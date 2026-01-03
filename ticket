@@ -740,7 +740,12 @@ cmd_edit() {
 
     local file
     file=$(ticket_path "$1") || return 1
-    "${EDITOR:-vi}" "$file"
+
+    if [ -t 0 ] && [ -t 1 ]; then
+        "${EDITOR:-vi}" "$file"
+    else
+        echo "Edit ticket file: $file"
+    fi
 }
 
 cmd_query() {
