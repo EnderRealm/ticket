@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Support `TICKETS_DIR` environment variable for custom tickets directory location
 - `dep cycle` command to detect dependency cycles in open tickets
 - `add-note` command for appending timestamped notes to tickets
 - `-a, --assignee` filter flag for `ls`, `ready`, `blocked`, and `closed` commands
