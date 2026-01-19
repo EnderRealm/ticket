@@ -205,6 +205,8 @@ cmd_create() {
     done
 
     title="${title:-Untitled}"
+    validate_priority "$priority" || return 1
+
     local id
     id=$(generate_id)
     local file="$TICKETS_DIR/${id}.md"
@@ -262,6 +264,18 @@ validate_status() {
     return 1
 }
 
+# Valid priorities
+VALID_PRIORITIES="0 1 2 3 4"
+
+validate_priority() {
+    local priority="$1"
+    for valid in $VALID_PRIORITIES; do
+        [[ "$priority" == "$valid" ]] && return 0
+    done
+    echo "Error: invalid priority '$priority'. Must be one of: $VALID_PRIORITIES" >&2
+    return 1
+}
+
 cmd_status() {
     if [[ $# -lt 2 ]]; then
         echo "Usage: $(basename "$0") status <id> <status>" >&2
@@ -303,6 +317,22 @@ cmd_reopen() {
         return 1
     fi
     cmd_status "$1" "open"
+}
+
+cmd_delete() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: $(basename "$0") delete <id> [id...]" >&2
+        return 1
+    fi
+
+    for arg in "$@"; do
+        local file
+        file=$(ticket_path "$arg") || continue
+        local id
+        id=$(basename "$file" .md)
+        rm "$file"
+        echo "Deleted $id"
+    done
 }
 
 cmd_dep_tree() {
@@ -670,7 +700,7 @@ cmd_dep() {
 cmd_ls() {
     [[ ! -d "$TICKETS_DIR" ]] && return 0
 
-    local status_filter="" assignee_filter="" tag_filter=""
+    local status_filter="" assignee_filter="" tag_filter="" priority_filter=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --status=*) status_filter="${1#--status=}"; shift ;;
@@ -678,20 +708,26 @@ cmd_ls() {
             --assignee=*) assignee_filter="${1#--assignee=}"; shift ;;
             -T) tag_filter="$2"; shift 2 ;;
             --tag=*) tag_filter="${1#--tag=}"; shift ;;
+            -P) priority_filter="$2"; shift 2 ;;
+            --priority=*) priority_filter="${1#--priority=}"; shift ;;
             *) shift ;;
         esac
     done
 
-    awk -v status_filter="$status_filter" -v assignee_filter="$assignee_filter" -v tag_filter="$tag_filter" '
+    # Normalize priority filter (strip leading P if present)
+    priority_filter="${priority_filter#P}"
+
+    awk -v status_filter="$status_filter" -v assignee_filter="$assignee_filter" -v tag_filter="$tag_filter" -v priority_filter="$priority_filter" '
     BEGIN { FS=": "; in_front=0 }
     FNR==1 {
         if (prev_file) emit()
-        id=""; status=""; title=""; deps=""; assignee=""; tags=""; in_front=0
+        id=""; status=""; title=""; deps=""; assignee=""; tags=""; priority=""; in_front=0
         prev_file=FILENAME
     }
     /^---$/ { in_front = !in_front; next }
     in_front && /^id:/ { id = $2 }
     in_front && /^status:/ { status = $2 }
+    in_front && /^priority:/ { priority = $2 }
     in_front && /^assignee:/ { assignee = $2 }
     in_front && /^tags:/ { tags = $2; gsub(/[\[\] ]/, "", tags) }
     in_front && /^deps:/ {
@@ -706,11 +742,12 @@ cmd_ls() {
         return 0
     }
     function emit() {
-        if (id != "" && (status_filter == "" || status == status_filter) && (assignee_filter == "" || assignee == assignee_filter) && (tag_filter == "" || has_tag(tags, tag_filter))) {
+        if (id != "" && (status_filter == "" || status == status_filter) && (assignee_filter == "" || assignee == assignee_filter) && (tag_filter == "" || has_tag(tags, tag_filter)) && (priority_filter == "" || priority == priority_filter)) {
             deps_display = (deps != "") ? "[" deps "]" : "[]"
             gsub(/,/, ", ", deps_display)
             dep_str = (deps_display != "[]") ? " <- " deps_display : ""
-            printf "%-8s [%s] - %s%s\n", id, status, title, dep_str
+            p = (priority != "") ? priority : 2
+            printf "%-8s [P%s][%s] - %s%s\n", id, p, status, title, dep_str
         }
     }
     ' "$TICKETS_DIR"/*.md 2>/dev/null
@@ -1355,6 +1392,9 @@ cmd_edit() {
         esac
     done
 
+    # Validate priority if provided
+    [[ -n "$priority" ]] && { validate_priority "$priority" || return 1; }
+
     # Update YAML fields
     [[ -n "$priority" ]] && update_yaml_field "$file" "priority" "$priority"
     [[ -n "$issue_type" ]] && update_yaml_field "$file" "type" "$issue_type"
@@ -1509,6 +1549,7 @@ Commands:
   start <id>               Set status to in_progress
   close <id>               Set status to closed
   reopen <id>              Set status to open
+  delete <id> [id...]      Delete ticket file(s)
   status <id> <status>     Update status (open|in_progress|closed)
   dep <id> <dep-id>        Add dependency (id depends on dep-id)
   dep tree [--full] <id>   Show dependency tree (--full disables dedup)
@@ -1516,7 +1557,7 @@ Commands:
   undep <id> <dep-id>      Remove dependency
   link <id> <id> [id...]   Link tickets together (symmetric)
   unlink <id> <target-id>  Remove link between tickets
-  ls [--status=X] [-a X] [-T X]   List tickets
+  ls [--status=X] [-a X] [-T X] [-P X]  List tickets (--priority=P0 or -P 0)
   ready [-a X] [-T X]      List open/in-progress tickets with deps resolved
   blocked [-a X] [-T X]    List open/in-progress tickets with unresolved deps
   closed [--limit=N] [-a X] [-T X] List recently closed tickets (default 20, by mtime)
@@ -1546,6 +1587,7 @@ case "${1:-help}" in
     create) shift; cmd_create "$@" ;;
     start)  shift; cmd_start "$@" ;;
     close)  shift; cmd_close "$@" ;;
+    delete) shift; cmd_delete "$@" ;;
     reopen) shift; cmd_reopen "$@" ;;
     status) shift; cmd_status "$@" ;;
     dep)    shift; cmd_dep "$@" ;;

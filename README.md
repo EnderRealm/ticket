@@ -35,6 +35,27 @@ cd ticket && ln -s "$PWD/ticket" ~/.local/bin/tk
 
 **Or** just copy `ticket` to somewhere in your PATH.
 
+## Local Development
+
+Symlink the script to your PATH for live editing:
+
+```bash
+# Clone and symlink (changes take effect immediately)
+git clone https://github.com/wedow/ticket.git
+ln -s "$PWD/ticket/ticket" ~/.local/bin/tk
+
+# Or use a different location
+ln -s "$PWD/ticket/ticket" /usr/local/bin/tk
+
+# Verify it works
+tk help
+
+# Run directly without installing
+./ticket help
+```
+
+The symlink approach means any edits to the `ticket` script are immediately available - no reinstall needed.
+
 ## Requirements
 
 `tk` is a portable bash script requiring only coreutils, so it works out of the box on any POSIX system with bash installed. The `query` command requires `jq`. Uses `rg` (ripgrep) if available, falls back to `grep`.
@@ -70,6 +91,7 @@ Commands:
   start <id>               Set status to in_progress
   close <id>               Set status to closed
   reopen <id>              Set status to open
+  delete <id> [id...]      Delete ticket file(s)
   status <id> <status>     Update status (open|in_progress|closed)
   dep <id> <dep-id>        Add dependency (id depends on dep-id)
   dep tree [--full] <id>   Show dependency tree (--full disables dedup)
@@ -77,7 +99,7 @@ Commands:
   undep <id> <dep-id>      Remove dependency
   link <id> <id> [id...]   Link tickets together (symmetric)
   unlink <id> <target-id>  Remove link between tickets
-  ls [--status=X] [-a X] [-T X]   List tickets
+  ls [--status=X] [-a X] [-T X] [-P X]  List tickets (--priority=P0 or -P 0)
   ready [-a X] [-T X]      List open/in-progress tickets with deps resolved
   blocked [-a X] [-T X]    List open/in-progress tickets with unresolved deps
   closed [--limit=N] [-a X] [-T X] List recently closed tickets (default 20, by mtime)

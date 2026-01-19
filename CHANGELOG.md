@@ -9,6 +9,8 @@
 - `-a, --assignee` filter flag for `ls`, `ready`, `blocked`, and `closed` commands
 - `--tags` flag for `create` command to add comma-separated tags
 - `-T, --tag` filter flag for `ls`, `ready`, `blocked`, and `closed` commands
+- `-P, --priority` filter flag for `ls` command
+- `delete` command to remove ticket files
 
 ### Changed
 - `edit` command now uses CLI flags instead of opening $EDITOR
