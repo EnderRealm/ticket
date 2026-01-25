@@ -348,62 +348,6 @@ propagate_status() {
     fi
 }
 
-cmd_status() {
-    if [[ $# -lt 2 ]]; then
-        echo "Usage: $(basename "$0") status <id> <status>" >&2
-        echo "Valid statuses: $VALID_STATUSES" >&2
-        return 1
-    fi
-
-    local id="$1"
-    local status="$2"
-
-    validate_status "$status" || return 1
-
-    local file
-    file=$(ticket_path "$id") || return 1
-
-    update_yaml_field "$file" "status" "$status"
-    echo "Updated $(basename "$file" .md) -> $status"
-
-    # Propagate terminal statuses upward
-    if [[ "$status" == "needs_testing" || "$status" == "closed" ]]; then
-        propagate_status "$id"
-    fi
-}
-
-cmd_start() {
-    if [[ $# -lt 1 ]]; then
-        echo "Usage: $(basename "$0") start <id>" >&2
-        return 1
-    fi
-    cmd_status "$1" "in_progress"
-}
-
-cmd_close() {
-    if [[ $# -lt 1 ]]; then
-        echo "Usage: $(basename "$0") close <id>" >&2
-        return 1
-    fi
-    cmd_status "$1" "closed"
-}
-
-cmd_testing() {
-    if [[ $# -lt 1 ]]; then
-        echo "Usage: $(basename "$0") testing <id>" >&2
-        return 1
-    fi
-    cmd_status "$1" "needs_testing"
-}
-
-cmd_reopen() {
-    if [[ $# -lt 1 ]]; then
-        echo "Usage: $(basename "$0") reopen <id>" >&2
-        return 1
-    fi
-    cmd_status "$1" "open"
-}
-
 cmd_delete() {
     if [[ $# -lt 1 ]]; then
         echo "Usage: $(basename "$0") delete <id> [id...]" >&2
@@ -1461,7 +1405,7 @@ cmd_edit() {
     if [[ $# -lt 1 ]]; then
         echo "Usage: $(basename "$0") edit <id> [options]" >&2
         echo "Options: --title, -d/--description, --design, --acceptance," >&2
-        echo "         -t/--type, -p/--priority, -a/--assignee," >&2
+        echo "         -s/--status, -t/--type, -p/--priority, -a/--assignee," >&2
         echo "         --external-ref, --parent, --tags" >&2
         return 1
     fi
@@ -1475,13 +1419,13 @@ cmd_edit() {
     if [[ $# -eq 0 ]]; then
         echo "Usage: $(basename "$0") edit <id> [options]" >&2
         echo "Options: --title, -d/--description, --design, --acceptance," >&2
-        echo "         -t/--type, -p/--priority, -a/--assignee," >&2
+        echo "         -s/--status, -t/--type, -p/--priority, -a/--assignee," >&2
         echo "         --external-ref, --parent, --tags" >&2
         return 1
     fi
 
     local title="" description="" design="" acceptance=""
-    local priority="" issue_type="" assignee="" external_ref="" parent="" tags=""
+    local priority="" issue_type="" assignee="" external_ref="" parent="" tags="" status=""
     local has_title=0 has_desc=0 has_design=0 has_accept=0
 
     while [[ $# -gt 0 ]]; do
@@ -1492,6 +1436,7 @@ cmd_edit() {
             --acceptance) acceptance="$2"; has_accept=1; shift 2 ;;
             -p|--priority) priority="$2"; shift 2 ;;
             -t|--type) issue_type="$2"; shift 2 ;;
+            -s|--status) status="$2"; shift 2 ;;
             -a|--assignee) assignee="$2"; shift 2 ;;
             --external-ref) external_ref="$2"; shift 2 ;;
             --parent) parent="$2"; shift 2 ;;
@@ -1501,8 +1446,9 @@ cmd_edit() {
         esac
     done
 
-    # Validate priority if provided
+    # Validate fields if provided
     [[ -n "$priority" ]] && { validate_priority "$priority" || return 1; }
+    [[ -n "$status" ]] && { validate_status "$status" || return 1; }
 
     # Update YAML fields
     [[ -n "$priority" ]] && update_yaml_field "$file" "priority" "$priority"
@@ -1511,6 +1457,7 @@ cmd_edit() {
     [[ -n "$external_ref" ]] && update_yaml_field "$file" "external-ref" "$external_ref"
     [[ -n "$parent" ]] && update_yaml_field "$file" "parent" "$parent"
     [[ -n "$tags" ]] && update_yaml_field "$file" "tags" "[${tags//,/, }]"
+    [[ -n "$status" ]] && update_yaml_field "$file" "status" "$status"
 
     # Update markdown content
     [[ $has_title -eq 1 ]] && update_title "$file" "$title"
@@ -1519,6 +1466,11 @@ cmd_edit() {
     [[ $has_accept -eq 1 ]] && update_section "$file" "Acceptance Criteria" "$acceptance"
 
     echo "Updated $(basename "$file" .md)"
+
+    # Propagate terminal statuses upward
+    if [[ "$status" == "needs_testing" || "$status" == "closed" ]]; then
+        propagate_status "$id"
+    fi
 }
 
 cmd_query() {
@@ -1673,10 +1625,10 @@ Required fields: id, status, deps, created, type, priority
 Optional fields: assignee, parent, tags, links, external-ref
 
 ## Working Conventions
-1. Start work: `tk start <id>` (sets in_progress)
+1. Start work: `tk edit <id> -s in_progress`
 2. Create child tasks under epics with --parent
 3. Features need a ## Plan section before they're ready
-4. Mark complete: `tk testing <id>` then `tk close <id>`
+4. Mark complete: `tk edit <id> -s needs_testing` then `tk edit <id> -s closed`
 5. Use `tk ready` to see what's available to work on
 
 ## Commit Format
@@ -1705,12 +1657,7 @@ Commands:
     --external-ref         External reference (e.g., gh-123, JIRA-456)
     --parent               Parent ticket ID
     --tags                 Comma-separated tags (e.g., --tags ui,backend,urgent)
-  start <id>               Set status to in_progress
-  testing <id>             Set status to needs_testing
-  close <id>               Set status to closed
-  reopen <id>              Set status to open
   delete <id> [id...]      Delete ticket file(s)
-  status <id> <status>     Update status (open|in_progress|needs_testing|closed)
   dep <id> <dep-id>        Add dependency (id depends on dep-id)
   dep tree [--full] <id>   Show dependency tree (--full disables dedup)
   dep cycle                Find dependency cycles in open tickets
@@ -1727,6 +1674,7 @@ Commands:
     -d, --description      Description text
     --design               Design notes
     --acceptance           Acceptance criteria
+    -s, --status           Status (open|in_progress|needs_testing|closed)
     -t, --type             Type (bug|feature|task|epic|workstream|chore)
     -p, --priority         Priority 0-4
     -a, --assignee         Assignee
@@ -1746,12 +1694,7 @@ EOF
 # Main dispatch
 case "${1:-help}" in
     create) shift; cmd_create "$@" ;;
-    start)  shift; cmd_start "$@" ;;
-    close)  shift; cmd_close "$@" ;;
-    testing) shift; cmd_testing "$@" ;;
     delete) shift; cmd_delete "$@" ;;
-    reopen) shift; cmd_reopen "$@" ;;
-    status) shift; cmd_status "$@" ;;
     dep)    shift; cmd_dep "$@" ;;
     undep)  shift; cmd_undep "$@" ;;
     link)   shift; cmd_link "$@" ;;

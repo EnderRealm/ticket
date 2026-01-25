@@ -4,7 +4,8 @@
 
 ### Added
 - `workstream` ticket type for high-level containers
-- `needs_testing` status and `testing` command
+- `needs_testing` status
+- `-s, --status` flag for `edit` command to change ticket status
 - Hierarchy gating: `ready` only shows tickets whose parent is `in_progress`
 - Plan section requirement: features need `## Plan` to appear in `ready`
 - `--open` flag for `ready` to bypass hierarchy and plan checks
@@ -24,6 +25,9 @@
 ### Changed
 - `create` command now displays full ticket details on success instead of just the ID
 - `edit` command now uses CLI flags instead of opening $EDITOR
+
+### Removed
+- `start`, `testing`, `close`, `reopen`, `status` commands (use `edit -s` instead)
 
 ### Fixed
 - `update_yaml_field` now works on BSD/macOS (was using GNU sed syntax)
