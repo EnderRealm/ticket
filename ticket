@@ -1630,16 +1630,22 @@ cmd_query() {
 
     local filter="${1:-}"
 
-    # Generate all JSON in one awk pass
+    # Generate all JSON in one awk pass, including body content
     local json_output
     json_output=$(awk '
     BEGIN { FS=": "; in_front=0 }
     FNR==1 {
         if (prev_file) emit()
-        field_count=0; in_front=0
+        field_count=0; in_front=0; past_front=0
+        title=""; description=""; current_section=""; section_content=""
+        delete sections
         prev_file=FILENAME
     }
-    /^---$/ { in_front = !in_front; next }
+    /^---$/ {
+        if (in_front) past_front=1
+        in_front = !in_front
+        next
+    }
     in_front && /^[a-zA-Z]/ {
         key = $1
         val = substr($0, length($1) + 3)
@@ -1648,7 +1654,42 @@ cmd_query() {
         field_keys[field_count] = key
         field_vals[field_count] = val
     }
+    past_front && /^# / && title == "" {
+        title = substr($0, 3)
+        current_section = "description"
+        next
+    }
+    past_front && /^## / {
+        # Save previous section
+        if (current_section != "" && section_content != "") {
+            gsub(/^[\n]+|[\n]+$/, "", section_content)
+            sections[current_section] = section_content
+        }
+        # Start new section
+        current_section = tolower(substr($0, 4))
+        gsub(/^ +| +$/, "", current_section)
+        gsub(/ /, "_", current_section)
+        section_content = ""
+        next
+    }
+    past_front && current_section != "" {
+        section_content = section_content $0 "\n"
+    }
+    function json_escape(s) {
+        gsub(/\\/, "\\\\", s)
+        gsub(/"/, "\\\"", s)
+        gsub(/\n/, "\\n", s)
+        gsub(/\r/, "\\r", s)
+        gsub(/\t/, "\\t", s)
+        return s
+    }
     function emit() {
+        # Save last section
+        if (current_section != "" && section_content != "") {
+            gsub(/^[\n]+|[\n]+$/, "", section_content)
+            sections[current_section] = section_content
+        }
+
         if (field_count > 0) {
             printf "{"
             for (i = 1; i <= field_count; i++) {
@@ -1667,8 +1708,16 @@ cmd_query() {
                     }
                     printf "]"
                 } else {
-                    printf "\"%s\":\"%s\"", key, val
+                    printf "\"%s\":\"%s\"", key, json_escape(val)
                 }
+            }
+            # Add title
+            if (title != "") {
+                printf ",\"title\":\"%s\"", json_escape(title)
+            }
+            # Add sections
+            for (sec in sections) {
+                printf ",\"%s\":\"%s\"", sec, json_escape(sections[sec])
             }
             printf "}\n"
         }
