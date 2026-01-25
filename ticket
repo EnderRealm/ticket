@@ -215,7 +215,7 @@ cmd_create() {
             [[ -n "$input_priority" ]] && priority="$input_priority"
         fi
         if [[ "$issue_type" == "task" ]]; then
-            read -r -p "Type [task/epic/bug] (default task): " input_type
+            read -r -p "Type [task/epic/workstream/bug] (default task): " input_type
             [[ -n "$input_type" ]] && issue_type="$input_type"
         fi
         if [[ -z "$tags" ]]; then
@@ -275,7 +275,7 @@ cmd_create() {
 }
 
 # Valid statuses
-VALID_STATUSES="open in_progress closed"
+VALID_STATUSES="open in_progress needs_testing closed"
 
 validate_status() {
     local status="$1"
@@ -298,6 +298,56 @@ validate_priority() {
     return 1
 }
 
+propagate_status() {
+    local id="$1"
+    local file
+    file=$(ticket_path "$id" 2>/dev/null) || return 0
+
+    # Get parent ID (strip any trailing comment)
+    local parent
+    parent=$(yaml_field "$file" "parent" | sed 's/ *#.*//' || true)
+    [[ -z "$parent" ]] && return 0
+
+    local parent_file
+    parent_file=$(ticket_path "$parent" 2>/dev/null) || return 0
+
+    # Find all children of parent
+    local all_closed=1 all_testing_or_closed=1
+    for child_file in "$TICKETS_DIR"/*.md; do
+        local child_parent
+        child_parent=$(yaml_field "$child_file" "parent" | sed 's/ *#.*//' || true)
+        [[ "$child_parent" != "$parent" ]] && continue
+
+        local child_status
+        child_status=$(yaml_field "$child_file" "status" || true)
+        if [[ "$child_status" != "closed" ]]; then
+            all_closed=0
+            if [[ "$child_status" != "needs_testing" ]]; then
+                all_testing_or_closed=0
+            fi
+        fi
+    done
+
+    # Propagate status upward
+    if [[ $all_closed -eq 1 ]]; then
+        local current_parent_status
+        current_parent_status=$(yaml_field "$parent_file" "status" || true)
+        if [[ "$current_parent_status" != "closed" ]]; then
+            update_yaml_field "$parent_file" "status" "closed"
+            echo "  -> $(basename "$parent_file" .md) -> closed (all children closed)"
+            propagate_status "$parent"
+        fi
+    elif [[ $all_testing_or_closed -eq 1 ]]; then
+        local current_parent_status
+        current_parent_status=$(yaml_field "$parent_file" "status" || true)
+        if [[ "$current_parent_status" != "needs_testing" && "$current_parent_status" != "closed" ]]; then
+            update_yaml_field "$parent_file" "status" "needs_testing"
+            echo "  -> $(basename "$parent_file" .md) -> needs_testing (all children done or testing)"
+            propagate_status "$parent"
+        fi
+    fi
+}
+
 cmd_status() {
     if [[ $# -lt 2 ]]; then
         echo "Usage: $(basename "$0") status <id> <status>" >&2
@@ -315,6 +365,11 @@ cmd_status() {
 
     update_yaml_field "$file" "status" "$status"
     echo "Updated $(basename "$file" .md) -> $status"
+
+    # Propagate terminal statuses upward
+    if [[ "$status" == "needs_testing" || "$status" == "closed" ]]; then
+        propagate_status "$id"
+    fi
 }
 
 cmd_start() {
@@ -331,6 +386,14 @@ cmd_close() {
         return 1
     fi
     cmd_status "$1" "closed"
+}
+
+cmd_testing() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: $(basename "$0") testing <id>" >&2
+        return 1
+    fi
+    cmd_status "$1" "needs_testing"
 }
 
 cmd_reopen() {
@@ -781,9 +844,10 @@ cmd_ls() {
 cmd_ready() {
     [[ ! -d "$TICKETS_DIR" ]] && return 0
 
-    local assignee_filter="" tag_filter=""
+    local assignee_filter="" tag_filter="" open_mode=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --open) open_mode=1; shift ;;
             -a) assignee_filter="$2"; shift 2 ;;
             --assignee=*) assignee_filter="${1#--assignee=}"; shift ;;
             -T) tag_filter="$2"; shift 2 ;;
@@ -792,11 +856,12 @@ cmd_ready() {
         esac
     done
 
-    awk -v assignee_filter="$assignee_filter" -v tag_filter="$tag_filter" '
+    awk -v assignee_filter="$assignee_filter" -v tag_filter="$tag_filter" -v open_mode="$open_mode" '
     BEGIN { FS=": "; in_front=0 }
     FNR==1 {
         if (prev_file) store()
-        id=""; status=""; title=""; deps=""; priority=""; assignee=""; tags=""; in_front=0
+        id=""; status=""; title=""; deps=""; priority=""; assignee=""; tags=""
+        parent=""; ticket_type=""; has_plan=0; in_front=0
         prev_file=FILENAME
     }
     /^---$/ { in_front = !in_front; next }
@@ -805,11 +870,14 @@ cmd_ready() {
     in_front && /^priority:/ { priority = $2 }
     in_front && /^assignee:/ { assignee = $2 }
     in_front && /^tags:/ { tags = $2; gsub(/[\[\] ]/, "", tags) }
+    in_front && /^parent:/ { parent = $2; sub(/ *#.*/, "", parent) }
+    in_front && /^type:/ { ticket_type = $2 }
     in_front && /^deps:/ {
         deps = $2
         gsub(/[\[\] ]/, "", deps)
     }
     !in_front && /^# / && title == "" { title = substr($0, 3) }
+    !in_front && /^## Plan/ { has_plan = 1 }
     function has_tag(tags_str, tag,    i, n, arr) {
         n = split(tags_str, arr, ",")
         for (i = 1; i <= n; i++) if (arr[i] == tag) return 1
@@ -823,7 +891,17 @@ cmd_ready() {
             priorities[id] = (priority != "") ? priority : 2
             assignees[id] = assignee
             all_tags[id] = tags
+            parents[id] = parent
+            types[id] = ticket_type
+            has_plan_section[id] = has_plan
         }
+    }
+    function parent_chain_active(tid,    p) {
+        p = parents[tid]
+        if (p == "") return 1
+        if (!(p in statuses)) return 1
+        if (statuses[p] != "in_progress") return 0
+        return parent_chain_active(p)
     }
     END {
         if (prev_file) store()
@@ -833,6 +911,12 @@ cmd_ready() {
             if (status != "open" && status != "in_progress") continue
             if (assignee_filter != "" && assignees[id] != assignee_filter) continue
             if (tag_filter != "" && !has_tag(all_tags[id], tag_filter)) continue
+
+            # Hierarchy gating: parent chain must be in_progress (unless --open)
+            if (!open_mode && !parent_chain_active(id)) continue
+
+            # Plan section required for features (unless --open)
+            if (!open_mode && types[id] == "feature" && !has_plan_section[id]) continue
 
             deps = deps_raw[id]
             ready = 1
@@ -1552,6 +1636,56 @@ cmd_migrate_beads() {
     '
 }
 
+cmd_workflow() {
+    cat << 'EOF'
+# Ticket Workflow Guide
+
+## Ticket Types
+- task: Default type for work items
+- epic: Container for related tasks, provides hierarchy
+- workstream: High-level container for epics and tasks
+- feature: New functionality (requires ## Plan section to be ready)
+- bug: Defect fix
+- chore: Maintenance work
+
+## Statuses
+- open: Not started
+- in_progress: Actively being worked on
+- needs_testing: Implementation complete, awaiting verification
+- closed: Done
+
+## Readiness Rules (tk ready)
+A ticket appears in `tk ready` when:
+1. Status is open or in_progress
+2. All dependencies (deps) are closed
+3. Parent chain is in_progress (use --open to bypass)
+4. Features have a ## Plan section (use --open to bypass)
+
+## Status Propagation
+When a ticket is set to needs_testing or closed, the system checks siblings:
+- If all siblings are needs_testing or closed -> parent becomes needs_testing
+- If all siblings are closed -> parent becomes closed
+This cascades up the hierarchy automatically.
+
+## Ticket Structure
+Tickets are markdown files with YAML frontmatter in .tickets/
+Required fields: id, status, deps, created, type, priority
+Optional fields: assignee, parent, tags, links, external-ref
+
+## Working Conventions
+1. Start work: `tk start <id>` (sets in_progress)
+2. Create child tasks under epics with --parent
+3. Features need a ## Plan section before they're ready
+4. Mark complete: `tk testing <id>` then `tk close <id>`
+5. Use `tk ready` to see what's available to work on
+
+## Commit Format
+Include ticket ID in commit messages:
+  <type>(<scope>): <description> [<ticket-id>]
+Example: feat(auth): add login flow [t-abc1]
+EOF
+}
+
 cmd_help() {
     local cmd
     cmd=$(basename "$0")
@@ -1565,17 +1699,18 @@ Commands:
     -d, --description      Description text
     --design               Design notes
     --acceptance           Acceptance criteria
-    -t, --type             Type (bug|feature|task|epic|chore) [default: task]
+    -t, --type             Type (bug|feature|task|epic|workstream|chore) [default: task]
     -p, --priority         Priority 0-4, 0=highest [default: 2]
     -a, --assignee         Assignee
     --external-ref         External reference (e.g., gh-123, JIRA-456)
     --parent               Parent ticket ID
     --tags                 Comma-separated tags (e.g., --tags ui,backend,urgent)
   start <id>               Set status to in_progress
+  testing <id>             Set status to needs_testing
   close <id>               Set status to closed
   reopen <id>              Set status to open
   delete <id> [id...]      Delete ticket file(s)
-  status <id> <status>     Update status (open|in_progress|closed)
+  status <id> <status>     Update status (open|in_progress|needs_testing|closed)
   dep <id> <dep-id>        Add dependency (id depends on dep-id)
   dep tree [--full] <id>   Show dependency tree (--full disables dedup)
   dep cycle                Find dependency cycles in open tickets
@@ -1583,7 +1718,7 @@ Commands:
   link <id> <id> [id...]   Link tickets together (symmetric)
   unlink <id> <target-id>  Remove link between tickets
   ls [--status=X] [-a X] [-T X] [-P X] [-t X]  List tickets
-  ready [-a X] [-T X]      List open/in-progress tickets with deps resolved
+  ready [--open] [-a X] [-T X]  List ready tickets (--open skips hierarchy/plan checks)
   blocked [-a X] [-T X]    List open/in-progress tickets with unresolved deps
   closed [--limit=N] [-a X] [-T X] List recently closed tickets (default 20, by mtime)
   show <id>                Display ticket
@@ -1592,7 +1727,7 @@ Commands:
     -d, --description      Description text
     --design               Design notes
     --acceptance           Acceptance criteria
-    -t, --type             Type (bug|feature|task|epic|chore)
+    -t, --type             Type (bug|feature|task|epic|workstream|chore)
     -p, --priority         Priority 0-4
     -a, --assignee         Assignee
     --external-ref         External reference
@@ -1600,6 +1735,7 @@ Commands:
     --tags                 Comma-separated tags
   add-note <id> [text]     Append timestamped note (or pipe via stdin)
   query [jq-filter]        Output tickets as JSON, optionally filtered
+  workflow                 Display workflow guide for LLM context
   migrate-beads            Import tickets from .beads/issues.jsonl
 
 Tickets stored as markdown files in .tickets/
@@ -1612,6 +1748,7 @@ case "${1:-help}" in
     create) shift; cmd_create "$@" ;;
     start)  shift; cmd_start "$@" ;;
     close)  shift; cmd_close "$@" ;;
+    testing) shift; cmd_testing "$@" ;;
     delete) shift; cmd_delete "$@" ;;
     reopen) shift; cmd_reopen "$@" ;;
     status) shift; cmd_status "$@" ;;
@@ -1627,6 +1764,7 @@ case "${1:-help}" in
     edit)   shift; cmd_edit "$@" ;;
     add-note) shift; cmd_add_note "$@" ;;
     query) shift; cmd_query "$@" ;;
+    workflow) cmd_workflow ;;
     migrate-beads) shift; cmd_migrate_beads "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
