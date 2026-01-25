@@ -7,8 +7,7 @@
 - `needs_testing` status
 - `-s, --status` flag for `edit` command to change ticket status
 - Hierarchy gating: `ready` only shows tickets whose parent is `in_progress`
-- Plan section requirement: features need `## Plan` to appear in `ready`
-- `--open` flag for `ready` to bypass hierarchy and plan checks
+- `--open` flag for `ready` to bypass hierarchy checks
 - Status propagation: `needs_testing`/`closed` auto-bubble up parent chain
 - `workflow` command outputs guide for LLM context
 - `-t, --type` filter flag for `ls` command

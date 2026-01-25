@@ -957,7 +957,7 @@ cmd_ready() {
     FNR==1 {
         if (prev_file) store()
         id=""; status=""; title=""; deps=""; priority=""; assignee=""; tags=""
-        parent=""; ticket_type=""; has_plan=0; in_front=0
+        parent=""; ticket_type=""; in_front=0
         prev_file=FILENAME
     }
     /^---$/ { in_front = !in_front; next }
@@ -973,7 +973,6 @@ cmd_ready() {
         gsub(/[\[\] ]/, "", deps)
     }
     !in_front && /^# / && title == "" { title = substr($0, 3) }
-    !in_front && /^## Plan/ { has_plan = 1 }
     function has_tag(tags_str, tag,    i, n, arr) {
         n = split(tags_str, arr, ",")
         for (i = 1; i <= n; i++) if (arr[i] == tag) return 1
@@ -989,7 +988,6 @@ cmd_ready() {
             all_tags[id] = tags
             parents[id] = parent
             types[id] = ticket_type
-            has_plan_section[id] = has_plan
         }
     }
     function parent_chain_active(tid,    p) {
@@ -1011,8 +1009,6 @@ cmd_ready() {
             # Hierarchy gating: parent chain must be in_progress (unless --open)
             if (!open_mode && !parent_chain_active(id)) continue
 
-            # Plan section required for features (unless --open)
-            if (!open_mode && types[id] == "feature" && !has_plan_section[id]) continue
 
             deps = deps_raw[id]
             ready = 1
@@ -1797,7 +1793,7 @@ cmd_workflow() {
 - task: Default type for work items
 - epic: Container for related tasks, provides hierarchy
 - workstream: High-level container for epics and tasks
-- feature: New functionality (requires ## Plan section to be ready)
+- feature: New functionality
 - bug: Defect fix
 - chore: Maintenance work
 
@@ -1812,7 +1808,6 @@ A ticket appears in `tk ready` when:
 1. Status is open or in_progress
 2. All dependencies (deps) are closed
 3. Parent chain is in_progress (use --open to bypass)
-4. Features have a ## Plan section (use --open to bypass)
 
 ## Status Propagation
 When a ticket is set to needs_testing or closed, the system checks siblings:
@@ -1828,7 +1823,7 @@ Optional fields: assignee, parent, tags, links, external-ref
 ## Working Conventions
 1. Start work: `tk edit <id> -s in_progress`
 2. Create child tasks under epics with --parent
-3. Features need a ## Plan section before they're ready
+3. Use parent tickets to organize work hierarchically
 4. Mark complete: `tk edit <id> -s needs_testing` then `tk edit <id> -s closed`
 5. Use `tk ready` to see what's available to work on
 
@@ -1867,7 +1862,7 @@ Commands:
   unlink <id> <target-id>  Remove link between tickets
   ls [--group-by=X] [--status=X] [-a X] [-T X] [-P X] [-t X]  List tickets
     --group, --group-by    Group by: workflow|type|status|priority
-  ready [--open] [-a X] [-T X]  List ready tickets (--open skips hierarchy/plan checks)
+  ready [--open] [-a X] [-T X]  List ready tickets (--open skips hierarchy checks)
   blocked [-a X] [-T X]    List open/in-progress tickets with unresolved deps
   closed [--limit=N] [-a X] [-T X] List recently closed tickets (default 20, by mtime)
   show <id>                Display ticket

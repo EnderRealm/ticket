@@ -314,26 +314,6 @@ assert_contains "tk ready" "$CHILD1" "Child visible when epic in_progress"
 assert_contains "tk ready" "$CHILD2" "Both children visible"
 
 # ============================================================================
-log_section "PLAN SECTION REQUIREMENT"
-# ============================================================================
-
-# Create feature without Plan section
-FEAT_NO_PLAN=$(tk create "Feature Without Plan" -t feature | extract_id)
-track_id "$FEAT_NO_PLAN"
-
-# Should NOT appear in ready
-assert_not_contains "tk ready" "$FEAT_NO_PLAN" "Feature without Plan not ready"
-
-# Should appear with --open
-assert_contains "tk ready --open" "$FEAT_NO_PLAN" "Feature visible with --open"
-
-# Add Plan section via direct file edit (tk edit doesn't handle multiline well)
-echo -e "\n## Plan\nStep 1: Do thing" >> ".tickets/$FEAT_NO_PLAN.md"
-
-# Now should appear in ready
-assert_contains "tk ready" "$FEAT_NO_PLAN" "Feature with Plan is ready"
-
-# ============================================================================
 log_section "STATUS PROPAGATION"
 # ============================================================================
 
