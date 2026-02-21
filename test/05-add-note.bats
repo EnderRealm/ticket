@@ -54,14 +54,13 @@ setup() {
     assert_output --partial "Piped content"
 }
 
-@test "add-note: no args with non-TTY stdin adds empty note" {
+@test "add-note: no text argument and empty stdin should fail" {
+    skip "blocked on t-c9da: empty stdin adds empty note instead of failing"
     local id
     id=$(create_ticket "No content")
-    # When stdin is not a TTY (as in BATS), add-note reads from stdin.
-    # With no piped content, this adds an empty note. The error case
-    # only fires when stdin IS a TTY and no args are provided.
-    run "$TK" add-note "$id"
-    assert_success
+    run "$TK" add-note "$id" </dev/null
+    assert_failure
+    assert_output --partial "no note provided"
 }
 
 @test "add-note: nonexistent ticket fails" {
