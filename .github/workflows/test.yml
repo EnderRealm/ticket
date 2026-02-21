@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install jq (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y jq
+
+      - name: Run tests
+        run: ./test/bats/bin/bats test/*.bats
+        env:
+          NO_COLOR: 1
+
+      - name: Run perf benchmarks (advisory)
+        if: always()
+        continue-on-error: true
+        run: ./test/bats/bin/bats test/30-perf.bats
+        env:
+          NO_COLOR: 1
+          PERF_MULTIPLIER: 5

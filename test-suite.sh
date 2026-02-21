@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Comprehensive test suite for tk ticket system
+# DEPRECATED: Use the BATS test suite instead:
+#   ./test/bats/bin/bats test/*.bats
+#
+# Legacy test suite for tk ticket system
 # Creates test tickets, exercises all features, then cleans up
 
 set -euo pipefail

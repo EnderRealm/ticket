@@ -24,16 +24,22 @@ Dependencies: bash, sed, awk, find. Optional: ripgrep (faster grep), jq (for que
 
 ## Testing
 
-No formal test suite. Manual testing workflow:
-```bash
-# Create test tickets
-tk create "Test ticket" -d "Description"
+BATS test suite in `test/` with 272 tests covering all commands, data model, lifecycle rules, output formats, error handling, and performance.
 
-# Verify commands
-tk ls
-tk ready
-tk blocked
+```bash
+# Run full suite
+./test/bats/bin/bats test/*.bats
+
+# Run a single file
+./test/bats/bin/bats test/01-create.bats
+
+# Run a single test by name
+./test/bats/bin/bats --filter 'create: -t sets type' test/01-create.bats
 ```
+
+Test helpers in `test/helpers/`. Each test gets an isolated `TICKETS_DIR` via `setup_fresh_tickets_dir`. Stats tests require gawk (skipped on macOS BSD awk).
+
+CI runs on ubuntu + macos via `.github/workflows/test.yml`.
 
 ## Changelog
 
