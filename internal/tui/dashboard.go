@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,6 +57,25 @@ func (m *dashboardModel) setSize(w, h int) {
 	m.height = h
 }
 
+// refreshTickets updates the ticket data while preserving cursor position.
+func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
+	var selectedID string
+	if t := m.selected(); t != nil {
+		selectedID = t.ID
+	}
+	m.all = tickets
+	m.buildItems()
+	if selectedID != "" {
+		for i, item := range m.items {
+			if item.Ticket.ID == selectedID {
+				m.cursor = i
+				m.clampOffset()
+				return
+			}
+		}
+	}
+}
+
 func (m *dashboardModel) buildItems() {
 	m.items = nil
 	needle := strings.ToLower(m.filterText)
@@ -96,6 +116,15 @@ func (m *dashboardModel) buildItems() {
 
 		m.items = append(m.items, item)
 	}
+
+	// Sort by priority ascending, then by age (oldest first within same priority).
+	// This matches the Inbox() sort order and makes the list predictable.
+	sort.SliceStable(m.items, func(i, j int) bool {
+		if m.items[i].Ticket.Priority != m.items[j].Ticket.Priority {
+			return m.items[i].Ticket.Priority < m.items[j].Ticket.Priority
+		}
+		return m.items[i].Since.Before(m.items[j].Since)
+	})
 
 	if m.cursor >= len(m.items) {
 		m.cursor = max(0, len(m.items)-1)

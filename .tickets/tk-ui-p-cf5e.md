@@ -1,6 +1,6 @@
 ---
 id: tk-ui-p-cf5e
-stage: triage
+stage: implement
 status: open
 deps: []
 links: []
@@ -9,5 +9,6 @@ type: bug
 priority: 0
 ---
 # 'tk ui' p for priority behaves weirdly
+
 
 Pressing p changes the priority as it should. However, it also moves focus to the first ticket (should stay on the current ticket) and rorders the ticket window. Don't understand the ticket order.

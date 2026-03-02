@@ -92,6 +92,27 @@ func (m *pipelineModel) setSize(w, h int) {
 	m.height = h
 }
 
+// refreshTickets updates the ticket data while preserving cursor position.
+func (m *pipelineModel) refreshTickets(tickets []*ticket.Ticket) {
+	var selectedID string
+	if t := m.selected(); t != nil {
+		selectedID = t.ID
+	}
+	m.all = tickets
+	m.buildColumns()
+	if selectedID != "" {
+		for ci, col := range m.columns {
+			for ri, t := range col.tickets {
+				if t.ID == selectedID {
+					m.stageCol = ci
+					m.cardRow = ri
+					return
+				}
+			}
+		}
+	}
+}
+
 func (m *pipelineModel) buildColumns() {
 	m.columns = nil
 	needle := strings.ToLower(m.filterText)

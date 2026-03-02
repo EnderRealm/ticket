@@ -128,8 +128,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ticketsLoadedMsg:
 		a.tickets = msg
-		a.dashboard = newDashboardModel(a.tickets, a.width, a.height)
-		a.pipeline = newPipelineModel(a.tickets, a.width, a.height)
+		a.dashboard.refreshTickets(a.tickets)
+		a.pipeline.refreshTickets(a.tickets)
 		// Refresh detail view if currently showing a ticket.
 		if a.current == viewDetail && a.detail.ticket != nil {
 			for _, t := range a.tickets {
