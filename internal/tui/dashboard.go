@@ -227,7 +227,7 @@ func (m dashboardModel) view() string {
 
 	// Header.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-4s %-10s %-24s %s", "P", "TYPE", "STAGE", "ID", "TITLE")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-5s %-10s %-24s %s", "P", "TYPE", "STAGE", "ID", "TITLE")))
 	b.WriteString("\n")
 
 	// Rows.
@@ -277,7 +277,7 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool) string {
 	sStyle := lipgloss.NewStyle().Foreground(stageColor)
 
 	pri := pStyle.Render(fmt.Sprintf("P%d", t.Priority))
-	typ := tStyle.Render(fmt.Sprintf("%-4s", shortType(t.Type)))
+	typ := tStyle.Render(fmt.Sprintf("%-5s", shortType(t.Type)))
 	stg := sStyle.Render(fmt.Sprintf("%-10s", stage))
 
 	// Review indicator.

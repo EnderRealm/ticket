@@ -1,36 +1,22 @@
 ---
 id: tk-ui-type-4515
-stage: implement
+stage: verify
 status: open
-review: approved
 deps: []
 links: []
 created: 2026-03-01T01:13:50Z
 type: bug
 priority: 0
 ---
-# 'tk ui' TYPE column to short for 'chore'
+# 'tk ui' TYPE column too short for 'chore'
 
+The TYPE column on the 'tk ui' list pages truncates 'chore' to 'chor' to make it consistent with the size of the column, which is currently limited to four characters to match 'TYPE'. However, we should spend one extra character and make that column five characters so that we can fit 'chore' in without truncation.
 
+## Implementation Notes
 
-## Review Log
+Widened the TYPE column from 4 to 5 characters in both TUI views:
 
-**2026-03-01T08:48:40Z [agent:impl-reviewer]**
-APPROVED — Everything looks good. Here's a summary of what was done:
+- `internal/tui/dashboard.go`: header format `%-4s` → `%-5s`; row format `%-4s` → `%-5s`
+- `internal/tui/pipeline.go`: card format `%-4s` → `%-5s`; `shortType(TypeChore)` now returns `"chore"` instead of `"chor"`
 
----
-
-## Bug Fix: `tk ui` TYPE column too short for `chore`
-
-**Root cause:** The `shortType()` function in `internal/tui/pipeline.go` was not abbreviating `"chore"` — it returned the full 5-character word while all other types return ≤ 4 characters (`"feat"`, `"task"`, `"epic"`, `"bug"`). The TYPE column had been widened to `%-5s` to avoid clipping, but the display was still off by 1 char relative to the header.
-
-**Changes made (3 files):**
-
-| File | Change |
-|------|--------|
-| `internal/tui/pipeline.go` | `shortType(TypeChore)` now returns `"chor"` instead of `"chore"` |
-| `internal/tui/pipeline.go` | Card type column format `%-5s` → `%-4s` |
-| `internal/tui/dashboard.go` | Row type column format `%-5s` → `%-4s` |
-| `internal/tui/dashboard.go` | Header format string `%-5s` (TYPE) → `%-4s` |
-
-All type abbreviations are now consistently ≤ 4 characters and the column width matches.
+All other short-type abbreviations (`feat`, `task`, `epic`, `bug`) are ≤ 4 chars and display correctly within the 5-char column.
