@@ -313,7 +313,7 @@ func (m pipelineModel) renderCard(t *ticket.Ticket, colWidth int, selected bool)
 
 	// Compact format: "P1 feat tic-xxxx"
 	pri := pStyle.Render(fmt.Sprintf("P%d", t.Priority))
-	typ := tStyle.Render(fmt.Sprintf("%-5s", shortType(t.Type)))
+	typ := tStyle.Render(fmt.Sprintf("%-6s", shortType(t.Type)))
 	id := t.ID
 
 	// Review indicator.

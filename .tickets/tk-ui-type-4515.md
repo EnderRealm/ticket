@@ -1,6 +1,6 @@
 ---
 id: tk-ui-type-4515
-stage: verify
+stage: done
 status: open
 deps: []
 links: []
@@ -14,9 +14,17 @@ The TYPE column on the 'tk ui' list pages truncates 'chore' to 'chor' to make it
 
 ## Implementation Notes
 
-Widened the TYPE column from 4 to 5 characters in both TUI views:
+Widened the TYPE column from 4 to 6 characters in both TUI views, giving all type labels a one-character padding margin:
 
-- `internal/tui/dashboard.go`: header format `%-4s` → `%-5s`; row format `%-4s` → `%-5s`
-- `internal/tui/pipeline.go`: card format `%-4s` → `%-5s`; `shortType(TypeChore)` now returns `"chore"` instead of `"chor"`
+- `internal/tui/dashboard.go`: header format `%-4s` → `%-6s`; row format `%-4s` → `%-6s`
+- `internal/tui/pipeline.go`: card format `%-4s` → `%-6s`; `shortType(TypeChore)` now returns `"chore"` instead of `"chor"`
 
-All other short-type abbreviations (`feat`, `task`, `epic`, `bug`) are ≤ 4 chars and display correctly within the 5-char column.
+All short-type abbreviations now display without truncation within the 6-char column:
+
+| Type    | Short  | Width |
+|---------|--------|-------|
+| feature | feat   | 4     |
+| bug     | bug    | 3     |
+| task    | task   | 4     |
+| epic    | epic   | 4     |
+| chore   | chore  | 5     |
