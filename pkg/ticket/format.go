@@ -77,6 +77,9 @@ func Serialize(t *Ticket) ([]byte, error) {
 	if t.ExternalRef != "" {
 		writeField(&buf, "external-ref", t.ExternalRef)
 	}
+	if t.Branch != "" {
+		writeField(&buf, "branch", t.Branch)
+	}
 	if t.Parent != "" {
 		writeField(&buf, "parent", t.Parent)
 	}

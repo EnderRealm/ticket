@@ -285,6 +285,87 @@ func TestEditBodyFields(t *testing.T) {
 	}
 }
 
+func TestCreateTicketWithBranch(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":  "Branch test",
+			"type":   "feature",
+			"branch": "feature/branch-test",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("tool returned error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var ticket map[string]any
+	if err := json.Unmarshal([]byte(text), &ticket); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if ticket["branch"] != "feature/branch-test" {
+		t.Errorf("branch = %q, want %q", ticket["branch"], "feature/branch-test")
+	}
+}
+
+func TestEditTicketBranch(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket without branch.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Edit branch test", "type": "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	// Branch should be absent.
+	if created["branch"] != nil && created["branch"] != "" {
+		t.Errorf("expected no branch on create, got %q", created["branch"])
+	}
+
+	// Edit to set branch.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":     id,
+			"branch": "fix/edit-branch",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	// Read back and verify.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+
+	if shown["branch"] != "fix/edit-branch" {
+		t.Errorf("branch = %q, want %q", shown["branch"], "fix/edit-branch")
+	}
+}
+
 func TestCreateTicketMissingTitle(t *testing.T) {
 	session := testServer(t)
 

@@ -108,6 +108,7 @@ Create & edit options:
   --parent             Parent ticket ID
   --tags               Comma-separated (e.g., --tags ui,backend)
   --external-ref       External reference (e.g., gh-123)
+  --branch             Git branch name (edit only)
 
 Stages: triage → spec → design → implement → test → verify → done
   Pipelines are type-dependent (e.g., chores skip spec/design/test/verify).

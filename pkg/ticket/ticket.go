@@ -185,6 +185,7 @@ type Ticket struct {
 	Links       []string   `yaml:"links,flow"`
 	Tags        []string   `yaml:"tags,omitempty,flow"`
 	ExternalRef string     `yaml:"external-ref,omitempty"`
+	Branch      string     `yaml:"branch,omitempty"`
 	Created     time.Time  `yaml:"created"`
 	Skipped     []Stage    `yaml:"skipped,omitempty,flow"`
 	Conversations []string `yaml:"conversations,omitempty,flow"`

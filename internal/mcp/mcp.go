@@ -54,6 +54,7 @@ type ticketJSON struct {
 	Priority      int          `json:"priority"`
 	Assignee      string       `json:"assignee,omitempty"`
 	ExternalRef   string       `json:"external_ref,omitempty"`
+	Branch        string       `json:"branch,omitempty"`
 	Parent        string       `json:"parent,omitempty"`
 	Tags          []string     `json:"tags,omitempty"`
 	Skipped       []string     `json:"skipped,omitempty"`
@@ -94,6 +95,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		Priority:      t.Priority,
 		Assignee:      t.Assignee,
 		ExternalRef:   t.ExternalRef,
+		Branch:        t.Branch,
 		Parent:        t.Parent,
 		Tags:          t.Tags,
 		Conversations: t.Conversations,
@@ -294,6 +296,7 @@ type createArgs struct {
 	Parent      string `json:"parent,omitempty" jsonschema:"parent ticket ID"`
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
+	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
 }
 
 func registerCreate(server *mcp.Server, store *ticket.FileStore) {
@@ -331,6 +334,9 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 		}
 		if args.ExternalRef != "" {
 			t.ExternalRef = args.ExternalRef
+		}
+		if args.Branch != "" {
+			t.Branch = args.Branch
 		}
 		if args.Tags != "" {
 			t.Tags = strings.Split(args.Tags, ",")
@@ -372,6 +378,7 @@ type editArgs struct {
 	Parent      string `json:"parent,omitempty" jsonschema:"new parent ticket ID"`
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
+	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
 	Description string `json:"description,omitempty" jsonschema:"new description text"`
 	Design      string `json:"design,omitempty" jsonschema:"new design text"`
 	Acceptance  string `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
@@ -409,6 +416,9 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 		}
 		if args.ExternalRef != "" {
 			t.ExternalRef = args.ExternalRef
+		}
+		if args.Branch != "" {
+			t.Branch = args.Branch
 		}
 		if args.Tags != "" {
 			t.Tags = strings.Split(args.Tags, ",")

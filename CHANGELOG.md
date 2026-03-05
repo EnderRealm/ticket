@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- `branch` frontmatter field to track git branch associated with a ticket
+- `--branch` flag on `tk edit` to set/clear the branch field
+- MCP `ticket_create` and `ticket_edit` support `branch` parameter
+
 ### Fixed
 - Ticket body accumulated extra blank lines on each save (parse→serialize round-trip)
 

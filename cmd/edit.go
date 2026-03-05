@@ -30,6 +30,7 @@ func init() {
 	f.StringP("priority", "p", "", "priority (0-4)")
 	f.StringP("assignee", "a", "", "assignee name")
 	f.String("external-ref", "", "external reference")
+	f.String("branch", "", "git branch name")
 	f.String("parent", "", "parent ticket ID")
 	f.String("tags", "", "comma-separated tags")
 	f.String("note", "", "append a timestamped note")
@@ -104,6 +105,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 	if v, _ := cmd.Flags().GetString("external-ref"); cmd.Flags().Changed("external-ref") {
 		t.ExternalRef = v
+		changed = true
+	}
+	if v, _ := cmd.Flags().GetString("branch"); cmd.Flags().Changed("branch") {
+		t.Branch = v
 		changed = true
 	}
 	if v, _ := cmd.Flags().GetString("parent"); cmd.Flags().Changed("parent") {
