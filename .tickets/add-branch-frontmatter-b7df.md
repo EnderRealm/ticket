@@ -1,8 +1,7 @@
 ---
 id: add-branch-frontmatter-b7df
-stage: verify
-status: open
-review: approved
+stage: done
+status: closed
 deps: []
 links: []
 created: 2026-03-05T03:43:51Z
@@ -10,6 +9,8 @@ type: feature
 priority: 0
 ---
 # Add branch to frontmatter
+
+
 
 
 Add a `branch` string field to ticket YAML frontmatter to track which git branch a ticket's work is on. Includes full stack: struct field, serialization, MCP exposure, CLI edit flag, TUI form field.

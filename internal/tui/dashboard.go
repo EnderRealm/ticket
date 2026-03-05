@@ -254,9 +254,17 @@ func (m dashboardModel) view() string {
 	b.WriteString(strings.Join(tabs, "  "))
 	b.WriteString("\n")
 
+	// Compute ID column width from widest ticket ID.
+	idWidth := 2 // minimum: "ID" header
+	for _, item := range m.items {
+		if w := len(item.Ticket.ID); w > idWidth {
+			idWidth = w
+		}
+	}
+
 	// Header.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-6s %-10s %-24s %s", "P", "TYPE", "STAGE", "ID", "TITLE")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-6s %-10s %-*s %s", "P", "TYPE", "STAGE", idWidth, "ID", "TITLE")))
 	b.WriteString("\n")
 
 	// Rows.
@@ -267,7 +275,7 @@ func (m dashboardModel) view() string {
 	}
 
 	for i := m.offset; i < end; i++ {
-		b.WriteString(m.renderRow(m.items[i], i == m.cursor))
+		b.WriteString(m.renderRow(m.items[i], i == m.cursor, idWidth))
 		b.WriteString("\n")
 	}
 
@@ -296,7 +304,7 @@ func (m dashboardModel) view() string {
 	return b.String()
 }
 
-func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool) string {
+func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, idWidth int) string {
 	t := item.Ticket
 	pStyle := lipgloss.NewStyle().Foreground(priorityColors[t.Priority])
 	tStyle := lipgloss.NewStyle().Foreground(typeColors[t.Type])
@@ -315,7 +323,7 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool) string {
 		rev = lipgloss.NewStyle().Foreground(reviewColors[t.Review]).Render("● ")
 	}
 
-	idText := fmt.Sprintf("%-24s", t.ID)
+	idText := fmt.Sprintf("%-*s", idWidth, t.ID)
 	if selected {
 		idText = dashRowSel.Render(idText)
 	}
