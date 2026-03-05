@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.5.0] - 2026-03-04
 
 ### Added
 - TUI `d` key to delete ticket from dashboard with y/n confirmation prompt
