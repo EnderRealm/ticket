@@ -95,6 +95,32 @@ func TestFileStore_Update(t *testing.T) {
 	}
 }
 
+func TestFileStore_Update_MigratesLegacy(t *testing.T) {
+	store, _ := testStore(t)
+	// Create a legacy ticket with status only, no stage.
+	tk := sampleTicket("t-mig1")
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Update any field — should auto-migrate to stage-based.
+	tk.Priority = 1
+	if err := store.Update(tk); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := store.Get("t-mig1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Stage != StageTriage {
+		t.Errorf("Stage = %q, want %q (auto-migrated from status open)", got.Stage, StageTriage)
+	}
+	if got.Status != StatusOpen {
+		t.Errorf("Status = %q, want %q (preserved for compat)", got.Status, StatusOpen)
+	}
+}
+
 func TestFileStore_Delete(t *testing.T) {
 	store, _ := testStore(t)
 	tk := sampleTicket("t-del1")

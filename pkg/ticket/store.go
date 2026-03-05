@@ -61,7 +61,9 @@ func (s *FileStore) Get(id string) (*Ticket, error) {
 }
 
 // Update writes a ticket back to disk in canonical format.
+// Legacy tickets using status-only are automatically migrated to stage-based.
 func (s *FileStore) Update(t *Ticket) error {
+	MigrateTicket(t)
 	if err := t.Validate(); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
