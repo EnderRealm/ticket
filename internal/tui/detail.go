@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,16 +26,22 @@ const (
 	inputNone inputMode = iota
 	inputAssignee
 	inputNote
+	inputMove
+	inputMovePicker
 )
 
+const enterPathOption = "enter path..."
+
 type detailModel struct {
-	ticket    *ticket.Ticket
-	lines     []string
-	offset    int
-	width     int
-	height    int
-	input     inputMode
-	inputText string
+	ticket       *ticket.Ticket
+	lines        []string
+	offset       int
+	width        int
+	height       int
+	input        inputMode
+	inputText    string
+	pickerItems  []string // repo paths for move picker
+	pickerCursor int
 }
 
 func newDetailModel(t *ticket.Ticket, w, h int) detailModel {
@@ -63,9 +71,44 @@ func (m *detailModel) startInput(mode inputMode) {
 	}
 }
 
+func (m *detailModel) startMovePicker(ticketsDir string) {
+	repos := discoverSiblingRepos(ticketsDir)
+	repos = append(repos, enterPathOption)
+	m.pickerItems = repos
+	m.pickerCursor = 0
+	m.input = inputMovePicker
+	m.inputText = ""
+}
+
+// discoverSiblingRepos finds git repositories adjacent to the repo that owns ticketsDir.
+func discoverSiblingRepos(ticketsDir string) []string {
+	repoRoot := filepath.Dir(ticketsDir) // /path/to/repo/.tickets -> /path/to/repo
+	parentDir := filepath.Dir(repoRoot)  // /path/to/repo -> /path/to
+	repoName := filepath.Base(repoRoot)
+
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		return nil
+	}
+
+	var repos []string
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == repoName {
+			continue
+		}
+		candidate := filepath.Join(parentDir, e.Name())
+		if info, err := os.Stat(filepath.Join(candidate, ".git")); err == nil && info.IsDir() {
+			repos = append(repos, candidate)
+		}
+	}
+	return repos
+}
+
 func (m detailModel) visibleRows() int {
 	rows := m.height - 1 // help bar
-	if m.input != inputNone {
+	if m.input == inputMovePicker {
+		rows -= len(m.pickerItems) + 1 // label + items
+	} else if m.input != inputNone {
 		rows-- // input bar
 	}
 	if rows < 1 {
@@ -77,6 +120,9 @@ func (m detailModel) visibleRows() int {
 func (m detailModel) update(msg tea.Msg) (detailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.input == inputMovePicker {
+			return m.updatePicker(msg)
+		}
 		if m.input != inputNone {
 			return m.updateInput(msg)
 		}
@@ -136,6 +182,14 @@ func (m detailModel) updateInput(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 			return m, func() tea.Msg {
 				return addNoteMsg{id: id, text: trimmed}
 			}
+		case inputMove:
+			trimmed := strings.TrimSpace(text)
+			if trimmed == "" {
+				return m, nil
+			}
+			return m, func() tea.Msg {
+				return moveTicketMsg{id: id, targetRepo: trimmed}
+			}
 		}
 		return m, nil
 	case "backspace":
@@ -145,6 +199,40 @@ func (m detailModel) updateInput(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 	default:
 		if len(msg.String()) == 1 {
 			m.inputText += msg.String()
+		}
+	}
+	return m, nil
+}
+
+func (m detailModel) updatePicker(msg tea.KeyMsg) (detailModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.input = inputNone
+		m.pickerItems = nil
+		return m, nil
+	case "up", "k":
+		if m.pickerCursor > 0 {
+			m.pickerCursor--
+		}
+	case "down", "j":
+		if m.pickerCursor < len(m.pickerItems)-1 {
+			m.pickerCursor++
+		}
+	case "enter":
+		selected := m.pickerItems[m.pickerCursor]
+		m.pickerItems = nil
+		m.pickerCursor = 0
+
+		if selected == enterPathOption {
+			m.input = inputMove
+			m.inputText = ""
+			return m, nil
+		}
+
+		id := m.ticket.ID
+		m.input = inputNone
+		return m, func() tea.Msg {
+			return moveTicketMsg{id: id, targetRepo: selected}
 		}
 	}
 	return m, nil
@@ -170,23 +258,36 @@ func (m detailModel) view() string {
 	}
 
 	// Input bar (if active).
-	if m.input != inputNone {
+	if m.input == inputMovePicker {
+		b.WriteString(inputLabelStyle.Render("move to repo:") + "\n")
+		for i, item := range m.pickerItems {
+			prefix := "  "
+			if i == m.pickerCursor {
+				prefix = "> "
+			}
+			b.WriteString(prefix + item + "\n")
+		}
+	} else if m.input != inputNone {
 		var label string
 		switch m.input {
 		case inputAssignee:
 			label = "assignee"
 		case inputNote:
 			label = "note"
+		case inputMove:
+			label = "move to repo"
 		}
 		b.WriteString(inputLabelStyle.Render(label+": ") + m.inputText + "█\n")
 	}
 
 	// Help bar.
 	var help string
-	if m.input != inputNone {
+	if m.input == inputMovePicker {
+		help = "↑↓ select  enter confirm  esc cancel"
+	} else if m.input != inputNone {
 		help = "enter confirm  esc cancel"
 	} else {
-		help = "↑↓/jk scroll  │  (e)dit (p)riority (a)ssignee (n)ote  │  esc back  (q)uit"
+		help = "↑↓/jk scroll  │  (e)dit (p)riority (a)ssignee (n)ote (m)ove  │  esc back  (q)uit"
 	}
 	b.WriteString(detailHelpStyle.Render(help))
 

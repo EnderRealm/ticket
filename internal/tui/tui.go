@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -83,6 +84,12 @@ type reviewMsg struct {
 // skipMsg skips a ticket ahead in the pipeline.
 type skipMsg struct {
 	id string
+}
+
+// moveTicketMsg moves a ticket to another repo.
+type moveTicketMsg struct {
+	id         string
+	targetRepo string
 }
 
 func loadTickets(store *ticket.FileStore) tea.Cmd {
@@ -171,6 +178,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleReview(msg.id, msg.verdict)
 	case skipMsg:
 		return a, a.handleSkip(msg.id)
+	case moveTicketMsg:
+		return a, a.handleMove(msg.id, msg.targetRepo)
 	case formCancelMsg:
 		a.current = a.prevView
 		return a, nil
@@ -201,6 +210,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.form = newEditFormModel(t, a.width, a.height)
 					a.prevView = viewDashboard
 					a.current = viewForm
+					return a, nil
+				}
+			case "m":
+				if t := a.dashboard.selected(); t != nil {
+					a.detail = newDetailModel(t, a.width, a.height)
+					a.detail.startMovePicker(a.ticketsDir)
+					a.prevView = viewDashboard
+					a.current = viewDetail
 					return a, nil
 				}
 			case "p":
@@ -240,6 +257,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case "n":
 				a.detail.startInput(inputNote)
+				return a, nil
+			case "m":
+				a.detail.startMovePicker(a.ticketsDir)
 				return a, nil
 			case "e":
 				a.form = newEditFormModel(a.detail.ticket, a.width, a.height)
@@ -552,6 +572,27 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },
+	)
+}
+
+func (a *App) handleMove(id, targetRepo string) tea.Cmd {
+	targetDir := filepath.Join(targetRepo, ".tickets")
+	dst := ticket.NewFileStore(targetDir)
+
+	results, err := ticket.MoveTicket(a.store, dst, id, false)
+	if err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
+
+	var parts []string
+	for _, r := range results {
+		parts = append(parts, fmt.Sprintf("%s → %s", r.OldID, r.NewID))
+	}
+	msg := fmt.Sprintf("Moved %s to %s", strings.Join(parts, ", "), targetRepo)
+	a.current = a.prevView
+	return tea.Batch(
+		loadTickets(a.store),
+		func() tea.Msg { return statusMsg(msg) },
 	)
 }
 

@@ -290,7 +290,7 @@ func (m dashboardModel) view() string {
 	} else if m.filterText != "" {
 		b.WriteString(filterStyle.Render("filter: " + m.filterText + "  (/ to edit, esc clears)"))
 	} else {
-		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority"
+		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove"
 		switch m.tab {
 		case tabVerify:
 			help += "  (v)erify"
