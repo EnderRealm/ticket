@@ -1,6 +1,6 @@
 ---
 id: add-ability-update-fa4c
-stage: triage
+stage: done
 status: closed
 deps: []
 links: []
@@ -12,8 +12,13 @@ priority: 0
 
 
 
+
 ## Notes
 
 **2026-03-05T03:49:21Z**
 
 Closed as duplicate of add-branch-frontmatter-b7df. Update capability included in that ticket's scope.
+
+**2026-03-05T05:35:34Z**
+
+Duplicate.

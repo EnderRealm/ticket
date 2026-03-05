@@ -8,6 +8,7 @@
 - MCP `ticket_create` and `ticket_edit` support `branch` parameter
 
 ### Fixed
+- `MoveTicket` now shallow-copies the full struct instead of manually listing fields, preserving Stage, Review, Risk, Branch, Skipped, and Conversations; resets Stage to triage and clears Review on move
 - Ticket body accumulated extra blank lines on each save (parse→serialize round-trip)
 - TUI dashboard ID column dynamically sized to widest ticket ID instead of hardcoded 24 chars
 

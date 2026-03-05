@@ -1,7 +1,7 @@
 ---
 id: tk-ui-add-f586
 stage: done
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-03-01T17:43:13Z
@@ -9,6 +9,7 @@ type: feature
 priority: 3
 ---
 # 'tk ui' add (m)ove to move a ticket to a new repo
+
 
 
 

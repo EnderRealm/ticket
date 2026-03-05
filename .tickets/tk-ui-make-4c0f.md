@@ -1,6 +1,6 @@
 ---
 id: tk-ui-make-4c0f
-stage: verify
+stage: done
 status: open
 deps: []
 links: []
@@ -9,6 +9,8 @@ type: bug
 priority: 0
 ---
 # 'tk ui' make sure the id column is wide enough for the widest ticket id
+
+
 
 
 
@@ -39,6 +41,9 @@ APPROVED — Straightforward fix. Dynamic width computation from items replaces 
 
 **2026-03-05T04:36:30Z [agent:impl-review]**
 APPROVED — Implementation matches acceptance criteria. Header and rows use same dynamic idWidth. Min width of 2 ensures header label fits.
+
+**2026-03-05T04:41:12Z [human:steve]**
+APPROVED — Verified — committed and pushed.
 
 ## Notes
 

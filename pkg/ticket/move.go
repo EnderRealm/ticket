@@ -77,20 +77,21 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		newID := idMap[t.ID]
 		result := MoveResult{OldID: t.ID, NewID: newID}
 
-		// Build the new ticket as a copy.
-		newTicket := &Ticket{
-			ID:          newID,
-			Status:      t.Status,
-			Type:        t.Type,
-			Priority:    t.Priority,
-			Assignee:    t.Assignee,
-			Tags:        copyStrings(t.Tags),
-			ExternalRef: t.ExternalRef,
-			Created:     t.Created,
-			Title:       t.Title,
-			Body:        t.Body,
-			Notes:       copyNotes(t.Notes),
-		}
+		// Shallow copy all fields, then override what needs to change.
+		copied := *t
+		newTicket := &copied
+		newTicket.ID = newID
+		newTicket.Status = StatusOpen
+		newTicket.Stage = StageTriage
+		newTicket.Review = ReviewNone
+		newTicket.Tags = copyStrings(t.Tags)
+		newTicket.Deps = nil
+		newTicket.Links = nil
+		newTicket.Notes = copyNotes(t.Notes)
+		newTicket.Reviews = copyReviews(t.Reviews)
+		newTicket.Skipped = nil
+		newTicket.Conversations = copyStrings(t.Conversations)
+		newTicket.Parent = ""
 
 		// Remap or strip parent.
 		if t.Parent != "" {
@@ -148,6 +149,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			Text:      closeNote,
 		})
 		t.Status = StatusClosed
+		t.Stage = StageDone
 		if err := src.Update(t); err != nil {
 			return nil, fmt.Errorf("closing %s in source: %w", t.ID, err)
 		}
@@ -206,3 +208,13 @@ func copyNotes(notes []Note) []Note {
 	copy(c, notes)
 	return c
 }
+
+func copyReviews(reviews []ReviewRecord) []ReviewRecord {
+	if reviews == nil {
+		return nil
+	}
+	c := make([]ReviewRecord, len(reviews))
+	copy(c, reviews)
+	return c
+}
+
