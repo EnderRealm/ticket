@@ -1,6 +1,6 @@
 ---
 id: tk-ui-add-539e
-stage: verify
+stage: done
 status: open
 deps: []
 links: []
@@ -9,6 +9,8 @@ type: feature
 priority: 1
 ---
 # 'tk ui' Add delete on main screen
+
+
 
 
 
@@ -49,3 +51,6 @@ APPROVED — Clean implementation. Confirmation state on dashboard model, delete
 
 **2026-03-05T05:51:18Z [agent:impl-reviewer]**
 APPROVED — All AC covered. d key triggers confirmation, y deletes, any other key cancels, no-op on empty list, help bar updated.
+
+**2026-03-05T05:53:53Z [human:steve]**
+APPROVED — Verified — committed and pushed.

@@ -1,6 +1,6 @@
 ---
 id: tk-move-print-0785
-stage: triage
+stage: done
 status: closed
 deps: []
 links: []
@@ -9,6 +9,7 @@ type: feature
 priority: 1
 ---
 # 'tk move' should print the new ticket id post move
+
 
 
 
