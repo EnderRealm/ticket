@@ -1,7 +1,7 @@
 ---
 id: tk-ui-p-cf5e
-stage: verify
-status: open
+stage: done
+status: closed
 deps: []
 links: []
 created: 2026-03-01T00:43:24Z
