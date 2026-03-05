@@ -86,6 +86,11 @@ type skipMsg struct {
 	id string
 }
 
+// deleteTicketMsg deletes a ticket permanently.
+type deleteTicketMsg struct {
+	id string
+}
+
 // moveTicketMsg moves a ticket to another repo.
 type moveTicketMsg struct {
 	id         string
@@ -178,6 +183,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleReview(msg.id, msg.verdict)
 	case skipMsg:
 		return a, a.handleSkip(msg.id)
+	case deleteTicketMsg:
+		return a, a.handleDelete(msg.id)
 	case moveTicketMsg:
 		return a, a.handleMove(msg.id, msg.targetRepo)
 	case formCancelMsg:
@@ -218,6 +225,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.detail.startMovePicker(a.ticketsDir)
 					a.prevView = viewDashboard
 					a.current = viewDetail
+					return a, nil
+				}
+			case "d":
+				if t := a.dashboard.selected(); t != nil {
+					a.dashboard.confirmDelete = true
+					a.dashboard.deleteTargetID = t.ID
 					return a, nil
 				}
 			case "p":
@@ -572,6 +585,18 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },
+	)
+}
+
+func (a *App) handleDelete(id string) tea.Cmd {
+	if err := a.store.Delete(id); err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
+
+	msg := fmt.Sprintf("Deleted %s", id)
+	return tea.Batch(
+		loadTickets(a.store),
+		func() tea.Msg { return statusMsg(msg) },
 	)
 }
 

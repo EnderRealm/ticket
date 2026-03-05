@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- TUI `d` key to delete ticket from dashboard with y/n confirmation prompt
 - `branch` frontmatter field to track git branch associated with a ticket
 - `--branch` flag on `tk edit` to set/clear the branch field
 - MCP `ticket_create` and `ticket_edit` support `branch` parameter

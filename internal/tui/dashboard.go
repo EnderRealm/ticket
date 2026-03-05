@@ -30,16 +30,18 @@ const (
 var tabLabels = []string{"all", "triage", "verify", "review"}
 
 type dashboardModel struct {
-	all          []*ticket.Ticket
-	items        []ticket.InboxItem
-	tab          inboxTab
-	cursor       int
-	offset       int
-	width        int
-	height       int
-	filterText   string
-	filterActive bool
-	typeFilter   ticket.TicketType
+	all            []*ticket.Ticket
+	items          []ticket.InboxItem
+	tab            inboxTab
+	cursor         int
+	offset         int
+	width          int
+	height         int
+	filterText     string
+	filterActive   bool
+	typeFilter     ticket.TicketType
+	confirmDelete  bool
+	deleteTargetID string
 }
 
 func newDashboardModel(tickets []*ticket.Ticket, w, h int) dashboardModel {
@@ -140,7 +142,7 @@ func (m dashboardModel) selected() *ticket.Ticket {
 }
 
 func (m dashboardModel) inputActive() bool {
-	return m.filterActive
+	return m.filterActive || m.confirmDelete
 }
 
 func (m *dashboardModel) clampOffset() {
@@ -168,6 +170,20 @@ func (m dashboardModel) visibleRows() int {
 func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.confirmDelete {
+			switch msg.String() {
+			case "y":
+				id := m.deleteTargetID
+				m.confirmDelete = false
+				m.deleteTargetID = ""
+				return m, func() tea.Msg { return deleteTicketMsg{id: id} }
+			default:
+				m.confirmDelete = false
+				m.deleteTargetID = ""
+			}
+			return m, nil
+		}
+
 		if m.filterActive {
 			switch msg.String() {
 			case "esc":
@@ -285,12 +301,15 @@ func (m dashboardModel) view() string {
 	}
 
 	// Filter / help bar.
-	if m.filterActive {
+	if m.confirmDelete {
+		prompt := fmt.Sprintf("Delete %s? (y)es / (n)o", m.deleteTargetID)
+		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(prompt))
+	} else if m.filterActive {
 		b.WriteString(filterStyle.Render("/ " + m.filterText + "█"))
 	} else if m.filterText != "" {
 		b.WriteString(filterStyle.Render("filter: " + m.filterText + "  (/ to edit, esc clears)"))
 	} else {
-		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove"
+		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete"
 		switch m.tab {
 		case tabVerify:
 			help += "  (v)erify"
