@@ -10,11 +10,17 @@ import (
 //go:embed pipelines.json
 var pipelinesJSON []byte
 
+// StageConfig describes a stage's metadata.
+type StageConfig struct {
+	Role string `json:"role"` // intake, definition, work, review, terminal
+}
+
 // PipelineConfig holds the full pipeline configuration loaded from JSON.
 type PipelineConfig struct {
-	Stages    []string                                `json:"stages"`
-	Pipelines map[string]map[string][]string          `json:"pipelines"`
-	Gates     map[string]GateConfig                   `json:"gates"`
+	Stages     map[string]StageConfig             `json:"stages"`
+	StageOrder []string                           `json:"stage_order"`
+	Pipelines  map[string]map[string][]string     `json:"pipelines"`
+	Gates      map[string]GateConfig              `json:"gates"`
 }
 
 // GateConfig declares the checks required for a stage transition.
@@ -46,22 +52,33 @@ func Config() *PipelineConfig {
 
 // AllStages returns all defined stages in pipeline order.
 func AllStages() []Stage {
-	stages := make([]Stage, len(loadedConfig.Stages))
-	for i, s := range loadedConfig.Stages {
+	stages := make([]Stage, len(loadedConfig.StageOrder))
+	for i, s := range loadedConfig.StageOrder {
 		stages[i] = Stage(s)
 	}
 	return stages
 }
 
-// DisplayStages returns stages suitable for display (excludes "done").
+// DisplayStages returns stages suitable for display (excludes terminal stages).
 func DisplayStages() []Stage {
 	var stages []Stage
-	for _, s := range loadedConfig.Stages {
-		if s != "done" {
-			stages = append(stages, Stage(s))
+	for _, s := range loadedConfig.StageOrder {
+		sc, ok := loadedConfig.Stages[s]
+		if ok && sc.Role == "terminal" {
+			continue
 		}
+		stages = append(stages, Stage(s))
 	}
 	return stages
+}
+
+// StageRole returns the role for a given stage, or empty string if unknown.
+func StageRole(s Stage) string {
+	sc, ok := loadedConfig.Stages[string(s)]
+	if !ok {
+		return ""
+	}
+	return sc.Role
 }
 
 // PipelineTypes returns all ticket types that have pipeline definitions.
@@ -128,12 +145,8 @@ func structuralDescription(name string) string {
 
 // isValidStage checks if a stage is defined in the config.
 func isValidStage(s Stage) bool {
-	for _, cs := range loadedConfig.Stages {
-		if Stage(cs) == s {
-			return true
-		}
-	}
-	return false
+	_, ok := loadedConfig.Stages[string(s)]
+	return ok
 }
 
 // lookupPipeline returns the stage sequence for a type+risk combination.

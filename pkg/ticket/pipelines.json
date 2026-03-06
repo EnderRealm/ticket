@@ -1,5 +1,16 @@
 {
-  "stages": [
+  "stages": {
+    "triage":        {"role": "intake"},
+    "spec":          {"role": "definition"},
+    "design":        {"role": "definition"},
+    "design-review": {"role": "review"},
+    "implement":     {"role": "work"},
+    "code-review":   {"role": "review"},
+    "test":          {"role": "work"},
+    "verify":        {"role": "review"},
+    "done":          {"role": "terminal"}
+  },
+  "stage_order": [
     "triage", "spec", "design", "design-review",
     "implement", "code-review", "test", "verify", "done"
   ],

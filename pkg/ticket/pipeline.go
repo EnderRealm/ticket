@@ -121,26 +121,55 @@ func IsFinalStage(t TicketType, s Stage) bool {
 	return p[len(p)-1] == s
 }
 
-// PipelineDescription generates a human-readable summary of all pipelines.
+// PipelineDescription generates a human-readable summary of all pipelines,
+// showing default and normal (with review stages) variants.
 func PipelineDescription() string {
 	var desc string
-	for _, t := range []TicketType{TypeFeature, TypeBug, TypeTask, TypeChore, TypeEpic} {
-		p, ok := Pipelines[t]
+	types := []TicketType{TypeFeature, TypeBug, TypeTask, TypeChore, TypeEpic}
+
+	for _, t := range types {
+		variants, ok := loadedConfig.Pipelines[string(t)]
 		if !ok {
 			continue
 		}
-		names := make([]string, len(p))
-		for i, s := range p {
-			names[i] = string(s)
-		}
-		desc += fmt.Sprintf("  %-10s", t)
-		for i, n := range names {
-			if i > 0 {
-				desc += " → "
+
+		// Show default pipeline.
+		if stages, ok := variants["default"]; ok {
+			desc += fmt.Sprintf("  %-16s", t)
+			for i, s := range stages {
+				if i > 0 {
+					desc += " → "
+				}
+				desc += s
 			}
-			desc += n
+			desc += "\n"
 		}
-		desc += "\n"
+
+		// Show normal variant if it differs from default.
+		normal, hasNormal := variants["normal"]
+		dflt := variants["default"]
+		if hasNormal && !stagesEqual(normal, dflt) {
+			desc += fmt.Sprintf("  %-16s", string(t)+"/normal")
+			for i, s := range normal {
+				if i > 0 {
+					desc += " → "
+				}
+				desc += s
+			}
+			desc += "\n"
+		}
 	}
 	return desc
+}
+
+func stagesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

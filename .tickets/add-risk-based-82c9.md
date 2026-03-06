@@ -1,6 +1,6 @@
 ---
 id: add-risk-based-82c9
-stage: triage
+stage: done
 status: open
 deps: [externalize-pipelines-gates-2c14]
 links: []
@@ -10,6 +10,7 @@ priority: 1
 assignee: Steve Macbeth
 parent: externalize-pipeline-configuration-50a4
 tags: [pipeline, architecture]
+skipped: [implement, test, verify]
 ---
 # Add risk-based pipeline variants
 

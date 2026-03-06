@@ -12,6 +12,9 @@
 - `AllStages()`, `DisplayStages()`, `GateInfoFor()` config accessor functions
 - `PipelineDescription()` generates workflow text from config data
 - TUI pipeline view colors for new `design-review` and `code-review` stages
+- `ticket_pipelines` MCP tool: returns full pipeline config (stages with roles, variants, gates) as structured JSON for orchestrator consumption
+- Stage roles in pipeline config: `intake`, `definition`, `work`, `review`, `terminal` — enables orchestrators to dispatch based on stage type
+- `ticket_advance` MCP tool now returns structured gate results (name, type, status, description) and accepts `evidence` parameter for agentic gate attestation
 
 ### Changed
 - Stage validation is now config-driven instead of hardcoded map
@@ -21,6 +24,7 @@
 - `ticket_workflow` MCP tool generates output from pipeline config
 - Risk-based gate scaling (`applyRiskScaling`) removed; replaced by pipeline variants
 - Help text updated to reflect new stages and risk-based pipeline variants
+- `tk workflow` and `ticket_workflow` now show normal pipeline variants alongside defaults
 
 ## [2.5.0] - 2026-03-04
 

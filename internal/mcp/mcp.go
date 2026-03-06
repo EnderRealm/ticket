@@ -31,6 +31,7 @@ func NewServer(ticketsDir string) *mcp.Server {
 	registerReady(server, store)
 	registerBlocked(server, store)
 	registerWorkflow(server)
+	registerPipelines(server)
 	registerAdvance(server, store)
 	registerReview(server, store)
 	registerSkip(server, store)
@@ -675,39 +676,162 @@ func registerWorkflow(server *mcp.Server) {
 	})
 }
 
+type pipelinesArgs struct {
+	Type string `json:"type,omitempty" jsonschema:"filter to a specific ticket type (feature, bug, task, epic, chore)"`
+	Risk string `json:"risk,omitempty" jsonschema:"filter to a specific risk level (low, normal, high, critical)"`
+}
+
+func registerPipelines(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ticket_pipelines",
+		Description: "Return the full pipeline configuration: stages, pipeline variants by type and risk, and gate definitions. Machine-readable structured output for orchestrators.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args pipelinesArgs) (*mcp.CallToolResult, any, error) {
+		cfg := ticket.Config()
+
+		type stageJSON struct {
+			Name string `json:"name"`
+			Role string `json:"role"`
+		}
+
+		type gateJSON struct {
+			Transition string   `json:"transition"`
+			Structural []string `json:"structural,omitempty"`
+			Agentic    []string `json:"agentic,omitempty"`
+		}
+
+		type pipelineResult struct {
+			Stages    []stageJSON                    `json:"stages"`
+			Pipelines map[string]map[string][]string `json:"pipelines"`
+			Gates     []gateJSON                     `json:"gates"`
+		}
+
+		var stages []stageJSON
+		for _, name := range cfg.StageOrder {
+			sc := cfg.Stages[name]
+			stages = append(stages, stageJSON{Name: name, Role: sc.Role})
+		}
+
+		result := pipelineResult{
+			Stages:    stages,
+			Pipelines: cfg.Pipelines,
+		}
+
+		// Filter by type if requested.
+		if args.Type != "" {
+			if variants, ok := cfg.Pipelines[args.Type]; ok {
+				result.Pipelines = map[string]map[string][]string{args.Type: variants}
+				// Filter further by risk if requested.
+				if args.Risk != "" {
+					if stages, ok := variants[args.Risk]; ok {
+						result.Pipelines = map[string]map[string][]string{
+							args.Type: {args.Risk: stages},
+						}
+					}
+				}
+			} else {
+				r, _ := errResult("unknown ticket type %q", args.Type)
+				return r, nil, nil
+			}
+		}
+
+		// Build gates list.
+		for transition, gc := range cfg.Gates {
+			g := gateJSON{Transition: transition}
+			if len(gc.Structural) > 0 {
+				g.Structural = gc.Structural
+			}
+			if len(gc.Agentic) > 0 {
+				g.Agentic = gc.Agentic
+			}
+			result.Gates = append(result.Gates, g)
+		}
+
+		r, err := jsonResult(result)
+		return r, nil, err
+	})
+}
+
 type advanceArgs struct {
-	ID     string `json:"id" jsonschema:"ticket ID"`
-	To     string `json:"to,omitempty" jsonschema:"target stage (default: next in pipeline)"`
-	Reason string `json:"reason,omitempty" jsonschema:"reason for skip (required when skipping)"`
-	Force  bool   `json:"force,omitempty" jsonschema:"bypass gate checks"`
+	ID       string            `json:"id" jsonschema:"ticket ID"`
+	To       string            `json:"to,omitempty" jsonschema:"target stage (default: next in pipeline)"`
+	Reason   string            `json:"reason,omitempty" jsonschema:"reason for skip (required when skipping)"`
+	Force    bool              `json:"force,omitempty" jsonschema:"bypass gate checks"`
+	Evidence map[string]string `json:"evidence,omitempty" jsonschema:"attestations for agentic gates (gate description -> evidence text)"`
+}
+
+type advanceResultJSON struct {
+	Ticket ticketJSON          `json:"ticket"`
+	From   string              `json:"from"`
+	To     string              `json:"to"`
+	Gates  []ticket.GateResult `json:"gates,omitempty"`
 }
 
 func registerAdvance(server *mcp.Server, store *ticket.FileStore) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_advance",
-		Description: "Advance a ticket to its next pipeline stage. Enforces gate checks unless force=true.",
+		Description: "Advance a ticket to its next pipeline stage. Enforces structural gate checks. Agentic gates require evidence attestation. Use force=true to bypass all gates.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args advanceArgs) (*mcp.CallToolResult, any, error) {
+		// Read the ticket to evaluate gates before advancing.
+		t, err := store.Get(args.ID)
+		if err != nil {
+			r, _ := errResult("ticket not found: %v", err)
+			return r, nil, nil
+		}
+
 		opts := ticket.AdvanceOptions{Force: args.Force}
 		if args.To != "" {
 			opts.SkipTo = ticket.Stage(args.To)
 			opts.Reason = args.Reason
 		}
 
+		// Determine target stage for gate evaluation.
+		var targetStage ticket.Stage
+		if opts.SkipTo != "" {
+			targetStage = opts.SkipTo
+		} else {
+			risk := t.Risk
+			pipeline, pErr := ticket.PipelineFor(t.Type, risk)
+			if pErr != nil {
+				r, _ := errResult("%v", pErr)
+				return r, nil, nil
+			}
+			next, ok := ticket.NextStageInPipeline(pipeline, t.Stage)
+			if !ok {
+				r, _ := errResult("ticket %s is already at final stage %s", args.ID, t.Stage)
+				return r, nil, nil
+			}
+			targetStage = next
+		}
+
+		// Evaluate gates for structured response.
+		evidence := args.Evidence
+		if evidence == nil {
+			evidence = map[string]string{}
+		}
+		gateResults := ticket.EvaluateGates(t, targetStage, evidence)
+
 		result, err := ticket.Advance(store, args.ID, opts)
 		if err != nil {
-			msg := err.Error()
-			if result != nil && len(result.GateErrors) > 0 {
-				msg += "\nGate failures:"
-				for _, e := range result.GateErrors {
-					msg += "\n  - " + e.Error()
-				}
+			resp := advanceResultJSON{
+				Ticket: toJSON(t),
+				From:   string(t.Stage),
+				To:     string(targetStage),
+				Gates:  gateResults,
 			}
-			r, _ := errResult("%s", msg)
+			r, _ := jsonResult(resp)
+			// Mark as error.
+			r.IsError = true
 			return r, nil, nil
 		}
 
-		t, _ := store.Get(args.ID)
-		r, jsonErr := jsonResult(toJSON(t))
+		t, _ = store.Get(args.ID)
+		resp := advanceResultJSON{
+			Ticket: toJSON(t),
+			From:   string(result.From),
+			To:     string(result.To),
+			Gates:  gateResults,
+		}
+		r, jsonErr := jsonResult(resp)
 		return r, nil, jsonErr
 	})
 }

@@ -1,6 +1,6 @@
 ---
 id: externalize-pipelines-gates-2c14
-stage: verify
+stage: done
 status: open
 deps: []
 links: []
@@ -26,6 +26,9 @@ APPROVED — All tests pass, build clean, backward-compatible API preserved
 
 **2026-03-06T08:23:32Z [agent:impl-review]**
 APPROVED — Config-driven architecture, hybrid gate model, risk-aware pipeline selection
+
+**2026-03-06T08:27:39Z [human:steve]**
+APPROVED — Approved for commit and push
 
 ## Notes
 
