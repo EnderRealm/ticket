@@ -83,7 +83,7 @@ func newEditFormModel(t *ticket.Ticket, w, h int) formModel {
 			break
 		}
 	}
-	stages, _ := ticket.PipelineFor(t.Type)
+	stages, _ := ticket.PipelineFor(t.Type, t.Risk)
 	stageIdx := 0
 	for i, s := range stages {
 		if s == t.Stage {

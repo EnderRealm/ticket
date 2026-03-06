@@ -93,13 +93,15 @@ func TestCheckGates_TestToVerify_WithResults(t *testing.T) {
 	}
 }
 
-func TestCheckGates_LowRisk_Advisory(t *testing.T) {
+func TestCheckGates_LowRisk_NotAdvisory(t *testing.T) {
+	// Risk-based variants replace risk scaling. Low-risk tickets get
+	// different pipelines that skip review stages, but gates on
+	// transitions that exist are still enforced.
 	tk := gateTicket(StageSpec, TypeFeature)
 	tk.Risk = RiskLow
-	// Low risk: all gates should pass (advisory).
 	errs := CheckGates(tk, StageDesign)
-	if len(errs) != 0 {
-		t.Errorf("low risk gates should be advisory (pass), got %v", errs)
+	if len(errs) == 0 {
+		t.Error("spec→design without AC and review should still fail for low risk")
 	}
 }
 

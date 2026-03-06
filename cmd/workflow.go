@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/spf13/cobra"
 )
 
@@ -10,55 +11,50 @@ var workflowCmd = &cobra.Command{
 	Use:   "workflow",
 	Short: "Print ticket workflow guide",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Print(workflowText)
+		fmt.Println("# Ticket Workflow Guide")
+		fmt.Println()
+		fmt.Println("## Ticket Types")
+		fmt.Println("- task: Default type for work items")
+		fmt.Println("- epic: Container for related tasks, provides hierarchy")
+		fmt.Println("- feature: New functionality")
+		fmt.Println("- bug: Defect fix")
+		fmt.Println("- chore: Maintenance work")
+		fmt.Println()
+		fmt.Println("## Stage Pipelines (default)")
+		fmt.Print(ticket.PipelineDescription())
+		fmt.Println()
+		fmt.Println("Risk levels: low, normal, high, critical")
+		fmt.Println("  Risk determines pipeline variant. Normal/high/critical add review stages.")
+		fmt.Println("  Use `tk pipeline` to see current ticket distribution.")
+		fmt.Println()
+		fmt.Println("## Gate Checks")
+		fmt.Println("Stage transitions enforce prerequisites:")
+		fmt.Println("- Structural gates: checked automatically (description exists, review approved, etc.)")
+		fmt.Println("- Agentic gates: requirements returned to the caller for evaluation")
+		fmt.Println()
+		fmt.Println("## Readiness Rules (tk ready)")
+		fmt.Println("A ticket appears in `tk ready` when:")
+		fmt.Println("1. Status is open or in_progress")
+		fmt.Println("2. All dependencies (deps) are closed")
+		fmt.Println("3. Parent chain is in_progress (use --open to bypass)")
+		fmt.Println()
+		fmt.Println("## Stage Propagation")
+		fmt.Println("When a child advances to done, the system checks siblings:")
+		fmt.Println("- All siblings at done -> parent advances to done")
+		fmt.Println("- All siblings at test or later -> parent advances to test")
+		fmt.Println()
+		fmt.Println("## Working Conventions")
+		fmt.Println("1. Use `tk advance <id>` to move through the pipeline")
+		fmt.Println("2. Use `tk review <id> --approve` to approve stage gates")
+		fmt.Println("3. Create child tasks under epics with --parent")
+		fmt.Println("4. Use `tk ready` to see what's available to work on")
+		fmt.Println()
+		fmt.Println("## Commit Format")
+		fmt.Println("[ticket-id] Imperative description of change")
+		fmt.Println("Example: [t-abc1] Add session refresh logic")
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(workflowCmd)
 }
-
-const workflowText = `# Ticket Workflow Guide
-
-## Ticket Types
-- task: Default type for work items
-- epic: Container for related tasks, provides hierarchy
-- feature: New functionality
-- bug: Defect fix
-- chore: Maintenance work
-
-## Statuses
-- open: Not started
-- in_progress: Actively being worked on
-- needs_testing: Implementation complete, awaiting verification
-- closed: Done
-
-## Readiness Rules (tk ready)
-A ticket appears in ` + "`tk ready`" + ` when:
-1. Status is open or in_progress
-2. All dependencies (deps) are closed
-3. Parent chain is in_progress (use --open to bypass)
-
-## Status Propagation
-When a ticket is set to needs_testing or closed, the system checks siblings:
-- If all siblings are needs_testing or closed -> parent becomes needs_testing
-- If all siblings are closed -> parent becomes closed
-This cascades up the hierarchy automatically.
-
-## Ticket Structure
-Tickets are markdown files with YAML frontmatter in .tickets/
-Required fields: id, status, deps, created, type, priority
-Optional fields: assignee, parent, tags, links, external-ref
-
-## Working Conventions
-1. Start work: ` + "`tk edit <id> -s in_progress`" + `
-2. Create child tasks under epics with --parent
-3. Use parent tickets to organize work hierarchically
-4. Mark complete: ` + "`tk edit <id> -s needs_testing`" + ` then ` + "`tk edit <id> -s closed`" + `
-5. Use ` + "`tk ready`" + ` to see what's available to work on
-
-## Commit Format
-Include ticket ID in commit messages:
-  <type>(<scope>): <description> [<ticket-id>]
-Example: feat(auth): add login flow [t-abc1]
-`

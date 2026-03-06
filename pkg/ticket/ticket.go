@@ -35,31 +35,24 @@ func ValidateStatus(s Status) error {
 type Stage string
 
 const (
-	StageTriage    Stage = "triage"
-	StageSpec      Stage = "spec"
-	StageDesign    Stage = "design"
-	StageImplement Stage = "implement"
-	StageTest      Stage = "test"
-	StageVerify    Stage = "verify"
-	StageDone      Stage = "done"
+	StageTriage       Stage = "triage"
+	StageSpec         Stage = "spec"
+	StageDesign       Stage = "design"
+	StageDesignReview Stage = "design-review"
+	StageImplement    Stage = "implement"
+	StageCodeReview   Stage = "code-review"
+	StageTest         Stage = "test"
+	StageVerify       Stage = "verify"
+	StageDone         Stage = "done"
 )
 
-var validStages = map[Stage]bool{
-	StageTriage:    true,
-	StageSpec:      true,
-	StageDesign:    true,
-	StageImplement: true,
-	StageTest:      true,
-	StageVerify:    true,
-	StageDone:      true,
-}
-
 // ValidateStage returns an error if s is not a recognized stage.
+// Valid stages are defined by the embedded pipeline configuration.
 func ValidateStage(s Stage) error {
-	if validStages[s] {
+	if isValidStage(s) {
 		return nil
 	}
-	return fmt.Errorf("invalid stage %q: must be one of triage, spec, design, implement, test, verify, done", s)
+	return fmt.Errorf("invalid stage %q: not defined in pipeline configuration", s)
 }
 
 // ReviewState tracks whether a stage is awaiting, has passed, or has failed review.

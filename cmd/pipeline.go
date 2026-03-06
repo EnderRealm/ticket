@@ -32,16 +32,8 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	stageFilter, _ := cmd.Flags().GetString("stage")
 
-	// Group by stage.
-	stages := []ticket.Stage{
-		ticket.StageTriage,
-		ticket.StageSpec,
-		ticket.StageDesign,
-		ticket.StageImplement,
-		ticket.StageTest,
-		ticket.StageVerify,
-		ticket.StageDone,
-	}
+	// Group by stage (from config).
+	stages := ticket.AllStages()
 
 	grouped := map[ticket.Stage][]*ticket.Ticket{}
 	for _, t := range tickets {

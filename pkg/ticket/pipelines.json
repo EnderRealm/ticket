@@ -1,0 +1,84 @@
+{
+  "stages": [
+    "triage", "spec", "design", "design-review",
+    "implement", "code-review", "test", "verify", "done"
+  ],
+  "pipelines": {
+    "feature": {
+      "default": ["triage", "spec", "design", "implement", "test", "verify", "done"],
+      "low":      ["triage", "spec", "design", "implement", "test", "verify", "done"],
+      "normal":   ["triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "high":     ["triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "critical": ["triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
+    },
+    "bug": {
+      "default": ["triage", "implement", "test", "verify", "done"],
+      "low":     ["triage", "implement", "done"],
+      "normal":  ["triage", "implement", "code-review", "test", "verify", "done"],
+      "high":    ["triage", "implement", "code-review", "test", "verify", "done"],
+      "critical":["triage", "implement", "code-review", "test", "verify", "done"]
+    },
+    "task": {
+      "default": ["triage", "implement", "test", "verify", "done"],
+      "low":     ["triage", "implement", "done"],
+      "normal":  ["triage", "implement", "code-review", "test", "verify", "done"],
+      "high":    ["triage", "implement", "code-review", "test", "verify", "done"],
+      "critical":["triage", "implement", "code-review", "test", "verify", "done"]
+    },
+    "chore": {
+      "default": ["triage", "implement", "done"],
+      "low":     ["triage", "implement", "done"],
+      "normal":  ["triage", "implement", "done"],
+      "high":    ["triage", "implement", "done"],
+      "critical":["triage", "implement", "done"]
+    },
+    "epic": {
+      "default": ["triage", "spec", "design", "done"],
+      "low":     ["triage", "spec", "design", "done"],
+      "normal":  ["triage", "spec", "design", "done"],
+      "high":    ["triage", "spec", "design", "done"],
+      "critical":["triage", "spec", "design", "done"]
+    }
+  },
+  "gates": {
+    "triage>spec": {
+      "structural": ["description_exists"]
+    },
+    "triage>implement": {
+      "structural": ["description_exists"]
+    },
+    "spec>design": {
+      "structural": ["acceptance_exists", "review_approved"]
+    },
+    "design>design-review": {
+      "structural": ["design_exists"]
+    },
+    "design>implement": {
+      "structural": ["design_exists", "review_approved"]
+    },
+    "design-review>implement": {
+      "structural": ["review_approved"]
+    },
+    "implement>code-review": {
+      "agentic": ["Implementation follows the approved design", "Code compiles and passes existing tests"]
+    },
+    "implement>test": {
+      "structural": ["code_review_approved", "impl_review_approved"]
+    },
+    "implement>done": {
+      "structural": ["advisory_review_surfaced"]
+    },
+    "code-review>test": {
+      "structural": ["review_approved"]
+    },
+    "test>verify": {
+      "structural": ["test_results_recorded"]
+    },
+    "verify>done": {
+      "structural": ["review_approved"]
+    },
+    "design>done": {
+      "structural": ["design_exists", "review_approved"]
+    }
+  }
+}

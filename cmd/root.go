@@ -110,8 +110,10 @@ Create & edit options:
   --external-ref       External reference (e.g., gh-123)
   --branch             Git branch name (edit only)
 
-Stages: triage → spec → design → implement → test → verify → done
-  Pipelines are type-dependent (e.g., chores skip spec/design/test/verify).
+Stages: triage → spec → design → design-review → implement → code-review → test → verify → done
+  Pipelines are type-dependent and risk-dependent.
+  Default pipelines (low risk) omit review stages.
+  Normal/high/critical add design-review and code-review stages.
 
 Global flags:
   --repo <path>    Operate on a different repo (walks up to find .tickets/)

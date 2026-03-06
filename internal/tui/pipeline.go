@@ -11,13 +11,15 @@ import (
 
 var (
 	stageColors = map[ticket.Stage]lipgloss.Color{
-		ticket.StageTriage:    "7", // white
-		ticket.StageSpec:      "6", // cyan
-		ticket.StageDesign:    "5", // magenta
-		ticket.StageImplement: "3", // yellow
-		ticket.StageTest:      "4", // blue
-		ticket.StageVerify:    "2", // green
-		ticket.StageDone:      "8", // gray
+		ticket.StageTriage:       "7", // white
+		ticket.StageSpec:         "6", // cyan
+		ticket.StageDesign:       "5", // magenta
+		ticket.StageDesignReview: "5", // magenta (same family as design)
+		ticket.StageImplement:    "3", // yellow
+		ticket.StageCodeReview:   "3", // yellow (same family as implement)
+		ticket.StageTest:         "4", // blue
+		ticket.StageVerify:       "2", // green
+		ticket.StageDone:         "8", // gray
 	}
 
 	reviewColors = map[ticket.ReviewState]lipgloss.Color{
@@ -50,15 +52,8 @@ var (
 	pipeHelpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
-// allStages defines the display order for pipeline columns.
-var allStages = []ticket.Stage{
-	ticket.StageTriage,
-	ticket.StageSpec,
-	ticket.StageDesign,
-	ticket.StageImplement,
-	ticket.StageTest,
-	ticket.StageVerify,
-}
+// allStages defines the display order for pipeline columns (from config, excludes done).
+var allStages = ticket.DisplayStages()
 
 type pipelineModel struct {
 	all          []*ticket.Ticket

@@ -650,31 +650,25 @@ func registerWorkflow(server *mcp.Server) {
 		Name:        "ticket_workflow",
 		Description: "Show the ticket workflow guide (types, stages, pipelines, conventions).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
-		guide := `Ticket Workflow Guide
-
-Types: feature, bug, task, epic, chore
-
-Stage Pipelines (type-dependent):
-  feature:  triage → spec → design → implement → test → verify → done
-  bug:      triage → implement → test → verify → done
-  task:     triage → implement → test → verify → done
-  chore:    triage → implement → done
-  epic:     triage → spec → design → done
-
-Review states: pending, approved, rejected
-Risk levels: low, normal, high, critical
-
-Commands:
-- ticket_advance: move ticket to next stage (enforces gates)
-- ticket_review: record approve/reject verdict
-- ticket_skip: jump to a stage with reason
-- ticket_inbox: show items needing human attention
-
-Conventions:
-- Epics group related work; set parent to nest tasks under epics
-- Dependencies gate readiness: a ticket is "ready" when all deps are done
-- Gate checks enforce prerequisites at each stage transition
-- Priority: 0=critical, 1=high, 2=normal, 3=low, 4=backlog`
+		guide := "Ticket Workflow Guide\n\n"
+		guide += "Types: feature, bug, task, epic, chore\n\n"
+		guide += "Stage Pipelines (default, type-dependent):\n"
+		guide += ticket.PipelineDescription()
+		guide += "\nRisk levels: low, normal, high, critical\n"
+		guide += "  Risk determines pipeline variant (e.g., normal adds review stages).\n"
+		guide += "  Use ticket_pipelines for full variant details.\n\n"
+		guide += "Review states: pending, approved, rejected\n\n"
+		guide += "Commands:\n"
+		guide += "- ticket_advance: move ticket to next stage (enforces gates)\n"
+		guide += "- ticket_review: record approve/reject verdict\n"
+		guide += "- ticket_skip: jump to a stage with reason\n"
+		guide += "- ticket_inbox: show items needing human attention\n"
+		guide += "- ticket_pipelines: full pipeline config (stages, variants, gates)\n\n"
+		guide += "Conventions:\n"
+		guide += "- Epics group related work; set parent to nest tasks under epics\n"
+		guide += "- Dependencies gate readiness: a ticket is \"ready\" when all deps are done\n"
+		guide += "- Gate checks enforce prerequisites at each stage transition\n"
+		guide += "- Priority: 0=critical, 1=high, 2=normal, 3=low, 4=backlog"
 
 		r, err := textResult(guide)
 		return r, nil, err

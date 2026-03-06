@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Pipeline configuration externalized to embedded JSON (`pkg/ticket/pipelines.json`)
+- New pipeline stages: `design-review` and `code-review` for explicit review phases
+- Risk-based pipeline variants: each ticket type can have different stage sequences per risk level (low, normal, high, critical)
+- `PipelineFor()` now accepts optional risk level parameter to select variant pipelines
+- Hybrid gate model: structural gates (checked server-side) and agentic gates (declared in config, returned as requirements)
+- `EvaluateGates()` returns structured gate results with type, status, and descriptions
+- `AllStages()`, `DisplayStages()`, `GateInfoFor()` config accessor functions
+- `PipelineDescription()` generates workflow text from config data
+- TUI pipeline view colors for new `design-review` and `code-review` stages
+
+### Changed
+- Stage validation is now config-driven instead of hardcoded map
+- `cmd/pipeline.go` reads stages from config instead of hardcoded list
+- TUI pipeline columns read from config instead of hardcoded `allStages`
+- `tk workflow` command generates output from pipeline config
+- `ticket_workflow` MCP tool generates output from pipeline config
+- Risk-based gate scaling (`applyRiskScaling`) removed; replaced by pipeline variants
+- Help text updated to reflect new stages and risk-based pipeline variants
+
 ## [2.5.0] - 2026-03-04
 
 ### Added

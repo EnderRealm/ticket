@@ -10,28 +10,68 @@ type GateCheck struct {
 	From        Stage
 	To          Stage
 	Description string
+	Type        string // "structural" or "agentic"
 	Check       func(t *Ticket) error
 }
 
-// Gates returns the gate checks for advancing from one stage to the next
-// for the given ticket type and risk level.
-func Gates(ticketType TicketType, risk RiskLevel) []GateCheck {
-	gates := baseGates(ticketType)
-	return applyRiskScaling(gates, risk)
+// GateResult describes the outcome of a single gate check.
+type GateResult struct {
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        string `json:"type"` // "structural" or "agentic"
+	Status      string `json:"status"` // "pass", "fail", "unevaluated"
+	Error       string `json:"error,omitempty"`
+}
+
+// Gates returns the gate checks for advancing from one stage to the next.
+// Structural gates have executable checks; agentic gates are returned as requirements.
+func Gates(from, to Stage) []GateCheck {
+	key := GateKey(from, to)
+	gc, ok := loadedConfig.Gates[key]
+	if !ok {
+		return nil
+	}
+
+	var gates []GateCheck
+
+	for _, name := range gc.Structural {
+		fn := structuralCheckFunc(name)
+		gates = append(gates, GateCheck{
+			From:        from,
+			To:          to,
+			Description: structuralDescription(name),
+			Type:        "structural",
+			Check:       fn,
+		})
+	}
+
+	for _, desc := range gc.Agentic {
+		gates = append(gates, GateCheck{
+			From:        from,
+			To:          to,
+			Description: desc,
+			Type:        "agentic",
+			Check:       nil, // Agentic gates are not checked server-side.
+		})
+	}
+
+	return gates
 }
 
 // CheckGates runs all gate checks for advancing ticket t from its current
 // stage to the given target stage. Returns all failures.
+// Agentic gates are skipped (returned separately via EvaluateGates).
 func CheckGates(t *Ticket, to Stage) []error {
-	risk := t.Risk
-	if risk == "" {
-		risk = RiskNormal
-	}
-	gates := Gates(t.Type, risk)
+	gates := Gates(t.Stage, to)
 
 	var errs []error
 	for _, g := range gates {
-		if g.From == t.Stage && g.To == to {
+		if g.Type == "agentic" {
+			continue // Agentic gates are not evaluated server-side.
+		}
+		if g.Check != nil {
 			if err := g.Check(t); err != nil {
 				errs = append(errs, fmt.Errorf("gate %q: %w", g.Description, err))
 			}
@@ -40,147 +80,73 @@ func CheckGates(t *Ticket, to Stage) []error {
 	return errs
 }
 
-func baseGates(ticketType TicketType) []GateCheck {
-	var gates []GateCheck
+// EvaluateGates returns structured results for all gates on a transition.
+// Structural gates are evaluated; agentic gates are marked as unevaluated
+// unless evidence is provided.
+func EvaluateGates(t *Ticket, to Stage, evidence map[string]string) []GateResult {
+	gates := Gates(t.Stage, to)
 
-	// triage → spec (feature, epic)
-	if HasStage(ticketType, StageSpec) {
-		gates = append(gates, GateCheck{
-			From:        StageTriage,
-			To:          StageSpec,
-			Description: "description exists",
-			Check:       checkDescriptionExists,
-		})
-	}
-
-	// triage → implement (bug, chore, task)
-	if !HasStage(ticketType, StageSpec) && HasStage(ticketType, StageImplement) {
-		gates = append(gates, GateCheck{
-			From:        StageTriage,
-			To:          StageImplement,
-			Description: "description exists",
-			Check:       checkDescriptionExists,
-		})
-	}
-
-	// spec → design (feature, epic)
-	if HasStage(ticketType, StageSpec) && HasStage(ticketType, StageDesign) {
-		gates = append(gates, GateCheck{
-			From:        StageSpec,
-			To:          StageDesign,
-			Description: "acceptance criteria exist",
-			Check:       checkACExists,
-		},
-			GateCheck{
-				From:        StageSpec,
-				To:          StageDesign,
-				Description: "spec review approved",
-				Check:       checkReviewApproved,
-			})
-	}
-
-	// design → implement (feature)
-	if HasStage(ticketType, StageDesign) && HasStage(ticketType, StageImplement) {
-		gates = append(gates, GateCheck{
-			From:        StageDesign,
-			To:          StageImplement,
-			Description: "design section exists",
-			Check:       checkDesignExists,
-		},
-			GateCheck{
-				From:        StageDesign,
-				To:          StageImplement,
-				Description: "design review approved",
-				Check:       checkReviewApproved,
-			})
-	}
-
-	// design → done (epic)
-	if HasStage(ticketType, StageDesign) && !HasStage(ticketType, StageImplement) {
-		gates = append(gates, GateCheck{
-			From:        StageDesign,
-			To:          StageDone,
-			Description: "design exists",
-			Check:       checkDesignExists,
-		},
-			GateCheck{
-				From:        StageDesign,
-				To:          StageDone,
-				Description: "design review approved",
-				Check:       checkReviewApproved,
-			})
-	}
-
-	// implement → test (feature, bug, task — mandatory reviews)
-	if HasStage(ticketType, StageImplement) && HasStage(ticketType, StageTest) {
-		gates = append(gates, GateCheck{
-			From:        StageImplement,
-			To:          StageTest,
-			Description: "code review approved",
-			Check:       checkCodeReviewApproved,
-		},
-			GateCheck{
-				From:        StageImplement,
-				To:          StageTest,
-				Description: "impl review approved",
-				Check:       checkImplReviewApproved,
-			})
-	}
-
-	// implement → done (chore — advisory review surfaced)
-	if HasStage(ticketType, StageImplement) && !HasStage(ticketType, StageTest) {
-		gates = append(gates, GateCheck{
-			From:        StageImplement,
-			To:          StageDone,
-			Description: "advisory review surfaced",
-			Check:       checkAdvisoryReviewSurfaced,
-		})
-	}
-
-	// test → verify (feature, bug, task)
-	if HasStage(ticketType, StageTest) && HasStage(ticketType, StageVerify) {
-		gates = append(gates, GateCheck{
-			From:        StageTest,
-			To:          StageVerify,
-			Description: "test results recorded",
-			Check:       checkTestResultsRecorded,
-		})
-	}
-
-	// verify → done (feature, bug, task)
-	if HasStage(ticketType, StageVerify) {
-		gates = append(gates, GateCheck{
-			From:        StageVerify,
-			To:          StageDone,
-			Description: "verification approved",
-			Check:       checkReviewApproved,
-		})
-	}
-
-	return gates
-}
-
-func applyRiskScaling(gates []GateCheck, risk RiskLevel) []GateCheck {
-	switch risk {
-	case RiskLow:
-		// Low risk: make all gates advisory (no-op checks).
-		advisory := make([]GateCheck, len(gates))
-		copy(advisory, gates)
-		for i := range advisory {
-			advisory[i].Description = advisory[i].Description + " (advisory)"
-			advisory[i].Check = func(*Ticket) error { return nil }
+	var results []GateResult
+	for _, g := range gates {
+		r := GateResult{
+			From:        string(g.From),
+			To:          string(g.To),
+			Description: g.Description,
+			Type:        g.Type,
 		}
-		return advisory
-	case RiskHigh, RiskCritical:
-		// High/critical: gates are the same but enforced strictly.
-		// Future: could add additional gates (extra reviewers, etc.)
-		return gates
+
+		if g.Type == "structural" {
+			r.Name = g.Description
+			if g.Check != nil {
+				if err := g.Check(t); err != nil {
+					r.Status = "fail"
+					r.Error = err.Error()
+				} else {
+					r.Status = "pass"
+				}
+			}
+		} else {
+			r.Name = g.Description
+			if ev, ok := evidence[g.Description]; ok {
+				r.Status = "pass"
+				r.Error = ev // Store attestation as context.
+			} else {
+				r.Status = "unevaluated"
+			}
+		}
+
+		results = append(results, r)
+	}
+	return results
+}
+
+// structuralCheckFunc maps a named check from config to a Go function.
+func structuralCheckFunc(name string) func(*Ticket) error {
+	switch name {
+	case "description_exists":
+		return checkDescriptionExists
+	case "acceptance_exists":
+		return checkACExists
+	case "design_exists":
+		return checkDesignExists
+	case "review_approved":
+		return checkReviewApproved
+	case "code_review_approved":
+		return checkCodeReviewApproved
+	case "impl_review_approved":
+		return checkImplReviewApproved
+	case "advisory_review_surfaced":
+		return checkAdvisoryReviewSurfaced
+	case "test_results_recorded":
+		return checkTestResultsRecorded
 	default:
-		return gates
+		return func(*Ticket) error {
+			return fmt.Errorf("unknown structural gate %q", name)
+		}
 	}
 }
 
-// Gate check implementations.
+// Structural check implementations.
 
 func checkDescriptionExists(t *Ticket) error {
 	body := strings.TrimSpace(t.Body)
@@ -230,7 +196,6 @@ func checkImplReviewApproved(t *Ticket) error {
 }
 
 func checkAdvisoryReviewSurfaced(t *Ticket) error {
-	// For chores: just needs any review record to exist.
 	if len(t.Reviews) > 0 {
 		return nil
 	}

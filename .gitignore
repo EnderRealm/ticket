@@ -1,3 +1,5 @@
 dist/
 tk-go
 tk
+
+.claude/worktrees/

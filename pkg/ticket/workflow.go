@@ -140,7 +140,11 @@ func Advance(store *FileStore, id string, opts AdvanceOptions) (*AdvanceResult, 
 		return nil, fmt.Errorf("ticket %s has no stage — migrate it first", id)
 	}
 
-	pipeline, err := PipelineFor(t.Type)
+	risk := t.Risk
+	if risk == "" {
+		risk = ""
+	}
+	pipeline, err := PipelineFor(t.Type, risk)
 	if err != nil {
 		return nil, err
 	}
@@ -150,17 +154,18 @@ func Advance(store *FileStore, id string, opts AdvanceOptions) (*AdvanceResult, 
 	var skipped []Stage
 
 	if opts.SkipTo != "" {
-		// Validate that SkipTo is a valid stage for this type and is ahead.
-		toIdx := StageIndex(t.Type, opts.SkipTo)
-		fromIdx := StageIndex(t.Type, from)
+		toIdx := StageIndexInPipeline(pipeline, opts.SkipTo)
+		fromIdx := StageIndexInPipeline(pipeline, from)
 		if toIdx < 0 {
 			return nil, fmt.Errorf("stage %q is not part of the %s pipeline", opts.SkipTo, t.Type)
+		}
+		if fromIdx < 0 {
+			return nil, fmt.Errorf("current stage %q is not part of the %s pipeline", from, t.Type)
 		}
 		if toIdx <= fromIdx {
 			return nil, fmt.Errorf("cannot skip backward from %s to %s", from, opts.SkipTo)
 		}
 		to = opts.SkipTo
-		// Collect skipped stages.
 		for i := fromIdx + 1; i < toIdx; i++ {
 			skipped = append(skipped, pipeline[i])
 		}
@@ -168,7 +173,7 @@ func Advance(store *FileStore, id string, opts AdvanceOptions) (*AdvanceResult, 
 			return nil, fmt.Errorf("reason is required when skipping stages")
 		}
 	} else {
-		next, ok := NextStage(t.Type, from)
+		next, ok := NextStageInPipeline(pipeline, from)
 		if !ok {
 			return nil, fmt.Errorf("ticket %s is already at final stage %s", id, from)
 		}
