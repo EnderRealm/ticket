@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.6.0] - 2026-03-06
 
 ### Added
 - Pipeline configuration externalized to embedded JSON (`pkg/ticket/pipelines.json`)
