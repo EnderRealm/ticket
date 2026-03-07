@@ -377,3 +377,53 @@ func TestCreateTicketMissingTitle(t *testing.T) {
 		t.Error("expected error for missing title")
 	}
 }
+
+func TestRiskField(t *testing.T) {
+	ctx := context.Background()
+	session := testServer(t)
+
+	// Create with risk.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Risk test",
+			"type":  "feature",
+			"risk":  "high",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+
+	if created["risk"] != "high" {
+		t.Errorf("create risk = %q, want %q", created["risk"], "high")
+	}
+
+	id := created["id"].(string)
+
+	// Edit risk.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":   id,
+			"risk": "critical",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	text = result.Content[0].(*mcp.TextContent).Text
+	var edited map[string]any
+	json.Unmarshal([]byte(text), &edited)
+
+	if edited["risk"] != "critical" {
+		t.Errorf("edit risk = %q, want %q", edited["risk"], "critical")
+	}
+}

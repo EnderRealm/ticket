@@ -1,7 +1,7 @@
 ---
 id: externalize-pipelines-gates-2c14
 stage: done
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-06T08:15:23Z

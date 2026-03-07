@@ -1,7 +1,7 @@
 ---
 id: add-ticket-pipelines-5448
 stage: done
-status: open
+status: closed
 deps: [externalize-pipelines-gates-2c14]
 links: []
 created: 2026-03-06T08:15:31Z

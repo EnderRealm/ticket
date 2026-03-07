@@ -1,7 +1,7 @@
 ---
 id: externalize-pipeline-configuration-50a4
 stage: triage
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-06T08:01:08Z

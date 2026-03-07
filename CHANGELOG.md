@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `ticket_create` and `ticket_edit` MCP tools now support `risk` parameter for setting risk level (low, normal, high, critical)
+
 ## [2.6.0] - 2026-03-06
 
 ### Added

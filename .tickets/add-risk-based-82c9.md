@@ -1,7 +1,7 @@
 ---
 id: add-risk-based-82c9
 stage: done
-status: open
+status: closed
 deps: [externalize-pipelines-gates-2c14]
 links: []
 created: 2026-03-06T08:15:28Z

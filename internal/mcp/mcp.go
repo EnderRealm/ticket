@@ -298,6 +298,7 @@ type createArgs struct {
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
+	Risk        string `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
 }
 
 func registerCreate(server *mcp.Server, store *ticket.FileStore) {
@@ -338,6 +339,9 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 		}
 		if args.Branch != "" {
 			t.Branch = args.Branch
+		}
+		if args.Risk != "" {
+			t.Risk = ticket.RiskLevel(args.Risk)
 		}
 		if args.Tags != "" {
 			t.Tags = strings.Split(args.Tags, ",")
@@ -384,6 +388,7 @@ type editArgs struct {
 	Design      string `json:"design,omitempty" jsonschema:"new design text"`
 	Acceptance  string `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
 	TestResults string `json:"test_results,omitempty" jsonschema:"test results to record"`
+	Risk        string `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
 }
 
 func registerEdit(server *mcp.Server, store *ticket.FileStore) {
@@ -420,6 +425,9 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 		}
 		if args.Branch != "" {
 			t.Branch = args.Branch
+		}
+		if args.Risk != "" {
+			t.Risk = ticket.RiskLevel(args.Risk)
 		}
 		if args.Tags != "" {
 			t.Tags = strings.Split(args.Tags, ",")
