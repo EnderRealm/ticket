@@ -47,6 +47,7 @@ type formModel struct {
 	priority int
 	stageIdx int
 	stages   []ticket.Stage // valid stages for ticket type
+	origNote string         // original note text for edit change detection
 	width    int
 	height   int
 }
@@ -104,9 +105,14 @@ func newEditFormModel(t *ticket.Ticket, w, h int) formModel {
 	m.fields[fieldTitle] = t.Title
 	m.fields[fieldDescription] = extractDescription(t.Body)
 	m.fields[fieldAssignee] = t.Assignee
+	if len(t.Notes) > 0 {
+		m.fields[fieldNote] = t.Notes[len(t.Notes)-1].Text
+		m.origNote = m.fields[fieldNote]
+	}
 	m.cursors[fieldTitle] = len(m.fields[fieldTitle])
 	m.cursors[fieldDescription] = len(m.fields[fieldDescription])
 	m.cursors[fieldAssignee] = len(m.fields[fieldAssignee])
+	m.cursors[fieldNote] = len(m.fields[fieldNote])
 	return m
 }
 
@@ -222,6 +228,7 @@ func (m formModel) submit() tea.Msg {
 		priority:    m.priority,
 		assignee:    strings.TrimSpace(m.fields[fieldAssignee]),
 		note:        strings.TrimSpace(m.fields[fieldNote]),
+		origNote:    m.origNote,
 	}
 	if len(m.stages) > 0 {
 		msg.stage = m.stages[m.stageIdx]
@@ -374,6 +381,7 @@ type formSubmitMsg struct {
 	assignee    string
 	stage       ticket.Stage
 	note        string
+	origNote    string // original note text for edit change detection
 }
 
 type formCancelMsg struct{}

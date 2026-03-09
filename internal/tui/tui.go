@@ -562,12 +562,19 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 	// Update description (text before first ## heading).
 	t.Body = ticket.UpdateSection(t.Body, "", msg.description)
 
-	// Add note if provided.
-	if msg.note != "" {
-		t.Notes = append(t.Notes, ticket.Note{
-			Timestamp: time.Now().UTC(),
-			Text:      msg.note,
-		})
+	// Handle note changes.
+	if msg.note != msg.origNote {
+		if msg.note != "" && msg.origNote != "" && len(t.Notes) > 0 {
+			// Edit the last note.
+			t.Notes[len(t.Notes)-1].Text = msg.note
+			t.Notes[len(t.Notes)-1].Timestamp = time.Now().UTC()
+		} else if msg.note != "" {
+			// Add a new note.
+			t.Notes = append(t.Notes, ticket.Note{
+				Timestamp: time.Now().UTC(),
+				Text:      msg.note,
+			})
+		}
 		// Strip existing notes section from body to avoid duplication.
 		if idx := strings.Index(t.Body, "\n## Notes\n"); idx >= 0 {
 			t.Body = t.Body[:idx+1]
