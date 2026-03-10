@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 func TestWrapText(t *testing.T) {
@@ -23,6 +26,12 @@ func TestWrapText(t *testing.T) {
 		{"multiple spaces consumed", "hello  world", 7, []string{"hello", "world"}},
 		{"single char width", "a b", 1, []string{"a", "b"}},
 		{"multibyte runes", "café mocha", 5, []string{"café", "mocha"}},
+		{"explicit newline", "hello\nworld", 20, []string{"hello", "world"}},
+		{"newline with wrap", "hello\nthe quick brown fox", 10, []string{"hello", "the quick", "brown fox"}},
+		{"multiple newlines", "a\nb\nc", 10, []string{"a", "b", "c"}},
+		{"trailing newline", "hello\n", 10, []string{"hello", ""}},
+		{"consecutive newlines", "hello\n\nworld", 10, []string{"hello", "", "world"}},
+		{"newline only", "\n", 10, []string{"", ""}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,6 +64,62 @@ func TestWrapTextStartOffsets(t *testing.T) {
 		if wrapped[i].start != ws {
 			t.Errorf("line %d start: got %d, want %d", i, wrapped[i].start, ws)
 		}
+	}
+}
+
+func TestWrapTextNewlineOffsets(t *testing.T) {
+	// "hello\nworld" — runes: h(0) e(1) l(2) l(3) o(4) \n(5) w(6) o(7) r(8) l(9) d(10)
+	wrapped := wrapText("hello\nworld", 20)
+	if len(wrapped) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(wrapped))
+	}
+	// "hello" starts at rune 0, "world" starts at rune 6 (after the \n)
+	wantStarts := []int{0, 6}
+	for i, ws := range wantStarts {
+		if wrapped[i].start != ws {
+			t.Errorf("line %d start: got %d, want %d", i, wrapped[i].start, ws)
+		}
+	}
+}
+
+func TestFormEditNoteSubmits(t *testing.T) {
+	m := formModel{
+		editID:   "test-123",
+		typeIdx:  0,
+		priority: 2,
+		width:    80,
+		height:   40,
+		stages:   []ticket.Stage{ticket.StageTriage, ticket.StageSpec},
+	}
+	m.fields[fieldTitle] = "Test ticket"
+	m.fields[fieldDescription] = "description"
+
+	// Tab to the note field.
+	m.focus = fieldNote
+
+	// Type "hello" into the note field.
+	for _, ch := range "hello" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+	}
+
+	if m.fields[fieldNote] != "hello" {
+		t.Fatalf("note field: got %q, want %q", m.fields[fieldNote], "hello")
+	}
+
+	// Press enter to submit.
+	var cmd tea.Cmd
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submit command, got nil")
+	}
+
+	msg := cmd()
+	submit, ok := msg.(formSubmitMsg)
+	if !ok {
+		t.Fatalf("expected formSubmitMsg, got %T", msg)
+	}
+	if submit.note != "hello" {
+		t.Errorf("submitted note: got %q, want %q", submit.note, "hello")
 	}
 }
 

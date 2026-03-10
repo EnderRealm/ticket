@@ -66,6 +66,10 @@ func (m formModel) isTextField(f formField) bool {
 	return f == fieldTitle || f == fieldDescription || f == fieldAssignee || f == fieldNote
 }
 
+func (m formModel) isMultilineField(f formField) bool {
+	return f == fieldDescription || f == fieldNote
+}
+
 func newFormModel(w, h int) formModel {
 	return formModel{
 		typeIdx:  0, // task
@@ -136,6 +140,14 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 			m.focus = formField((int(m.focus) + 1) % numFields)
 		case "shift+tab", "up":
 			m.focus = formField((int(m.focus) - 1 + numFields) % numFields)
+
+		case "ctrl+j":
+			if m.isMultilineField(m.focus) {
+				pos := m.cursors[m.focus]
+				text := m.fields[m.focus]
+				m.fields[m.focus] = text[:pos] + "\n" + text[pos:]
+				m.cursors[m.focus] = pos + 1
+			}
 
 		case "enter":
 			if m.focus == fieldType {
@@ -358,7 +370,7 @@ func (m formModel) view() string {
 	}
 
 	b.WriteString("\n")
-	help := "tab/↑↓ fields  ←→ move/cycle  enter submit  esc cancel"
+	help := "tab/↑↓ fields  ←→ move/cycle  ctrl+j newline  enter submit  esc cancel"
 	b.WriteString(formHelpStyle.Render(help))
 
 	return b.String()
@@ -383,15 +395,32 @@ type wrappedLine struct {
 	start int // rune offset in original text
 }
 
-// wrapText breaks s into lines of at most width runes, preferring spaces
-// as break points so words stay intact. Falls back to hard breaks for
-// words longer than width.
+// wrapText breaks s into lines of at most width runes, respecting explicit
+// newlines first, then preferring spaces as break points so words stay
+// intact. Falls back to hard breaks for words longer than width.
 func wrapText(s string, width int) []wrappedLine {
-	runes := []rune(s)
-	if len(runes) <= width {
-		return []wrappedLine{{text: s, start: 0}}
+	segments := strings.Split(s, "\n")
+	var result []wrappedLine
+	runeOffset := 0
+
+	for i, seg := range segments {
+		if i > 0 {
+			runeOffset++ // account for the \n rune
+		}
+		segRunes := []rune(seg)
+		if len(segRunes) <= width {
+			result = append(result, wrappedLine{text: seg, start: runeOffset})
+		} else {
+			result = append(result, wrapSegment(segRunes, width, runeOffset)...)
+		}
+		runeOffset += len(segRunes)
 	}
 
+	return result
+}
+
+// wrapSegment word-wraps a single line (no newlines) into wrapped lines.
+func wrapSegment(runes []rune, width, baseOffset int) []wrappedLine {
 	var result []wrappedLine
 	lineStart := 0
 	lastSpace := -1
@@ -402,24 +431,22 @@ func wrapText(s string, width int) []wrappedLine {
 		}
 		if i-lineStart+1 > width {
 			if lastSpace > lineStart {
-				// Find start of space run to avoid trailing spaces on the line.
 				breakAt := lastSpace
 				for breakAt > lineStart && runes[breakAt-1] == ' ' {
 					breakAt--
 				}
 				result = append(result, wrappedLine{
 					text:  string(runes[lineStart:breakAt]),
-					start: lineStart,
+					start: baseOffset + lineStart,
 				})
 				lineStart = lastSpace + 1
-				// Skip consecutive spaces at the new line start.
 				for lineStart < len(runes) && runes[lineStart] == ' ' {
 					lineStart++
 				}
 			} else {
 				result = append(result, wrappedLine{
 					text:  string(runes[lineStart:i]),
-					start: lineStart,
+					start: baseOffset + lineStart,
 				})
 				lineStart = i
 			}
@@ -428,8 +455,7 @@ func wrapText(s string, width int) []wrappedLine {
 	}
 	result = append(result, wrappedLine{
 		text:  string(runes[lineStart:]),
-		start: lineStart,
+		start: baseOffset + lineStart,
 	})
-
 	return result
 }

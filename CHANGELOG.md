@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- TUI: ctrl+j inserts newlines in multi-line form fields (description, note)
+
 ### Fixed
 - MCP: design/acceptance/test_results fields with `## ` markdown headings no longer get truncated on read-back
 - Scanner buffer increased from 64KB to 1MB per line in ticket parser, preventing silent failures on large fields
