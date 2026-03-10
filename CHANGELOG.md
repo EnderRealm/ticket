@@ -4,6 +4,7 @@
 
 ### Added
 - TUI: ctrl+j inserts newlines in multi-line form fields (description, note)
+- TUI: ctrl+s saves/submits form in edit and create mode (works from any field, including choice fields)
 
 ### Fixed
 - MCP: design/acceptance/test_results fields with `## ` markdown headings no longer get truncated on read-back

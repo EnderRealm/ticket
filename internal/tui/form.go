@@ -136,6 +136,9 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 		case "esc":
 			return m, func() tea.Msg { return formCancelMsg{} }
 
+		case "ctrl+s":
+			return m, m.submit
+
 		case "tab", "down":
 			m.focus = formField((int(m.focus) + 1) % numFields)
 		case "shift+tab", "up":
@@ -370,7 +373,7 @@ func (m formModel) view() string {
 	}
 
 	b.WriteString("\n")
-	help := "tab/↑↓ fields  ←→ move/cycle  ctrl+j newline  enter submit  esc cancel"
+	help := "tab/↑↓ fields  ←→ move/cycle  ctrl+j newline  ctrl+s/enter save  esc cancel"
 	b.WriteString(formHelpStyle.Render(help))
 
 	return b.String()

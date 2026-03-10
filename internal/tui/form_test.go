@@ -123,6 +123,40 @@ func TestFormEditNoteSubmits(t *testing.T) {
 	}
 }
 
+func TestFormCtrlSSubmitsFromChoiceField(t *testing.T) {
+	m := formModel{
+		editID:   "test-456",
+		typeIdx:  1,
+		priority: 2,
+		width:    80,
+		height:   40,
+		stages:   []ticket.Stage{ticket.StageTriage, ticket.StageSpec},
+	}
+	m.fields[fieldTitle] = "Test ticket"
+
+	// Focus on a choice field where enter would cycle instead of submit.
+	m.focus = fieldType
+
+	// ctrl+s should submit regardless.
+	var cmd tea.Cmd
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("expected submit command from ctrl+s, got nil")
+	}
+
+	msg := cmd()
+	submit, ok := msg.(formSubmitMsg)
+	if !ok {
+		t.Fatalf("expected formSubmitMsg, got %T", msg)
+	}
+	if submit.title != "Test ticket" {
+		t.Errorf("submitted title: got %q, want %q", submit.title, "Test ticket")
+	}
+	if submit.ticketType != ticketTypes[1] {
+		t.Errorf("submitted type: got %v, want %v", submit.ticketType, ticketTypes[1])
+	}
+}
+
 func TestFormViewWrapsTextField(t *testing.T) {
 	// width=38 → avail = 38-18 = 20 chars per line
 	m := newFormModel(38, 40)
