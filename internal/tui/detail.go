@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	fieldKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
+	fieldKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Width(14)
 	fieldValStyle   = lipgloss.NewStyle()
 	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
@@ -303,59 +303,60 @@ func (m detailModel) render() []string {
 	lines = append(lines, "")
 
 	// Frontmatter fields.
-	lines = append(lines, m.field("id", t.ID))
+	lines = append(lines, m.field("ID", t.ID))
 	if t.Stage != "" {
-		lines = append(lines, m.field("stage", string(t.Stage)))
+		lines = append(lines, m.field("Stage", string(t.Stage)))
 	}
 	if t.Status != "" {
-		lines = append(lines, m.field("status", string(t.Status)))
+		lines = append(lines, m.field("Status", string(t.Status)))
 	}
 	if t.Review != "" {
-		lines = append(lines, m.field("review", string(t.Review)))
+		lines = append(lines, m.field("Review", string(t.Review)))
 	}
 	if t.Risk != "" {
-		lines = append(lines, m.field("risk", string(t.Risk)))
+		lines = append(lines, m.field("Risk", string(t.Risk)))
 	}
-	lines = append(lines, m.field("type", string(t.Type)))
-	lines = append(lines, m.field("priority", fmt.Sprintf("P%d", t.Priority)))
+	lines = append(lines, m.field("Type", string(t.Type)))
+	lines = append(lines, m.field("Priority", fmt.Sprintf("P%d", t.Priority)))
 
 	if t.Assignee != "" {
-		lines = append(lines, m.field("assignee", t.Assignee))
+		lines = append(lines, m.field("Assignee", t.Assignee))
 	}
 	if t.Parent != "" {
-		lines = append(lines, m.field("parent", t.Parent))
+		lines = append(lines, m.field("Parent", t.Parent))
 	}
 	if len(t.Deps) > 0 {
-		lines = append(lines, m.field("deps", strings.Join(t.Deps, ", ")))
+		lines = append(lines, m.field("Deps", strings.Join(t.Deps, ", ")))
 	}
 	if len(t.Links) > 0 {
-		lines = append(lines, m.field("links", strings.Join(t.Links, ", ")))
+		lines = append(lines, m.field("Links", strings.Join(t.Links, ", ")))
 	}
 	if len(t.Tags) > 0 {
-		lines = append(lines, m.field("tags", strings.Join(t.Tags, ", ")))
+		lines = append(lines, m.field("Tags", strings.Join(t.Tags, ", ")))
 	}
 	if t.ExternalRef != "" {
-		lines = append(lines, m.field("external-ref", t.ExternalRef))
+		lines = append(lines, m.field("External Ref", t.ExternalRef))
 	}
-	lines = append(lines, m.field("created", t.Created.Format("2006-01-02 15:04")))
+	lines = append(lines, m.field("Created", t.Created.Format("2006-01-02 15:04")))
 
 	lines = append(lines, "")
 
 	// Body sections.
+	pad := "  "
 	body := t.Body
 	if body != "" {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "## ") {
-				lines = append(lines, sectionStyle.Render(line))
+				lines = append(lines, pad+sectionStyle.Render(line))
 			} else {
-				lines = append(lines, line)
+				lines = append(lines, pad+line)
 			}
 		}
 	}
 
 	// Review log.
 	if len(t.Reviews) > 0 {
-		lines = append(lines, sectionStyle.Render("## Review Log"))
+		lines = append(lines, pad+sectionStyle.Render("## Review Log"))
 		lines = append(lines, "")
 		for _, r := range t.Reviews {
 			verdict := strings.ToUpper(r.Verdict)
@@ -364,19 +365,19 @@ func (m detailModel) render() []string {
 			if r.Comment != "" {
 				entry += " — " + r.Comment
 			}
-			lines = append(lines, entry)
+			lines = append(lines, pad+entry)
 		}
 		lines = append(lines, "")
 	}
 
 	// Notes.
 	if len(t.Notes) > 0 {
-		lines = append(lines, sectionStyle.Render("## Notes"))
+		lines = append(lines, pad+sectionStyle.Render("## Notes"))
 		lines = append(lines, "")
 		for _, n := range t.Notes {
-			lines = append(lines, fieldKeyStyle.Render(n.Timestamp.Format("2006-01-02 15:04:05")))
+			lines = append(lines, pad+fieldKeyStyle.Render(n.Timestamp.Format("2006-01-02 15:04:05")))
 			for _, nl := range strings.Split(n.Text, "\n") {
-				lines = append(lines, nl)
+				lines = append(lines, pad+nl)
 			}
 			lines = append(lines, "")
 		}
@@ -386,5 +387,5 @@ func (m detailModel) render() []string {
 }
 
 func (m detailModel) field(key, val string) string {
-	return fieldKeyStyle.Render(key+":") + " " + fieldValStyle.Render(val)
+	return "  " + fieldKeyStyle.Render(key+":") + " " + fieldValStyle.Render(val)
 }

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- TUI: Unified visual layout across open, edit, and create screens (consistent header style, fixed-width labels, matching indentation)
+
 ### Added
 - TUI: ctrl+j inserts newlines in multi-line form fields (description, note)
 - TUI: ctrl+s saves/submits form in edit and create mode (works from any field, including choice fields)

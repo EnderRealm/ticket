@@ -14,7 +14,6 @@ var (
 	formActiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	formCursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	formHelpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	formTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 )
 
 var ticketTypes = []ticket.TicketType{
@@ -248,9 +247,13 @@ func (m formModel) view() string {
 	var b strings.Builder
 
 	if m.editID != "" {
-		b.WriteString(formTitleStyle.Render("Edit Ticket"))
+		title := m.fields[fieldTitle]
+		if title == "" {
+			title = "Untitled"
+		}
+		b.WriteString(titleStyle.Render("# " + title))
 	} else {
-		b.WriteString(formTitleStyle.Render("Create New Ticket"))
+		b.WriteString(titleStyle.Render("# New Ticket"))
 	}
 	b.WriteString("\n\n")
 
