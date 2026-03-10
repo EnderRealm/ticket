@@ -16,6 +16,7 @@ var (
 	fieldValStyle   = lipgloss.NewStyle()
 	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
+	timestampStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
 	detailHelpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	inputLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 )
@@ -375,7 +376,7 @@ func (m detailModel) render() []string {
 		lines = append(lines, pad+sectionStyle.Render("## Notes"))
 		lines = append(lines, "")
 		for _, n := range t.Notes {
-			lines = append(lines, pad+fieldKeyStyle.Render(n.Timestamp.Format("2006-01-02 15:04:05")))
+			lines = append(lines, pad+timestampStyle.Render(n.Timestamp.Format("2006-01-02 15:04:05")))
 			for _, nl := range strings.Split(n.Text, "\n") {
 				lines = append(lines, pad+nl)
 			}
