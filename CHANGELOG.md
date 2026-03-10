@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.7.0] - 2026-03-10
 
 ### Changed
 - TUI: Unified visual layout across open, edit, and create screens (consistent header style, fixed-width labels, matching indentation)
