@@ -15,7 +15,6 @@ var (
 	fieldKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Width(14)
 	fieldValStyle   = lipgloss.NewStyle()
 	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
 	timestampStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
 	detailHelpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	inputLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
@@ -299,11 +298,8 @@ func (m detailModel) render() []string {
 	t := m.ticket
 	var lines []string
 
-	// Title.
-	lines = append(lines, titleStyle.Render("# "+t.Title))
-	lines = append(lines, "")
-
 	// Frontmatter fields.
+	lines = append(lines, m.field("Title", t.Title))
 	lines = append(lines, m.field("ID", t.ID))
 	if t.Stage != "" {
 		lines = append(lines, m.field("Stage", string(t.Stage)))

@@ -246,16 +246,7 @@ func (m formModel) submit() tea.Msg {
 func (m formModel) view() string {
 	var b strings.Builder
 
-	if m.editID != "" {
-		title := m.fields[fieldTitle]
-		if title == "" {
-			title = "Untitled"
-		}
-		b.WriteString(titleStyle.Render("# " + title))
-	} else {
-		b.WriteString(titleStyle.Render("# New Ticket"))
-	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
 	labels := [fieldCount]string{"Title:", "Description:", "Type:", "Priority:", "Assignee:", "Stage:", "Note:"}
 	last := m.lastField()
