@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- MCP: design/acceptance/test_results fields with `## ` markdown headings no longer get truncated on read-back
+- Scanner buffer increased from 64KB to 1MB per line in ticket parser, preventing silent failures on large fields
+- MCP: `ticket_edit` no longer silently swallows re-read errors after update
+
 ## [2.6.1] - 2026-03-07
 
 ### Added

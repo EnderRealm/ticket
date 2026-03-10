@@ -1,24 +1,15 @@
 ---
 id: mcp-ticket-create-adef
-stage: triage
+stage: done
 status: closed
-review: approved
 deps: []
 links: []
 created: 2026-02-28T20:26:56Z
 type: bug
 priority: 0
+skipped: [implement, test, verify]
 ---
 # MCP: ticket_create doesn't set created datetime field
-
-
-
-
-
-
-
-
-
 
 The CLI properly sets created datetime field on ticket create, but the MCP ticket_create tool doesn't
 

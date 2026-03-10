@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	ticketmcp "github.com/EnderRealm/ticket/internal/mcp"
@@ -375,6 +376,89 @@ func TestCreateTicketMissingTitle(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected error for missing title")
+	}
+}
+
+func TestEditDesignWithMarkdownHeadings(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Design heading test", "type": "feature"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	designContent := "## Overview\n\nThis is the overview.\n\n## Architecture\n\nThree-layer design.\n\n## Data Model\n\nUser table with fields."
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "design": designContent},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+
+	if shown["design"] != designContent {
+		t.Errorf("design with headings truncated\ngot:  %q\nwant: %q", shown["design"], designContent)
+	}
+}
+
+func TestEditDesignLongLine(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Long line test", "type": "feature"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	longLine := strings.Repeat("x", 70000)
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "design": longLine},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("show error after long line: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+
+	design, _ := shown["design"].(string)
+	if len(design) != len(longLine) {
+		t.Errorf("design length = %d, want %d", len(design), len(longLine))
 	}
 }
 

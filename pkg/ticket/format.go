@@ -140,6 +140,7 @@ func Serialize(t *Ticket) ([]byte, error) {
 // Expects the file to start with "---\n".
 func splitFrontmatter(r io.Reader) (front []byte, body string, err error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var state int // 0=before opening ---, 1=in frontmatter, 2=body
 	var frontBuf bytes.Buffer
 	var bodyBuf bytes.Buffer
@@ -329,11 +330,34 @@ func parseReviewLog(section string) []ReviewRecord {
 	return reviews
 }
 
+// structuralSections lists the heading prefixes that delimit ticket body sections.
+// User content within sections may contain arbitrary ## headings without conflict.
+var structuralSections = []string{
+	"\n## Design",
+	"\n## Acceptance Criteria",
+	"\n## Test Results",
+	"\n## Notes",
+	"\n## Review Log",
+}
+
+// nextStructuralSection returns the index of the next known structural section
+// marker in s, or -1 if none found.
+func nextStructuralSection(s string) int {
+	best := -1
+	for _, marker := range structuralSections {
+		idx := strings.Index(s, marker)
+		if idx >= 0 && (best < 0 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
 // UpdateSection replaces or inserts a markdown section in the body.
-// If heading is empty, replaces the description (text before first ## heading).
+// If heading is empty, replaces the description (text before first structural heading).
 func UpdateSection(body, heading, content string) string {
 	if heading == "" {
-		idx := strings.Index(body, "\n## ")
+		idx := nextStructuralSection(body)
 		if idx >= 0 {
 			return "\n" + content + "\n" + body[idx:]
 		}
@@ -344,10 +368,10 @@ func UpdateSection(body, heading, content string) string {
 	idx := strings.Index(body, marker)
 	if idx >= 0 {
 		rest := body[idx+len(marker):]
-		nextSection := strings.Index(rest, "\n## ")
+		nextIdx := nextStructuralSection(rest)
 		var after string
-		if nextSection >= 0 {
-			after = rest[nextSection:]
+		if nextIdx >= 0 {
+			after = rest[nextIdx:]
 		}
 		return body[:idx] + marker + "\n\n" + content + "\n" + after
 	}

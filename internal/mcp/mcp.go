@@ -166,10 +166,6 @@ func parseSections(body string) (desc, design, acceptance, testResults string) {
 		case strings.HasPrefix(line, "## Test Results"):
 			flush()
 			current = &testResults
-		case strings.HasPrefix(line, "## "):
-			// Other section - stop capturing known sections.
-			flush()
-			current = nil
 		default:
 			buf = append(buf, line)
 		}
@@ -460,7 +456,11 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 		}
 
 		// Re-read to get propagated state.
-		t, _ = store.Get(t.ID)
+		t, err = store.Get(t.ID)
+		if err != nil {
+			r, _ := errResult("failed to re-read ticket: %v", err)
+			return r, nil, nil
+		}
 		r, err := jsonResult(toJSON(t))
 		return r, nil, err
 	})
