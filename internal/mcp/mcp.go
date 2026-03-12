@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -365,16 +366,32 @@ type createArgs struct {
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
 	Risk        string `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
+	Repo        string `json:"repo,omitempty" jsonschema:"path to repo root; walks up to find .tickets/ directory (like CLI --repo flag)"`
 }
 
 func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket.",
+		Description: "Create a new ticket. Supports optional repo parameter for cross-repo creation.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		if args.Title == "" {
 			r, _ := errResult("title is required")
 			return r, nil, nil
+		}
+
+		targetStore := store
+		if args.Repo != "" {
+			abs, err := filepath.Abs(args.Repo)
+			if err != nil {
+				r, _ := errResult("invalid repo path: %v", err)
+				return r, nil, nil
+			}
+			dir, ok := ticket.FindTicketsDir(abs)
+			if !ok {
+				r, _ := errResult("no .tickets/ directory found under %s", abs)
+				return r, nil, nil
+			}
+			targetStore = ticket.NewFileStore(dir)
 		}
 
 		t := &ticket.Ticket{
@@ -428,7 +445,7 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 		}
 		t.Body = body.String()
 
-		if err := store.Create(t); err != nil {
+		if err := targetStore.Create(t); err != nil {
 			r, _ := errResult("failed to create ticket: %v", err)
 			return r, nil, nil
 		}

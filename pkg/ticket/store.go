@@ -170,3 +170,22 @@ func (s *FileStore) writeTicket(t *Ticket) error {
 	}
 	return os.WriteFile(s.ticketFile(t.ID), data, 0o644)
 }
+
+// FindTicketsDir walks up from startDir looking for a .tickets/ subdirectory.
+// startDir should be an absolute path. Returns the path and true if found,
+// or empty string and false.
+func FindTicketsDir(startDir string) (string, bool) {
+	dir := startDir
+	for {
+		candidate := filepath.Join(dir, ".tickets")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", false
+}

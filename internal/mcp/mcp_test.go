@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -905,6 +907,121 @@ func TestRevertWithoutReasonFails(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected error when reason is empty")
+	}
+}
+
+func TestCreateTicketRemoteRepo(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Set up an alternate repo with .tickets/ directory.
+	altDir := t.TempDir()
+	altTicketsDir := filepath.Join(altDir, ".tickets")
+	if err := os.MkdirAll(altTicketsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a ticket targeting the alternate repo.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Remote repo ticket",
+			"type":  "task",
+			"repo":  altDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("tool returned error: %v", result.Content)
+	}
+
+	// Verify ticket landed in the alternate directory.
+	entries, err := os.ReadDir(altTicketsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdFiles := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			mdFiles++
+		}
+	}
+	if mdFiles != 1 {
+		t.Errorf("expected 1 .md file in alt repo, got %d", mdFiles)
+	}
+
+	// Verify the server's default store is unaffected.
+	listResult, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := listResult.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 0 {
+		t.Errorf("expected 0 tickets in default store, got %d", len(tickets))
+	}
+
+	// Create a ticket without repo — should land in default store.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Default store ticket",
+			"type":  "task",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("default create error: %v", result.Content)
+	}
+
+	listResult, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = listResult.Content[0].(*mcp.TextContent).Text
+	json.Unmarshal([]byte(text), &resp)
+	tickets = resp["tickets"].([]any)
+	if len(tickets) != 1 {
+		t.Errorf("expected 1 ticket in default store, got %d", len(tickets))
+	}
+}
+
+func TestCreateTicketRemoteRepoNotFound(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Use a temp dir with no .tickets/ subdirectory.
+	noTicketsDir := t.TempDir()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Should fail",
+			"type":  "task",
+			"repo":  noTicketsDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error when .tickets/ not found")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "no .tickets/ directory found") {
+		t.Errorf("error message = %q, want substring %q", text, "no .tickets/ directory found")
 	}
 }
 

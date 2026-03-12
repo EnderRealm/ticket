@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/spf13/cobra"
 )
 
@@ -175,23 +176,6 @@ func Execute() {
 	}
 }
 
-// findTicketsDir walks up from startDir looking for a .tickets/ directory.
-func findTicketsDir(startDir string) (string, bool) {
-	dir := startDir
-	for {
-		candidate := filepath.Join(dir, ".tickets")
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return "", false
-}
-
 // TicketsDir returns the directory where tickets are stored.
 // Priority: --repo flag → TICKETS_DIR env → walk up from CWD → fallback .tickets
 func TicketsDir() string {
@@ -201,7 +185,7 @@ func TicketsDir() string {
 			fmt.Fprintf(os.Stderr, "Error: invalid --repo path: %v\n", err)
 			os.Exit(1)
 		}
-		if dir, ok := findTicketsDir(abs); ok {
+		if dir, ok := ticket.FindTicketsDir(abs); ok {
 			return dir
 		}
 		fmt.Fprintf(os.Stderr, "Error: no .tickets/ directory found under %s\n", abs)
@@ -210,7 +194,7 @@ func TicketsDir() string {
 	if dir := os.Getenv("TICKETS_DIR"); dir != "" {
 		return dir
 	}
-	if dir, ok := findTicketsDir(mustGetwd()); ok {
+	if dir, ok := ticket.FindTicketsDir(mustGetwd()); ok {
 		return dir
 	}
 	return ".tickets"
