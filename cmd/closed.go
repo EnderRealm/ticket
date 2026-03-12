@@ -69,9 +69,10 @@ func runClosed(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	printHeader()
+	var result []*ticket.Ticket
 	for _, m := range mt {
-		printRow(m.ticket)
+		result = append(result, m.ticket)
 	}
+	newTableWriter().Print(result)
 	return nil
 }

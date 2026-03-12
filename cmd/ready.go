@@ -43,9 +43,6 @@ func runReady(cmd *cobra.Command, args []string) error {
 	}
 
 	ticket.SortByPriorityID(tickets)
-	printHeader()
-	for _, t := range tickets {
-		printRow(t)
-	}
+	newTableWriter().Print(tickets)
 	return nil
 }

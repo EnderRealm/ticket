@@ -77,10 +77,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 	}
 
 	ticket.SortByStagePriorityID(tickets)
-	printHeader()
-	for _, t := range tickets {
-		printRow(t)
-	}
+	newTableWriter().Print(tickets)
 	return nil
 }
 
@@ -127,6 +124,28 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 		return groups[groupOrder[i]].order < groups[groupOrder[j]].order
 	})
 
+	// Determine which column to suppress based on grouping mode.
+	var defaultSkip []string
+	switch groupBy {
+	case "workflow", "pipeline":
+		defaultSkip = append(defaultSkip, "STAGE")
+	case "type":
+		defaultSkip = append(defaultSkip, "TYPE")
+	case "priority":
+		defaultSkip = append(defaultSkip, "P")
+	}
+
+	// Build table writers and compute widths globally across all tickets.
+	tw := newTableWriter(defaultSkip...)
+	tw.computeWidths(tickets)
+
+	// Blocked group needs STAGE, so it gets its own writer with global widths.
+	var blockedTW *tableWriter
+	if groupBy == "workflow" {
+		blockedTW = newTableWriter()
+		blockedTW.computeWidths(tickets)
+	}
+
 	first := true
 	for _, name := range groupOrder {
 		g := groups[name]
@@ -134,17 +153,19 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 			continue
 		}
 
-		ticket.SortByStagePriorityID(g.tickets)
+		ticket.SortByPriorityID(g.tickets)
 
 		if !first {
 			fmt.Println()
 		}
 		first = false
 
-		fmt.Printf("=== %s ===\n", g.name)
-		printHeader()
-		for _, t := range g.tickets {
-			printRow(t)
+		fmt.Println(colorGroupHeader(fmt.Sprintf("=== %s ===", g.name)))
+
+		if groupBy == "workflow" && g.name == "Blocked" {
+			blockedTW.PrintGroup(g.tickets)
+		} else {
+			tw.PrintGroup(g.tickets)
 		}
 	}
 
@@ -160,22 +181,6 @@ func workflowGroup(store *ticket.FileStore, t *ticket.Ticket) (string, int) {
 		return "Unknown", 100
 	}
 	return string(stage), ticket.StageIndex(t.Type, stage)
-}
-
-func printHeader() {
-	fmt.Printf("%-9s %-3s %-11s %-14s %s\n", "ID", "P", "TYPE", "STATUS", "TITLE")
-}
-
-func printRow(t *ticket.Ticket) {
-	depStr := ""
-	if n := len(t.Deps); n == 1 {
-		depStr = " (1 dep)"
-	} else if n > 1 {
-		depStr = fmt.Sprintf(" (%d deps)", n)
-	}
-
-	fmt.Printf("%-9s P%d  %-11s %-14s %s%s\n",
-		t.ID, t.Priority, t.Type, t.Stage, t.Title, depStr)
 }
 
 func pipelineGroup(t *ticket.Ticket) (string, int) {

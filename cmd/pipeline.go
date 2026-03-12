@@ -36,21 +36,27 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	stages := ticket.AllStages()
 
 	grouped := map[ticket.Stage][]*ticket.Ticket{}
+	var allFiltered []*ticket.Ticket
 	for _, t := range tickets {
 		stage := t.Stage
-		if stage == "" {
+		if stage == "" || stage == ticket.StageDone {
 			continue
 		}
 		if stageFilter != "" && string(stage) != stageFilter {
 			continue
 		}
 		grouped[stage] = append(grouped[stage], t)
+		allFiltered = append(allFiltered, t)
 	}
 
 	if len(grouped) == 0 {
 		printEmptyMessage()
 		return nil
 	}
+
+	// Compute global column widths across all groups.
+	tw := newTableWriter("STAGE")
+	tw.computeWidths(allFiltered)
 
 	first := true
 	for _, stage := range stages {
@@ -66,11 +72,8 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 		first = false
 
-		fmt.Printf("=== %s (%d) ===\n", stage, len(group))
-		printHeader()
-		for _, t := range group {
-			printRow(t)
-		}
+		fmt.Println(colorGroupHeader(fmt.Sprintf("=== %s (%d) ===", stage, len(group))))
+		tw.PrintGroup(group)
 	}
 
 	return nil

@@ -5,8 +5,12 @@
 ### Added
 - MCP: `ticket_create` supports `repo` parameter for cross-repo ticket creation. Walks up from given path to find `.tickets/` directory, matching CLI `--repo` flag behavior.
 - `FindTicketsDir` exported from `pkg/ticket` for shared use by CLI and MCP.
+- CLI: Dynamic column widths in `ls`, `ready`, `blocked`, `pipeline`, and `closed` output — columns align based on actual data
+- CLI: Color output for headers (bold), priority (P0=red, P1=yellow), and group headers (bold cyan). Respects `NO_COLOR` and non-TTY detection.
+- CLI: Redundant column suppression — STAGE hidden when grouped by stage, TYPE hidden when grouped by type, P hidden when grouped by priority
 
 ### Changed
+- CLI: "STATUS" column renamed to "STAGE" in all list output
 - MCP: `ticket_list` returns summary fields only (id, title, stage, review, risk, type, priority, assignee, parent, tags, deps, links, created). Body content (description, design, acceptance_criteria, test_results, notes, reviews) moved to `ticket_show` only. Response shape changed from array to `{tickets, total, offset, limit}` object.
 
 ### Fixed
