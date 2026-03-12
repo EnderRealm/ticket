@@ -96,7 +96,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	t := &ticket.Ticket{
 		ID:          id,
-		Status:      ticket.StatusOpen,
 		Stage:       ticket.StageTriage,
 		Type:        ticket.TicketType(typeStr),
 		Priority:    priority,

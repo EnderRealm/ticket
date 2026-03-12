@@ -103,7 +103,7 @@ func loadTickets(store *ticket.FileStore) tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		ticket.SortByStatusPriorityID(tickets)
+		ticket.SortByStagePriorityID(tickets)
 		return ticketsLoadedMsg(tickets)
 	}
 }

@@ -5,6 +5,13 @@
 ### Added
 - `revert` CLI command and `ticket_revert` MCP tool to move tickets backward in the pipeline (e.g., verify → implement when rework is needed). Requires `--to` and `--reason` flags; appends audit note.
 
+### Removed
+- `status` field: replaced entirely by `stage` pipeline field. Legacy tickets with `status` auto-migrate on read.
+- `tk start`, `tk close`, `tk reopen` commands removed. Use `tk advance` and pipeline stages instead.
+- `--status` filter flag removed from `tk ls`. Use `--stage` instead.
+- `status` group-by option removed from `tk ls --group-by`.
+- `status` field removed from MCP `ticket_create`, `ticket_edit`, and `ticket_show` responses.
+
 ### Fixed
 - TUI: Detail view now word-wraps body text, review log entries, and notes to fit terminal width
 

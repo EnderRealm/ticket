@@ -29,7 +29,7 @@ func MigrateTicket(t *Ticket) bool {
 	}
 
 	t.Stage = stage
-	// Keep Status for backward compat during dual-support period.
+	t.Status = "" // Status is deprecated; clear after migration.
 	return true
 }
 

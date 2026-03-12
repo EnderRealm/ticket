@@ -40,6 +40,11 @@ func Parse(r io.Reader) (*Ticket, error) {
 		t.Conversations = []string{}
 	}
 
+	// Auto-migrate legacy tickets that have status but no stage.
+	if t.Status != "" && t.Stage == "" {
+		MigrateTicket(&t)
+	}
+
 	parseBody(&t, body)
 	return &t, nil
 }
@@ -55,9 +60,6 @@ func Serialize(t *Ticket) ([]byte, error) {
 	// Write stage if present, fall back to status for legacy tickets.
 	if t.Stage != "" {
 		writeField(&buf, "stage", string(t.Stage))
-	}
-	if t.Status != "" {
-		writeField(&buf, "status", string(t.Status))
 	}
 	if t.Review != ReviewNone {
 		writeField(&buf, "review", string(t.Review))

@@ -10,7 +10,7 @@ import (
 
 const sampleTicketYAML = `---
 id: t-abc1
-status: open
+stage: triage
 deps: [t-dep1, t-dep2]
 links: []
 created: 2026-02-22T00:57:39Z
@@ -42,8 +42,8 @@ func TestParse_BasicFields(t *testing.T) {
 	if tk.ID != "t-abc1" {
 		t.Errorf("ID = %q, want %q", tk.ID, "t-abc1")
 	}
-	if tk.Status != StatusOpen {
-		t.Errorf("Status = %q, want %q", tk.Status, StatusOpen)
+	if tk.Stage != StageTriage {
+		t.Errorf("Stage = %q, want %q", tk.Stage, StageTriage)
 	}
 	if tk.Type != TypeTask {
 		t.Errorf("Type = %q, want %q", tk.Type, TypeTask)
@@ -74,7 +74,7 @@ func TestParse_BasicFields(t *testing.T) {
 func TestParse_Notes(t *testing.T) {
 	input := `---
 id: t-note1
-status: open
+stage: triage
 deps: []
 links: []
 created: 2026-01-01T00:00:00Z
@@ -125,7 +125,7 @@ func TestParse_MissingFrontmatter(t *testing.T) {
 func TestSerialize_RoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-abc1",
-		Status:   StatusOpen,
+		Stage:    StageTriage,
 		Type:     TypeTask,
 		Priority: 1,
 		Assignee: "Steve Macbeth",
@@ -155,8 +155,8 @@ func TestSerialize_RoundTrip(t *testing.T) {
 	if parsed.Title != tk.Title {
 		t.Errorf("Title = %q, want %q", parsed.Title, tk.Title)
 	}
-	if parsed.Status != tk.Status {
-		t.Errorf("Status = %q, want %q", parsed.Status, tk.Status)
+	if parsed.Stage != tk.Stage {
+		t.Errorf("Stage = %q, want %q", parsed.Stage, tk.Stage)
 	}
 	if len(parsed.Deps) != 1 || parsed.Deps[0] != "t-dep1" {
 		t.Errorf("Deps = %v, want [t-dep1]", parsed.Deps)
@@ -166,7 +166,7 @@ func TestSerialize_RoundTrip(t *testing.T) {
 func TestSerialize_EmptyArrays(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-test",
-		Status:   StatusOpen,
+		Stage:    StageTriage,
 		Type:     TypeBug,
 		Priority: 2,
 		Deps:     []string{},
@@ -191,7 +191,7 @@ func TestSerialize_EmptyArrays(t *testing.T) {
 func TestSerialize_WithNotes(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-test",
-		Status:   StatusOpen,
+		Stage:    StageTriage,
 		Type:     TypeTask,
 		Priority: 2,
 		Deps:     []string{},
@@ -419,7 +419,7 @@ APPROVED — Proceed to implementation.
 }
 
 func TestParse_BackwardCompat_StatusOnly(t *testing.T) {
-	// Legacy ticket with only status field — should still parse.
+	// Legacy ticket with only status field — should auto-migrate to stage.
 	input := `---
 id: t-legacy
 status: open
@@ -437,11 +437,8 @@ Description.
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if tk.Status != StatusOpen {
-		t.Errorf("Status = %q, want open", tk.Status)
-	}
-	if tk.Stage != "" {
-		t.Errorf("Stage = %q, want empty", tk.Stage)
+	if tk.Stage != StageTriage {
+		t.Errorf("Stage = %q, want triage (auto-migrated from status open)", tk.Stage)
 	}
 }
 
@@ -493,8 +490,7 @@ func TestSerialize_BodyNoBlankLineAccumulation(t *testing.T) {
 	// Start with a leading newline in Body — the form that triggered the bug.
 	tk := &Ticket{
 		ID:       "t-accum",
-		Status:   StatusOpen,
-		Stage:    "implement",
+		Stage:    StageImplement,
 		Type:     TypeBug,
 		Priority: 0,
 		Deps:     []string{},

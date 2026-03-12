@@ -22,7 +22,6 @@ func init() {
 	f.StringP("description", "d", "", "description text")
 	f.String("design", "", "design notes")
 	f.String("acceptance", "", "acceptance criteria")
-	f.StringP("status", "s", "", "status (open, in_progress, needs_testing, closed)")
 	f.String("stage", "", "pipeline stage (triage, spec, design, implement, test, verify, done)")
 	f.String("review", "", "review state (pending, approved, rejected)")
 	f.String("risk", "", "risk level (low, normal, high, critical)")
@@ -51,13 +50,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	if v, _ := cmd.Flags().GetString("title"); cmd.Flags().Changed("title") {
 		t.Title = v
-		changed = true
-	}
-	if v, _ := cmd.Flags().GetString("status"); cmd.Flags().Changed("status") {
-		if err := ticket.ValidateStatus(ticket.Status(v)); err != nil {
-			return err
-		}
-		t.Status = ticket.Status(v)
 		changed = true
 	}
 	if v, _ := cmd.Flags().GetString("stage"); cmd.Flags().Changed("stage") {
@@ -161,20 +153,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Updated %s\n", t.ID)
-
-	// Propagate status if changed to a terminal state.
-	if cmd.Flags().Changed("status") {
-		if t.Status == ticket.StatusClosed || t.Status == ticket.StatusNeedsTesting {
-			changes, err := ticket.PropagateStatus(store, t.ID)
-			if err != nil {
-				return err
-			}
-			for _, c := range changes {
-				fmt.Printf("  -> %s -> %s (all children %s)\n", c.ID, c.NewStatus, propagationReason(c.NewStatus))
-			}
-		}
-	}
-
 	return nil
 }
 

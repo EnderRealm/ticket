@@ -45,7 +45,6 @@ func NewServer(ticketsDir string) *mcp.Server {
 // JSON representation of a ticket for MCP responses.
 type ticketJSON struct {
 	ID            string       `json:"id"`
-	Status        string       `json:"status,omitempty"`
 	Stage         string       `json:"stage,omitempty"`
 	Review        string       `json:"review,omitempty"`
 	Risk          string       `json:"risk,omitempty"`
@@ -86,7 +85,6 @@ type noteJSON struct {
 func toJSON(t *ticket.Ticket) ticketJSON {
 	j := ticketJSON{
 		ID:            t.ID,
-		Status:        string(t.Status),
 		Stage:         string(t.Stage),
 		Review:        string(t.Review),
 		Risk:          string(t.Risk),
@@ -203,7 +201,7 @@ func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 // --- Tool registrations ---
 
 type listArgs struct {
-	Status   string `json:"status,omitempty" jsonschema:"filter by status: open, in_progress, needs_testing, closed"`
+	Stage    string `json:"stage,omitempty" jsonschema:"filter by stage: triage, spec, design, implement, test, verify, done"`
 	Type     string `json:"type,omitempty" jsonschema:"filter by type: bug, feature, task, epic, chore"`
 	Priority *int   `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
 	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee name"`
@@ -223,12 +221,12 @@ func registerList(server *mcp.Server, store *ticket.FileStore) {
 		}
 
 		opts := ticket.DefaultListOptions()
-		if args.Status != "" {
-			opts.Status = ticket.Status(args.Status)
+		if args.Stage != "" {
+			opts.Stage = ticket.Stage(args.Stage)
 		} else {
 			var filtered []*ticket.Ticket
 			for _, t := range tickets {
-				if t.Status != ticket.StatusClosed {
+				if t.Stage != ticket.StageDone {
 					filtered = append(filtered, t)
 				}
 			}
@@ -251,7 +249,7 @@ func registerList(server *mcp.Server, store *ticket.FileStore) {
 		}
 
 		tickets = ticket.Filter(tickets, opts)
-		ticket.SortByStatusPriorityID(tickets)
+		ticket.SortByStagePriorityID(tickets)
 
 		var result []ticketJSON
 		for _, t := range tickets {
@@ -311,7 +309,6 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 		t := &ticket.Ticket{
 			ID:       ticket.GenerateID(args.Title),
 			Title:    args.Title,
-			Status:   ticket.StatusOpen,
 			Stage:    ticket.StageTriage,
 			Priority: 2,
 			Created:  time.Now().UTC(),
@@ -373,7 +370,6 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 type editArgs struct {
 	ID          string `json:"id" jsonschema:"ticket ID"`
 	Title       string `json:"title,omitempty" jsonschema:"new title"`
-	Status      string `json:"status,omitempty" jsonschema:"new status: open, in_progress, needs_testing, closed"`
 	Type        string `json:"type,omitempty" jsonschema:"new type"`
 	Priority    *int   `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
 	Assignee    string `json:"assignee,omitempty" jsonschema:"new assignee"`
@@ -401,9 +397,6 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 
 		if args.Title != "" {
 			t.Title = args.Title
-		}
-		if args.Status != "" {
-			t.Status = ticket.Status(args.Status)
 		}
 		if args.Type != "" {
 			t.Type = ticket.TicketType(args.Type)
@@ -451,12 +444,7 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 			return r, nil, nil
 		}
 
-		// Propagate status changes.
-		if args.Status != "" {
-			ticket.PropagateStatus(store, t.ID)
-		}
-
-		// Re-read to get propagated state.
+		// Re-read to get current state.
 		t, err = store.Get(t.ID)
 		if err != nil {
 			r, _ := errResult("failed to re-read ticket: %v", err)

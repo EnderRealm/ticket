@@ -5,22 +5,6 @@ import (
 	"time"
 )
 
-func TestValidateStatus(t *testing.T) {
-	valid := []Status{StatusOpen, StatusInProgress, StatusNeedsTesting, StatusClosed}
-	for _, s := range valid {
-		if err := ValidateStatus(s); err != nil {
-			t.Errorf("ValidateStatus(%q) = %v, want nil", s, err)
-		}
-	}
-
-	invalid := []Status{"", "pending", "done", "OPEN"}
-	for _, s := range invalid {
-		if err := ValidateStatus(s); err == nil {
-			t.Errorf("ValidateStatus(%q) = nil, want error", s)
-		}
-	}
-}
-
 func TestValidateType(t *testing.T) {
 	valid := []TicketType{TypeTask, TypeFeature, TypeBug, TypeEpic, TypeChore}
 	for _, tt := range valid {
@@ -56,7 +40,7 @@ func TestTicketValidate(t *testing.T) {
 	base := func() *Ticket {
 		return &Ticket{
 			ID:       "t-abc1",
-			Status:   StatusOpen,
+			Stage:    StageTriage,
 			Type:     TypeTask,
 			Priority: 2,
 			Created:  time.Now(),
@@ -77,11 +61,18 @@ func TestTicketValidate(t *testing.T) {
 		t.Error("empty ID should fail validation")
 	}
 
-	// Bad status.
+	// Missing stage.
 	tk = base()
-	tk.Status = "nope"
+	tk.Stage = ""
 	if err := tk.Validate(); err == nil {
-		t.Error("invalid status should fail validation")
+		t.Error("empty stage should fail validation")
+	}
+
+	// Bad stage.
+	tk = base()
+	tk.Stage = "nope"
+	if err := tk.Validate(); err == nil {
+		t.Error("invalid stage should fail validation")
 	}
 
 	// Bad type.

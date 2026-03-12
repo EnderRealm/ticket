@@ -33,7 +33,7 @@ func runTimeline(cmd *cobra.Command, args []string) error {
 	// (matches bash behavior).
 	weeklyCounts := map[string]int{}
 	for _, t := range tickets {
-		if t.Status != ticket.StatusClosed || t.Created.IsZero() {
+		if t.Stage != ticket.StageDone || t.Created.IsZero() {
 			continue
 		}
 		yr, wk := t.Created.ISOWeek()

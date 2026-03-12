@@ -18,9 +18,9 @@ var lsCmd = &cobra.Command{
 
 func init() {
 	addFilterFlags(lsCmd)
-	lsCmd.Flags().String("status", "", "filter by status")
+	lsCmd.Flags().String("stage", "", "filter by stage")
 	lsCmd.Flags().String("parent", "", "filter by parent ticket ID")
-	lsCmd.Flags().String("group-by", "", "group by: workflow | type | status | priority")
+	lsCmd.Flags().String("group-by", "", "group by: workflow | pipeline | type | priority")
 	lsCmd.Flags().Bool("group", false, "shorthand for --group-by=workflow")
 	lsCmd.Flags().Bool("flat", false, "flat list (no grouping)")
 
@@ -42,14 +42,14 @@ func runLs(cmd *cobra.Command, args []string) error {
 		groupBy = "workflow"
 	}
 
-	statusFilter, _ := cmd.Flags().GetString("status")
-	if statusFilter != "" {
-		opts.Status = ticket.Status(statusFilter)
+	stageFilter, _ := cmd.Flags().GetString("stage")
+	if stageFilter != "" {
+		opts.Stage = ticket.Stage(stageFilter)
 	} else {
-		// No explicit status: exclude closed/done.
+		// No explicit stage: exclude done.
 		var filtered []*ticket.Ticket
 		for _, t := range tickets {
-			if t.Status != ticket.StatusClosed && t.Stage != ticket.StageDone {
+			if t.Stage != ticket.StageDone {
 				filtered = append(filtered, t)
 			}
 		}
@@ -57,7 +57,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Default to workflow grouping unless flat or explicit group-by.
-	if groupBy == "" && !flat && statusFilter == "" {
+	if groupBy == "" && !flat && stageFilter == "" {
 		groupBy = "workflow"
 	}
 
@@ -76,7 +76,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 		return printGrouped(store, tickets, groupBy)
 	}
 
-	ticket.SortByStatusPriorityID(tickets)
+	ticket.SortByStagePriorityID(tickets)
 	printHeader()
 	for _, t := range tickets {
 		printRow(t)
@@ -106,14 +106,11 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 		case "type":
 			name = string(t.Type)
 			order = ticket.TypeOrder(t.Type)
-		case "status":
-			name = string(t.Status)
-			order = statusOrderVal(t.Status)
 		case "priority":
 			name = fmt.Sprintf("P%d", t.Priority)
 			order = t.Priority
 		default:
-			return fmt.Errorf("unknown group-by value: %s (use: workflow, pipeline, type, status, priority)", groupBy)
+			return fmt.Errorf("unknown group-by value: %s (use: workflow, pipeline, type, priority)", groupBy)
 		}
 
 		g, ok := groups[name]
@@ -137,7 +134,7 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 			continue
 		}
 
-		ticket.SortByStatusPriorityID(g.tickets)
+		ticket.SortByStagePriorityID(g.tickets)
 
 		if !first {
 			fmt.Println()
@@ -155,36 +152,14 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 }
 
 func workflowGroup(store *ticket.FileStore, t *ticket.Ticket) (string, int) {
-	switch t.Status {
-	case ticket.StatusInProgress:
-		return "In Progress", 1
-	case ticket.StatusOpen:
-		if ticket.IsBlocked(store, t) {
-			return "Blocked", 3
-		}
-		return "Ready", 2
-	case ticket.StatusNeedsTesting:
-		return "Needs Testing", 4
-	case ticket.StatusClosed:
-		return "Closed", 5
-	default:
-		return string(t.Status), 6
+	if ticket.IsBlocked(store, t) {
+		return "Blocked", 99
 	}
-}
-
-func statusOrderVal(s ticket.Status) int {
-	switch s {
-	case ticket.StatusInProgress:
-		return 1
-	case ticket.StatusOpen:
-		return 2
-	case ticket.StatusNeedsTesting:
-		return 3
-	case ticket.StatusClosed:
-		return 4
-	default:
-		return 5
+	stage := t.Stage
+	if stage == "" {
+		return "Unknown", 100
 	}
+	return string(stage), ticket.StageIndex(t.Type, stage)
 }
 
 func printHeader() {
@@ -199,24 +174,14 @@ func printRow(t *ticket.Ticket) {
 		depStr = fmt.Sprintf(" (%d deps)", n)
 	}
 
-	// Show stage if available, fall back to status.
-	state := string(t.Status)
-	if t.Stage != "" {
-		state = string(t.Stage)
-	}
-
 	fmt.Printf("%-9s P%d  %-11s %-14s %s%s\n",
-		t.ID, t.Priority, t.Type, state, t.Title, depStr)
+		t.ID, t.Priority, t.Type, t.Stage, t.Title, depStr)
 }
 
 func pipelineGroup(t *ticket.Ticket) (string, int) {
 	stage := t.Stage
 	if stage == "" {
-		if s, ok := ticket.StatusToStage[t.Status]; ok {
-			stage = s
-		} else {
-			return string(t.Status), 99
-		}
+		return "unknown", 99
 	}
 	return string(stage), ticket.StageIndex(t.Type, stage)
 }

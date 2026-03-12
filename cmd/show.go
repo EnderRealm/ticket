@@ -65,11 +65,11 @@ func showTicket(store *ticket.FileStore, id string) error {
 
 	fmt.Print(output)
 
-	// Blockers: unclosed deps (check both status and stage).
+	// Blockers: deps not at done stage.
 	var blockers []string
 	for _, depID := range t.Deps {
 		dep, ok := byID[depID]
-		if !ok || (dep.Status != ticket.StatusClosed && dep.Stage != ticket.StageDone) {
+		if !ok || dep.Stage != ticket.StageDone {
 			blockers = append(blockers, depID)
 		}
 	}
@@ -77,17 +77,17 @@ func showTicket(store *ticket.FileStore, id string) error {
 		fmt.Print("\n## Blockers\n\n")
 		for _, id := range blockers {
 			if dep, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, dep.Status, dep.Title)
+				fmt.Printf("- %s [%s] %s\n", id, dep.Stage, dep.Title)
 			} else {
 				fmt.Printf("- %s [unknown]\n", id)
 			}
 		}
 	}
 
-	// Blocking: tickets that depend on this one and aren't closed/done.
+	// Blocking: tickets that depend on this one and aren't done.
 	var blocking []string
 	for _, tk := range allTickets {
-		if tk.Status == ticket.StatusClosed || tk.Stage == ticket.StageDone {
+		if tk.Stage == ticket.StageDone {
 			continue
 		}
 		for _, depID := range tk.Deps {
@@ -101,7 +101,7 @@ func showTicket(store *ticket.FileStore, id string) error {
 		fmt.Print("\n## Blocking\n\n")
 		for _, id := range blocking {
 			if tk, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", id, tk.Stage, tk.Title)
 			}
 		}
 	}
@@ -117,7 +117,7 @@ func showTicket(store *ticket.FileStore, id string) error {
 		fmt.Print("\n## Children\n\n")
 		for _, id := range children {
 			if tk, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", id, tk.Stage, tk.Title)
 			}
 		}
 	}
@@ -127,7 +127,7 @@ func showTicket(store *ticket.FileStore, id string) error {
 		fmt.Print("\n## Linked\n\n")
 		for _, id := range t.Links {
 			if tk, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", id, tk.Stage, tk.Title)
 			} else {
 				fmt.Printf("- %s [unknown]\n", id)
 			}

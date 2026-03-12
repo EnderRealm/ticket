@@ -1,7 +1,7 @@
 ---
 id: ticket-add-note-4698
 stage: triage
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-05T10:05:56Z

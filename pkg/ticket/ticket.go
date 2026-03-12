@@ -16,21 +16,6 @@ const (
 	StatusClosed       Status = "closed"
 )
 
-var validStatuses = map[Status]bool{
-	StatusOpen:         true,
-	StatusInProgress:   true,
-	StatusNeedsTesting: true,
-	StatusClosed:       true,
-}
-
-// ValidateStatus returns an error if s is not a recognized status.
-func ValidateStatus(s Status) error {
-	if validStatuses[s] {
-		return nil
-	}
-	return fmt.Errorf("invalid status %q: must be one of open, in_progress, needs_testing, closed", s)
-}
-
 // Stage represents a position in a type-dependent pipeline.
 type Stage string
 
@@ -196,21 +181,11 @@ func (t *Ticket) Validate() error {
 		return fmt.Errorf("ticket ID is required")
 	}
 
-	// Dual mode: tickets must have either status (legacy) or stage (pipeline).
-	hasStatus := t.Status != ""
-	hasStage := t.Stage != ""
-	if !hasStatus && !hasStage {
-		return fmt.Errorf("ticket must have either status or stage")
+	if t.Stage == "" {
+		return fmt.Errorf("ticket must have a stage")
 	}
-	if hasStatus {
-		if err := ValidateStatus(t.Status); err != nil {
-			return err
-		}
-	}
-	if hasStage {
-		if err := ValidateStage(t.Stage); err != nil {
-			return err
-		}
+	if err := ValidateStage(t.Stage); err != nil {
+		return err
 	}
 
 	if t.Review != ReviewNone {

@@ -29,10 +29,10 @@ func runClosed(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Filter to closed only.
+	// Filter to done only.
 	var closed []*ticket.Ticket
 	for _, t := range tickets {
-		if t.Status == ticket.StatusClosed {
+		if t.Stage == ticket.StageDone {
 			closed = append(closed, t)
 		}
 	}

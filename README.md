@@ -145,13 +145,13 @@ Gate checks enforce preconditions at stage transitions (e.g., acceptance criteri
 ### Filter Flags
 
 ```
---status X        open | in_progress | needs_testing | closed
+--stage X         Filter by pipeline stage
 -t, --type X      bug | feature | task | epic | chore
 -P, --priority X  0 (critical) through 4 (backlog)
 -a, --assignee X  Filter by assignee
 -T, --tag X       Filter by tag
 --parent X        Children of ticket X
---group-by X      Group by: workflow | pipeline | type | status | priority
+--group-by X      Group by: workflow | pipeline | type | priority
 --flat            Flat list (no grouping)
 ```
 

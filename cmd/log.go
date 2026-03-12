@@ -27,11 +27,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("%s: %s\n\n", t.ID, t.Title)
 
-	if t.Stage != "" {
-		fmt.Printf("Current stage: %s\n", t.Stage)
-	} else {
-		fmt.Printf("Current status: %s (legacy)\n", t.Status)
-	}
+	fmt.Printf("Current stage: %s\n", t.Stage)
 	if t.Review != "" {
 		fmt.Printf("Review: %s\n", t.Review)
 	}

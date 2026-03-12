@@ -39,12 +39,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	for _, t := range tickets {
 		stage := t.Stage
 		if stage == "" {
-			// Map legacy status for display.
-			if s, ok := ticket.StatusToStage[t.Status]; ok {
-				stage = s
-			} else {
-				continue
-			}
+			continue
 		}
 		if stageFilter != "" && string(stage) != stageFilter {
 			continue

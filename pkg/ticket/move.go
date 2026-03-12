@@ -81,7 +81,6 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		copied := *t
 		newTicket := &copied
 		newTicket.ID = newID
-		newTicket.Status = StatusOpen
 		newTicket.Stage = StageTriage
 		newTicket.Review = ReviewNone
 		newTicket.Tags = copyStrings(t.Tags)
@@ -148,7 +147,6 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			Timestamp: now,
 			Text:      closeNote,
 		})
-		t.Status = StatusClosed
 		t.Stage = StageDone
 		if err := src.Update(t); err != nil {
 			return nil, fmt.Errorf("closing %s in source: %w", t.ID, err)

@@ -124,12 +124,6 @@ func (m *pipelineModel) buildColumns() {
 				}
 			}
 			s := t.Stage
-			if s == "" {
-				// Map legacy tickets.
-				if mapped, ok := ticket.StatusToStage[t.Status]; ok {
-					s = mapped
-				}
-			}
 			if s == stage {
 				col.tickets = append(col.tickets, t)
 			}

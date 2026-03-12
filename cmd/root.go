@@ -58,11 +58,11 @@ Query (JSON):
   Always use single quotes for the filter to avoid bash issues with ! and ".
 
   tk query                                        # all tickets as JSONL
-  tk query '.status == "open"'                    # filter by field
+  tk query '.stage == "triage"'                    # filter by field
   tk query '.type == "bug" and .priority <= 1'    # compound filter
   tk query '.title | test("deploy"; "i")'         # regex search
 
-  JSON fields: id, status, stage, type, priority, title, description,
+  JSON fields: id, stage, type, priority, title, description,
     design, acceptance_criteria, deps[], links[], tags[],
     created, assignee, parent, notes, external_ref, review, risk
   Body sections (## Heading) become snake_case fields.
@@ -76,17 +76,17 @@ Interactive:
   serve                      Start MCP server on stdio
 
 Other:
-  workflow                   Ticket workflow guide (types, statuses, conventions)
+  workflow                   Ticket workflow guide (types, stages, conventions)
   migrate-beads              Import from .beads/issues.jsonl
 
 Filter flags for ls:
-  --status=X         open | in_progress | needs_testing | closed
+  --stage=X          triage | spec | design | implement | test | verify | done
   -t, --type=X       bug | feature | task | epic | chore
   -P, --priority=X   0 (critical) through 4 (backlog)
   -a, --assignee=X   Filter by assignee
   -T, --tag=X        Filter by tag
   --parent=X         Children of ticket X
-  --group-by=X       Group by: workflow | pipeline | type | status | priority
+  --group-by=X       Group by: workflow | pipeline | type | priority
   --flat             Flat list (no grouping)
 
 Filter flags for ready, blocked, closed:
@@ -100,7 +100,6 @@ Create & edit options:
   --acceptance         Acceptance criteria
   -t, --type           bug | feature | task | epic | chore [default: task]
   -p, --priority       0-4, 0=highest [default: 2]
-  -s, --status         open | in_progress | needs_testing | closed (edit only)
   --stage              Pipeline stage (edit only)
   --review             Review state: pending | approved | rejected (edit only)
   --risk               Risk level: low | normal | high | critical (edit only)

@@ -17,7 +17,7 @@ func testStore(t *testing.T) (*FileStore, func()) {
 func sampleTicket(id string) *Ticket {
 	return &Ticket{
 		ID:       id,
-		Status:   StatusOpen,
+		Stage:    StageTriage,
 		Type:     TypeTask,
 		Priority: 2,
 		Deps:     []string{},
@@ -63,10 +63,10 @@ func TestFileStore_CreateDuplicate(t *testing.T) {
 func TestFileStore_CreateInvalid(t *testing.T) {
 	store, _ := testStore(t)
 	tk := sampleTicket("t-bad1")
-	tk.Status = "invalid"
+	tk.Stage = "invalid"
 
 	if err := store.Create(tk); err == nil {
-		t.Error("Create with invalid status should fail")
+		t.Error("Create with invalid stage should fail")
 	}
 }
 
@@ -77,7 +77,7 @@ func TestFileStore_Update(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	tk.Status = StatusInProgress
+	tk.Stage = StageImplement
 	tk.Priority = 0
 	if err := store.Update(tk); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -87,8 +87,8 @@ func TestFileStore_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Status != StatusInProgress {
-		t.Errorf("Status = %q, want %q", got.Status, StatusInProgress)
+	if got.Stage != StageImplement {
+		t.Errorf("Stage = %q, want %q", got.Stage, StageImplement)
 	}
 	if got.Priority != 0 {
 		t.Errorf("Priority = %d, want 0", got.Priority)
@@ -97,13 +97,23 @@ func TestFileStore_Update(t *testing.T) {
 
 func TestFileStore_Update_MigratesLegacy(t *testing.T) {
 	store, _ := testStore(t)
-	// Create a legacy ticket with status only, no stage.
-	tk := sampleTicket("t-mig1")
-	if err := store.Create(tk); err != nil {
-		t.Fatalf("Create: %v", err)
+	// Write a raw legacy ticket file with status only, no stage.
+	// Can't use store.Create because Validate requires stage.
+	raw := "---\nid: t-mig1\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: task\npriority: 2\n---\n# Legacy ticket\n\nDescription.\n"
+	if err := os.WriteFile(filepath.Join(store.Dir, "t-mig1.md"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write raw ticket: %v", err)
 	}
 
-	// Update any field — should auto-migrate to stage-based.
+	// Get triggers auto-migration in Parse.
+	tk, err := store.Get("t-mig1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if tk.Stage != StageTriage {
+		t.Errorf("Stage = %q, want %q (auto-migrated from status open)", tk.Stage, StageTriage)
+	}
+
+	// Update persists the migrated stage.
 	tk.Priority = 1
 	if err := store.Update(tk); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -114,10 +124,7 @@ func TestFileStore_Update_MigratesLegacy(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if got.Stage != StageTriage {
-		t.Errorf("Stage = %q, want %q (auto-migrated from status open)", got.Stage, StageTriage)
-	}
-	if got.Status != StatusOpen {
-		t.Errorf("Status = %q, want %q (preserved for compat)", got.Status, StatusOpen)
+		t.Errorf("Stage = %q, want %q after update", got.Stage, StageTriage)
 	}
 }
 

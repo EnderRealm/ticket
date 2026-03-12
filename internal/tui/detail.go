@@ -304,9 +304,6 @@ func (m detailModel) render() []string {
 	if t.Stage != "" {
 		lines = append(lines, m.field("Stage", string(t.Stage)))
 	}
-	if t.Status != "" {
-		lines = append(lines, m.field("Status", string(t.Status)))
-	}
 	if t.Review != "" {
 		lines = append(lines, m.field("Review", string(t.Review)))
 	}

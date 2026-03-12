@@ -15,7 +15,6 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 
 	original := &Ticket{
 		ID:          "test-ticket-1234",
-		Status:      StatusOpen,
 		Stage:       StageDesign,
 		Review:      ReviewApproved,
 		Risk:        "high",
@@ -85,9 +84,6 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 	}
 
 	// Fields that should be reset.
-	if moved.Status != StatusOpen {
-		t.Errorf("Status: got %q, want %q (should reset to open)", moved.Status, StatusOpen)
-	}
 	if moved.Stage != StageTriage {
 		t.Errorf("Stage: got %q, want %q (should reset to triage)", moved.Stage, StageTriage)
 	}
@@ -106,13 +102,10 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 		t.Error("missing provenance note on moved ticket")
 	}
 
-	// Original should be closed.
+	// Original should be done.
 	orig, err := src.Get(original.ID)
 	if err != nil {
 		t.Fatalf("get original: %v", err)
-	}
-	if orig.Status != StatusClosed {
-		t.Errorf("original status: got %q, want %q", orig.Status, StatusClosed)
 	}
 	if orig.Stage != StageDone {
 		t.Errorf("original stage: got %q, want %q", orig.Stage, StageDone)
@@ -128,7 +121,7 @@ func TestMoveTicketCreatesFileInBothDirs(t *testing.T) {
 
 	original := &Ticket{
 		ID:       "iso-test-abcd",
-		Status:   StatusOpen,
+		Stage:    StageTriage,
 		Type:     TypeTask,
 		Priority: 2,
 		Created:  time.Now().UTC(),

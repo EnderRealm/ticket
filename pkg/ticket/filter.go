@@ -7,7 +7,7 @@ import (
 
 // ListOptions carries filter parameters for listing tickets.
 type ListOptions struct {
-	Status   Status
+	Stage    Stage
 	Type     TicketType
 	Priority int // -1 means no filter
 	Assignee string
@@ -24,7 +24,7 @@ func DefaultListOptions() ListOptions {
 func Filter(tickets []*Ticket, opts ListOptions) []*Ticket {
 	var result []*Ticket
 	for _, t := range tickets {
-		if opts.Status != "" && t.Status != opts.Status {
+		if opts.Stage != "" && t.Stage != opts.Stage {
 			continue
 		}
 		if opts.Type != "" && t.Type != opts.Type {
@@ -47,11 +47,12 @@ func Filter(tickets []*Ticket, opts ListOptions) []*Ticket {
 	return result
 }
 
-// SortByStatusPriorityID sorts tickets by status order, then priority (asc),
+// SortByStagePriorityID sorts tickets by stage order, then priority (asc),
 // then ID. This is the default sort for ls/ready/blocked.
-func SortByStatusPriorityID(tickets []*Ticket) {
+func SortByStagePriorityID(tickets []*Ticket) {
 	sort.SliceStable(tickets, func(i, j int) bool {
-		si, sj := statusOrder(tickets[i].Status), statusOrder(tickets[j].Status)
+		si := StageIndex(tickets[i].Type, tickets[i].Stage)
+		sj := StageIndex(tickets[j].Type, tickets[j].Stage)
 		if si != sj {
 			return si < sj
 		}
@@ -70,22 +71,6 @@ func SortByPriorityID(tickets []*Ticket) {
 		}
 		return tickets[i].ID < tickets[j].ID
 	})
-}
-
-// statusOrder returns the sort rank for a status, matching the bash impl.
-func statusOrder(s Status) int {
-	switch s {
-	case StatusInProgress:
-		return 1
-	case StatusOpen:
-		return 2
-	case StatusNeedsTesting:
-		return 3
-	case StatusClosed:
-		return 4
-	default:
-		return 5
-	}
 }
 
 // TypeOrder returns the sort rank for a ticket type, matching the bash impl.

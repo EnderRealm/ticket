@@ -88,11 +88,11 @@ func runDepTree(cmd *cobra.Command, args []string) error {
 
 	for _, n := range nodes {
 		indent := strings.Repeat("  ", n.Depth)
-		status := string(n.Status)
-		if status == "" {
-			status = "?"
+		stage := string(n.Stage)
+		if stage == "" {
+			stage = "?"
 		}
-		fmt.Printf("%s%s [%s] %s\n", indent, n.ID, status, n.Title)
+		fmt.Printf("%s%s [%s] %s\n", indent, n.ID, stage, n.Title)
 	}
 	return nil
 }
@@ -122,7 +122,7 @@ func runDepCycle(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Cycle %d: %s\n", i+1, c)
 		for _, id := range c.IDs {
 			if t, ok := byID[id]; ok {
-				fmt.Printf("  %-8s [%s] %s\n", id, t.Status, t.Title)
+				fmt.Printf("  %-8s [%s] %s\n", id, t.Stage, t.Title)
 			}
 		}
 	}

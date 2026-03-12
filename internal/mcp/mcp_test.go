@@ -63,9 +63,6 @@ func TestCreateTicket(t *testing.T) {
 	if ticket["stage"] != "triage" {
 		t.Errorf("stage = %q, want %q", ticket["stage"], "triage")
 	}
-	if ticket["status"] != "open" {
-		t.Errorf("status = %q, want %q", ticket["status"], "open")
-	}
 	created, _ := ticket["created"].(string)
 	if created == "" || created == "0001-01-01T00:00:00Z" {
 		t.Errorf("created = %q, want non-zero timestamp", created)
