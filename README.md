@@ -97,6 +97,7 @@ Creating & Editing:
 Pipeline:
   advance <id> [--to stage]  Advance to next pipeline stage
   skip <id> --to <stage>     Skip ahead with --reason justification
+  revert <id> --to <stage>   Revert to earlier stage with --reason
   review <id> --approve      Record review verdict (--approve or --reject)
   log <id>                   Show stage/review history
   pipeline [--stage X]       Show tickets grouped by pipeline stage

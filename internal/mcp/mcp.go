@@ -35,6 +35,7 @@ func NewServer(ticketsDir string) *mcp.Server {
 	registerAdvance(server, store)
 	registerReview(server, store)
 	registerSkip(server, store)
+	registerRevert(server, store)
 	registerMigrate(server, store)
 	registerInbox(server, store)
 
@@ -671,6 +672,7 @@ func registerWorkflow(server *mcp.Server) {
 		guide += "- ticket_advance: move ticket to next stage (enforces gates)\n"
 		guide += "- ticket_review: record approve/reject verdict\n"
 		guide += "- ticket_skip: jump to a stage with reason\n"
+		guide += "- ticket_revert: revert to an earlier stage with reason\n"
 		guide += "- ticket_inbox: show items needing human attention\n"
 		guide += "- ticket_pipelines: full pipeline config (stages, variants, gates)\n\n"
 		guide += "Conventions:\n"
@@ -904,6 +906,38 @@ func registerSkip(server *mcp.Server, store *ticket.FileStore) {
 
 		t, _ := store.Get(args.ID)
 		r, jsonErr := jsonResult(toJSON(t))
+		return r, nil, jsonErr
+	})
+}
+
+type revertArgs struct {
+	ID     string `json:"id" jsonschema:"ticket ID"`
+	To     string `json:"to" jsonschema:"target stage to revert to (must be earlier than current)"`
+	Reason string `json:"reason" jsonschema:"reason for reverting"`
+}
+
+func registerRevert(server *mcp.Server, store *ticket.FileStore) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ticket_revert",
+		Description: "Revert a ticket to an earlier pipeline stage with an audit trail. Use when a later stage reveals issues requiring rework.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args revertArgs) (*mcp.CallToolResult, any, error) {
+		result, err := ticket.Revert(store, args.ID, ticket.Stage(args.To), args.Reason)
+		if err != nil {
+			r, _ := errResult("revert failed: %v", err)
+			return r, nil, nil
+		}
+
+		t, _ := store.Get(args.ID)
+		resp := struct {
+			Ticket ticketJSON `json:"ticket"`
+			From   string     `json:"from"`
+			To     string     `json:"to"`
+		}{
+			Ticket: toJSON(t),
+			From:   string(result.From),
+			To:     string(result.To),
+		}
+		r, jsonErr := jsonResult(resp)
 		return r, nil, jsonErr
 	})
 }

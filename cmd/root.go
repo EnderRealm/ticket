@@ -34,6 +34,7 @@ Creating & Editing:
 Pipeline:
   advance <id> [--to <stage>] [--force]  Advance ticket to next pipeline stage
   skip <id> --to <stage> --reason '...'  Skip to a later stage with justification
+  revert <id> --to <stage> --reason '..' Revert to an earlier stage with justification
   review <id> --approve|--reject         Record review verdict on current stage
   log <id>                               Show stage transition and review history
   pipeline [--stage <stage>]             Show tickets grouped by pipeline stage

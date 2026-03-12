@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- `revert` CLI command and `ticket_revert` MCP tool to move tickets backward in the pipeline (e.g., verify → implement when rework is needed). Requires `--to` and `--reason` flags; appends audit note.
+
 ### Fixed
 - TUI: Detail view now word-wraps body text, review log entries, and notes to fit terminal width
 

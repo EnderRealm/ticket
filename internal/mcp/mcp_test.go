@@ -511,3 +511,185 @@ func TestRiskField(t *testing.T) {
 		t.Errorf("edit risk = %q, want %q", edited["risk"], "critical")
 	}
 }
+
+// createAndAdvanceTo is a test helper that creates a feature ticket and advances it
+// to the given stage (using skip to bypass gates). Returns the ticket ID.
+func createAndAdvanceTo(t *testing.T, session *mcp.ClientSession, stage string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":       "Revert test ticket",
+			"type":        "feature",
+			"description": "A feature for testing revert",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	if stage != "triage" {
+		_, err = session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "ticket_skip",
+			Arguments: map[string]any{
+				"id":     id,
+				"to":     stage,
+				"reason": "test setup",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return id
+}
+
+func TestRevertSuccess(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createAndAdvanceTo(t, session, "implement")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_revert",
+		Arguments: map[string]any{
+			"id":     id,
+			"to":     "spec",
+			"reason": "acceptance criteria incomplete",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("revert returned error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+
+	if resp["from"] != "implement" {
+		t.Errorf("from = %q, want %q", resp["from"], "implement")
+	}
+	if resp["to"] != "spec" {
+		t.Errorf("to = %q, want %q", resp["to"], "spec")
+	}
+
+	ticket := resp["ticket"].(map[string]any)
+	if ticket["stage"] != "spec" {
+		t.Errorf("ticket stage = %q, want %q", ticket["stage"], "spec")
+	}
+	review, _ := ticket["review"].(string)
+	if review != "" {
+		t.Errorf("review should be reset, got %q", review)
+	}
+
+	// Verify audit note was appended.
+	notes, _ := ticket["notes"].([]any)
+	if len(notes) == 0 {
+		t.Fatal("expected at least one audit note")
+	}
+	lastNote := notes[len(notes)-1].(map[string]any)
+	noteText := lastNote["text"].(string)
+	if !strings.Contains(noteText, "Reverted from implement to spec") {
+		t.Errorf("audit note missing revert info: %q", noteText)
+	}
+	if !strings.Contains(noteText, "acceptance criteria incomplete") {
+		t.Errorf("audit note missing reason: %q", noteText)
+	}
+}
+
+func TestRevertForwardFails(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createAndAdvanceTo(t, session, "spec")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_revert",
+		Arguments: map[string]any{
+			"id":     id,
+			"to":     "implement",
+			"reason": "should fail",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error when reverting forward")
+	}
+}
+
+func TestRevertSameStageFails(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createAndAdvanceTo(t, session, "implement")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_revert",
+		Arguments: map[string]any{
+			"id":     id,
+			"to":     "implement",
+			"reason": "should fail",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error when reverting to same stage")
+	}
+}
+
+func TestRevertWithoutReasonFails(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createAndAdvanceTo(t, session, "implement")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_revert",
+		Arguments: map[string]any{
+			"id":     id,
+			"to":     "triage",
+			"reason": "",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error when reason is empty")
+	}
+}
+
+func TestRevertToInvalidStageFails(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createAndAdvanceTo(t, session, "implement")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_revert",
+		Arguments: map[string]any{
+			"id":     id,
+			"to":     "nonexistent",
+			"reason": "should fail",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error for invalid stage")
+	}
+}

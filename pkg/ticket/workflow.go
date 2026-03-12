@@ -213,6 +213,62 @@ func Skip(store *FileStore, id string, to Stage, reason string) (*AdvanceResult,
 	})
 }
 
+// RevertResult describes what happened during a stage revert.
+type RevertResult struct {
+	From Stage
+	To   Stage
+}
+
+// Revert moves a ticket backward to an earlier pipeline stage.
+// A reason is always required. The ticket's review state is reset and
+// a timestamped note is appended for audit trail.
+func Revert(store *FileStore, id string, to Stage, reason string) (*RevertResult, error) {
+	if reason == "" {
+		return nil, fmt.Errorf("reason is required when reverting stages")
+	}
+
+	t, err := store.Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("ticket %s: %w", id, err)
+	}
+
+	if t.Stage == "" {
+		return nil, fmt.Errorf("ticket %s has no stage — migrate it first", id)
+	}
+
+	pipeline, err := PipelineFor(t.Type, t.Risk)
+	if err != nil {
+		return nil, err
+	}
+
+	fromIdx := StageIndexInPipeline(pipeline, t.Stage)
+	toIdx := StageIndexInPipeline(pipeline, to)
+	if fromIdx < 0 {
+		return nil, fmt.Errorf("current stage %q is not part of the %s pipeline", t.Stage, t.Type)
+	}
+	if toIdx < 0 {
+		return nil, fmt.Errorf("stage %q is not part of the %s pipeline", to, t.Type)
+	}
+	if toIdx >= fromIdx {
+		return nil, fmt.Errorf("revert target %s is not before current stage %s", to, t.Stage)
+	}
+
+	from := t.Stage
+	t.Stage = to
+	t.Review = ReviewNone
+
+	t.Notes = append(t.Notes, Note{
+		Timestamp: time.Now().UTC(),
+		Text:      fmt.Sprintf("Reverted from %s to %s: %s", from, to, reason),
+	})
+
+	if err := store.Update(t); err != nil {
+		return nil, err
+	}
+
+	return &RevertResult{From: from, To: to}, nil
+}
+
 // SetReview records a review verdict on a ticket and appends a ReviewRecord.
 func SetReview(store *FileStore, id string, reviewer string, verdict ReviewState, comment string) error {
 	t, err := store.Get(id)
