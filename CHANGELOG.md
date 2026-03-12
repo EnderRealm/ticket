@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.1.0] - 2026-03-12
 
 ### Added
 - MCP: `ticket_create` supports `repo` parameter for cross-repo ticket creation. Walks up from given path to find `.tickets/` directory, matching CLI `--repo` flag behavior.
