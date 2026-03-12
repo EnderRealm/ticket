@@ -1,6 +1,6 @@
 ---
 id: externalize-pipeline-configuration-50a4
-stage: triage
+stage: done
 status: closed
 deps: []
 links: []
@@ -11,6 +11,7 @@ assignee: Steve Macbeth
 tags: [pipeline, architecture]
 ---
 # Externalize pipeline configuration to JSON and add risk-based variants
+
 
 Pipeline stage sequences are hardcoded in pkg/ticket/pipeline.go as a Go map. Stage gate checks are hardcoded in gates.go. This makes pipeline changes require code changes and recompilation, and prevents risk-level-based pipeline variants.
 

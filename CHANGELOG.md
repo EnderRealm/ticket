@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- TUI: Detail view now word-wraps body text, review log entries, and notes to fit terminal width
+
 ## [2.7.0] - 2026-03-10
 
 ### Changed

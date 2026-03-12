@@ -340,13 +340,19 @@ func (m detailModel) render() []string {
 
 	// Body sections.
 	pad := "  "
+	avail := m.width - len(pad)
+	if avail < 20 {
+		avail = 20
+	}
 	body := t.Body
 	if body != "" {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "## ") {
 				lines = append(lines, pad+sectionStyle.Render(line))
 			} else {
-				lines = append(lines, pad+line)
+				for _, wl := range wrapText(line, avail) {
+					lines = append(lines, pad+wl.text)
+				}
 			}
 		}
 	}
@@ -362,7 +368,9 @@ func (m detailModel) render() []string {
 			if r.Comment != "" {
 				entry += " — " + r.Comment
 			}
-			lines = append(lines, pad+entry)
+			for _, wl := range wrapText(entry, avail) {
+				lines = append(lines, pad+wl.text)
+			}
 		}
 		lines = append(lines, "")
 	}
@@ -373,8 +381,8 @@ func (m detailModel) render() []string {
 		lines = append(lines, "")
 		for _, n := range t.Notes {
 			lines = append(lines, pad+timestampStyle.Render(n.Timestamp.Format("2006-01-02 15:04:05")))
-			for _, nl := range strings.Split(n.Text, "\n") {
-				lines = append(lines, pad+nl)
+			for _, wl := range wrapText(n.Text, avail) {
+				lines = append(lines, pad+wl.text)
 			}
 			lines = append(lines, "")
 		}
