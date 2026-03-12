@@ -1,7 +1,6 @@
 ---
 id: tk-ui-add-1fda
-stage: triage
-status: open
+stage: done
 deps: []
 links: []
 created: 2026-03-01T17:43:13Z
@@ -9,6 +8,7 @@ type: feature
 priority: 3
 ---
 # 'tk ui' add (m)ove to move a ticket to a new repo
+
 
 
 
