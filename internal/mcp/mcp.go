@@ -251,7 +251,7 @@ func registerList(server *mcp.Server, store *ticket.FileStore) {
 		tickets = ticket.Filter(tickets, opts)
 		ticket.SortByStagePriorityID(tickets)
 
-		var result []ticketJSON
+		result := []ticketJSON{}
 		for _, t := range tickets {
 			result = append(result, toJSON(t))
 		}
@@ -600,7 +600,7 @@ func registerReady(server *mcp.Server, store *ticket.FileStore) {
 		ready = ticket.Filter(ready, opts)
 		ticket.SortByPriorityID(ready)
 
-		var result []ticketJSON
+		result := []ticketJSON{}
 		for _, t := range ready {
 			result = append(result, toJSON(t))
 		}
@@ -631,7 +631,7 @@ func registerBlocked(server *mcp.Server, store *ticket.FileStore) {
 		blocked = ticket.Filter(blocked, opts)
 		ticket.SortByPriorityID(blocked)
 
-		var result []ticketJSON
+		result := []ticketJSON{}
 		for _, t := range blocked {
 			result = append(result, toJSON(t))
 		}

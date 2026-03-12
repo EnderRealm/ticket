@@ -547,6 +547,28 @@ func createAndAdvanceTo(t *testing.T, session *mcp.ClientSession, stage string) 
 	return id
 }
 
+func TestListEmptyReturnsArray(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// List with a filter that matches nothing.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"assignee": "nonexistent-person"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_list error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	if text != "[]" {
+		t.Errorf("empty ticket_list returned %q, want %q", text, "[]")
+	}
+}
+
 func TestRevertSuccess(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

@@ -13,6 +13,7 @@
 - `status` field removed from MCP `ticket_create`, `ticket_edit`, and `ticket_show` responses.
 
 ### Fixed
+- MCP: `ticket_list`, `ticket_ready`, and `ticket_blocked` return `[]` instead of `null` when no tickets match filters
 - TUI: Detail view now word-wraps body text, review log entries, and notes to fit terminal width
 
 ## [2.7.0] - 2026-03-10

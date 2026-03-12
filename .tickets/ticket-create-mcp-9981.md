@@ -1,6 +1,6 @@
 ---
 id: ticket-create-mcp-9981
-stage: triage
+stage: done
 status: closed
 deps: []
 links: []
@@ -8,6 +8,7 @@ created: 2026-03-05T10:05:56Z
 type: bug
 priority: 2
 assignee: Steve Macbeth
+skipped: [implement, test, verify]
 ---
 # ticket_create MCP tool doesn't map title parameter
 
