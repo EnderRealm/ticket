@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -564,8 +565,224 @@ func TestListEmptyReturnsArray(t *testing.T) {
 	}
 
 	text := result.Content[0].(*mcp.TextContent).Text
-	if text != "[]" {
-		t.Errorf("empty ticket_list returned %q, want %q", text, "[]")
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(text), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	tickets, ok := resp["tickets"].([]any)
+	if !ok {
+		t.Fatalf("tickets field is not an array: %T", resp["tickets"])
+	}
+	if len(tickets) != 0 {
+		t.Errorf("expected 0 tickets, got %d", len(tickets))
+	}
+	if resp["total"] != float64(0) {
+		t.Errorf("total = %v, want 0", resp["total"])
+	}
+}
+
+func TestListReturnsSummaryFields(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket with body content.
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":       "Summary field test",
+			"type":        "feature",
+			"description": "A long description that should not appear in list",
+			"design":      "Design content excluded from list",
+			"acceptance":  "AC excluded from list",
+		},
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 ticket, got %d", len(tickets))
+	}
+	tk := tickets[0].(map[string]any)
+
+	// Summary fields present.
+	if tk["id"] == nil || tk["id"] == "" {
+		t.Error("missing id")
+	}
+	if tk["title"] != "Summary field test" {
+		t.Errorf("title = %q, want %q", tk["title"], "Summary field test")
+	}
+	if tk["type"] != "feature" {
+		t.Errorf("type = %q, want %q", tk["type"], "feature")
+	}
+	if tk["stage"] == nil {
+		t.Error("missing stage")
+	}
+
+	// Body fields absent.
+	for _, field := range []string{"description", "design", "acceptance_criteria", "test_results", "notes", "reviews"} {
+		if tk[field] != nil {
+			t.Errorf("list response should not include %q, got %v", field, tk[field])
+		}
+	}
+}
+
+func TestListPagination(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create 5 tickets.
+	for i := 0; i < 5; i++ {
+		_, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "ticket_create",
+			Arguments: map[string]any{
+				"title": fmt.Sprintf("Pagination ticket %d", i),
+				"type":  "task",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// List with limit=2.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"limit": 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 2 {
+		t.Errorf("expected 2 tickets, got %d", len(tickets))
+	}
+	if resp["total"] != float64(5) {
+		t.Errorf("total = %v, want 5", resp["total"])
+	}
+	if resp["limit"] != float64(2) {
+		t.Errorf("limit = %v, want 2", resp["limit"])
+	}
+
+	// List with offset=3, limit=10.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"offset": 3, "limit": 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets = resp["tickets"].([]any)
+	if len(tickets) != 2 {
+		t.Errorf("expected 2 tickets (5 total, offset 3), got %d", len(tickets))
+	}
+	if resp["offset"] != float64(3) {
+		t.Errorf("offset = %v, want 3", resp["offset"])
+	}
+
+	// List with limit=0 (unlimited).
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"limit": 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets = resp["tickets"].([]any)
+	if len(tickets) != 5 {
+		t.Errorf("limit=0 should return all, got %d", len(tickets))
+	}
+}
+
+func TestListDefaultLimitUnderCap(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create 3 tickets (under default limit).
+	for i := range 3 {
+		session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "ticket_create",
+			Arguments: map[string]any{
+				"title": fmt.Sprintf("Default limit ticket %d", i),
+				"type":  "task",
+			},
+		})
+	}
+
+	// List without explicit limit — should use default (50), return all 3.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 3 {
+		t.Errorf("expected 3 tickets, got %d", len(tickets))
+	}
+	if resp["limit"] != float64(50) {
+		t.Errorf("default limit = %v, want 50", resp["limit"])
+	}
+}
+
+func TestListDefaultLimitCapsResults(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create 55 tickets to exceed the default limit of 50.
+	for i := range 55 {
+		session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "ticket_create",
+			Arguments: map[string]any{
+				"title": fmt.Sprintf("Cap test ticket %d", i),
+				"type":  "task",
+			},
+		})
+	}
+
+	// List without explicit limit — should cap at 50.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 50 {
+		t.Errorf("expected 50 tickets (capped), got %d", len(tickets))
+	}
+	if resp["total"] != float64(55) {
+		t.Errorf("total = %v, want 55", resp["total"])
 	}
 }
 

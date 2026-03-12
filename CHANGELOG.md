@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- MCP: `ticket_list` returns summary fields only (id, title, stage, review, risk, type, priority, assignee, parent, tags, deps, links, created). Body content (description, design, acceptance_criteria, test_results, notes, reviews) moved to `ticket_show` only. Response shape changed from array to `{tickets, total, offset, limit}` object.
+
+### Fixed
+- MCP: `ticket_list` now paginates results (default limit 50) to prevent responses exceeding MCP client token limits. New `offset` and `limit` parameters control pagination.
+
 ## [3.0.0] - 2026-03-11
 
 ### Added

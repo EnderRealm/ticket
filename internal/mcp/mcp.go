@@ -42,7 +42,42 @@ func NewServer(ticketsDir string) *mcp.Server {
 	return server
 }
 
-// JSON representation of a ticket for MCP responses.
+// Summary representation for list responses — metadata only, no body content.
+type ticketSummaryJSON struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Stage    string   `json:"stage,omitempty"`
+	Review   string   `json:"review,omitempty"`
+	Risk     string   `json:"risk,omitempty"`
+	Type     string   `json:"type"`
+	Priority int      `json:"priority"`
+	Assignee string   `json:"assignee,omitempty"`
+	Parent   string   `json:"parent,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Deps     []string `json:"deps"`
+	Links    []string `json:"links"`
+	Created  string   `json:"created"`
+}
+
+func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
+	return ticketSummaryJSON{
+		ID:       t.ID,
+		Title:    t.Title,
+		Stage:    string(t.Stage),
+		Review:   string(t.Review),
+		Risk:     string(t.Risk),
+		Type:     string(t.Type),
+		Priority: t.Priority,
+		Assignee: t.Assignee,
+		Parent:   t.Parent,
+		Tags:     t.Tags,
+		Deps:     nonNil(t.Deps),
+		Links:    nonNil(t.Links),
+		Created:  t.Created.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+}
+
+// Full JSON representation of a ticket for MCP responses.
 type ticketJSON struct {
 	ID            string       `json:"id"`
 	Stage         string       `json:"stage,omitempty"`
@@ -207,12 +242,23 @@ type listArgs struct {
 	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee name"`
 	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
 	Parent   string `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
+	Offset   *int   `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
+	Limit    *int   `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
+}
+
+const defaultListLimit = 50
+
+type listResultJSON struct {
+	Tickets []ticketSummaryJSON `json:"tickets"`
+	Total   int                 `json:"total"`
+	Offset  int                 `json:"offset"`
+	Limit   int                 `json:"limit"`
 }
 
 func registerList(server *mcp.Server, store *ticket.FileStore) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters. Returns non-closed tickets by default.",
+		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
 		tickets, err := store.List()
 		if err != nil {
@@ -251,12 +297,37 @@ func registerList(server *mcp.Server, store *ticket.FileStore) {
 		tickets = ticket.Filter(tickets, opts)
 		ticket.SortByStagePriorityID(tickets)
 
-		result := []ticketJSON{}
-		for _, t := range tickets {
-			result = append(result, toJSON(t))
+		total := len(tickets)
+
+		// Apply pagination.
+		offset := 0
+		if args.Offset != nil && *args.Offset > 0 {
+			offset = *args.Offset
+		}
+		limit := defaultListLimit
+		if args.Limit != nil {
+			if *args.Limit == 0 {
+				limit = total // 0 = unlimited
+			} else if *args.Limit > 0 {
+				limit = *args.Limit
+			}
 		}
 
-		r, err := jsonResult(result)
+		offset = min(offset, total)
+		end := min(offset+limit, total)
+		tickets = tickets[offset:end]
+
+		items := []ticketSummaryJSON{}
+		for _, t := range tickets {
+			items = append(items, toSummaryJSON(t))
+		}
+
+		r, err := jsonResult(listResultJSON{
+			Tickets: items,
+			Total:   total,
+			Offset:  offset,
+			Limit:   limit,
+		})
 		return r, nil, err
 	})
 }
