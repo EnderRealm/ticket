@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.0.0] - 2026-03-11
 
 ### Added
 - `revert` CLI command and `ticket_revert` MCP tool to move tickets backward in the pipeline (e.g., verify → implement when rework is needed). Requires `--to` and `--reason` flags; appends audit note.
