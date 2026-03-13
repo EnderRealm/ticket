@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.2.0] - 2026-03-13
 
 ### Added
 - Generic extra fields: arbitrary key/value metadata on tickets via `Extra map[string]string` in YAML frontmatter
