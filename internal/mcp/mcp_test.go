@@ -1046,3 +1046,204 @@ func TestRevertToInvalidStageFails(t *testing.T) {
 		t.Error("expected error for invalid stage")
 	}
 }
+
+func TestCreateExtraFields(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Extra fields create",
+			"type":  "task",
+			"set":   map[string]any{"env": "staging", "team": "backend"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("create error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var tk map[string]any
+	json.Unmarshal([]byte(text), &tk)
+
+	if tk["env"] != "staging" {
+		t.Errorf("env = %q, want staging", tk["env"])
+	}
+	if tk["team"] != "backend" {
+		t.Errorf("team = %q, want backend", tk["team"])
+	}
+}
+
+func TestEditExtraFields(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket.
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Extra edit test", "type": "task"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	// Set extra fields.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":  id,
+			"set": map[string]any{"env": "prod", "region": "us-east"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	// Show and verify.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+
+	if shown["env"] != "prod" {
+		t.Errorf("env = %q, want prod", shown["env"])
+	}
+	if shown["region"] != "us-east" {
+		t.Errorf("region = %q, want us-east", shown["region"])
+	}
+
+	// Update one, remove another.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":  id,
+			"set": map[string]any{"env": "staging", "region": ""},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	// Show and verify update/remove.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown2 map[string]any
+	json.Unmarshal([]byte(text), &shown2)
+
+	if shown2["env"] != "staging" {
+		t.Errorf("env = %q, want staging", shown2["env"])
+	}
+	if _, exists := shown2["region"]; exists {
+		t.Errorf("region should be removed, got %v", shown2["region"])
+	}
+}
+
+func TestShowExtraFields(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Show extra test",
+			"type":  "task",
+			"set":   map[string]any{"env": "dev"},
+		},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+
+	if shown["env"] != "dev" {
+		t.Errorf("env = %q, want dev", shown["env"])
+	}
+}
+
+func TestListExtraFields(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "List extra test",
+			"type":  "task",
+			"set":   map[string]any{"env": "prod"},
+		},
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 ticket, got %d", len(tickets))
+	}
+	tk := tickets[0].(map[string]any)
+
+	if tk["env"] != "prod" {
+		t.Errorf("env = %q, want prod", tk["env"])
+	}
+}
+
+func TestEditExtraReservedKey(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Reserved key test", "type": "task"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":  id,
+			"set": map[string]any{"stage": "done"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error for reserved key 'stage'")
+	}
+}

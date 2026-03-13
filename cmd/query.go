@@ -33,8 +33,29 @@ type ticketJSON struct {
 	Assignee    string   `json:"assignee,omitempty"`
 	ExternalRef string   `json:"external-ref,omitempty"`
 	Parent      string   `json:"parent,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	Title       string   `json:"title"`
+	Tags  []string          `json:"tags,omitempty"`
+	Title string            `json:"title"`
+	Extra map[string]string `json:"-"`
+}
+
+func (j ticketJSON) MarshalJSON() ([]byte, error) {
+	type alias ticketJSON
+	data, err := json.Marshal(alias(j))
+	if err != nil {
+		return nil, err
+	}
+	if len(j.Extra) == 0 {
+		return data, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range j.Extra {
+		b, _ := json.Marshal(v)
+		m[k] = b
+	}
+	return json.Marshal(m)
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
@@ -59,6 +80,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 			Parent:      t.Parent,
 			Tags:        t.Tags,
 			Title:       t.Title,
+			Extra:       t.Extra,
 		}
 		data, err := json.Marshal(j)
 		if err != nil {

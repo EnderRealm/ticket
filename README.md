@@ -155,6 +155,18 @@ Gate checks enforce preconditions at stage transitions (e.g., acceptance criteri
 --flat            Flat list (no grouping)
 ```
 
+### Extra Fields
+
+Tickets support arbitrary custom key/value metadata via `--set`:
+
+```bash
+tk create "Deploy config" --set env=production --set region=us-east
+tk edit <id> --set env=staging        # update
+tk edit <id> --set env=               # remove
+```
+
+Extra fields appear in `tk show` output, `tk query` JSONL (under `extra`), and MCP responses.
+
 Partial ID matching: `tk show 5c4` matches `nw-5c46`.
 
 ## Releasing

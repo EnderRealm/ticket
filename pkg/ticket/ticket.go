@@ -168,6 +168,9 @@ type Ticket struct {
 	Skipped     []Stage    `yaml:"skipped,omitempty,flow"`
 	Conversations []string `yaml:"conversations,omitempty,flow"`
 
+	// Custom key/value pairs, handled manually in format.go.
+	Extra map[string]string `yaml:"-"`
+
 	// Parsed from markdown, not stored in frontmatter.
 	Title   string         `yaml:"-"`
 	Body    string         `yaml:"-"`
@@ -228,4 +231,56 @@ func ValidateStageForType(t *Ticket) error {
 // current stage to the given target stage, without actually advancing.
 func ValidateGates(t *Ticket, to Stage) []error {
 	return CheckGates(t, to)
+}
+
+// reservedKeys lists YAML frontmatter keys and JSON output keys used by known Ticket fields.
+// Extra fields are flattened to the top level in JSON, so both namespaces must be reserved.
+var reservedKeys = map[string]bool{
+	// YAML frontmatter fields.
+	"id": true, "status": true, "stage": true, "review": true, "risk": true,
+	"deps": true, "links": true, "created": true, "type": true, "priority": true,
+	"assignee": true, "external-ref": true, "branch": true, "parent": true,
+	"tags": true, "skipped": true, "conversations": true,
+	// JSON output fields derived from body sections and markdown heading.
+	"title": true, "description": true, "design": true, "notes": true, "reviews": true,
+	"acceptance_criteria": true, "test_results": true, "external_ref": true,
+}
+
+// IsReservedKey reports whether key is a known frontmatter field name.
+func IsReservedKey(key string) bool {
+	return reservedKeys[key]
+}
+
+// ValidateExtraKey checks that key is a valid extra field name.
+// Keys must be non-empty identifiers: letters, digits, hyphens, underscores.
+func ValidateExtraKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("extra field key must not be empty")
+	}
+	if reservedKeys[key] {
+		return fmt.Errorf("extra field key %q is reserved", key)
+	}
+	for _, c := range key {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return fmt.Errorf("extra field key %q contains invalid character %q (allowed: letters, digits, hyphens, underscores)", key, string(c))
+		}
+	}
+	return nil
+}
+
+// ValidateExtraValue checks that value is safe for unquoted YAML serialization.
+// Values allow printable ASCII: letters, digits, spaces, and common punctuation.
+// YAML indicator characters (% ! & * @ ` : # [ ] { } | > ' ") and control
+// characters are rejected to prevent parse failures in writeField output.
+func ValidateExtraValue(value string) error {
+	for _, c := range value {
+		if c < ' ' || c > '~' {
+			return fmt.Errorf("extra field value contains non-printable character %q", string(c))
+		}
+		switch c {
+		case ':', '#', '[', ']', '{', '}', '%', '!', '&', '*', '@', '`', '|', '>', '\'', '"':
+			return fmt.Errorf("extra field value contains invalid character %q", string(c))
+		}
+	}
+	return nil
 }

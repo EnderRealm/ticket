@@ -55,9 +55,30 @@ type ticketSummaryJSON struct {
 	Assignee string   `json:"assignee,omitempty"`
 	Parent   string   `json:"parent,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
-	Deps     []string `json:"deps"`
-	Links    []string `json:"links"`
-	Created  string   `json:"created"`
+	Deps    []string          `json:"deps"`
+	Links   []string          `json:"links"`
+	Created string            `json:"created"`
+	Extra   map[string]string `json:"-"`
+}
+
+func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
+	type alias ticketSummaryJSON
+	data, err := json.Marshal(alias(j))
+	if err != nil {
+		return nil, err
+	}
+	if len(j.Extra) == 0 {
+		return data, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range j.Extra {
+		b, _ := json.Marshal(v)
+		m[k] = b
+	}
+	return json.Marshal(m)
 }
 
 func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
@@ -75,6 +96,7 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 		Deps:     nonNil(t.Deps),
 		Links:    nonNil(t.Links),
 		Created:  t.Created.UTC().Format("2006-01-02T15:04:05Z"),
+		Extra:    t.Extra,
 	}
 }
 
@@ -101,8 +123,29 @@ type ticketJSON struct {
 	Design        string       `json:"design,omitempty"`
 	Acceptance    string       `json:"acceptance_criteria,omitempty"`
 	TestResults   string       `json:"test_results,omitempty"`
-	Notes         []noteJSON   `json:"notes,omitempty"`
-	Reviews       []reviewJSON `json:"reviews,omitempty"`
+	Notes   []noteJSON        `json:"notes,omitempty"`
+	Reviews []reviewJSON      `json:"reviews,omitempty"`
+	Extra   map[string]string `json:"-"`
+}
+
+func (j ticketJSON) MarshalJSON() ([]byte, error) {
+	type alias ticketJSON
+	data, err := json.Marshal(alias(j))
+	if err != nil {
+		return nil, err
+	}
+	if len(j.Extra) == 0 {
+		return data, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range j.Extra {
+		b, _ := json.Marshal(v)
+		m[k] = b
+	}
+	return json.Marshal(m)
 }
 
 type reviewJSON struct {
@@ -141,6 +184,8 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 	for _, s := range t.Skipped {
 		j.Skipped = append(j.Skipped, string(s))
 	}
+
+	j.Extra = t.Extra
 
 	// Extract body sections.
 	body := t.Body
@@ -365,8 +410,9 @@ type createArgs struct {
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
-	Risk        string `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
-	Repo        string `json:"repo,omitempty" jsonschema:"path to repo root; walks up to find .tickets/ directory (like CLI --repo flag)"`
+	Risk        string            `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
+	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; walks up to find .tickets/ directory (like CLI --repo flag)"`
+	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 }
 
 func registerCreate(server *mcp.Server, store *ticket.FileStore) {
@@ -432,6 +478,23 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 			}
 		}
 
+		if len(args.Set) > 0 {
+			t.Extra = map[string]string{}
+			for k, v := range args.Set {
+				if err := ticket.ValidateExtraKey(k); err != nil {
+					r, _ := errResult("invalid extra key: %v", err)
+					return r, nil, nil
+				}
+				if v != "" {
+					if err := ticket.ValidateExtraValue(v); err != nil {
+						r, _ := errResult("invalid extra value for %q: %v", k, err)
+						return r, nil, nil
+					}
+					t.Extra[k] = v
+				}
+			}
+		}
+
 		// Build body.
 		var body strings.Builder
 		if args.Description != "" {
@@ -468,8 +531,9 @@ type editArgs struct {
 	Description string `json:"description,omitempty" jsonschema:"new description text"`
 	Design      string `json:"design,omitempty" jsonschema:"new design text"`
 	Acceptance  string `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
-	TestResults string `json:"test_results,omitempty" jsonschema:"test results to record"`
-	Risk        string `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
+	TestResults string            `json:"test_results,omitempty" jsonschema:"test results to record"`
+	Risk        string            `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
+	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
 }
 
 func registerEdit(server *mcp.Server, store *ticket.FileStore) {
@@ -525,6 +589,27 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 		}
 		if args.TestResults != "" {
 			t.Body = ticket.UpdateSection(t.Body, "Test Results", args.TestResults)
+		}
+
+		if len(args.Set) > 0 {
+			if t.Extra == nil {
+				t.Extra = map[string]string{}
+			}
+			for k, v := range args.Set {
+				if err := ticket.ValidateExtraKey(k); err != nil {
+					r, _ := errResult("invalid extra key: %v", err)
+					return r, nil, nil
+				}
+				if v == "" {
+					delete(t.Extra, k)
+				} else {
+					if err := ticket.ValidateExtraValue(v); err != nil {
+						r, _ := errResult("invalid extra value for %q: %v", k, err)
+						return r, nil, nil
+					}
+					t.Extra[k] = v
+				}
+			}
 		}
 
 		if err := store.Update(t); err != nil {

@@ -33,6 +33,7 @@ func init() {
 	f.String("parent", "", "parent ticket ID")
 	f.String("tags", "", "comma-separated tags")
 	f.String("note", "", "append a timestamped note")
+	f.StringArray("set", nil, "set extra field (key=value, blank value removes)")
 
 	rootCmd.AddCommand(editCmd)
 }
@@ -144,6 +145,24 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		changed = true
 	}
 
+	if sets, _ := cmd.Flags().GetStringArray("set"); cmd.Flags().Changed("set") {
+		if t.Extra == nil {
+			t.Extra = map[string]string{}
+		}
+		for _, s := range sets {
+			key, value, err := parseSetFlag(s)
+			if err != nil {
+				return err
+			}
+			if value == "" {
+				delete(t.Extra, key)
+			} else {
+				t.Extra[key] = value
+			}
+		}
+		changed = true
+	}
+
 	if !changed {
 		return fmt.Errorf("no options provided")
 	}
@@ -154,5 +173,23 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Updated %s\n", t.ID)
 	return nil
+}
+
+func parseSetFlag(s string) (key, value string, err error) {
+	idx := strings.Index(s, "=")
+	if idx < 0 {
+		return "", "", fmt.Errorf("--set requires key=value format: %q", s)
+	}
+	key = s[:idx]
+	value = s[idx+1:]
+	if err := ticket.ValidateExtraKey(key); err != nil {
+		return "", "", err
+	}
+	if value != "" {
+		if err := ticket.ValidateExtraValue(value); err != nil {
+			return "", "", err
+		}
+	}
+	return key, value, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,17 @@ func Parse(r io.Reader) (*Ticket, error) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
+	// Second pass: capture unknown keys into Extra.
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(front, &raw); err == nil {
+		t.Extra = map[string]string{}
+		for k, v := range raw {
+			if !reservedKeys[k] {
+				t.Extra[k] = fmt.Sprintf("%v", v)
+			}
+		}
+	}
+
 	// Ensure nil slices become empty slices for consistent handling.
 	if t.Deps == nil {
 		t.Deps = []string{}
@@ -38,6 +50,9 @@ func Parse(r io.Reader) (*Ticket, error) {
 	}
 	if t.Conversations == nil {
 		t.Conversations = []string{}
+	}
+	if t.Extra == nil {
+		t.Extra = map[string]string{}
 	}
 
 	// Auto-migrate legacy tickets that have status but no stage.
@@ -97,6 +112,16 @@ func Serialize(t *Ticket) ([]byte, error) {
 	}
 	if len(t.Conversations) > 0 {
 		writeFlowArray(&buf, "conversations", t.Conversations)
+	}
+	if len(t.Extra) > 0 {
+		keys := make([]string, 0, len(t.Extra))
+		for k := range t.Extra {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			writeField(&buf, k, t.Extra[k])
+		}
 	}
 	buf.WriteString("---\n")
 

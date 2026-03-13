@@ -539,3 +539,173 @@ func TestSerialize_BodyNoBlankLineAccumulation(t *testing.T) {
 		t.Error("note text missing after round-trips")
 	}
 }
+
+func TestExtraFields_RoundTrip(t *testing.T) {
+	input := `---
+id: t-extra1
+stage: triage
+deps: []
+links: []
+created: 2026-01-01T00:00:00Z
+type: task
+priority: 2
+env: production
+team: backend
+---
+# Extra fields ticket
+
+Description.
+`
+	tk, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(tk.Extra) != 2 {
+		t.Fatalf("len(Extra) = %d, want 2", len(tk.Extra))
+	}
+	if tk.Extra["env"] != "production" {
+		t.Errorf("Extra[env] = %q, want production", tk.Extra["env"])
+	}
+	if tk.Extra["team"] != "backend" {
+		t.Errorf("Extra[team] = %q, want backend", tk.Extra["team"])
+	}
+
+	// Round-trip: serialize and re-parse.
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	tk2, err := Parse(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if tk2.Extra["env"] != "production" {
+		t.Errorf("after round-trip Extra[env] = %q", tk2.Extra["env"])
+	}
+	if tk2.Extra["team"] != "backend" {
+		t.Errorf("after round-trip Extra[team] = %q", tk2.Extra["team"])
+	}
+}
+
+func TestSerialize_ExtraFieldOrdering(t *testing.T) {
+	tk := &Ticket{
+		ID:       "t-order",
+		Stage:    StageTriage,
+		Type:     TypeTask,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Ordering test",
+		Body:     "\n",
+		Extra:    map[string]string{"zebra": "z", "alpha": "a", "mid": "m"},
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s := string(data)
+
+	// Extra fields should appear after known fields, sorted alphabetically.
+	alphaIdx := strings.Index(s, "alpha: a")
+	midIdx := strings.Index(s, "mid: m")
+	zebraIdx := strings.Index(s, "zebra: z")
+	closingIdx := strings.Index(s, "---\n# ")
+
+	if alphaIdx < 0 || midIdx < 0 || zebraIdx < 0 {
+		t.Fatalf("extra fields missing from output:\n%s", s)
+	}
+	if alphaIdx >= midIdx || midIdx >= zebraIdx {
+		t.Errorf("extra fields not sorted: alpha@%d mid@%d zebra@%d", alphaIdx, midIdx, zebraIdx)
+	}
+
+	// Extra fields should come after priority (last guaranteed known field) and before closing ---.
+	priorityIdx := strings.Index(s, "priority: 2")
+	if alphaIdx <= priorityIdx {
+		t.Errorf("extra fields should come after known fields")
+	}
+	if zebraIdx >= closingIdx {
+		t.Errorf("extra fields should come before closing ---")
+	}
+}
+
+func TestSerialize_NoExtraFieldsUnchanged(t *testing.T) {
+	tk := &Ticket{
+		ID:       "t-noextra",
+		Stage:    StageTriage,
+		Type:     TypeTask,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "No extra",
+		Body:     "\nDescription.\n",
+		Extra:    map[string]string{},
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s := string(data)
+
+	// Output should end frontmatter with priority then --- (no extra lines).
+	if !strings.Contains(s, "priority: 2\n---\n") {
+		t.Errorf("unexpected frontmatter ending:\n%s", s)
+	}
+}
+
+func TestExtra_ReservedKeyRejected(t *testing.T) {
+	reserved := []string{"id", "stage", "type", "priority", "assignee", "deps", "created", "external-ref"}
+	for _, key := range reserved {
+		if err := ValidateExtraKey(key); err == nil {
+			t.Errorf("ValidateExtraKey(%q) should return error", key)
+		}
+	}
+}
+
+func TestExtra_InvalidCharsRejected(t *testing.T) {
+	// Keys: only letters, digits, hyphens, underscores allowed.
+	badKeys := []string{
+		"has space", "has:colon", "has#hash", "has[bracket",
+		"has\nnewline", "has\ttab", "has%percent", "has.dot",
+		"has!bang", "has@at", "has'quote",
+	}
+	for _, key := range badKeys {
+		if err := ValidateExtraKey(key); err == nil {
+			t.Errorf("ValidateExtraKey(%q) should return error", key)
+		}
+	}
+
+	// Values: YAML indicator characters and control chars rejected.
+	badValues := []string{
+		"has:colon", "has#hash", "has[bracket", "has{brace",
+		"has\nnewline", "has\rreturn", "has\ttab",
+		"has%percent", "has!bang", "has&amp", "has*star",
+		"has@at", "has`tick", "has|pipe", "has>angle",
+		"has'quote", "has\"dquote", "has]close", "has}close",
+	}
+	for _, val := range badValues {
+		if err := ValidateExtraValue(val); err == nil {
+			t.Errorf("ValidateExtraValue(%q) should return error", val)
+		}
+	}
+
+	// Valid keys: letters, digits, hyphens, underscores.
+	goodKeys := []string{"valid-key", "another_key", "Key123", "ABC"}
+	for _, key := range goodKeys {
+		if err := ValidateExtraKey(key); err != nil {
+			t.Errorf("ValidateExtraKey(%q) = %v", key, err)
+		}
+	}
+
+	// Valid values: printable ASCII minus YAML indicators.
+	goodValues := []string{"simple value", "abc123", "hello-world_v2", "path/to/file", "a,b,c", "1+2=3", "v2.0 (beta)"}
+	for _, val := range goodValues {
+		if err := ValidateExtraValue(val); err != nil {
+			t.Errorf("ValidateExtraValue(%q) = %v", val, err)
+		}
+	}
+}

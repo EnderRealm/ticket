@@ -27,6 +27,7 @@ func init() {
 	f.String("external-ref", "", "external reference")
 	f.String("parent", "", "parent ticket ID")
 	f.String("tags", "", "comma-separated tags")
+	f.StringArray("set", nil, "set extra field (key=value)")
 
 	rootCmd.AddCommand(createCmd)
 }
@@ -94,6 +95,21 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		body.WriteString("\n")
 	}
 
+	extra := map[string]string{}
+	if sets, _ := cmd.Flags().GetStringArray("set"); cmd.Flags().Changed("set") {
+		for _, s := range sets {
+			key, value, err := parseSetFlag(s)
+			if err != nil {
+				return err
+			}
+			if value == "" {
+				delete(extra, key)
+			} else {
+				extra[key] = value
+			}
+		}
+	}
+
 	t := &ticket.Ticket{
 		ID:          id,
 		Stage:       ticket.StageTriage,
@@ -108,6 +124,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		Created:     time.Now().UTC(),
 		Title:       title,
 		Body:        body.String(),
+		Extra:       extra,
 	}
 
 	if err := store.Create(t); err != nil {

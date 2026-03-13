@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -332,6 +333,17 @@ func (m detailModel) render() []string {
 		lines = append(lines, m.field("External Ref", t.ExternalRef))
 	}
 	lines = append(lines, m.field("Created", t.Created.Format("2006-01-02 15:04")))
+
+	if len(t.Extra) > 0 {
+		keys := make([]string, 0, len(t.Extra))
+		for k := range t.Extra {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			lines = append(lines, m.field(k, t.Extra[k]))
+		}
+	}
 
 	lines = append(lines, "")
 

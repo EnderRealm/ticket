@@ -65,7 +65,8 @@ Query (JSON):
 
   JSON fields: id, stage, type, priority, title, description,
     design, acceptance_criteria, deps[], links[], tags[],
-    created, assignee, parent, notes, external_ref, review, risk
+    created, assignee, parent, notes, external_ref, review, risk,
+    plus any custom extra fields (flattened to top level)
   Body sections (## Heading) become snake_case fields.
 
 Analytics:
@@ -110,6 +111,7 @@ Create & edit options:
   --tags               Comma-separated (e.g., --tags ui,backend)
   --external-ref       External reference (e.g., gh-123)
   --branch             Git branch name (edit only)
+  --set key=value      Set extra field (repeatable, blank value removes)
 
 Stages: triage → spec → design → design-review → implement → code-review → test → verify → done
   Pipelines are type-dependent and risk-dependent.

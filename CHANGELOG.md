@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Generic extra fields: arbitrary key/value metadata on tickets via `Extra map[string]string` in YAML frontmatter
+- CLI: `--set key=value` flag on `create` and `edit` commands (repeatable, blank value removes field)
+- CLI: `tk query` JSONL output includes `extra` field for custom metadata
+- MCP: `set` parameter on `ticket_create` and `ticket_edit` for extra field CRUD
+- Extra fields flattened to top level in all JSON output (CLI query, MCP show/list/create/edit) — no `.extra.` prefix needed
+- TUI: Extra fields rendered in detail view after known metadata fields
+- Validation: extra field keys allow only `[a-zA-Z0-9_-]`; values reject all YAML indicator characters (`%`, `!`, `&`, `*`, `@`, `` ` ``, `|`, `>`, `'`, `"`, `:`, `#`, `[`, `]`, `{`, `}`) and control characters to prevent YAML parse corruption
+
 ## [3.1.0] - 2026-03-12
 
 ### Added
