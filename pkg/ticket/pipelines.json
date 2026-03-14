@@ -1,57 +1,61 @@
 {
   "stages": {
-    "triage":        {"role": "intake"},
-    "spec":          {"role": "definition"},
-    "design":        {"role": "definition"},
-    "design-review": {"role": "review"},
-    "implement":     {"role": "work"},
-    "code-review":   {"role": "review"},
-    "test":          {"role": "work"},
-    "verify":        {"role": "review"},
-    "done":          {"role": "terminal"}
+    "backlog":        {"role": "intake"},
+    "triage":         {"role": "intake"},
+    "spec":           {"role": "definition"},
+    "design":         {"role": "definition"},
+    "design-review":  {"role": "review"},
+    "implement":      {"role": "work"},
+    "code-review":    {"role": "review"},
+    "test":           {"role": "work"},
+    "verify":         {"role": "review"},
+    "done":           {"role": "terminal"}
   },
   "stage_order": [
-    "triage", "spec", "design", "design-review",
+    "backlog", "triage", "spec", "design", "design-review",
     "implement", "code-review", "test", "verify", "done"
   ],
   "pipelines": {
     "feature": {
-      "default": ["triage", "spec", "design", "implement", "test", "verify", "done"],
-      "low":      ["triage", "spec", "design", "implement", "test", "verify", "done"],
-      "normal":   ["triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
-      "high":     ["triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
-      "critical": ["triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
+      "default": ["backlog", "triage", "spec", "design", "implement", "test", "verify", "done"],
+      "low":      ["backlog", "triage", "spec", "design", "implement", "test", "verify", "done"],
+      "normal":   ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "high":     ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "critical": ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
     },
     "bug": {
-      "default": ["triage", "implement", "test", "verify", "done"],
-      "low":     ["triage", "implement", "done"],
-      "normal":  ["triage", "implement", "code-review", "test", "verify", "done"],
-      "high":    ["triage", "implement", "code-review", "test", "verify", "done"],
-      "critical":["triage", "implement", "code-review", "test", "verify", "done"]
+      "default": ["backlog", "triage", "implement", "test", "verify", "done"],
+      "low":     ["backlog", "triage", "implement", "done"],
+      "normal":  ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
+      "high":    ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
+      "critical":["backlog", "triage", "implement", "code-review", "test", "verify", "done"]
     },
     "task": {
-      "default": ["triage", "implement", "test", "verify", "done"],
-      "low":     ["triage", "implement", "done"],
-      "normal":  ["triage", "implement", "code-review", "test", "verify", "done"],
-      "high":    ["triage", "implement", "code-review", "test", "verify", "done"],
-      "critical":["triage", "implement", "code-review", "test", "verify", "done"]
+      "default": ["backlog", "triage", "implement", "test", "verify", "done"],
+      "low":     ["backlog", "triage", "implement", "done"],
+      "normal":  ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
+      "high":    ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
+      "critical":["backlog", "triage", "implement", "code-review", "test", "verify", "done"]
     },
     "chore": {
-      "default": ["triage", "implement", "done"],
-      "low":     ["triage", "implement", "done"],
-      "normal":  ["triage", "implement", "done"],
-      "high":    ["triage", "implement", "done"],
-      "critical":["triage", "implement", "done"]
+      "default": ["backlog", "triage", "implement", "done"],
+      "low":     ["backlog", "triage", "implement", "done"],
+      "normal":  ["backlog", "triage", "implement", "done"],
+      "high":    ["backlog", "triage", "implement", "done"],
+      "critical":["backlog", "triage", "implement", "done"]
     },
     "epic": {
-      "default": ["triage", "spec", "design", "done"],
-      "low":     ["triage", "spec", "design", "done"],
-      "normal":  ["triage", "spec", "design", "done"],
-      "high":    ["triage", "spec", "design", "done"],
-      "critical":["triage", "spec", "design", "done"]
+      "default": ["backlog", "triage", "spec", "design", "done"],
+      "low":     ["backlog", "triage", "spec", "design", "done"],
+      "normal":  ["backlog", "triage", "spec", "design", "done"],
+      "high":    ["backlog", "triage", "spec", "design", "done"],
+      "critical":["backlog", "triage", "spec", "design", "done"]
     }
   },
   "gates": {
+    "backlog>triage": {
+      "structural": ["description_exists", "priority_set", "risk_set"]
+    },
     "triage>spec": {
       "structural": ["description_exists"]
     },

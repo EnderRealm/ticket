@@ -36,7 +36,7 @@ var ConversationalStages = map[Stage]bool{
 func NextAction(t *Ticket) InboxItem {
 	item := InboxItem{Ticket: t, Since: t.Created}
 
-	if t.Stage == "" || t.Stage == StageDone {
+	if t.Stage == "" || t.Stage == StageDone || t.Stage == StageBacklog {
 		item.Action = ActionReady
 		item.Detail = "no action needed"
 		return item
@@ -96,7 +96,7 @@ func Inbox(store *FileStore) ([]InboxItem, error) {
 
 	var items []InboxItem
 	for _, t := range tickets {
-		if t.Stage == "" || t.Stage == StageDone {
+		if t.Stage == "" || t.Stage == StageDone || t.Stage == StageBacklog {
 			continue
 		}
 		item := NextAction(t)

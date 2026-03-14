@@ -134,6 +134,10 @@ func structuralDescription(name string) string {
 		return "code review is approved"
 	case "impl_review_approved":
 		return "implementation review is approved"
+	case "priority_set":
+		return "priority is set"
+	case "risk_set":
+		return "risk level is set"
 	case "advisory_review_surfaced":
 		return "advisory review has been recorded"
 	case "test_results_recorded":

@@ -282,7 +282,7 @@ func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 // --- Tool registrations ---
 
 type listArgs struct {
-	Stage    string `json:"stage,omitempty" jsonschema:"filter by stage: triage, spec, design, implement, test, verify, done"`
+	Stage    string `json:"stage,omitempty" jsonschema:"filter by stage: backlog, triage, spec, design, implement, test, verify, done"`
 	Type     string `json:"type,omitempty" jsonschema:"filter by type: bug, feature, task, epic, chore"`
 	Priority *int   `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
 	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee name"`
@@ -318,7 +318,7 @@ func registerList(server *mcp.Server, store *ticket.FileStore) {
 		} else {
 			var filtered []*ticket.Ticket
 			for _, t := range tickets {
-				if t.Stage != ticket.StageDone {
+				if t.Stage != ticket.StageDone && t.Stage != ticket.StageBacklog {
 					filtered = append(filtered, t)
 				}
 			}
@@ -443,7 +443,7 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 		t := &ticket.Ticket{
 			ID:       ticket.GenerateID(args.Title),
 			Title:    args.Title,
-			Stage:    ticket.StageTriage,
+			Stage:    ticket.StageBacklog,
 			Priority: 2,
 			Created:  time.Now().UTC(),
 		}
@@ -521,6 +521,7 @@ func registerCreate(server *mcp.Server, store *ticket.FileStore) {
 type editArgs struct {
 	ID          string `json:"id" jsonschema:"ticket ID"`
 	Title       string `json:"title,omitempty" jsonschema:"new title"`
+	Stage       string `json:"stage,omitempty" jsonschema:"pipeline stage (bypasses pipeline ordering): backlog, triage, spec, design, implement, test, verify, done"`
 	Type        string `json:"type,omitempty" jsonschema:"new type"`
 	Priority    *int   `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
 	Assignee    string `json:"assignee,omitempty" jsonschema:"new assignee"`
@@ -549,6 +550,14 @@ func registerEdit(server *mcp.Server, store *ticket.FileStore) {
 
 		if args.Title != "" {
 			t.Title = args.Title
+		}
+		if args.Stage != "" {
+			if err := ticket.ValidateStage(ticket.Stage(args.Stage)); err != nil {
+				r, _ := errResult("invalid stage: %v", err)
+				return r, nil, nil
+			}
+			t.Stage = ticket.Stage(args.Stage)
+			t.Review = ticket.ReviewNone
 		}
 		if args.Type != "" {
 			t.Type = ticket.TicketType(args.Type)

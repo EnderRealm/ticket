@@ -84,6 +84,7 @@ Run `tk help` for the full command reference. Key commands:
 Viewing:
   show <id>                  Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
+  backlog [filters]          List tickets in the backlog
   ready [filters]            Tickets with all deps resolved and parent in_progress
   blocked [filters]          Tickets with unresolved deps
   closed [--limit=N]         Recently closed tickets
@@ -134,11 +135,11 @@ Tickets progress through type-dependent stage pipelines:
 
 | Type | Pipeline |
 |------|----------|
-| feature | triage → spec → design → implement → test → verify → done |
-| bug | triage → implement → test → verify → done |
-| task | triage → implement → test → verify → done |
-| chore | triage → implement → done |
-| epic | triage → spec → design → done |
+| feature | backlog → triage → spec → design → implement → test → verify → done |
+| bug | backlog → triage → implement → test → verify → done |
+| task | backlog → triage → implement → test → verify → done |
+| chore | backlog → triage → implement → done |
+| epic | backlog → triage → spec → design → done |
 
 Gate checks enforce preconditions at stage transitions (e.g., acceptance criteria before spec → design, review approval before implement → test). Gates scale by risk level: low (advisory), normal (standard), high/critical (strict).
 

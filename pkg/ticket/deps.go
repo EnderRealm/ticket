@@ -192,7 +192,7 @@ func BlockingDeps(store *FileStore, t *Ticket) []string {
 // IsReady returns true if the ticket is actionable: not done,
 // all deps done, and parent chain is active (all ancestors not done).
 func IsReady(store *FileStore, t *Ticket) bool {
-	if t.Stage == StageDone || t.Stage == "" {
+	if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
 		return false
 	}
 	if IsBlocked(store, t) {
@@ -204,7 +204,7 @@ func IsReady(store *FileStore, t *Ticket) bool {
 // IsReadyOpen is like IsReady but bypasses parent gating.
 // Shows all unblocked non-done tickets regardless of epic status.
 func IsReadyOpen(store *FileStore, t *Ticket) bool {
-	if t.Stage == StageDone || t.Stage == "" {
+	if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
 		return false
 	}
 	return !IsBlocked(store, t)
@@ -275,7 +275,7 @@ func BlockedTickets(store *FileStore) ([]*Ticket, error) {
 
 	var blocked []*Ticket
 	for _, t := range tickets {
-		if t.Stage == StageDone || t.Stage == "" {
+		if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
 			continue
 		}
 		if IsBlocked(store, t) {

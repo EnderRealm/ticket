@@ -20,6 +20,7 @@ const (
 type Stage string
 
 const (
+	StageBacklog      Stage = "backlog"
 	StageTriage       Stage = "triage"
 	StageSpec         Stage = "spec"
 	StageDesign       Stage = "design"

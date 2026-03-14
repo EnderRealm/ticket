@@ -83,7 +83,7 @@ func (m *dashboardModel) buildItems() {
 	needle := strings.ToLower(m.filterText)
 
 	for _, t := range m.all {
-		if t.Stage == "" || t.Stage == ticket.StageDone {
+		if t.Stage == "" || t.Stage == ticket.StageDone || t.Stage == ticket.StageBacklog {
 			continue
 		}
 		if m.typeFilter != "" && t.Type != m.typeFilter {

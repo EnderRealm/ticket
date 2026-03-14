@@ -13,9 +13,9 @@ func TestPipelineFor_AllTypes(t *testing.T) {
 		if len(p) == 0 {
 			t.Errorf("PipelineFor(%s) returned empty pipeline", tt)
 		}
-		// Every pipeline starts at triage and ends at done.
-		if p[0] != StageTriage {
-			t.Errorf("PipelineFor(%s) starts at %s, want triage", tt, p[0])
+		// Every pipeline starts at backlog and ends at done.
+		if p[0] != StageBacklog {
+			t.Errorf("PipelineFor(%s) starts at %s, want backlog", tt, p[0])
 		}
 		if p[len(p)-1] != StageDone {
 			t.Errorf("PipelineFor(%s) ends at %s, want done", tt, p[len(p)-1])
@@ -35,11 +35,11 @@ func TestPipelineLengths(t *testing.T) {
 		typ    TicketType
 		stages int
 	}{
-		{TypeFeature, 7},
-		{TypeBug, 5},
-		{TypeChore, 3},
-		{TypeEpic, 4},
-		{TypeTask, 5},
+		{TypeFeature, 8},
+		{TypeBug, 6},
+		{TypeChore, 4},
+		{TypeEpic, 5},
+		{TypeTask, 6},
 	}
 	for _, tt := range tests {
 		p, _ := PipelineFor(tt.typ)
@@ -51,7 +51,7 @@ func TestPipelineLengths(t *testing.T) {
 
 func TestHasStage(t *testing.T) {
 	// Features have all stages.
-	for _, s := range []Stage{StageTriage, StageSpec, StageDesign, StageImplement, StageTest, StageVerify, StageDone} {
+	for _, s := range []Stage{StageBacklog, StageTriage, StageSpec, StageDesign, StageImplement, StageTest, StageVerify, StageDone} {
 		if !HasStage(TypeFeature, s) {
 			t.Errorf("HasStage(feature, %s) = false, want true", s)
 		}
@@ -74,8 +74,14 @@ func TestHasStage(t *testing.T) {
 }
 
 func TestNextStage(t *testing.T) {
+	// Feature: backlog → triage.
+	next, ok := NextStage(TypeFeature, StageBacklog)
+	if !ok || next != StageTriage {
+		t.Errorf("NextStage(feature, backlog) = (%s, %v), want (triage, true)", next, ok)
+	}
+
 	// Feature: triage → spec.
-	next, ok := NextStage(TypeFeature, StageTriage)
+	next, ok = NextStage(TypeFeature, StageTriage)
 	if !ok || next != StageSpec {
 		t.Errorf("NextStage(feature, triage) = (%s, %v), want (spec, true)", next, ok)
 	}
@@ -99,18 +105,26 @@ func TestPrevStage(t *testing.T) {
 		t.Errorf("PrevStage(feature, spec) = (%s, %v), want (triage, true)", prev, ok)
 	}
 
-	_, ok = PrevStage(TypeFeature, StageTriage)
+	prev, ok = PrevStage(TypeFeature, StageTriage)
+	if !ok || prev != StageBacklog {
+		t.Errorf("PrevStage(feature, triage) = (%s, %v), want (backlog, true)", prev, ok)
+	}
+
+	_, ok = PrevStage(TypeFeature, StageBacklog)
 	if ok {
-		t.Error("PrevStage(feature, triage) should return false")
+		t.Error("PrevStage(feature, backlog) should return false")
 	}
 }
 
 func TestStageIndex(t *testing.T) {
-	if idx := StageIndex(TypeFeature, StageTriage); idx != 0 {
-		t.Errorf("StageIndex(feature, triage) = %d, want 0", idx)
+	if idx := StageIndex(TypeFeature, StageBacklog); idx != 0 {
+		t.Errorf("StageIndex(feature, backlog) = %d, want 0", idx)
 	}
-	if idx := StageIndex(TypeFeature, StageDone); idx != 6 {
-		t.Errorf("StageIndex(feature, done) = %d, want 6", idx)
+	if idx := StageIndex(TypeFeature, StageTriage); idx != 1 {
+		t.Errorf("StageIndex(feature, triage) = %d, want 1", idx)
+	}
+	if idx := StageIndex(TypeFeature, StageDone); idx != 7 {
+		t.Errorf("StageIndex(feature, done) = %d, want 7", idx)
 	}
 	if idx := StageIndex(TypeChore, StageDesign); idx != -1 {
 		t.Errorf("StageIndex(chore, design) = %d, want -1", idx)

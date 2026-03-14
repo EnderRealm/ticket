@@ -83,6 +83,8 @@ func colorizeType(s string, t ticket.TicketType) string {
 // colorizeStage matches TUI stageColors.
 func colorizeStage(s string, stage ticket.Stage) string {
 	switch stage {
+	case ticket.StageBacklog:
+		return colorize(s, ansiGray)
 	case ticket.StageTriage:
 		return colorize(s, ansiWhite)
 	case ticket.StageSpec:

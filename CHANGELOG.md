@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Pipeline: `backlog` stage before `triage` for all ticket types. Full pipeline: backlog → triage → spec → design → implement → test → verify → done
+- Pipeline: `backlog>triage` gate requiring description, priority, and risk before promotion
+- CLI: `tk backlog` command to list tickets in backlog stage
+- CLI: `tk edit --stage` flag to directly set a ticket's stage (bypassing pipeline ordering)
+- MCP: `ticket_edit` supports `stage` parameter for direct stage assignment
+- Gates: `priority_set` and `risk_set` structural checks
+
+### Changed
+- Default initial stage for new tickets is now `backlog` (was `triage`)
+- `tk ls` excludes backlog tickets by default (use `--stage backlog` to see them)
+- `ticket_list` MCP tool excludes backlog tickets by default (use `stage: "backlog"` to see them)
+- `ticket_ready` and `ticket_inbox` exclude backlog tickets
+- TUI dashboard excludes backlog tickets from inbox view
+
 ## [3.2.0] - 2026-03-13
 
 ### Added

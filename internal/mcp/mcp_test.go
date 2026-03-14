@@ -63,12 +63,196 @@ func TestCreateTicket(t *testing.T) {
 	if ticket["title"] != "Test ticket from MCP" {
 		t.Errorf("title = %q, want %q", ticket["title"], "Test ticket from MCP")
 	}
-	if ticket["stage"] != "triage" {
-		t.Errorf("stage = %q, want %q", ticket["stage"], "triage")
+	if ticket["stage"] != "backlog" {
+		t.Errorf("stage = %q, want %q", ticket["stage"], "backlog")
 	}
 	created, _ := ticket["created"].(string)
 	if created == "" || created == "0001-01-01T00:00:00Z" {
 		t.Errorf("created = %q, want non-zero timestamp", created)
+	}
+}
+
+func TestAdvanceFromBacklog(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket with description and risk (to pass backlog>triage gates).
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":       "Advance from backlog",
+			"type":        "task",
+			"description": "Has a description",
+			"risk":        "low",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	// Advance from backlog → triage.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_advance",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("advance failed: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+	tk := resp["ticket"].(map[string]any)
+	if tk["stage"] != "triage" {
+		t.Errorf("stage after advance = %q, want triage", tk["stage"])
+	}
+}
+
+func TestReadyExcludesBacklog(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a backlog ticket.
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Backlog idea",
+			"type":  "task",
+		},
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_ready",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var tickets []any
+	json.Unmarshal([]byte(text), &tickets)
+	if len(tickets) != 0 {
+		t.Errorf("ticket_ready should exclude backlog, got %d tickets", len(tickets))
+	}
+}
+
+func TestListExcludesBacklog(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a backlog ticket.
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Backlog item",
+			"type":  "task",
+		},
+	})
+
+	// Default list should exclude backlog.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 0 {
+		t.Errorf("default ticket_list should exclude backlog, got %d", len(tickets))
+	}
+}
+
+func TestListFilterBacklog(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a backlog ticket.
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Backlog item",
+			"type":  "task",
+		},
+	})
+
+	// Explicit stage filter should include it.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"stage": "backlog"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp map[string]any
+	json.Unmarshal([]byte(text), &resp)
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 1 {
+		t.Errorf("ticket_list with stage=backlog should return 1, got %d", len(tickets))
+	}
+}
+
+func TestEditStage(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket (defaults to backlog).
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Stage edit test",
+			"type":  "task",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	// Edit stage to triage.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":    id,
+			"stage": "triage",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var edited map[string]any
+	json.Unmarshal([]byte(text), &edited)
+	if edited["stage"] != "triage" {
+		t.Errorf("stage after edit = %q, want triage", edited["stage"])
+	}
+
+	// Invalid stage should fail.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":    id,
+			"stage": "invalid",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("editing to invalid stage should return error")
 	}
 }
 
@@ -534,7 +718,7 @@ func createAndAdvanceTo(t *testing.T, session *mcp.ClientSession, stage string) 
 	json.Unmarshal([]byte(text), &created)
 	id := created["id"].(string)
 
-	if stage != "triage" {
+	if stage != "backlog" {
 		_, err = session.CallTool(ctx, &mcp.CallToolParams{
 			Name: "ticket_skip",
 			Arguments: map[string]any{
@@ -602,7 +786,7 @@ func TestListReturnsSummaryFields(t *testing.T) {
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{},
+		Arguments: map[string]any{"stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -660,7 +844,7 @@ func TestListPagination(t *testing.T) {
 	// List with limit=2.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"limit": 2},
+		Arguments: map[string]any{"limit": 2, "stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -683,7 +867,7 @@ func TestListPagination(t *testing.T) {
 	// List with offset=3, limit=10.
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"offset": 3, "limit": 10},
+		Arguments: map[string]any{"offset": 3, "limit": 10, "stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -702,7 +886,7 @@ func TestListPagination(t *testing.T) {
 	// List with limit=0 (unlimited).
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"limit": 0},
+		Arguments: map[string]any{"limit": 0, "stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -734,7 +918,7 @@ func TestListDefaultLimitUnderCap(t *testing.T) {
 	// List without explicit limit — should use default (50), return all 3.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{},
+		Arguments: map[string]any{"stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -770,7 +954,7 @@ func TestListDefaultLimitCapsResults(t *testing.T) {
 	// List without explicit limit — should cap at 50.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{},
+		Arguments: map[string]any{"stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -985,7 +1169,7 @@ func TestCreateTicketRemoteRepo(t *testing.T) {
 
 	listResult, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{},
+		Arguments: map[string]any{"stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1200,7 +1384,7 @@ func TestListExtraFields(t *testing.T) {
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{},
+		Arguments: map[string]any{"stage": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)

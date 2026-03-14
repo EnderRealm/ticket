@@ -11,6 +11,7 @@ import (
 
 var (
 	stageColors = map[ticket.Stage]lipgloss.Color{
+		ticket.StageBacklog:      "8", // gray
 		ticket.StageTriage:       "7", // white
 		ticket.StageSpec:         "6", // cyan
 		ticket.StageDesign:       "5", // magenta

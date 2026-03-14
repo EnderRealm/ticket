@@ -39,7 +39,7 @@ func runNext(cmd *cobra.Command, args []string) error {
 		if len(p.StageBreakdown) > 0 {
 			fmt.Print("  stages:")
 			for _, stage := range []ticket.Stage{
-				ticket.StageTriage, ticket.StageSpec, ticket.StageDesign,
+				ticket.StageBacklog, ticket.StageTriage, ticket.StageSpec, ticket.StageDesign,
 				ticket.StageImplement, ticket.StageTest, ticket.StageVerify, ticket.StageDone,
 			} {
 				if count, ok := p.StageBreakdown[stage]; ok && count > 0 {

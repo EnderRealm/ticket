@@ -135,6 +135,10 @@ func structuralCheckFunc(name string) func(*Ticket) error {
 		return checkCodeReviewApproved
 	case "impl_review_approved":
 		return checkImplReviewApproved
+	case "priority_set":
+		return checkPrioritySet
+	case "risk_set":
+		return checkRiskSet
 	case "advisory_review_surfaced":
 		return checkAdvisoryReviewSurfaced
 	case "test_results_recorded":
@@ -200,6 +204,20 @@ func checkAdvisoryReviewSurfaced(t *Ticket) error {
 		return nil
 	}
 	return fmt.Errorf("no advisory review recorded")
+}
+
+func checkPrioritySet(t *Ticket) error {
+	if err := ValidatePriority(t.Priority); err != nil {
+		return fmt.Errorf("priority not set: %w", err)
+	}
+	return nil
+}
+
+func checkRiskSet(t *Ticket) error {
+	if t.Risk == "" {
+		return fmt.Errorf("risk level not set")
+	}
+	return nil
 }
 
 func checkTestResultsRecorded(t *Ticket) error {

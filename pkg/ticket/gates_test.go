@@ -105,6 +105,43 @@ func TestCheckGates_LowRisk_NotAdvisory(t *testing.T) {
 	}
 }
 
+func TestCheckGates_BacklogToTriage_NeedsRisk(t *testing.T) {
+	tk := gateTicket(StageBacklog, TypeFeature)
+	// Has description and valid priority, but no risk.
+	errs := CheckGates(tk, StageTriage)
+	if len(errs) == 0 {
+		t.Error("backlog→triage without risk should fail gate")
+	}
+	found := false
+	for _, err := range errs {
+		if err.Error() != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected at least one gate error")
+	}
+}
+
+func TestCheckGates_BacklogToTriage_AllFields(t *testing.T) {
+	tk := gateTicket(StageBacklog, TypeFeature)
+	tk.Risk = RiskNormal
+	errs := CheckGates(tk, StageTriage)
+	if len(errs) != 0 {
+		t.Errorf("backlog→triage with description, priority, and risk should pass, got %v", errs)
+	}
+}
+
+func TestCheckGates_BacklogToTriage_NoDescription(t *testing.T) {
+	tk := gateTicket(StageBacklog, TypeFeature)
+	tk.Body = "\n"
+	tk.Risk = RiskNormal
+	errs := CheckGates(tk, StageTriage)
+	if len(errs) == 0 {
+		t.Error("backlog→triage without description should fail gate")
+	}
+}
+
 func TestCheckGates_ChoreImplementToDone(t *testing.T) {
 	tk := gateTicket(StageImplement, TypeChore)
 	// No reviews — should fail.

@@ -525,7 +525,7 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 		Priority: msg.priority,
 		Assignee: msg.assignee,
 		Status:   ticket.StatusOpen,
-		Stage:    ticket.StageTriage,
+		Stage:    ticket.StageBacklog,
 		Created:  time.Now().UTC(),
 	}
 

@@ -112,7 +112,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	t := &ticket.Ticket{
 		ID:          id,
-		Stage:       ticket.StageTriage,
+		Stage:       ticket.StageBacklog,
 		Type:        ticket.TicketType(typeStr),
 		Priority:    priority,
 		Assignee:    assignee,

@@ -59,6 +59,49 @@ func TestNextAction_Done(t *testing.T) {
 	}
 }
 
+func TestNextAction_Backlog(t *testing.T) {
+	tk := &Ticket{ID: "t-1", Stage: StageBacklog, Type: TypeFeature, Created: time.Now()}
+	item := NextAction(tk)
+	if item.Action != ActionReady {
+		t.Errorf("NextAction(backlog) = %s, want ready", item.Action)
+	}
+	if item.Detail != "no action needed" {
+		t.Errorf("NextAction(backlog) detail = %q, want %q", item.Detail, "no action needed")
+	}
+}
+
+func TestInbox_ExcludesBacklog(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+
+	// Backlog ticket — should NOT appear in inbox.
+	t1 := &Ticket{
+		ID: "t-backlog", Stage: StageBacklog, Type: TypeFeature, Priority: 0,
+		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Backlog idea", Body: "\n",
+	}
+	// Triage ticket — should appear.
+	t2 := &Ticket{
+		ID: "t-triage", Stage: StageTriage, Type: TypeFeature, Priority: 1,
+		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Triaged", Body: "\n",
+	}
+
+	for _, tk := range []*Ticket{t1, t2} {
+		if err := store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := Inbox(store)
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("Inbox returned %d items, want 1", len(items))
+	}
+	if items[0].Ticket.ID != "t-triage" {
+		t.Errorf("inbox item = %s, want t-triage", items[0].Ticket.ID)
+	}
+}
+
 func TestInbox_FiltersHumanActions(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 

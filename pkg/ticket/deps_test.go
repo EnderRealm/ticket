@@ -149,6 +149,17 @@ func TestIsReady_DoneNotReady(t *testing.T) {
 	}
 }
 
+func TestIsReady_BacklogNotReady(t *testing.T) {
+	s := depStore(t, mk("t-1", StageBacklog))
+	tk, _ := s.Get("t-1")
+	if IsReady(s, tk) {
+		t.Error("backlog ticket should not be ready")
+	}
+	if IsReadyOpen(s, tk) {
+		t.Error("backlog ticket should not be ready (open mode)")
+	}
+}
+
 func TestReadyTickets(t *testing.T) {
 	s := depStore(t,
 		mk("t-1", StageTriage),

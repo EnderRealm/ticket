@@ -22,7 +22,7 @@ func init() {
 	f.StringP("description", "d", "", "description text")
 	f.String("design", "", "design notes")
 	f.String("acceptance", "", "acceptance criteria")
-	f.String("stage", "", "pipeline stage (triage, spec, design, implement, test, verify, done)")
+	f.String("stage", "", "pipeline stage (backlog, triage, spec, design, implement, test, verify, done)")
 	f.String("review", "", "review state (pending, approved, rejected)")
 	f.String("risk", "", "risk level (low, normal, high, critical)")
 	f.StringP("type", "t", "", "ticket type")
@@ -58,6 +58,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		t.Stage = ticket.Stage(v)
+		t.Review = ticket.ReviewNone
 		changed = true
 	}
 	if v, _ := cmd.Flags().GetString("review"); cmd.Flags().Changed("review") {

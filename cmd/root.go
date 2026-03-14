@@ -22,6 +22,7 @@ Usage: tk <command> [args]
 Viewing:
   show <id>                  Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
+  backlog [filters]          List tickets in the backlog
   ready [filters]            Tickets with all deps resolved and parent in_progress
   blocked [filters]          Tickets with unresolved deps
   closed [--limit=N] [filters]  Recently closed (default limit: 20)
@@ -82,7 +83,7 @@ Other:
   migrate-beads              Import from .beads/issues.jsonl
 
 Filter flags for ls:
-  --stage=X          triage | spec | design | implement | test | verify | done
+  --stage=X          backlog | triage | spec | design | implement | test | verify | done
   -t, --type=X       bug | feature | task | epic | chore
   -P, --priority=X   0 (critical) through 4 (backlog)
   -a, --assignee=X   Filter by assignee
@@ -113,7 +114,7 @@ Create & edit options:
   --branch             Git branch name (edit only)
   --set key=value      Set extra field (repeatable, blank value removes)
 
-Stages: triage → spec → design → design-review → implement → code-review → test → verify → done
+Stages: backlog → triage → spec → design → design-review → implement → code-review → test → verify → done
   Pipelines are type-dependent and risk-dependent.
   Default pipelines (low risk) omit review stages.
   Normal/high/critical add design-review and code-review stages.

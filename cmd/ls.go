@@ -46,10 +46,10 @@ func runLs(cmd *cobra.Command, args []string) error {
 	if stageFilter != "" {
 		opts.Stage = ticket.Stage(stageFilter)
 	} else {
-		// No explicit stage: exclude done.
+		// No explicit stage: exclude done and backlog.
 		var filtered []*ticket.Ticket
 		for _, t := range tickets {
-			if t.Stage != ticket.StageDone {
+			if t.Stage != ticket.StageDone && t.Stage != ticket.StageBacklog {
 				filtered = append(filtered, t)
 			}
 		}
