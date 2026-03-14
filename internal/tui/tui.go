@@ -238,17 +238,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, func() tea.Msg { return cyclePriorityMsg{id: t.ID} }
 				}
 			case "v":
-				if a.dashboard.tab == tabVerify {
-					if t := a.dashboard.selected(); t != nil {
-						return a, a.handleVerify(t.ID)
-					}
+				if t := a.dashboard.selected(); t != nil && t.Stage == ticket.StageVerify {
+					return a, a.handleVerify(t.ID)
 				}
 			case "R":
-				if a.dashboard.tab == tabReview {
-					if t := a.dashboard.selected(); t != nil {
-						return a, func() tea.Msg {
-							return reviewMsg{id: t.ID, verdict: ticket.ReviewApproved}
-						}
+				if t := a.dashboard.selected(); t != nil && t.Review == ticket.ReviewPending {
+					return a, func() tea.Msg {
+						return reviewMsg{id: t.ID, verdict: ticket.ReviewApproved}
 					}
 				}
 			}

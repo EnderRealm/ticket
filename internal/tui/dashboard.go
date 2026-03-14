@@ -21,13 +21,14 @@ var (
 type inboxTab int
 
 const (
-	tabAll inboxTab = iota
+	tabBacklog inboxTab = iota
 	tabTriage
-	tabVerify
-	tabReview
+	tabInbox
+	tabDone
+	tabAll
 )
 
-var tabLabels = []string{"all", "triage", "verify", "review"}
+var tabLabels = []string{"backlog", "triage", "inbox", "done", "all"}
 
 type dashboardModel struct {
 	all            []*ticket.Ticket
@@ -47,6 +48,7 @@ type dashboardModel struct {
 func newDashboardModel(tickets []*ticket.Ticket, w, h int) dashboardModel {
 	m := dashboardModel{
 		all:    tickets,
+		tab:    tabTriage,
 		width:  w,
 		height: h,
 	}
@@ -83,9 +85,35 @@ func (m *dashboardModel) buildItems() {
 	needle := strings.ToLower(m.filterText)
 
 	for _, t := range m.all {
-		if t.Stage == "" || t.Stage == ticket.StageDone || t.Stage == ticket.StageBacklog {
+		if t.Stage == "" {
 			continue
 		}
+
+		// Per-tab stage filtering.
+		switch m.tab {
+		case tabBacklog:
+			if t.Stage != ticket.StageBacklog {
+				continue
+			}
+		case tabTriage:
+			if t.Stage != ticket.StageTriage {
+				continue
+			}
+		case tabInbox:
+			if t.Stage == ticket.StageDone || t.Stage == ticket.StageBacklog {
+				continue
+			}
+		case tabDone:
+			if t.Stage != ticket.StageDone {
+				continue
+			}
+		case tabAll:
+			// Show everything except done.
+			if t.Stage == ticket.StageDone {
+				continue
+			}
+		}
+
 		if m.typeFilter != "" && t.Type != m.typeFilter {
 			continue
 		}
@@ -98,24 +126,9 @@ func (m *dashboardModel) buildItems() {
 
 		item := ticket.NextAction(t)
 
-		// Non-"all" tabs only show human-actionable tickets.
-		if m.tab != tabAll {
+		// Inbox tab only shows human-actionable tickets.
+		if m.tab == tabInbox {
 			if item.Action != ticket.ActionHumanReview && item.Action != ticket.ActionHumanInput {
-				continue
-			}
-		}
-
-		switch m.tab {
-		case tabTriage:
-			if t.Stage != ticket.StageTriage {
-				continue
-			}
-		case tabVerify:
-			if t.Stage != ticket.StageVerify {
-				continue
-			}
-		case tabReview:
-			if t.Review != ticket.ReviewPending {
 				continue
 			}
 		}
@@ -313,14 +326,7 @@ func (m dashboardModel) view() string {
 	} else if m.filterText != "" {
 		b.WriteString(filterStyle.Render("filter: " + m.filterText + "  (/ to edit, esc clears)"))
 	} else {
-		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete"
-		switch m.tab {
-		case tabVerify:
-			help += "  (v)erify"
-		case tabReview:
-			help += "  (R)eview"
-		}
-		help += "  │  (q)uit"
+		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete  │  (q)uit"
 		b.WriteString(dashHelpStyle.Render(help))
 	}
 

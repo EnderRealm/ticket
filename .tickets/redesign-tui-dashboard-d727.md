@@ -1,12 +1,14 @@
 ---
 id: redesign-tui-dashboard-d727
-stage: backlog
+stage: done
+risk: low
 deps: []
 links: []
 created: 2026-03-14T18:32:59Z
 type: feature
 priority: 2
 tags: [tui, dashboard]
+skipped: [spec, design]
 ---
 # Redesign TUI dashboard tabs for backlog workflow
 
