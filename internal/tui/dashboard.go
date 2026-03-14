@@ -97,8 +97,12 @@ func (m *dashboardModel) buildItems() {
 		}
 
 		item := ticket.NextAction(t)
-		if item.Action != ticket.ActionHumanReview && item.Action != ticket.ActionHumanInput {
-			continue
+
+		// Non-"all" tabs only show human-actionable tickets.
+		if m.tab != tabAll {
+			if item.Action != ticket.ActionHumanReview && item.Action != ticket.ActionHumanInput {
+				continue
+			}
 		}
 
 		switch m.tab {
