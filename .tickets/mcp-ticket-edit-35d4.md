@@ -1,7 +1,6 @@
 ---
 id: mcp-ticket-edit-35d4
-stage: triage
-status: open
+stage: backlog
 deps: []
 links: []
 created: 2026-03-12T08:18:10Z

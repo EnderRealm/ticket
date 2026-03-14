@@ -1,7 +1,6 @@
 ---
 id: tk-ui-commands-f279
-stage: triage
-status: open
+stage: backlog
 deps: []
 links: []
 created: 2026-03-05T05:56:18Z

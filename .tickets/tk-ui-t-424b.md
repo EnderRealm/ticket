@@ -1,7 +1,6 @@
 ---
 id: tk-ui-t-424b
-stage: triage
-status: open
+stage: backlog
 deps: []
 links: []
 created: 2026-03-01T17:37:19Z

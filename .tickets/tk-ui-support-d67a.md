@@ -1,7 +1,6 @@
 ---
 id: tk-ui-support-d67a
-stage: triage
-status: open
+stage: backlog
 deps: []
 links: []
 created: 2026-03-05T07:09:04Z
