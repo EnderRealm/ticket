@@ -1,7 +1,6 @@
 ---
 id: if-sync-daemon-80df
-stage: triage
-status: open
+stage: backlog
 deps: []
 links: []
 created: 2026-03-05T05:37:10Z

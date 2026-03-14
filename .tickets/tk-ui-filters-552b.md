@@ -1,7 +1,6 @@
 ---
 id: tk-ui-filters-552b
-stage: triage
-status: open
+stage: backlog
 deps: []
 links: []
 created: 2026-03-01T17:38:07Z
