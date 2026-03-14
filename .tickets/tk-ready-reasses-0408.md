@@ -1,6 +1,7 @@
 ---
 id: tk-ready-reasses-0408
-stage: backlog
+stage: triage
+status: open
 deps: []
 links: []
 created: 2026-03-01T18:19:46Z

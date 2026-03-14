@@ -1,6 +1,6 @@
 ---
 id: test-ticket-custom-bca3
-stage: backlog
+stage: triage
 deps: []
 links: []
 created: 2026-03-13T01:32:56Z
