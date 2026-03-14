@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.0] - 2026-03-14
+
+### Changed
+- TUI: Dashboard tabs redesigned from `all|triage|verify|review` to `backlog|triage|inbox|done|all`
+- TUI: Default tab is now `triage` (was `all`)
+- TUI: `all` tab shows all active tickets, not just human-actionable ones
+- TUI: Verify/review keybindings now context-sensitive based on ticket state, not tab
+
 ## [4.0.0] - 2026-03-14
 
 ### Added
