@@ -37,7 +37,7 @@ func TestPipelineLengths(t *testing.T) {
 	}{
 		{TypeFeature, 8},
 		{TypeBug, 6},
-		{TypeChore, 4},
+		{TypeChore, 5},
 		{TypeEpic, 5},
 		{TypeTask, 6},
 	}
@@ -57,8 +57,8 @@ func TestHasStage(t *testing.T) {
 		}
 	}
 
-	// Chores skip spec, design, test, verify.
-	for _, s := range []Stage{StageSpec, StageDesign, StageTest, StageVerify} {
+	// Chores skip spec, design, test.
+	for _, s := range []Stage{StageSpec, StageDesign, StageTest} {
 		if HasStage(TypeChore, s) {
 			t.Errorf("HasStage(chore, %s) = true, want false", s)
 		}

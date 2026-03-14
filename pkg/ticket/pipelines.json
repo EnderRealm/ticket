@@ -25,24 +25,24 @@
     },
     "bug": {
       "default": ["backlog", "triage", "implement", "test", "verify", "done"],
-      "low":     ["backlog", "triage", "implement", "done"],
+      "low":     ["backlog", "triage", "implement", "verify", "done"],
       "normal":  ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
       "high":    ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
       "critical":["backlog", "triage", "implement", "code-review", "test", "verify", "done"]
     },
     "task": {
       "default": ["backlog", "triage", "implement", "test", "verify", "done"],
-      "low":     ["backlog", "triage", "implement", "done"],
+      "low":     ["backlog", "triage", "implement", "verify", "done"],
       "normal":  ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
       "high":    ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
       "critical":["backlog", "triage", "implement", "code-review", "test", "verify", "done"]
     },
     "chore": {
-      "default": ["backlog", "triage", "implement", "done"],
-      "low":     ["backlog", "triage", "implement", "done"],
-      "normal":  ["backlog", "triage", "implement", "done"],
-      "high":    ["backlog", "triage", "implement", "done"],
-      "critical":["backlog", "triage", "implement", "done"]
+      "default": ["backlog", "triage", "implement", "verify", "done"],
+      "low":     ["backlog", "triage", "implement", "verify", "done"],
+      "normal":  ["backlog", "triage", "implement", "verify", "done"],
+      "high":    ["backlog", "triage", "implement", "verify", "done"],
+      "critical":["backlog", "triage", "implement", "verify", "done"]
     },
     "epic": {
       "default": ["backlog", "triage", "spec", "design", "done"],
@@ -79,9 +79,6 @@
     },
     "implement>test": {
       "structural": ["code_review_approved", "impl_review_approved"]
-    },
-    "implement>done": {
-      "structural": ["advisory_review_surfaced"]
     },
     "code-review>test": {
       "structural": ["review_approved"]

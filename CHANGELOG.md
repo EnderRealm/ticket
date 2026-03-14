@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.1.1] - 2026-03-14
+
+### Fixed
+- Pipeline: Add `verify` stage to bug/low, task/low, and all chore pipeline variants that previously went directly from implement to done
+- Pipeline: Remove dead `implement>done` gate (no pipeline variant uses this transition)
+
 ## [4.1.0] - 2026-03-14
 
 ### Changed

@@ -142,20 +142,18 @@ func TestCheckGates_BacklogToTriage_NoDescription(t *testing.T) {
 	}
 }
 
-func TestCheckGates_ChoreImplementToDone(t *testing.T) {
-	tk := gateTicket(StageImplement, TypeChore)
+func TestCheckGates_ChoreVerifyToDone(t *testing.T) {
+	tk := gateTicket(StageVerify, TypeChore)
 	// No reviews — should fail.
 	errs := CheckGates(tk, StageDone)
 	if len(errs) == 0 {
-		t.Error("chore implement→done without advisory review should fail")
+		t.Error("chore verify→done without review should fail")
 	}
 
-	// Add a review.
-	tk.Reviews = []ReviewRecord{
-		{Reviewer: "agent:code-review", Verdict: "approved"},
-	}
+	// Approve the review.
+	tk.Review = ReviewApproved
 	errs = CheckGates(tk, StageDone)
 	if len(errs) != 0 {
-		t.Errorf("chore implement→done with review should pass, got %v", errs)
+		t.Errorf("chore verify→done with review should pass, got %v", errs)
 	}
 }
