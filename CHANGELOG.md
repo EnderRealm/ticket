@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [4.0.0] - 2026-03-14
 
 ### Added
 - Pipeline: `backlog` stage before `triage` for all ticket types. Full pipeline: backlog → triage → spec → design → implement → test → verify → done
