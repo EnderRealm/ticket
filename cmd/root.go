@@ -25,7 +25,7 @@ Viewing:
   backlog [filters]          List tickets in the backlog
   ready [filters]            Tickets with all deps resolved and parent in_progress
   blocked [filters]          Tickets with unresolved deps
-  closed [--limit=N] [filters]  Recently closed (default limit: 20)
+  done [--limit=N] [filters]    Recently done (default limit: 20)
 
 Creating & Editing:
   create [title] [options]   Create ticket (interactive if no title)
@@ -91,7 +91,7 @@ Filter flags for ls:
   --group-by=X       Group by: workflow | pipeline | type | priority
   --flat             Flat list (no grouping)
 
-Filter flags for ready, blocked, closed:
+Filter flags for ready, blocked, done:
   -a, --assignee=X   Filter by assignee
   -T, --tag=X        Filter by tag
   ready also accepts: --open (skip parent hierarchy checks)

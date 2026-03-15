@@ -9,20 +9,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var closedCmd = &cobra.Command{
-	Use:   "closed",
-	Short: "Show recently closed tickets",
-	RunE:  runClosed,
+var doneCmd = &cobra.Command{
+	Use:   "done",
+	Short: "Show recently done tickets",
+	RunE:  runDone,
 }
 
 func init() {
-	addFilterFlags(closedCmd)
-	closedCmd.Flags().Int("limit", 20, "maximum number of tickets to show")
+	addFilterFlags(doneCmd)
+	doneCmd.Flags().Int("limit", 20, "maximum number of tickets to show")
 
-	rootCmd.AddCommand(closedCmd)
+	rootCmd.AddCommand(doneCmd)
 }
 
-func runClosed(cmd *cobra.Command, args []string) error {
+func runDone(cmd *cobra.Command, args []string) error {
 	store := ticket.NewFileStore(TicketsDir())
 	tickets, err := store.List()
 	if err != nil {
@@ -30,15 +30,15 @@ func runClosed(cmd *cobra.Command, args []string) error {
 	}
 
 	// Filter to done only.
-	var closed []*ticket.Ticket
+	var done []*ticket.Ticket
 	for _, t := range tickets {
 		if t.Stage == ticket.StageDone {
-			closed = append(closed, t)
+			done = append(done, t)
 		}
 	}
 
 	opts := parseFilterFlags(cmd)
-	closed = ticket.Filter(closed, opts)
+	done = ticket.Filter(done, opts)
 
 	// Sort by file mtime (most recent first).
 	dir := TicketsDir()
@@ -47,7 +47,7 @@ func runClosed(cmd *cobra.Command, args []string) error {
 		mtime  int64
 	}
 	var mt []mtimeTicket
-	for _, t := range closed {
+	for _, t := range done {
 		info, err := os.Stat(filepath.Join(dir, t.ID+".md"))
 		mtime := int64(0)
 		if err == nil {

@@ -18,6 +18,7 @@ const (
 	viewPipeline
 	viewDetail
 	viewForm
+	viewReview
 )
 
 // App is the top-level bubbletea model.
@@ -29,6 +30,7 @@ type App struct {
 	detail     detailModel
 	form       formModel
 	pipeline   pipelineModel
+	review     reviewModel
 	current    view
 	prevView   view // view to return to from detail/form
 	width      int
@@ -81,6 +83,19 @@ type reviewMsg struct {
 	verdict ticket.ReviewState
 }
 
+// reviewApproveMsg approves a ticket from the review view.
+type reviewApproveMsg struct {
+	id    string
+	notes string
+}
+
+// reviewRejectMsg rejects a ticket from the review view with feedback and stage revert.
+type reviewRejectMsg struct {
+	id    string
+	notes string
+	stage ticket.Stage
+}
+
 // skipMsg skips a ticket ahead in the pipeline.
 type skipMsg struct {
 	id string
@@ -130,6 +145,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.detail.setSize(a.width, a.height)
 		a.form.setSize(a.width, a.height)
 		a.pipeline.setSize(a.width, a.height)
+		a.review.setSize(a.width, a.height)
 		return a, nil
 
 	case fileChangedMsg:
@@ -147,6 +163,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, t := range a.tickets {
 				if t.ID == a.detail.ticket.ID {
 					a.detail = newDetailModel(t, a.width, a.height)
+					break
+				}
+			}
+		}
+		// Refresh review view if currently showing a ticket.
+		if a.current == viewReview && a.review.ticket != nil {
+			for _, t := range a.tickets {
+				if t.ID == a.review.ticket.ID {
+					a.review = newReviewModel(t, a.width, a.height)
 					break
 				}
 			}
@@ -181,6 +206,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleAdvance(msg.id, msg.force)
 	case reviewMsg:
 		return a, a.handleReview(msg.id, msg.verdict)
+	case reviewApproveMsg:
+		return a, a.handleReviewApprove(msg.id, msg.notes)
+	case reviewRejectMsg:
+		return a, a.handleReviewReject(msg.id, msg.notes, msg.stage)
 	case skipMsg:
 		return a, a.handleSkip(msg.id)
 	case deleteTicketMsg:
@@ -241,6 +270,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if t := a.dashboard.selected(); t != nil && t.Stage == ticket.StageVerify {
 					return a, a.handleVerify(t.ID)
 				}
+			case "r":
+				if t := a.dashboard.selected(); t != nil && t.Stage == ticket.StageVerify {
+					a.review = newReviewModel(t, a.width, a.height)
+					a.prevView = viewDashboard
+					a.current = viewReview
+					return a, nil
+				}
 			case "R":
 				if t := a.dashboard.selected(); t != nil && t.Review == ticket.ReviewPending {
 					return a, func() tea.Msg {
@@ -275,6 +311,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.prevView = viewDetail
 				a.current = viewForm
 				return a, nil
+			}
+
+		case viewReview:
+			if a.review.inputActive() {
+				break // let review handle input
+			}
+			switch msg.String() {
+			case "esc":
+				a.current = a.prevView
+				return a, nil
+			case "q":
+				return a, tea.Quit
 			}
 
 		case viewPipeline:
@@ -354,6 +402,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		a.pipeline, cmd = a.pipeline.update(msg)
 		return a, cmd
+	case viewReview:
+		var cmd tea.Cmd
+		a.review, cmd = a.review.update(msg)
+		return a, cmd
 	}
 
 	return a, nil
@@ -374,6 +426,8 @@ func (a App) View() string {
 		content = a.form.view()
 	case viewPipeline:
 		content = a.pipeline.view()
+	case viewReview:
+		content = a.review.view()
 	}
 
 	if a.status != "" {
@@ -624,6 +678,50 @@ func (a *App) handleVerify(id string) tea.Cmd {
 	}
 
 	msg := fmt.Sprintf("%s: verified ✓", id)
+	return tea.Batch(
+		loadTickets(a.store),
+		func() tea.Msg { return statusMsg(msg) },
+	)
+}
+
+func (a *App) handleReviewApprove(id, notes string) tea.Cmd {
+	if err := ticket.SetReview(a.store, id, "human:tui", ticket.ReviewApproved, notes); err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
+
+	result, err := ticket.Advance(a.store, id, ticket.AdvanceOptions{})
+	a.current = a.prevView
+	if err != nil {
+		msg := fmt.Sprintf("%s: approved (advance failed: %s)", id, err.Error())
+		return tea.Batch(
+			loadTickets(a.store),
+			func() tea.Msg { return statusMsg(msg) },
+		)
+	}
+
+	msg := fmt.Sprintf("%s: approved, %s -> %s", id, result.From, result.To)
+	return tea.Batch(
+		loadTickets(a.store),
+		func() tea.Msg { return statusMsg(msg) },
+	)
+}
+
+func (a *App) handleReviewReject(id, notes string, stage ticket.Stage) tea.Cmd {
+	if err := ticket.SetReview(a.store, id, "human:tui", ticket.ReviewRejected, notes); err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
+
+	result, err := ticket.Revert(a.store, id, stage, notes)
+	a.current = a.prevView
+	if err != nil {
+		msg := fmt.Sprintf("%s: rejected (revert failed: %s)", id, err.Error())
+		return tea.Batch(
+			loadTickets(a.store),
+			func() tea.Msg { return statusMsg(msg) },
+		)
+	}
+
+	msg := fmt.Sprintf("%s: rejected, reverted to %s", id, result.To)
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(msg) },

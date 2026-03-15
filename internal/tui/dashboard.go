@@ -368,7 +368,7 @@ func (m dashboardModel) view() string {
 		prompt := fmt.Sprintf("Delete %s? (y)es / (n)o", m.deleteTargetID)
 		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(prompt))
 	} else {
-		help := "tab ↑↓  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete  │  (q)uit"
+		help := "tab ↑↓  │  enter (o)pen (c)reate (e)dit (r)eview  │  (p)riority (m)ove (d)elete  │  (q)uit"
 		b.WriteString(dashHelpStyle.Render(help))
 	}
 
