@@ -256,6 +256,49 @@ func TestEditStage(t *testing.T) {
 	}
 }
 
+func TestEditBacklogTicketNonStageField(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket (defaults to backlog).
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Backlog edit test", "type": "task"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+	if created["stage"] != "backlog" {
+		t.Fatalf("new ticket stage = %q, want backlog", created["stage"])
+	}
+
+	// Editing a non-stage field on a backlog ticket must succeed.
+	// Regression: previously failed with "invalid stage backlog: not defined in pipeline configuration".
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "risk": "high"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("editing risk on backlog ticket failed: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var edited map[string]any
+	json.Unmarshal([]byte(text), &edited)
+	if edited["stage"] != "backlog" {
+		t.Errorf("stage after edit = %q, want backlog", edited["stage"])
+	}
+	if edited["risk"] != "high" {
+		t.Errorf("risk after edit = %q, want high", edited["risk"])
+	}
+}
+
 func TestAddNotePreservesNewlines(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
