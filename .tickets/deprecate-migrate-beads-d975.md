@@ -1,7 +1,6 @@
 ---
 id: deprecate-migrate-beads-d975
-stage: triage
-risk: low
+stage: backlog
 deps: []
 links: []
 created: 2026-03-12T19:04:38Z
