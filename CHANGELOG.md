@@ -4,6 +4,7 @@
 
 ### Added
 - TUI: Dashboard now shows active type filter on a dedicated filter line (matches pipeline view)
+- TUI: Dashboard supports pgup/pgdn for page navigation and mouse scroll wheel
 
 ## [4.1.1] - 2026-03-14
 

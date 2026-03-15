@@ -240,6 +240,18 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				m.cursor++
 				m.clampOffset()
 			}
+		case "pgup":
+			m.cursor -= m.visibleRows()
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			m.clampOffset()
+		case "pgdown":
+			m.cursor += m.visibleRows()
+			if m.cursor > len(m.items)-1 {
+				m.cursor = max(0, len(m.items)-1)
+			}
+			m.clampOffset()
 		case "g":
 			m.cursor = 0
 			m.clampOffset()
@@ -263,6 +275,21 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				m.filterText = ""
 				m.buildItems()
 			}
+		}
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.cursor -= 3
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			m.clampOffset()
+		case tea.MouseButtonWheelDown:
+			m.cursor += 3
+			if m.cursor > len(m.items)-1 {
+				m.cursor = max(0, len(m.items)-1)
+			}
+			m.clampOffset()
 		}
 	}
 	return m, nil
