@@ -30,14 +30,14 @@ func TestAdvance_NextStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Advance: %v", err)
 	}
-	if result.From != StageTriage || result.To != StageImplement {
-		t.Errorf("Advance = %s→%s, want triage→implement", result.From, result.To)
+	if result.From != StageTriage || result.To != StageSpec {
+		t.Errorf("Advance = %s→%s, want triage→spec", result.From, result.To)
 	}
 
 	// Verify persisted.
 	updated, _ := store.Get("t-adv")
-	if updated.Stage != StageImplement {
-		t.Errorf("persisted stage = %s, want implement", updated.Stage)
+	if updated.Stage != StageSpec {
+		t.Errorf("persisted stage = %s, want spec", updated.Stage)
 	}
 }
 
@@ -122,13 +122,13 @@ func TestSkip(t *testing.T) {
 	if result.To != StageImplement {
 		t.Errorf("skip to = %s, want implement", result.To)
 	}
-	if len(result.Skipped) != 2 { // skipped spec and design
-		t.Errorf("skipped %d stages, want 2", len(result.Skipped))
+	if len(result.Skipped) != 3 { // skipped spec, design, design-review
+		t.Errorf("skipped %d stages, want 3", len(result.Skipped))
 	}
 
 	updated, _ := store.Get("t-skip")
-	if len(updated.Skipped) != 2 {
-		t.Errorf("persisted skipped = %d, want 2", len(updated.Skipped))
+	if len(updated.Skipped) != 3 {
+		t.Errorf("persisted skipped = %d, want 3", len(updated.Skipped))
 	}
 }
 

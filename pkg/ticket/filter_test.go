@@ -89,11 +89,11 @@ func TestSortByStagePriorityID(t *testing.T) {
 	tickets := makeTickets()
 	SortByStagePriorityID(tickets)
 
-	// Stage order is pipeline-dependent. For these types:
-	// triage(0) < implement(1) < done(last)
+	// Stage order is pipeline-dependent. StageIndex for each ticket's type:
+	// t-003: feature triage=1, t-001: task triage=1, t-002: bug implement=2,
+	// t-004: epic done=4, t-005: chore implement=5
 	// Within same stage index, lower priority number first.
-	// t-003 (triage, P1), t-001 (triage, P2), t-002 (implement, P0), t-005 (implement, P3), t-004 (done, P1)
-	expected := []string{"t-003", "t-001", "t-002", "t-005", "t-004"}
+	expected := []string{"t-003", "t-001", "t-002", "t-004", "t-005"}
 	got := ids(tickets)
 	for i, id := range expected {
 		if got[i] != id {

@@ -620,11 +620,11 @@ assert_contains "tk show $STAGE2" "stage: triage" "New bug has stage: triage"
 log_section "STAGE PIPELINE — ADVANCE"
 # ============================================================================
 
-# Advance a chore: triage → implement (needs description)
+# Advance a chore: triage → spec (chore now follows feature pipeline)
 CHORE=$(tk create "Advance Test Chore" -t chore -d "Has a description" | extract_id)
 track_id "$CHORE"
-assert_ok "tk advance $CHORE" "Advance chore triage → implement"
-assert_contains "tk show $CHORE" "stage: implement" "Chore advanced to implement"
+assert_ok "tk advance $CHORE" "Advance chore triage → spec"
+assert_contains "tk show $CHORE" "stage: spec" "Chore advanced to spec"
 
 # Advance without gate satisfaction should fail
 FEAT=$(tk create "Advance Test Feature" -t feature -d "Feature description" | extract_id)

@@ -17,32 +17,32 @@
   ],
   "pipelines": {
     "feature": {
-      "default": ["backlog", "triage", "spec", "design", "implement", "test", "verify", "done"],
-      "low":      ["backlog", "triage", "spec", "design", "implement", "test", "verify", "done"],
-      "normal":   ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
-      "high":     ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
-      "critical": ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
+      "default": ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "low":     ["backlog", "triage", "spec", "design", "implement", "test", "verify", "done"],
+      "normal":  ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "high":    ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "critical":["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
     },
     "bug": {
-      "default": ["backlog", "triage", "implement", "test", "verify", "done"],
+      "default": ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
       "low":     ["backlog", "triage", "implement", "verify", "done"],
       "normal":  ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
-      "high":    ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
-      "critical":["backlog", "triage", "implement", "code-review", "test", "verify", "done"]
+      "high":    ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "critical":["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
     },
     "task": {
-      "default": ["backlog", "triage", "implement", "test", "verify", "done"],
-      "low":     ["backlog", "triage", "implement", "verify", "done"],
-      "normal":  ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
-      "high":    ["backlog", "triage", "implement", "code-review", "test", "verify", "done"],
-      "critical":["backlog", "triage", "implement", "code-review", "test", "verify", "done"]
+      "default": ["backlog", "triage", "done"],
+      "low":     ["backlog", "triage", "done"],
+      "normal":  ["backlog", "triage", "done"],
+      "high":    ["backlog", "triage", "done"],
+      "critical":["backlog", "triage", "done"]
     },
     "chore": {
-      "default": ["backlog", "triage", "implement", "verify", "done"],
-      "low":     ["backlog", "triage", "implement", "verify", "done"],
-      "normal":  ["backlog", "triage", "implement", "verify", "done"],
-      "high":    ["backlog", "triage", "implement", "verify", "done"],
-      "critical":["backlog", "triage", "implement", "verify", "done"]
+      "default": ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "low":     ["backlog", "triage", "spec", "design", "implement", "test", "verify", "done"],
+      "normal":  ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "high":    ["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"],
+      "critical":["backlog", "triage", "spec", "design", "design-review", "implement", "code-review", "test", "verify", "done"]
     },
     "epic": {
       "default": ["backlog", "triage", "spec", "design", "done"],
@@ -60,6 +60,9 @@
       "structural": ["description_exists"]
     },
     "triage>implement": {
+      "structural": ["description_exists"]
+    },
+    "triage>done": {
       "structural": ["description_exists"]
     },
     "spec>design": {

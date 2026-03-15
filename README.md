@@ -135,13 +135,13 @@ Tickets progress through type-dependent stage pipelines:
 
 | Type | Pipeline |
 |------|----------|
-| feature | backlog → triage → spec → design → implement → test → verify → done |
-| bug | backlog → triage → implement → test → verify → done |
-| task | backlog → triage → implement → test → verify → done |
-| chore | backlog → triage → implement → done |
+| feature | backlog → triage → spec → design → design-review → implement → code-review → test → verify → done |
+| bug | backlog → triage → implement → code-review → test → verify → done |
+| task | backlog → triage → done |
+| chore | backlog → triage → spec → design → design-review → implement → code-review → test → verify → done |
 | epic | backlog → triage → spec → design → done |
 
-Gate checks enforce preconditions at stage transitions (e.g., acceptance criteria before spec → design, review approval before implement → test). Gates scale by risk level: low (advisory), normal (standard), high/critical (strict).
+These are the default (normal risk) pipelines. Risk level controls pipeline shape: low-risk skips review stages, high/critical-risk bugs get the full feature pipeline (spec, design, design-review). Gate checks enforce preconditions at stage transitions (e.g., acceptance criteria before spec → design, review approval before design-review → implement).
 
 ### Filter Flags
 

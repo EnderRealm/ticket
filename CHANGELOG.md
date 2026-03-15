@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [4.2.0] - 2026-03-15
+
+### Changed
+- Pipeline: default variant now equals normal for all ticket types (adds review stages)
+- Pipeline: high/critical-risk bugs get the full feature pipeline (spec, design, design-review, code-review)
+- Pipeline: chores now follow feature risk pipelines (were previously flat)
+- Pipeline: tasks simplified to backlog → triage → done (research only, no code stages)
 
 ### Added
 - TUI: Dashboard now shows active type filter on a dedicated filter line (matches pipeline view)
