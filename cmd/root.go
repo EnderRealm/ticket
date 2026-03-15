@@ -80,7 +80,6 @@ Interactive:
 
 Other:
   workflow                   Ticket workflow guide (types, stages, conventions)
-  migrate-beads              Import from .beads/issues.jsonl
 
 Filter flags for ls:
   --stage=X          backlog | triage | spec | design | implement | test | verify | done
