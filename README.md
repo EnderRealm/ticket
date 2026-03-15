@@ -87,7 +87,7 @@ Viewing:
   backlog [filters]          List tickets in the backlog
   ready [filters]            Tickets with all deps resolved and parent in_progress
   blocked [filters]          Tickets with unresolved deps
-  closed [--limit=N]         Recently closed tickets
+  done [--limit=N]           Recently done tickets
 
 Creating & Editing:
   create [title] [options]   Create ticket (interactive if no title)
