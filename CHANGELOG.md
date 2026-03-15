@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [4.3.0] - 2026-03-15
 
 ### Added
 - TUI: Review flow for verify-stage tickets — press `r` in dashboard to open full review view with git checkout command, PR URL, and acceptance criteria; approve with optional notes or reject with feedback and stage picker
