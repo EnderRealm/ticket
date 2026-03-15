@@ -168,6 +168,14 @@ tk edit <id> --set env=               # remove
 
 Extra fields appear in `tk show` output, `tk query` JSONL (under `extra`), and MCP responses.
 
+### Bulk Operations
+
+Move all triage tickets to backlog:
+
+```bash
+tk query '.stage == "triage"' | jq -r '.id' | xargs -I{} tk revert {} --to backlog --reason "moving to backlog"
+```
+
 Partial ID matching: `tk show 5c4` matches `nw-5c46`.
 
 ## Releasing
