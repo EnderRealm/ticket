@@ -1,7 +1,6 @@
 ---
 id: tk-ui-support-c849
-stage: implement
-status: closed
+stage: done
 risk: low
 deps: []
 links: []
@@ -11,6 +10,7 @@ priority: 1
 skipped: [design]
 ---
 # 'tk ui' support ctrl+j for newline in edit and create textboxes
+
 
 Add ctrl+j support for inserting newlines in the TUI form textboxes (description and note fields). Currently all text fields are single-line only — enter submits the form. Multi-line fields should allow ctrl+j to insert a literal newline while enter continues to submit. ctrl+j sends LF (linefeed) which bubbletea reliably detects on all terminals without configuration.
 

@@ -1,16 +1,16 @@
 ---
 id: tk-ui-add-3f61
 stage: implement
-status: open
 risk: low
 deps: []
 links: []
 created: 2026-03-05T05:34:22Z
 type: feature
-priority: 4
+priority: 2
 branch: forge/tk-ui-add-3f61
 ---
 # 'tk ui' add two additional spaces between id and title columns
+
 
 ## Acceptance Criteria
 
@@ -28,19 +28,6 @@ Add two additional spaces (from 1 to 3) between the ID and TITLE columns in the 
 3. When a ticket has an active review indicator (`●`) prepended to the ID, the system shall still use exactly 3 spaces between the ID text and the title, verified by the same row unit test with `t.Review = ticket.ReviewPending`.
 
 4. When the dashboard is rendered with zero tickets, the system shall not panic and shall still emit the column header with 3 spaces between ID and TITLE, verified by unit test calling `view()` on an empty `dashboardModel`.
-
-## Scope
-
-### In Scope
-- `internal/tui/dashboard.go`: Change the header format string on line 283 from `"%-*s %s"` to `"%-*s   %s"` (1→3 spaces), and the row format string on line 350 from `"%s%s %s"` (the tail) to `"%s%s   %s"` (1→3 spaces).
-- `internal/tui/dashboard_test.go` _(new file)_: Unit tests verifying the 3-space separation in the header and `renderRow` output.
-
-### Out of Scope
-- `internal/tui/pipeline.go`: The pipeline Kanban view uses card-based layout, not ID/TITLE columns; no change needed.
-- `cmd/ls.go` or any other list-rendering code outside the TUI package.
-- Column widths, colors, or any other formatting changes beyond the requested spacing.
-
-### #####################################################################
 
 ## Design
 
