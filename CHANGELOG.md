@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- TUI: Dashboard now shows active type filter on a dedicated filter line (matches pipeline view)
+
 ## [4.1.1] - 2026-03-14
 
 ### Fixed

@@ -7,7 +7,6 @@ links: []
 created: 2026-03-12T19:04:38Z
 type: chore
 priority: 4
-branch: forge/deprecate-migrate-beads-d975
 run_id: orch-mmr3v0yu-p83i5r
 ---
 # Deprecate 'migrate-beads'

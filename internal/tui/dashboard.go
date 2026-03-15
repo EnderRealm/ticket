@@ -176,8 +176,8 @@ func (m *dashboardModel) clampOffset() {
 }
 
 func (m dashboardModel) visibleRows() int {
-	// Reserve: 1 tabs, 1 header, 1 filter/help bar.
-	rows := m.height - 3
+	// Reserve: 1 tabs, 1 header, 1 filter line, 1 help bar.
+	rows := m.height - 4
 	if rows < 1 {
 		rows = 1
 	}
@@ -317,16 +317,31 @@ func (m dashboardModel) view() string {
 		b.WriteString("\n")
 	}
 
-	// Filter / help bar.
+	// Filter line.
+	var filterLine string
+	if m.filterActive {
+		filterLine = filterStyle.Render("/ " + m.filterText + "█")
+	} else if m.filterText != "" {
+		filterLine = filterStyle.Render("filter: " + m.filterText + "  (/ to edit, esc clears)")
+	} else {
+		var parts []string
+		if m.typeFilter != "" {
+			parts = append(parts, fmt.Sprintf("type: %s", m.typeFilter))
+		} else {
+			parts = append(parts, "all types")
+		}
+		parts = append(parts, "(t type, / search)")
+		filterLine = filterStyle.Render(strings.Join(parts, "  "))
+	}
+	b.WriteString(filterLine)
+	b.WriteString("\n")
+
+	// Help bar / delete confirmation.
 	if m.confirmDelete {
 		prompt := fmt.Sprintf("Delete %s? (y)es / (n)o", m.deleteTargetID)
 		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(prompt))
-	} else if m.filterActive {
-		b.WriteString(filterStyle.Render("/ " + m.filterText + "█"))
-	} else if m.filterText != "" {
-		b.WriteString(filterStyle.Render("filter: " + m.filterText + "  (/ to edit, esc clears)"))
 	} else {
-		help := "tab ↑↓ / t filter  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete  │  (q)uit"
+		help := "tab ↑↓  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete  │  (q)uit"
 		b.WriteString(dashHelpStyle.Render(help))
 	}
 
