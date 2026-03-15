@@ -1,6 +1,6 @@
 ---
 id: add-verify-stage-d34c
-stage: verify
+stage: done
 risk: normal
 deps: []
 links: []
@@ -47,6 +47,9 @@ APPROVED — All 3 acceptance criteria met. Bug/low, task/low, and all chore var
 **2026-03-14T21:25:39Z [agent:code-reviewer]**
 APPROVED — Clean, minimal change following existing conventions. No security concerns. Tests properly validate both failure and success paths for new transitions.
 
+**2026-03-14T21:34:02Z [human:steve]**
+APPROVED — Approved for release. Committed as v4.1.1.
+
 ## Notes
 
 **2026-03-14T21:23:35Z**
@@ -76,3 +79,7 @@ Fix applied: added verify before done in bug/low, task/low, and all 5 chore vari
 
 ### Failures
 None.
+
+**2026-03-15T00:52:51Z**
+
+Already implemented as part of add-backlog-stage-d553. All non-epic pipeline variants already include verify in pipelines.json.
