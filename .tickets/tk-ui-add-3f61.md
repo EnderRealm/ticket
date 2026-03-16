@@ -8,9 +8,9 @@ created: 2026-03-05T05:34:22Z
 type: feature
 priority: 2
 branch: forge/tk-ui-add-3f61
+run_id: orch-mmsrkl87-5yernu
 ---
 # 'tk ui' add two additional spaces between id and title columns
-
 
 ## Acceptance Criteria
 
@@ -89,5 +89,39 @@ The new test file lives in the same `tui` package (package-internal, not `tui_te
 - **No `newDashboardModel` call in tests**: `newDashboardModel` calls `buildItems()`, which filters tickets by stage and action kind. Constructing `dashboardModel{width: 80, height: 10}` directly and populating `InboxItem` manually avoids the filter logic and keeps tests focused on rendering only. This matches the spirit of the acceptance criteria which calls `renderRow` directly.
 
 - **No ANSI-stripping in assertions**: In a non-TTY environment (Go test runner), lipgloss detects no terminal and emits unstyled output. The rendered strings for `idText` (non-selected row) and `t.Title` will be plain ASCII. This assumption is consistent with how `form_test.go` is written.
+
+### #####################################################################
+
+## Notes
+
+**2026-03-16T05:51:01Z**
+
+### Agent: Grimnar (surgical-coder) during implement @ 2026-03-16T05:51:01.119Z
+### #####################################################################
+
+## Summary
+
+### What changed and why
+
+Added two additional spaces (1 → 3) between the ID and TITLE columns in the `tk ui` dashboard, applied consistently to the header and data rows. Created a new test file with four unit tests covering all acceptance criteria.
+
+### Files modified
+
+1. **`internal/tui/dashboard.go`**
+   - **Line 327** (header format string in `view()`): Changed `%-*s %s` → `%-*s   %s` (1 space → 3 spaces between ID and TITLE columns)
+   - **Line 402** (row format string in `renderRow()`): Changed `%s %s` → `%s   %s` (1 space → 3 spaces between idText and t.Title)
+
+2. **`internal/tui/dashboard_test.go`** (new file)
+   - `TestDashboardHeaderThreeSpacesBetweenIDAndTitle` — AC1
+   - `TestRenderRowThreeSpacesBetweenIDAndTitle` — AC2
+   - `TestRenderRowReviewPendingThreeSpaces` — AC3
+   - `TestDashboardEmptyNoPanic` — AC4
+
+### Verification results
+
+- **Build:** PASS
+- **go vet:** PASS
+- **Tests (internal/tui):** 4/4 PASS
+- **Full suite:** 1 pre-existing failure in `pkg/ticket` (unrelated YAML parse error on `tk-ui-cursor-cc4b.md`)
 
 ### #####################################################################
