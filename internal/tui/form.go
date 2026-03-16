@@ -262,7 +262,7 @@ func (m formModel) view() string {
 		case fieldType:
 			var parts []string
 			for j, tt := range ticketTypes {
-				s := string(tt)
+				s := lipgloss.NewStyle().Foreground(typeColors[tt]).Render(string(tt))
 				if j == m.typeIdx {
 					s = formCursorStyle.Render("[" + s + "]")
 				}
