@@ -1,6 +1,6 @@
 ---
 id: tk-ui-cursor-cc4b
-stage: implement
+stage: done
 risk: low
 deps: []
 links: []
@@ -12,6 +12,11 @@ branch: forge/tk-ui-cursor-cc4b
 # 'tk ui' cursor highlighting on Priority is messed up
 
 The cursor is one yellow bar and one white bar. Same for Stage cursor. But the Type cursor is two yellow bars. Should be consistent. Also not sure colors of priorites and stages match color choices on the dashboard. And types don't have colors. Just in general colors on the edit/view page are kind of messed up.
+
+## Review Log
+
+**2026-03-16T05:10:34Z [human:tui]**
+APPROVED — Looks good!
 
 ## Notes
 
