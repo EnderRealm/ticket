@@ -303,16 +303,20 @@ func (m detailModel) render() []string {
 	lines = append(lines, m.field("Title", t.Title))
 	lines = append(lines, m.field("ID", t.ID))
 	if t.Stage != "" {
-		lines = append(lines, m.field("Stage", string(t.Stage)))
+		stageStyle := lipgloss.NewStyle().Foreground(stageColors[t.Stage])
+		lines = append(lines, m.field("Stage", stageStyle.Render(string(t.Stage))))
 	}
 	if t.Review != "" {
-		lines = append(lines, m.field("Review", string(t.Review)))
+		reviewStyle := lipgloss.NewStyle().Foreground(reviewColors[t.Review])
+		lines = append(lines, m.field("Review", reviewStyle.Render(string(t.Review))))
 	}
 	if t.Risk != "" {
 		lines = append(lines, m.field("Risk", string(t.Risk)))
 	}
-	lines = append(lines, m.field("Type", string(t.Type)))
-	lines = append(lines, m.field("Priority", fmt.Sprintf("P%d", t.Priority)))
+	typeStyle := lipgloss.NewStyle().Foreground(typeColors[t.Type])
+	lines = append(lines, m.field("Type", typeStyle.Render(string(t.Type))))
+	priStyle := lipgloss.NewStyle().Foreground(priorityColors[t.Priority])
+	lines = append(lines, m.field("Priority", priStyle.Render(fmt.Sprintf("P%d", t.Priority))))
 
 	if t.Assignee != "" {
 		lines = append(lines, m.field("Assignee", t.Assignee))
