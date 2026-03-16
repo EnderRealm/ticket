@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- CLI: `tk show --metadata` flag to display only frontmatter fields and description (omits notes, reviews, relationships)
+
 ## [4.3.0] - 2026-03-15
 
 ### Added

@@ -131,7 +131,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return showTicket(store, id)
+	return showTicket(store, id, false)
 }
 
 func gitUserName() string {

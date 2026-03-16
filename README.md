@@ -82,7 +82,7 @@ Run `tk help` for the full command reference. Key commands:
 
 ```
 Viewing:
-  show <id>                  Display ticket details
+  show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
   backlog [filters]          List tickets in the backlog
   ready [filters]            Tickets with all deps resolved and parent in_progress
