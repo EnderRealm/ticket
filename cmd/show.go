@@ -17,26 +17,41 @@ var showCmd = &cobra.Command{
 }
 
 func init() {
+	showCmd.Flags().Bool("metadata", false, "show only frontmatter fields and description")
 	rootCmd.AddCommand(showCmd)
 }
 
 func runShow(cmd *cobra.Command, args []string) error {
+	metadataOnly, _ := cmd.Flags().GetBool("metadata")
 	store := ticket.NewFileStore(TicketsDir())
 	for i, id := range args {
 		if i > 0 {
 			fmt.Println()
 		}
-		if err := showTicket(store, id); err != nil {
+		if err := showTicket(store, id, metadataOnly); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func showTicket(store *ticket.FileStore, id string) error {
+func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	t, err := store.Get(id)
 	if err != nil {
 		return err
+	}
+
+	if metadataOnly {
+		// Serialize only frontmatter + title + description (no notes, reviews, relationships).
+		meta := *t
+		meta.Notes = nil
+		meta.Reviews = nil
+		data, err := ticket.Serialize(&meta)
+		if err != nil {
+			return err
+		}
+		fmt.Print(string(data))
+		return nil
 	}
 
 	// Get all tickets for relationship display.
