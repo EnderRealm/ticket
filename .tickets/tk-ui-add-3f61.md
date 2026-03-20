@@ -1,6 +1,6 @@
 ---
 id: tk-ui-add-3f61
-stage: implement
+stage: test
 risk: low
 deps: []
 links: []
@@ -59,3 +59,8 @@ Two format strings were modified in `internal/tui/dashboard.go` to increase spac
 - **Full suite:** 1 pre-existing failure in `pkg/ticket` (unrelated `tk-ui-cursor-cc4b.md` YAML parse error)
 
 ### #####################################################################
+
+**2026-03-20T23:48:22Z**
+
+**Dispatch: implement**
+- **Grimnar** (generator): approved — 211s, $0.4991
