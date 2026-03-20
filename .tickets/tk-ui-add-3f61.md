@@ -1,6 +1,6 @@
 ---
 id: tk-ui-add-3f61
-stage: design
+stage: implement
 risk: low
 deps: []
 links: []
@@ -26,3 +26,36 @@ Spec is complete. I researched `internal/tui/dashboard.go` and `internal/tui/das
 
 **Dispatch: spec**
 - **Rundar** (generator): approved — 73s, $0.2240
+
+**2026-03-20T23:44:50Z**
+
+**Dispatch: design**
+- **Helga** (generator): approved — 203s, $0.4752
+
+**2026-03-20T23:48:21Z**
+
+### Agent: Grimnar (surgical-coder) during implement @ 2026-03-20T23:48:21.153Z
+### #####################################################################
+
+## Summary
+
+The implementation for adding two additional spaces between the ID and title columns in `tk ui` is **already complete** on branch `forge/tk-ui-add-3f61`.
+
+### What changed and why
+
+Two format strings were modified in `internal/tui/dashboard.go` to increase spacing from 1 space to 3 spaces between the ID and TITLE columns:
+
+| File | Line | Change |
+|------|------|--------|
+| `internal/tui/dashboard.go` | 327 | Header: `%-*s %s` → `%-*s   %s` |
+| `internal/tui/dashboard.go` | 402 | Row: `%s%s %s` → `%s%s   %s` |
+| `internal/tui/dashboard_test.go` | new | 4 tests for spacing in header, row, review-indicator row, and empty dashboard |
+
+### Verification results
+
+- **Build:** PASS
+- **Vet:** PASS
+- **TUI tests:** 10 passed, 0 failed
+- **Full suite:** 1 pre-existing failure in `pkg/ticket` (unrelated `tk-ui-cursor-cc4b.md` YAML parse error)
+
+### #####################################################################
