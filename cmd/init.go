@@ -178,27 +178,37 @@ func bootstrapCentralStoreGit(storeRoot string) error {
 	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
 		return err
 	}
-	if !dirExists(filepath.Join(storeRoot, ".git")) {
+
+	// Check if storeRoot is already inside a git repo (e.g., a subdirectory
+	// of another repo). If so, skip git init — the parent repo owns history.
+	alreadyInRepo := false
+	if _, err := exec.Command("git", "-C", storeRoot, "rev-parse", "--is-inside-work-tree").Output(); err == nil {
+		alreadyInRepo = true
+	}
+
+	if !alreadyInRepo && !dirExists(filepath.Join(storeRoot, ".git")) {
 		if out, err := exec.Command("git", "-C", storeRoot, "init").CombinedOutput(); err != nil {
 			return fmt.Errorf("central store git init failed: %v (%s)", err, strings.TrimSpace(string(out)))
 		}
 	}
 
-	// Set local identity if not already configured
-	email, _ := execCommand("git", "-C", storeRoot, "config", "--get", "user.email")
-	if email == "" {
-		cfgEmail := "tk@local"
-		cfgName := "tk"
-		if cfg, err := project.Load(); err == nil {
-			if cfg.GitEmail != "" {
-				cfgEmail = cfg.GitEmail
+	// Set local identity if not already configured (only for standalone repos)
+	if !alreadyInRepo {
+		email, _ := execCommand("git", "-C", storeRoot, "config", "--get", "user.email")
+		if email == "" {
+			cfgEmail := "tk@local"
+			cfgName := "tk"
+			if cfg, err := project.Load(); err == nil {
+				if cfg.GitEmail != "" {
+					cfgEmail = cfg.GitEmail
+				}
+				if cfg.GitName != "" {
+					cfgName = cfg.GitName
+				}
 			}
-			if cfg.GitName != "" {
-				cfgName = cfg.GitName
-			}
+			exec.Command("git", "-C", storeRoot, "config", "user.email", cfgEmail).Run()
+			exec.Command("git", "-C", storeRoot, "config", "user.name", cfgName).Run()
 		}
-		exec.Command("git", "-C", storeRoot, "config", "user.email", cfgEmail).Run()
-		exec.Command("git", "-C", storeRoot, "config", "user.name", cfgName).Run()
 	}
 
 	if out, err := exec.Command("git", "-C", storeRoot, "add", "-A").CombinedOutput(); err != nil {
