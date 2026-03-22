@@ -324,7 +324,7 @@ func (m dashboardModel) view() string {
 
 	// Header.
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-6s %-10s %-*s %s", "P", "TYPE", "STAGE", idWidth, "ID", "TITLE")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-6s %-10s %-*s   %s", "P", "TYPE", "STAGE", idWidth, "ID", "TITLE")))
 	b.WriteString("\n")
 
 	// Rows.
@@ -399,5 +399,5 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, idWidth 
 		idText = dashRowSel.Render(idText)
 	}
 
-	return fmt.Sprintf("%s  %s %s %s%s %s", pri, typ, stg, rev, idText, t.Title)
+	return fmt.Sprintf("%s  %s %s %s%s   %s", pri, typ, stg, rev, idText, t.Title)
 }
