@@ -154,7 +154,7 @@ func TestCentralStoreRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CentralStoreRoot: %v", err)
 	}
-	expected := filepath.Join(home, "code", "forge-data", "tickets")
+	expected := filepath.Join(home, ".tickets")
 	if root != expected {
 		t.Errorf("CentralStoreRoot = %q, want %q", root, expected)
 	}
@@ -186,7 +186,7 @@ func TestCentralStoreRootIgnoresEnv(t *testing.T) {
 		t.Fatalf("CentralStoreRoot: %v", err)
 	}
 	// CentralStoreRoot should NOT use TICKETS_DIR — different semantics
-	expected := filepath.Join(home, "code", "forge-data", "tickets")
+	expected := filepath.Join(home, ".tickets")
 	if root != expected {
 		t.Errorf("CentralStoreRoot = %q, want %q (should ignore TICKETS_DIR)", root, expected)
 	}
@@ -201,7 +201,7 @@ func TestCentralProjectDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CentralProjectDir: %v", err)
 	}
-	expected := filepath.Join(home, "code", "forge-data", "tickets", "myproject")
+	expected := filepath.Join(home, ".tickets", "myproject")
 	if dir != expected {
 		t.Errorf("CentralProjectDir = %q, want %q", dir, expected)
 	}

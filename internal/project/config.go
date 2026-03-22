@@ -15,8 +15,11 @@ const (
 
 // Config stores tk project configuration.
 type Config struct {
-	CentralRoot string                   `yaml:"central_root,omitempty" json:"central_root,omitempty"`
-	Projects    map[string]ProjectConfig `yaml:"projects"`
+	CentralRoot  string                   `yaml:"central_root,omitempty" json:"central_root,omitempty"`
+	GitEmail     string                   `yaml:"git_email,omitempty" json:"git_email,omitempty"`
+	GitName      string                   `yaml:"git_name,omitempty" json:"git_name,omitempty"`
+	DefaultStore string                   `yaml:"default_store,omitempty" json:"default_store,omitempty"`
+	Projects     map[string]ProjectConfig `yaml:"projects"`
 }
 
 // ProjectConfig stores per-project settings.
@@ -115,7 +118,7 @@ func (cfg *Config) UpsertProject(name string, project ProjectConfig) {
 }
 
 // CentralStoreRoot returns the central ticket store root directory.
-// Checks ~/.ticket/config.yaml for central_root, falls back to ~/code/forge-data/tickets.
+// Checks ~/.ticket/config.yaml for central_root, falls back to ~/.tickets.
 func CentralStoreRoot() (string, error) {
 	cfg, err := Load()
 	if err == nil && cfg.CentralRoot != "" {
@@ -127,7 +130,7 @@ func CentralStoreRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "code", "forge-data", "tickets"), nil
+	return filepath.Join(home, ".tickets"), nil
 }
 
 // CentralProjectDir returns <centralRoot>/<projectName>.

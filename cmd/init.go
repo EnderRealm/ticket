@@ -58,6 +58,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if store == "" {
 		if yes {
 			store = "central"
+			if cfg.DefaultStore == "local" || cfg.DefaultStore == "central" {
+				store = cfg.DefaultStore
+			}
 			if hasLocalTickets {
 				copyLocalToCentral = true
 			}
@@ -184,8 +187,18 @@ func bootstrapCentralStoreGit(storeRoot string) error {
 	// Set local identity if not already configured
 	email, _ := execCommand("git", "-C", storeRoot, "config", "--get", "user.email")
 	if email == "" {
-		exec.Command("git", "-C", storeRoot, "config", "user.email", "tk@local").Run()
-		exec.Command("git", "-C", storeRoot, "config", "user.name", "tk").Run()
+		cfgEmail := "tk@local"
+		cfgName := "tk"
+		if cfg, err := project.Load(); err == nil {
+			if cfg.GitEmail != "" {
+				cfgEmail = cfg.GitEmail
+			}
+			if cfg.GitName != "" {
+				cfgName = cfg.GitName
+			}
+		}
+		exec.Command("git", "-C", storeRoot, "config", "user.email", cfgEmail).Run()
+		exec.Command("git", "-C", storeRoot, "config", "user.name", cfgName).Run()
 	}
 
 	if out, err := exec.Command("git", "-C", storeRoot, "add", "-A").CombinedOutput(); err != nil {

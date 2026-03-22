@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Core: `git_email`, `git_name`, `default_store` config fields in `~/.ticket/config.yaml`
+
+### Changed
+- Core: Central store fallback changed from `~/code/forge-data/tickets` to `~/.tickets` (generic default)
+- Core: `bootstrapCentralStoreGit` reads git identity from config before falling back to `tk@local`
+
 ## [5.0.0] - 2026-03-22
 
 ### Added

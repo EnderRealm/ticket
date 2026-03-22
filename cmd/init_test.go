@@ -113,7 +113,7 @@ func TestTicketsDirCentral(t *testing.T) {
 	project.Save(cfg)
 
 	// Create central store directory
-	centralDir := filepath.Join(home, "code", "forge-data", "tickets", "myproject")
+	centralDir := filepath.Join(home, ".tickets", "myproject")
 	os.MkdirAll(centralDir, 0o755)
 
 	// ticketsDirFromConfig should resolve to central
@@ -216,6 +216,79 @@ func TestInitNonInteractive(t *testing.T) {
 	}
 	if p.Store != "central" {
 		t.Errorf("store = %q, want central (--yes should default to central)", p.Store)
+	}
+}
+
+func TestInitNonInteractiveDefaultStoreLocal(t *testing.T) {
+	home := setupTestHome(t)
+
+	// Set default_store to local in config
+	cfg := project.Config{DefaultStore: "local", Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
+
+	projDir := filepath.Join(home, "localproj")
+	os.MkdirAll(projDir, 0o755)
+	runGit(t, projDir, "init")
+	runGit(t, projDir, "config", "user.email", "test@test.com")
+	runGit(t, projDir, "config", "user.name", "test")
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(projDir)
+	defer os.Chdir(oldDir)
+
+	initCmd.Flags().Set("yes", "true")
+	initCmd.Flags().Set("store", "")
+	initCmd.Flags().Set("project", "localproj")
+	defer func() {
+		initCmd.Flags().Set("yes", "false")
+		initCmd.Flags().Set("store", "")
+		initCmd.Flags().Set("project", "")
+	}()
+
+	if err := runInit(initCmd, nil); err != nil {
+		t.Fatalf("runInit --yes with default_store local: %v", err)
+	}
+
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p, ok := cfg.Projects["localproj"]
+	if !ok {
+		t.Fatal("project not found")
+	}
+	if p.Store != "local" {
+		t.Errorf("store = %q, want local (default_store: local should override)", p.Store)
+	}
+}
+
+func TestInitBootstrapGitConfigIdentity(t *testing.T) {
+	home := setupTestHome(t)
+
+	// Set custom git identity in config
+	cfg := project.Config{
+		GitEmail: "custom@example.com",
+		GitName:  "Custom User",
+		Projects: map[string]project.ProjectConfig{},
+	}
+	project.Save(cfg)
+
+	centralRoot := filepath.Join(home, ".tickets")
+	os.MkdirAll(centralRoot, 0o755)
+
+	err := bootstrapCentralStoreGit(centralRoot)
+	if err != nil {
+		t.Fatalf("bootstrapCentralStoreGit: %v", err)
+	}
+
+	email, _ := execCommand("git", "-C", centralRoot, "config", "--get", "user.email")
+	if email != "custom@example.com" {
+		t.Errorf("git email = %q, want custom@example.com", email)
+	}
+
+	name, _ := execCommand("git", "-C", centralRoot, "config", "--get", "user.name")
+	if name != "Custom User" {
+		t.Errorf("git name = %q, want Custom User", name)
 	}
 }
 
