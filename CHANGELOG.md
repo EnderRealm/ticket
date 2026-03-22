@@ -3,7 +3,9 @@
 ## [Unreleased]
 
 ### Added
-- Core: `git_email`, `git_name`, `default_store` config fields in `~/.ticket/config.yaml`
+- Core: Background git sync in `tk serve` — automatically stages, commits, and pushes ticket changes every 5s (configurable via `sync_interval`)
+- Core: Sync-blocked marker file (`.tk-sync-blocked`) persists across restarts when rebase conflicts occur
+- Core: `git_email`, `git_name`, `default_store`, `sync_interval` config fields in `~/.ticket/config.yaml`
 
 ### Changed
 - Core: Central store fallback changed from `~/code/forge-data/tickets` to `~/.tickets` (generic default)

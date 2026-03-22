@@ -19,6 +19,7 @@ type Config struct {
 	GitEmail     string                   `yaml:"git_email,omitempty" json:"git_email,omitempty"`
 	GitName      string                   `yaml:"git_name,omitempty" json:"git_name,omitempty"`
 	DefaultStore string                   `yaml:"default_store,omitempty" json:"default_store,omitempty"`
+	SyncInterval string                   `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
 	Projects     map[string]ProjectConfig `yaml:"projects"`
 }
 
