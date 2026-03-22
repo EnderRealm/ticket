@@ -121,6 +121,10 @@ Analytics:
   stats                      Project health dashboard
   timeline [--weeks=N]       Tickets closed by week
 
+Setup:
+  init [--store X] [--project X] [--yes] [--json]
+                               Initialize ticket storage (central or local)
+
 Interactive:
   ui                         Terminal UI (list + pipeline kanban view)
   serve                      MCP server for AI agent integration

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/EnderRealm/ticket/internal/project"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,10 @@ Query (JSON):
 Analytics:
   stats                      Project health at a glance
   timeline [--weeks=N]       Tickets closed by week (default: 4 weeks)
+
+Setup:
+  init [--store central|local] [--project <name>] [--yes] [--json]
+                               Initialize ticket storage for this project
 
 Interactive:
   ui                         Interactive ticket browser (TUI)
@@ -179,7 +184,7 @@ func Execute() {
 }
 
 // TicketsDir returns the directory where tickets are stored.
-// Priority: --repo flag → TICKETS_DIR env → walk up from CWD → fallback .tickets
+// Priority: --repo flag → TICKETS_DIR env → config lookup → walk up from CWD → fallback .tickets
 func TicketsDir() string {
 	if repoFlag != "" {
 		abs, err := filepath.Abs(repoFlag)
@@ -196,10 +201,34 @@ func TicketsDir() string {
 	if dir := os.Getenv("TICKETS_DIR"); dir != "" {
 		return dir
 	}
+	if dir, ok := ticketsDirFromConfig(); ok {
+		return dir
+	}
 	if dir, ok := ticket.FindTicketsDir(mustGetwd()); ok {
 		return dir
 	}
 	return ".tickets"
+}
+
+func ticketsDirFromConfig() (string, bool) {
+	cfg, err := project.Load()
+	if err != nil {
+		return "", false
+	}
+	cwd := mustGetwd()
+	name, _ := project.ResolveName(cfg, cwd, "")
+	if name == "" {
+		return "", false
+	}
+	p, ok := cfg.Projects[name]
+	if !ok || p.Store != "central" {
+		return "", false
+	}
+	dir, err := project.CentralProjectDir(name)
+	if err != nil {
+		return "", false
+	}
+	return dir, true
 }
 
 func mustGetwd() string {

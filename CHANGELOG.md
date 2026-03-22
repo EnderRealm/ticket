@@ -1,8 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [5.0.0] - 2026-03-22
 
 ### Added
+- CLI: `tk init` command for central store configuration — register projects with `--store central|local`, auto-detect project names from git remote, bootstrap central store as git repo
+- Core: Config-based ticket directory resolution via `~/.ticket/config.yaml` — `TicketsDir()` now checks project config between `TICKETS_DIR` env and walk-up fallback
+- Core: `central_root` config field to override default central store location
+- Core: Project name sanitization to prevent path traversal
 - CLI: `tk show --metadata` flag to display only frontmatter fields and description (omits notes, reviews, relationships)
 
 ## [4.3.0] - 2026-03-15
