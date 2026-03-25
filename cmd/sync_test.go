@@ -28,8 +28,9 @@ func setupGitRepo(t *testing.T) string {
 func TestSyncCommit(t *testing.T) {
 	dir := setupGitRepo(t)
 
-	// Create a ticket file
-	os.WriteFile(filepath.Join(dir, "test-ticket.md"), []byte("---\ntitle: Test\n---\n"), 0o644)
+	// Create a ticket file under tickets/
+	os.MkdirAll(filepath.Join(dir, "tickets", "proj"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tickets", "proj", "test-ticket.md"), []byte("---\ntitle: Test\n---\n"), 0o644)
 
 	warning := syncCentralStore(dir)
 	if warning != "" {
@@ -74,7 +75,8 @@ func TestSyncPush(t *testing.T) {
 	runGit(t, dir, "push", "-u", "origin", "HEAD")
 
 	// Create a file and sync
-	os.WriteFile(filepath.Join(dir, "pushed-ticket.md"), []byte("---\ntitle: Pushed\n---\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "tickets"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tickets", "pushed-ticket.md"), []byte("---\ntitle: Pushed\n---\n"), 0o644)
 
 	warning := syncCentralStore(dir)
 	if warning != "" {
@@ -109,7 +111,8 @@ func TestSyncPushConflict(t *testing.T) {
 	exec.Command("git", "-C", repoB, "push").Run()
 
 	// Now sync from A — push should fail, pull --rebase should succeed
-	os.WriteFile(filepath.Join(repoA, "local-ticket.md"), []byte("from A"), 0o644)
+	os.MkdirAll(filepath.Join(repoA, "tickets"), 0o755)
+	os.WriteFile(filepath.Join(repoA, "tickets", "local-ticket.md"), []byte("from A"), 0o644)
 
 	warning := syncCentralStore(repoA)
 	// Should succeed after rebase (no actual conflict in file content)
@@ -180,7 +183,8 @@ func TestSyncBlocked(t *testing.T) {
 	os.RemoveAll(rebaseDir)
 	// syncCentralStore should now clear the block and proceed
 
-	os.WriteFile(filepath.Join(dir, "unblocked.md"), []byte("---\ntitle: Unblocked\n---\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "tickets"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tickets", "unblocked.md"), []byte("---\ntitle: Unblocked\n---\n"), 0o644)
 	warning = syncCentralStore(dir)
 	if warning != "" {
 		t.Fatalf("sync after resolution returned warning: %s", warning)
@@ -220,8 +224,9 @@ func TestServeSyncStarts(t *testing.T) {
 	// Launch sync loop with short interval, cancel quickly
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Write a file to sync
-	os.WriteFile(filepath.Join(storeRoot, "sync-test.md"), []byte("test"), 0o644)
+	// Write a file to sync under tickets/
+	os.MkdirAll(filepath.Join(storeRoot, "tickets"), 0o755)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "sync-test.md"), []byte("test"), 0o644)
 
 	started := make(chan struct{})
 	go func() {
@@ -298,8 +303,9 @@ func TestSyncCommand(t *testing.T) {
 	project.Save(cfg)
 	_ = centralRoot
 
-	// Create a file to sync
-	os.WriteFile(filepath.Join(dir, "sync-cmd-test.md"), []byte("test"), 0o644)
+	// Create a file to sync under tickets/
+	os.MkdirAll(filepath.Join(dir, "tickets"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tickets", "sync-cmd-test.md"), []byte("test"), 0o644)
 
 	err := runSync(syncCmd, nil)
 	if err != nil {

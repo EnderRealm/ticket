@@ -89,10 +89,9 @@ func syncCentralStore(gitDir string) string {
 		}
 	}
 
-	// Stage all changes
-	if out, err := exec.Command("git", "-C", gitDir, "add", "-A").CombinedOutput(); err != nil {
-		return fmt.Sprintf("git add failed: %v (%s)", err, strings.TrimSpace(string(out)))
-	}
+	// Stage only tk-managed paths (tickets directory and shared config)
+	exec.Command("git", "-C", gitDir, "add", "tickets/").Run()
+	exec.Command("git", "-C", gitDir, "add", "config.yaml").Run()
 
 	// Check for staged changes
 	diff := exec.Command("git", "-C", gitDir, "diff", "--cached", "--quiet")
