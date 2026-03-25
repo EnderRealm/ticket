@@ -7,6 +7,17 @@ import (
 	"strings"
 )
 
+// Store defines the interface for ticket storage backends.
+type Store interface {
+	Get(id string) (*Ticket, error)
+	List() ([]*Ticket, error)
+	Create(t *Ticket) error
+	Update(t *Ticket) error
+	Delete(id string) error
+}
+
+var _ Store = (*FileStore)(nil)
+
 // FileStore provides filesystem-backed CRUD operations for tickets.
 type FileStore struct {
 	Dir string

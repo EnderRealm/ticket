@@ -35,7 +35,7 @@ func MigrateTicket(t *Ticket) bool {
 
 // MigrateAll migrates all tickets in the store from status to stage.
 // Returns the count of tickets migrated.
-func MigrateAll(store *FileStore) (int, error) {
+func MigrateAll(store Store) (int, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return 0, err

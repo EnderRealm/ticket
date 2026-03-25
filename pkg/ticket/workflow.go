@@ -24,7 +24,7 @@ type AdvanceResult struct {
 
 // Advance moves a ticket to its next pipeline stage, enforcing gate checks.
 // The ticket is persisted to the store on success.
-func Advance(store *FileStore, id string, opts AdvanceOptions) (*AdvanceResult, error) {
+func Advance(store Store, id string, opts AdvanceOptions) (*AdvanceResult, error) {
 	t, err := store.Get(id)
 	if err != nil {
 		return nil, fmt.Errorf("ticket %s: %w", id, err)
@@ -100,7 +100,7 @@ func Advance(store *FileStore, id string, opts AdvanceOptions) (*AdvanceResult, 
 }
 
 // Skip is a convenience wrapper around Advance with SkipTo set.
-func Skip(store *FileStore, id string, to Stage, reason string) (*AdvanceResult, error) {
+func Skip(store Store, id string, to Stage, reason string) (*AdvanceResult, error) {
 	return Advance(store, id, AdvanceOptions{
 		SkipTo: to,
 		Reason: reason,
@@ -116,7 +116,7 @@ type RevertResult struct {
 // Revert moves a ticket backward to an earlier pipeline stage.
 // A reason is always required. The ticket's review state is reset and
 // a timestamped note is appended for audit trail.
-func Revert(store *FileStore, id string, to Stage, reason string) (*RevertResult, error) {
+func Revert(store Store, id string, to Stage, reason string) (*RevertResult, error) {
 	if reason == "" {
 		return nil, fmt.Errorf("reason is required when reverting stages")
 	}
@@ -164,7 +164,7 @@ func Revert(store *FileStore, id string, to Stage, reason string) (*RevertResult
 }
 
 // SetReview records a review verdict on a ticket and appends a ReviewRecord.
-func SetReview(store *FileStore, id string, reviewer string, verdict ReviewState, comment string) error {
+func SetReview(store Store, id string, reviewer string, verdict ReviewState, comment string) error {
 	t, err := store.Get(id)
 	if err != nil {
 		return fmt.Errorf("ticket %s: %w", id, err)
@@ -199,7 +199,7 @@ type StageChange struct {
 //   - All children at test or later → parent advances to test (if in pipeline)
 //
 // Recurses upward through the parent chain. Returns a slice of changes made.
-func PropagateStage(store *FileStore, childID string) ([]StageChange, error) {
+func PropagateStage(store Store, childID string) ([]StageChange, error) {
 	child, err := store.Get(childID)
 	if err != nil {
 		return nil, nil

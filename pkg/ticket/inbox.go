@@ -88,7 +88,7 @@ func NextAction(t *Ticket) InboxItem {
 }
 
 // Inbox returns tickets needing human attention, sorted by priority then age.
-func Inbox(store *FileStore) ([]InboxItem, error) {
+func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
@@ -126,7 +126,7 @@ type ProjectSummary struct {
 
 // Projects returns active epics with their child progress, sorted by
 // priority then completeness (least complete first).
-func Projects(store *FileStore) ([]ProjectSummary, error) {
+func Projects(store Store) ([]ProjectSummary, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err

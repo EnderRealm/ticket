@@ -13,7 +13,7 @@ type DepNode struct {
 // DepTree walks the dependency graph for the given ticket ID.
 // With full=false (default), each node appears only once (dedup).
 // With full=true, shows the full tree with repeated subtrees.
-func DepTree(store *FileStore, id string, full bool) ([]DepNode, error) {
+func DepTree(store Store, id string, full bool) ([]DepNode, error) {
 	root, err := store.Get(id)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func (c Cycle) String() string {
 
 // FindCycles detects dependency cycles among open (non-closed) tickets.
 // Uses DFS with white(0)/gray(1)/black(2) coloring.
-func FindCycles(store *FileStore) ([]Cycle, error) {
+func FindCycles(store Store) ([]Cycle, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
@@ -156,7 +156,7 @@ func normalizeCycle(ids []string) string {
 
 // IsBlocked returns true if any of the ticket's dependencies are not closed.
 // Only meaningful for open/in_progress tickets.
-func IsBlocked(store *FileStore, t *Ticket) bool {
+func IsBlocked(store Store, t *Ticket) bool {
 	if len(t.Deps) == 0 {
 		return false
 	}
@@ -174,7 +174,7 @@ func IsBlocked(store *FileStore, t *Ticket) bool {
 }
 
 // BlockingDeps returns the IDs of dependencies that are not done.
-func BlockingDeps(store *FileStore, t *Ticket) []string {
+func BlockingDeps(store Store, t *Ticket) []string {
 	var blocking []string
 	for _, depID := range t.Deps {
 		dep, err := store.Get(depID)
@@ -191,7 +191,7 @@ func BlockingDeps(store *FileStore, t *Ticket) []string {
 
 // IsReady returns true if the ticket is actionable: not done,
 // all deps done, and parent chain is active (all ancestors not done).
-func IsReady(store *FileStore, t *Ticket) bool {
+func IsReady(store Store, t *Ticket) bool {
 	if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
 		return false
 	}
@@ -203,7 +203,7 @@ func IsReady(store *FileStore, t *Ticket) bool {
 
 // IsReadyOpen is like IsReady but bypasses parent gating.
 // Shows all unblocked non-done tickets regardless of epic status.
-func IsReadyOpen(store *FileStore, t *Ticket) bool {
+func IsReadyOpen(store Store, t *Ticket) bool {
 	if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
 		return false
 	}
@@ -212,7 +212,7 @@ func IsReadyOpen(store *FileStore, t *Ticket) bool {
 
 // parentChainActive checks that every ancestor (via parent field) is
 // in_progress. If a parent is not found in the store, it's treated as active.
-func parentChainActive(store *FileStore, id string, visited map[string]bool) bool {
+func parentChainActive(store Store, id string, visited map[string]bool) bool {
 	if visited[id] {
 		return true // avoid infinite loops
 	}
@@ -236,16 +236,16 @@ func parentChainActive(store *FileStore, id string, visited map[string]bool) boo
 }
 
 // ReadyTickets returns all tickets that pass the IsReady check.
-func ReadyTickets(store *FileStore) ([]*Ticket, error) {
+func ReadyTickets(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, false)
 }
 
 // ReadyTicketsOpen returns all unblocked tickets, bypassing parent gating.
-func ReadyTicketsOpen(store *FileStore) ([]*Ticket, error) {
+func ReadyTicketsOpen(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, true)
 }
 
-func readyTicketsImpl(store *FileStore, openMode bool) ([]*Ticket, error) {
+func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
@@ -267,7 +267,7 @@ func readyTicketsImpl(store *FileStore, openMode bool) ([]*Ticket, error) {
 }
 
 // BlockedTickets returns all open/in_progress tickets with unresolved deps.
-func BlockedTickets(store *FileStore) ([]*Ticket, error) {
+func BlockedTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err

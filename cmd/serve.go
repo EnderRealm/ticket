@@ -8,6 +8,7 @@ import (
 
 	"github.com/EnderRealm/ticket/internal/mcp"
 	"github.com/EnderRealm/ticket/internal/project"
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +35,8 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		server := mcp.NewServer(TicketsDir())
+		store := ticket.NewFileStore(TicketsDir())
+		server := mcp.NewServer(store)
 		return server.Run(ctx, &gomcp.StdioTransport{})
 	},
 }

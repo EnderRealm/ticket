@@ -14,9 +14,7 @@ import (
 )
 
 // NewServer creates an MCP server with all ticket management tools registered.
-func NewServer(ticketsDir string) *mcp.Server {
-	store := ticket.NewFileStore(ticketsDir)
-
+func NewServer(store ticket.Store) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "tk", Version: "0.1.0"},
 		nil,
@@ -301,7 +299,7 @@ type listResultJSON struct {
 	Limit   int                 `json:"limit"`
 }
 
-func registerList(server *mcp.Server, store *ticket.FileStore) {
+func registerList(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_list",
 		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate.",
@@ -382,7 +380,7 @@ type showArgs struct {
 	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
 }
 
-func registerShow(server *mcp.Server, store *ticket.FileStore) {
+func registerShow(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_show",
 		Description: "Show full details of a ticket by ID.",
@@ -415,7 +413,7 @@ type createArgs struct {
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 }
 
-func registerCreate(server *mcp.Server, store *ticket.FileStore) {
+func registerCreate(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_create",
 		Description: "Create a new ticket. Supports optional repo parameter for cross-repo creation.",
@@ -537,7 +535,7 @@ type editArgs struct {
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
 }
 
-func registerEdit(server *mcp.Server, store *ticket.FileStore) {
+func registerEdit(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
 		Description: "Edit an existing ticket's fields.",
@@ -642,7 +640,7 @@ type addNoteArgs struct {
 	Text string `json:"text" jsonschema:"note text to append"`
 }
 
-func registerAddNote(server *mcp.Server, store *ticket.FileStore) {
+func registerAddNote(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_add_note",
 		Description: "Append a timestamped note to a ticket.",
@@ -674,7 +672,7 @@ type depArgs struct {
 	Action string `json:"action" jsonschema:"add or remove"`
 }
 
-func registerDep(server *mcp.Server, store *ticket.FileStore) {
+func registerDep(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_dep",
 		Description: "Add or remove a dependency. The ticket (id) depends on dep_id.",
@@ -716,7 +714,7 @@ type linkArgs struct {
 	Action   string `json:"action" jsonschema:"add or remove"`
 }
 
-func registerLink(server *mcp.Server, store *ticket.FileStore) {
+func registerLink(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_link",
 		Description: "Add or remove a symmetric link between two tickets.",
@@ -761,7 +759,7 @@ type readyArgs struct {
 	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
 }
 
-func registerReady(server *mcp.Server, store *ticket.FileStore) {
+func registerReady(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
 		Description: "List tickets that are ready to work on (all deps resolved, parent in_progress).",
@@ -792,7 +790,7 @@ func registerReady(server *mcp.Server, store *ticket.FileStore) {
 	})
 }
 
-func registerBlocked(server *mcp.Server, store *ticket.FileStore) {
+func registerBlocked(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_blocked",
 		Description: "List tickets that are blocked by unresolved dependencies.",
@@ -946,7 +944,7 @@ type advanceResultJSON struct {
 	Gates  []ticket.GateResult `json:"gates,omitempty"`
 }
 
-func registerAdvance(server *mcp.Server, store *ticket.FileStore) {
+func registerAdvance(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_advance",
 		Description: "Advance a ticket to its next pipeline stage. Enforces structural gate checks. Agentic gates require evidence attestation. Use force=true to bypass all gates.",
@@ -1024,7 +1022,7 @@ type reviewArgs struct {
 	Reviewer string `json:"reviewer,omitempty" jsonschema:"reviewer identity (e.g. human:steve, agent:code-review)"`
 }
 
-func registerReview(server *mcp.Server, store *ticket.FileStore) {
+func registerReview(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_review",
 		Description: "Record a review verdict (approve or reject) on a ticket's current stage.",
@@ -1063,7 +1061,7 @@ type skipArgs struct {
 	Reason string `json:"reason" jsonschema:"reason for skipping stages"`
 }
 
-func registerSkip(server *mcp.Server, store *ticket.FileStore) {
+func registerSkip(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_skip",
 		Description: "Skip a ticket to a named stage with an audit trail.",
@@ -1086,7 +1084,7 @@ type revertArgs struct {
 	Reason string `json:"reason" jsonschema:"reason for reverting"`
 }
 
-func registerRevert(server *mcp.Server, store *ticket.FileStore) {
+func registerRevert(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_revert",
 		Description: "Revert a ticket to an earlier pipeline stage with an audit trail. Use when a later stage reveals issues requiring rework.",
@@ -1112,7 +1110,7 @@ func registerRevert(server *mcp.Server, store *ticket.FileStore) {
 	})
 }
 
-func registerMigrate(server *mcp.Server, store *ticket.FileStore) {
+func registerMigrate(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_migrate",
 		Description: "Migrate all status-based tickets to stage pipeline. Idempotent.",
@@ -1130,7 +1128,7 @@ func registerMigrate(server *mcp.Server, store *ticket.FileStore) {
 
 type inboxArgs struct{}
 
-func registerInbox(server *mcp.Server, store *ticket.FileStore) {
+func registerInbox(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_inbox",
 		Description: "Show tickets needing human attention, sorted by priority then age.",

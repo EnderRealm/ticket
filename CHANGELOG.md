@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Core: Extract `Store` interface from `FileStore` — MCP server and all ticket operations now accept the interface, enabling future multi-project store backends
+
 ## [5.2.0] - 2026-03-24
 
 ### Added

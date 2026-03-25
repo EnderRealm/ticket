@@ -10,13 +10,15 @@ import (
 	"testing"
 
 	ticketmcp "github.com/EnderRealm/ticket/internal/mcp"
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func testServer(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	dir := t.TempDir()
-	server := ticketmcp.NewServer(dir)
+	store := ticket.NewFileStore(dir)
+	server := ticketmcp.NewServer(store)
 
 	st, ct := mcp.NewInMemoryTransports()
 
