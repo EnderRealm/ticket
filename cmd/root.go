@@ -189,6 +189,7 @@ func init() {
 			return nil
 		}
 		if !project.IsConfigured() {
+			cmd.SilenceUsage = true
 			return fmt.Errorf("tk is not configured. Run `tk setup` to get started")
 		}
 		return nil
