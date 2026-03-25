@@ -125,13 +125,13 @@ func CentralStoreRoot() (string, error) {
 	return local.CentralRoot, nil
 }
 
-// CentralProjectDir returns <centralRoot>/<projectName>.
+// CentralProjectDir returns <centralRoot>/tickets/<projectName>.
 func CentralProjectDir(projectName string) (string, error) {
 	root, err := CentralStoreRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, projectName), nil
+	return filepath.Join(root, "tickets", projectName), nil
 }
 
 // --- Internal helpers ---

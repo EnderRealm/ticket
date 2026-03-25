@@ -31,7 +31,7 @@ func TestInitBootstrapGit(t *testing.T) {
 	centralRoot := filepath.Join(home, ".tickets")
 
 	// Simulate what init does for central store
-	centralDir := filepath.Join(centralRoot, "myproject")
+	centralDir := filepath.Join(centralRoot, "tickets", "myproject")
 	os.MkdirAll(centralDir, 0o755)
 
 	err := bootstrapCentralStoreGit(centralRoot)
@@ -115,7 +115,7 @@ func TestTicketsDirCentral(t *testing.T) {
 	project.Save(cfg)
 
 	// Create central store directory
-	centralDir := filepath.Join(centralRoot, "myproject")
+	centralDir := filepath.Join(centralRoot, "tickets", "myproject")
 	os.MkdirAll(centralDir, 0o755)
 
 	// ticketsDirFromConfig should resolve to central
@@ -137,7 +137,7 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	home := setupTestHome(t)
 
 	centralRoot := filepath.Join(home, "central")
-	os.MkdirAll(filepath.Join(centralRoot, "ticket"), 0o755)
+	os.MkdirAll(filepath.Join(centralRoot, "tickets", "ticket"), 0o755)
 
 	// Write local config with central_root but no project path
 	localCfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}}
@@ -172,7 +172,7 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	if !ok {
 		t.Fatal("ticketsDirFromConfig should resolve via shared config + dirname")
 	}
-	expected := filepath.Join(centralRoot, "ticket")
+	expected := filepath.Join(centralRoot, "tickets", "ticket")
 	if dir != expected {
 		t.Errorf("ticketsDirFromConfig = %q, want %q", dir, expected)
 	}

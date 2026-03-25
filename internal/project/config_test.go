@@ -224,7 +224,7 @@ func TestCentralProjectDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CentralProjectDir: %v", err)
 	}
-	expected := filepath.Join(centralRoot, "myproject")
+	expected := filepath.Join(centralRoot, "tickets", "myproject")
 	if dir != expected {
 		t.Errorf("CentralProjectDir = %q, want %q", dir, expected)
 	}
