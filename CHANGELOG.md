@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.1.0] - 2026-03-24
 
 ### Added
 - Core: Background git sync in `tk serve` — automatically stages, commits, and pushes ticket changes every 5s (configurable via `sync_interval`)
