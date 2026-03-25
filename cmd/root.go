@@ -78,6 +78,7 @@ Analytics:
 Setup:
   init [--store central|local] [--project <name>] [--yes] [--json]
                                Initialize ticket storage for this project
+  sync                         Sync ticket changes to git (stage, commit, push)
 
 Interactive:
   ui                         Interactive ticket browser (TUI)

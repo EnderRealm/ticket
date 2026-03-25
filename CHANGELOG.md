@@ -7,6 +7,7 @@
 - Core: Sync-blocked marker file (`.tk-sync-blocked`) persists across restarts when rebase conflicts occur
 - Core: `git_email`, `git_name`, `default_store`, `sync_interval` config fields in `~/.ticket/config.yaml`
 - Core: Split config into shared (`<central_root>/config.yaml`) and local (`~/.ticket/config.yaml`) layers for multi-machine support
+- CLI: `tk sync` command for manual one-shot ticket git sync
 
 ### Changed
 - Core: Central store fallback changed from `~/code/forge-data/tickets` to `~/.tickets` (generic default)

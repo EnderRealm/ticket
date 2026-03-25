@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -11,12 +12,53 @@ import (
 	"time"
 
 	"github.com/EnderRealm/ticket/internal/project"
+	"github.com/spf13/cobra"
 )
 
 const (
 	defaultSyncInterval = 5 * time.Second
 	syncBlockedFile     = ".tk-sync-blocked"
 )
+
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Sync ticket changes to git (stage, commit, push)",
+	RunE:  runSync,
+}
+
+func init() {
+	rootCmd.AddCommand(syncCmd)
+}
+
+func runSync(cmd *cobra.Command, args []string) error {
+	storeRoot, err := project.CentralStoreRoot()
+	if err != nil {
+		return fmt.Errorf("cannot resolve central store: %w", err)
+	}
+
+	gitRoot, err := findGitRoot(storeRoot)
+	if err != nil {
+		return fmt.Errorf("central store is not in a git repository: %w", err)
+	}
+
+	warning := syncCentralStore(gitRoot)
+
+	if jsonOutput {
+		data, _ := json.MarshalIndent(map[string]any{
+			"synced":  warning == "",
+			"warning": warning,
+		}, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	if warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	} else {
+		fmt.Println("sync complete")
+	}
+	return nil
+}
 
 // syncLoop runs syncCentralStore on a ticker until ctx is cancelled.
 func syncLoop(ctx context.Context, gitDir string, interval time.Duration) {

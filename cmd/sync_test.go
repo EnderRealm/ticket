@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -281,6 +282,78 @@ func TestSyncIntervalConfig(t *testing.T) {
 	d = syncInterval()
 	if d != 10*time.Second {
 		t.Errorf("custom interval = %v, want 10s", d)
+	}
+}
+
+func TestSyncCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TICKETS_DIR", "")
+
+	centralRoot := filepath.Join(home, ".tickets")
+	dir := setupGitRepo(t)
+
+	// Set up config pointing to our test repo as central root
+	cfg := project.Config{CentralRoot: dir, Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
+	_ = centralRoot
+
+	// Create a file to sync
+	os.WriteFile(filepath.Join(dir, "sync-cmd-test.md"), []byte("test"), 0o644)
+
+	err := runSync(syncCmd, nil)
+	if err != nil {
+		t.Fatalf("runSync: %v", err)
+	}
+
+	// Verify committed
+	out, _ := execCommand("git", "-C", dir, "log", "--oneline", "-1")
+	if !contains(out, "tk: sync tickets") {
+		t.Errorf("expected sync commit, got %q", out)
+	}
+}
+
+func TestSyncCommandJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TICKETS_DIR", "")
+
+	dir := setupGitRepo(t)
+
+	cfg := project.Config{CentralRoot: dir, Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	err := runSync(syncCmd, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("runSync --json: %v", err)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, output)
+	}
+
+	if _, ok := result["synced"]; !ok {
+		t.Error("missing 'synced' field")
+	}
+	if _, ok := result["warning"]; !ok {
+		t.Error("missing 'warning' field")
 	}
 }
 
