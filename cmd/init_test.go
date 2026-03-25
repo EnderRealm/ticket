@@ -99,12 +99,14 @@ func TestInitCopyLocal(t *testing.T) {
 func TestTicketsDirCentral(t *testing.T) {
 	home := setupTestHome(t)
 
+	centralRoot := filepath.Join(home, "central")
+
 	// Create a project directory
 	projDir := filepath.Join(home, "myproject")
 	os.MkdirAll(projDir, 0o755)
 
 	// Create config pointing to central store
-	cfg := project.Config{Projects: map[string]project.ProjectConfig{
+	cfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{
 		"myproject": {
 			Path:  projDir,
 			Store: "central",
@@ -113,7 +115,7 @@ func TestTicketsDirCentral(t *testing.T) {
 	project.Save(cfg)
 
 	// Create central store directory
-	centralDir := filepath.Join(home, ".tickets", "myproject")
+	centralDir := filepath.Join(centralRoot, "myproject")
 	os.MkdirAll(centralDir, 0o755)
 
 	// ticketsDirFromConfig should resolve to central
@@ -134,24 +136,18 @@ func TestTicketsDirCentral(t *testing.T) {
 func TestTicketsDirNoLocalPath(t *testing.T) {
 	home := setupTestHome(t)
 
-	centralRoot := filepath.Join(home, ".tickets")
+	centralRoot := filepath.Join(home, "central")
 	os.MkdirAll(filepath.Join(centralRoot, "ticket"), 0o755)
 
-	// Write shared config with project but no local path
-	sharedCfg := project.Config{Projects: map[string]project.ProjectConfig{
-		"ticket": {Store: "central"},
-	}}
-	sharedPath := filepath.Join(centralRoot, "config.yaml")
-	os.MkdirAll(filepath.Dir(sharedPath), 0o755)
-	data, _ := os.ReadFile(sharedPath) // may not exist
-	_ = data
+	// Write local config with central_root but no project path
+	localCfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}}
+	project.Save(localCfg)
 
-	// Write shared config manually
-	import_yaml_data := []byte("projects:\n    ticket:\n        store: central\n")
-	os.WriteFile(sharedPath, import_yaml_data, 0o644)
-	_ = sharedCfg
+	// Write shared config with project
+	sharedData := []byte("projects:\n    ticket:\n        store: central\n")
+	os.WriteFile(filepath.Join(centralRoot, "config.yaml"), sharedData, 0o644)
 
-	// No local config — ticketsDirFromConfig should still resolve via git remote
+	// ticketsDirFromConfig should resolve via git remote
 	// Since we're in the ticket repo, git remote gives us "ticket"
 	oldDir, _ := os.Getwd()
 	projDir := filepath.Join(home, "fakerepo")
@@ -232,6 +228,11 @@ func TestInitProjectFlag(t *testing.T) {
 
 func TestInitNonInteractive(t *testing.T) {
 	home := setupTestHome(t)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	cfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
 
 	projDir := filepath.Join(home, "niproject")
 	os.MkdirAll(projDir, 0o755)
@@ -345,6 +346,12 @@ func TestInitBootstrapGitConfigIdentity(t *testing.T) {
 
 func TestInitJSON(t *testing.T) {
 	home := setupTestHome(t)
+
+	// Need central_root for tk init --store central
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	cfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
 
 	projDir := filepath.Join(home, "jsonproject")
 	os.MkdirAll(projDir, 0o755)

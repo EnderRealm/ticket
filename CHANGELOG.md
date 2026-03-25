@@ -8,6 +8,8 @@
 - Core: `git_email`, `git_name`, `default_store`, `sync_interval` config fields in `~/.ticket/config.yaml`
 - Core: Split config into shared (`<central_root>/config.yaml`) and local (`~/.ticket/config.yaml`) layers for multi-machine support
 - CLI: `tk sync` command for manual one-shot ticket git sync
+- CLI: `tk setup` command for first-run configuration — sets central store path, creates ~/.ticket/config.yaml
+- Core: Config gate — all commands (except setup/help/version) require valid config with central_root set
 
 ### Changed
 - Core: Central store fallback changed from `~/code/forge-data/tickets` to `~/.tickets` (generic default)

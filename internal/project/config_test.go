@@ -10,7 +10,9 @@ func TestConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	cfg := Config{Projects: map[string]ProjectConfig{}}
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	cfg := Config{CentralRoot: centralRoot, Projects: map[string]ProjectConfig{}}
 	cfg.UpsertProject("myproject", ProjectConfig{
 		Path:         "/tmp/myproject",
 		Store:        "central",
@@ -145,18 +147,32 @@ func TestUpsertProject(t *testing.T) {
 	}
 }
 
-func TestCentralStoreRoot(t *testing.T) {
+func TestCentralStoreRootNoFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("TICKETS_DIR", "")
 
-	root, err := CentralStoreRoot()
-	if err != nil {
-		t.Fatalf("CentralStoreRoot: %v", err)
+	// No config — should return error, not fallback
+	_, err := CentralStoreRoot()
+	if err == nil {
+		t.Fatal("CentralStoreRoot should error when central_root not configured")
 	}
-	expected := filepath.Join(home, ".tickets")
-	if root != expected {
-		t.Errorf("CentralStoreRoot = %q, want %q", root, expected)
+}
+
+func TestIsConfigured(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// No config — not configured
+	if IsConfigured() {
+		t.Error("should not be configured without config file")
+	}
+
+	// With central_root — configured
+	cfg := Config{CentralRoot: "/some/path", Projects: map[string]ProjectConfig{}}
+	Save(cfg)
+	if !IsConfigured() {
+		t.Error("should be configured after setting central_root")
 	}
 }
 
@@ -181,14 +197,17 @@ func TestCentralStoreRootIgnoresEnv(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("TICKETS_DIR", "/custom/tickets")
 
+	// Set central_root in config
+	cfg := Config{CentralRoot: "/configured/path", Projects: map[string]ProjectConfig{}}
+	Save(cfg)
+
 	root, err := CentralStoreRoot()
 	if err != nil {
 		t.Fatalf("CentralStoreRoot: %v", err)
 	}
-	// CentralStoreRoot should NOT use TICKETS_DIR — different semantics
-	expected := filepath.Join(home, ".tickets")
-	if root != expected {
-		t.Errorf("CentralStoreRoot = %q, want %q (should ignore TICKETS_DIR)", root, expected)
+	// Should use config, not TICKETS_DIR
+	if root != "/configured/path" {
+		t.Errorf("CentralStoreRoot = %q, want /configured/path (should ignore TICKETS_DIR)", root)
 	}
 }
 
@@ -197,11 +216,15 @@ func TestCentralProjectDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("TICKETS_DIR", "")
 
+	centralRoot := filepath.Join(home, "central")
+	cfg := Config{CentralRoot: centralRoot, Projects: map[string]ProjectConfig{}}
+	Save(cfg)
+
 	dir, err := CentralProjectDir("myproject")
 	if err != nil {
 		t.Fatalf("CentralProjectDir: %v", err)
 	}
-	expected := filepath.Join(home, ".tickets", "myproject")
+	expected := filepath.Join(centralRoot, "myproject")
 	if dir != expected {
 		t.Errorf("CentralProjectDir = %q, want %q", dir, expected)
 	}
@@ -329,16 +352,20 @@ func TestLoadSharedOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	centralRoot := filepath.Join(home, ".tickets")
+	centralRoot := filepath.Join(home, "central")
 	os.MkdirAll(centralRoot, 0o755)
 
-	// Write shared config only — no local config
+	// Write shared config with project info
 	sharedCfg := Config{Projects: map[string]ProjectConfig{
 		"proj": {Store: "central", RegisteredAt: "2026-01-01T00:00:00Z"},
 	}}
 	writeFileAtomic(filepath.Join(centralRoot, configFileName), sharedCfg)
 
-	// No local config exists
+	// Local config has central_root but no project entries
+	localCfg := Config{CentralRoot: centralRoot, Projects: map[string]ProjectConfig{}}
+	localPath, _ := ConfigPath()
+	writeFileAtomic(localPath, localCfg)
+
 	merged, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

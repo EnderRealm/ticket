@@ -45,8 +45,13 @@ func Load() (Config, error) {
 
 	// Resolve central root from local config to find shared config
 	centralRoot := centralStoreRootFromLocal(local)
-	sharedPath := filepath.Join(centralRoot, configFileName)
-	shared, _ := loadFile(sharedPath) // ignore error — shared config is optional
+	var shared Config
+	if centralRoot != "" {
+		sharedPath := filepath.Join(centralRoot, configFileName)
+		shared, _ = loadFile(sharedPath) // ignore error — shared config is optional
+	} else {
+		shared = Config{Projects: map[string]ProjectConfig{}}
+	}
 
 	return mergeConfigs(local, shared), nil
 }
@@ -63,10 +68,13 @@ func Save(cfg Config) error {
 		return err
 	}
 
-	// Only write shared config if we can resolve the central root
+	// Only write shared config if central root is configured
 	centralRoot := centralStoreRootFromLocal(cfg)
-	sharedPath := filepath.Join(centralRoot, configFileName)
-	return saveShared(cfg, sharedPath)
+	if centralRoot != "" {
+		sharedPath := filepath.Join(centralRoot, configFileName)
+		return saveShared(cfg, sharedPath)
+	}
+	return nil
 }
 
 // ConfigPath returns ~/.ticket/config.yaml.
@@ -95,18 +103,26 @@ func (cfg *Config) UpsertProject(name string, project ProjectConfig) {
 	cfg.Projects[name] = project
 }
 
+// IsConfigured returns true if ~/.ticket/config.yaml exists and has central_root set.
+func IsConfigured() bool {
+	local, err := loadLocalOnly()
+	if err != nil {
+		return false
+	}
+	return local.CentralRoot != ""
+}
+
 // CentralStoreRoot returns the central ticket store root directory.
-// Reads local config only (not merged) to avoid circular dependency.
+// Returns an error if central_root is not configured — run `tk setup` first.
 func CentralStoreRoot() (string, error) {
 	local, err := loadLocalOnly()
-	if err == nil {
-		return centralStoreRootFromLocal(local), nil
-	}
-	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("tk is not configured: %w", err)
 	}
-	return filepath.Join(home, ".tickets"), nil
+	if local.CentralRoot == "" || !filepath.IsAbs(local.CentralRoot) {
+		return "", fmt.Errorf("central_root is not configured. Run `tk setup` to get started")
+	}
+	return local.CentralRoot, nil
 }
 
 // CentralProjectDir returns <centralRoot>/<projectName>.
@@ -153,16 +169,13 @@ func loadFile(path string) (Config, error) {
 	return cfg, nil
 }
 
-// centralStoreRootFromLocal extracts central_root from a config, falling back to ~/.tickets.
+// centralStoreRootFromLocal extracts central_root from a config.
+// Returns empty string if not configured.
 func centralStoreRootFromLocal(cfg Config) string {
 	if cfg.CentralRoot != "" && filepath.IsAbs(cfg.CentralRoot) {
 		return cfg.CentralRoot
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".tickets"
-	}
-	return filepath.Join(home, ".tickets")
+	return ""
 }
 
 // mergeConfigs combines local and shared configs. Local provides top-level fields
@@ -218,9 +231,16 @@ func saveLocal(cfg Config) error {
 		Projects:     map[string]ProjectConfig{},
 	}
 
+	hasShared := cfg.CentralRoot != ""
 	for name, p := range cfg.Projects {
-		if p.Path != "" {
-			localCfg.Projects[name] = ProjectConfig{Path: p.Path}
+		if hasShared {
+			// Only store path locally — shared fields go to shared config
+			if p.Path != "" {
+				localCfg.Projects[name] = ProjectConfig{Path: p.Path}
+			}
+		} else {
+			// No shared config available — store everything locally
+			localCfg.Projects[name] = p
 		}
 	}
 

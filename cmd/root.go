@@ -76,8 +76,9 @@ Analytics:
   timeline [--weeks=N]       Tickets closed by week (default: 4 weeks)
 
 Setup:
+  setup [--central-root <path>]  First-run configuration (required before use)
   init [--store central|local] [--project <name>] [--yes] [--json]
-                               Initialize ticket storage for this project
+                               Register a project with the central store
   sync                         Sync ticket changes to git (stage, commit, push)
 
 Interactive:
@@ -169,12 +170,29 @@ var rootCmd = &cobra.Command{
 	Version: version(),
 }
 
+// Commands exempt from the config gate.
+var gateExempt = map[string]bool{
+	"setup":   true,
+	"help":    true,
+	"version": true,
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "path to repo root (walks up to find .tickets/)")
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		fmt.Println(helpText)
 	})
+
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if gateExempt[cmd.Name()] {
+			return nil
+		}
+		if !project.IsConfigured() {
+			return fmt.Errorf("tk is not configured. Run `tk setup` to get started")
+		}
+		return nil
+	}
 }
 
 func Execute() {

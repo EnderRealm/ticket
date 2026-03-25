@@ -122,8 +122,10 @@ Analytics:
   timeline [--weeks=N]       Tickets closed by week
 
 Setup:
+  setup [--central-root <path>]  First-run config (required before use)
   init [--store X] [--project X] [--yes] [--json]
-                               Initialize ticket storage (central or local)
+                               Register a project with the central store
+  sync                         Sync ticket changes to git
 
 Interactive:
   ui                         Terminal UI (list + pipeline kanban view)
