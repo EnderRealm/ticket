@@ -1,9 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## [5.2.0] - 2026-03-24
 
 ### Added
+- CLI: `tk setup` command for first-run configuration — sets central store path, creates ~/.ticket/config.yaml
 - CLI: `tk status` command — system health overview with version, config paths, data repo state, sync status, and per-project ticket counts
+- Core: Config gate — all commands (except setup/help/version) require valid config with central_root set
+- Core: Ticket directories at `<central_root>/tickets/<project>` (not directly under central root)
+
+### Changed
+- Core: `CentralStoreRoot()` no longer falls back to `~/.tickets` — requires explicit config via `tk setup`
+- Core: Git sync scoped to `tickets/` and `config.yaml` only (won't commit unrelated files in data repo)
+- Core: Git bootstrap skips `git init` when central store is inside an existing repo
 
 ## [5.1.0] - 2026-03-24
 
