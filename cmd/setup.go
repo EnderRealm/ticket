@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -65,6 +66,11 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	// Create directory if needed
 	if err := os.MkdirAll(centralRoot, 0o755); err != nil {
 		return fmt.Errorf("creating central store directory: %w", err)
+	}
+
+	// Verify central root is inside a git repo
+	if err := exec.Command("git", "-C", centralRoot, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		return fmt.Errorf("central store path is not inside a git repository: %s\nTicket sync requires git. Initialize a repo or use a path inside an existing one", centralRoot)
 	}
 
 	// Load existing config to preserve project entries
