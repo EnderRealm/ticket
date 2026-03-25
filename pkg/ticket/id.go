@@ -81,6 +81,26 @@ func slugifyTitle(title string) string {
 	return strings.Join(slug, "-")
 }
 
+// ParseNamespacedID splits a namespaced ticket ID ("project/ticket-id")
+// into its project and ticket ID components. If the ID contains no slash,
+// the project is empty and the full string is the ticket ID.
+func ParseNamespacedID(id string) (project, ticketID string) {
+	if i := strings.IndexByte(id, '/'); i >= 0 {
+		return id[:i], id[i+1:]
+	}
+	return "", id
+}
+
+// FormatNamespacedID combines a project name and ticket ID into a
+// namespaced ID ("project/ticket-id"). If project is empty, returns
+// the bare ticket ID.
+func FormatNamespacedID(project, ticketID string) string {
+	if project == "" {
+		return ticketID
+	}
+	return project + "/" + ticketID
+}
+
 // idHash returns 4 hex chars from sha256 of nanosecond timestamp +
 // monotonic counter. The counter prevents collisions when multiple IDs are
 // generated within the same nanosecond.

@@ -88,6 +88,58 @@ func TestGenerateIDFrom_DifferentTitles(t *testing.T) {
 	}
 }
 
+func TestParseNamespacedID(t *testing.T) {
+	tests := []struct {
+		id      string
+		project string
+		ticket  string
+	}{
+		{"myproject/nw-5c46", "myproject", "nw-5c46"},
+		{"nw-5c46", "", "nw-5c46"},
+		{"", "", ""},
+		{"project/sub/ticket-id", "project", "sub/ticket-id"},
+		{"/bare-slash", "", "bare-slash"},
+		{"project/", "project", ""},
+	}
+	for _, tt := range tests {
+		project, ticket := ParseNamespacedID(tt.id)
+		if project != tt.project || ticket != tt.ticket {
+			t.Errorf("ParseNamespacedID(%q) = (%q, %q), want (%q, %q)",
+				tt.id, project, ticket, tt.project, tt.ticket)
+		}
+	}
+}
+
+func TestFormatNamespacedID(t *testing.T) {
+	tests := []struct {
+		project string
+		ticket  string
+		want    string
+	}{
+		{"myproject", "nw-5c46", "myproject/nw-5c46"},
+		{"", "nw-5c46", "nw-5c46"},
+		{"project", "", "project/"},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		got := FormatNamespacedID(tt.project, tt.ticket)
+		if got != tt.want {
+			t.Errorf("FormatNamespacedID(%q, %q) = %q, want %q",
+				tt.project, tt.ticket, got, tt.want)
+		}
+	}
+}
+
+func TestNamespacedIDRoundtrip(t *testing.T) {
+	project, ticketID := "myproject", "fix-bug-a1b2"
+	formatted := FormatNamespacedID(project, ticketID)
+	gotProject, gotTicket := ParseNamespacedID(formatted)
+	if gotProject != project || gotTicket != ticketID {
+		t.Errorf("roundtrip failed: format(%q, %q) = %q, parse back = (%q, %q)",
+			project, ticketID, formatted, gotProject, gotTicket)
+	}
+}
+
 func TestSlugifyTitle(t *testing.T) {
 	tests := []struct {
 		title string
