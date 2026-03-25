@@ -13,7 +13,7 @@ const (
 	configFileName = "config.yaml"
 )
 
-// Config stores tk project configuration.
+// Config stores tk project configuration (merged view of local + shared).
 type Config struct {
 	CentralRoot  string                   `yaml:"central_root,omitempty" json:"central_root,omitempty"`
 	GitEmail     string                   `yaml:"git_email,omitempty" json:"git_email,omitempty"`
@@ -25,20 +25,112 @@ type Config struct {
 
 // ProjectConfig stores per-project settings.
 type ProjectConfig struct {
-	Path         string `yaml:"path" json:"path"`
-	Store        string `yaml:"store" json:"store"`
+	Path         string `yaml:"path,omitempty" json:"path,omitempty"`
+	Store        string `yaml:"store,omitempty" json:"store,omitempty"`
 	AutoLink     bool   `yaml:"auto_link" json:"auto_link"`
 	AutoClose    bool   `yaml:"auto_close" json:"auto_close"`
 	RegisteredAt string `yaml:"registered_at,omitempty" json:"registered_at,omitempty"`
 }
 
-// Load reads ~/.tk/config.yaml. Missing or empty file returns empty config.
+// Load reads both local (~/.ticket/config.yaml) and shared (<central_root>/config.yaml)
+// configs, merging them into a single Config. Local fields (central_root, git_email,
+// git_name, default_store, sync_interval, per-project path) come from local config.
+// Shared fields (per-project store, auto_link, auto_close, registered_at) come from
+// shared config. Missing files are not errors — returns what's available.
 func Load() (Config, error) {
-	path, err := ConfigPath()
+	local, err := loadLocalOnly()
 	if err != nil {
 		return Config{}, err
 	}
 
+	// Resolve central root from local config to find shared config
+	centralRoot := centralStoreRootFromLocal(local)
+	sharedPath := filepath.Join(centralRoot, configFileName)
+	shared, _ := loadFile(sharedPath) // ignore error — shared config is optional
+
+	return mergeConfigs(local, shared), nil
+}
+
+// Save writes the config to both local and shared files, splitting fields
+// appropriately. Local gets top-level fields + per-project path. Shared gets
+// per-project store, auto_link, auto_close, registered_at.
+func Save(cfg Config) error {
+	if cfg.Projects == nil {
+		cfg.Projects = map[string]ProjectConfig{}
+	}
+
+	if err := saveLocal(cfg); err != nil {
+		return err
+	}
+
+	// Only write shared config if we can resolve the central root
+	centralRoot := centralStoreRootFromLocal(cfg)
+	sharedPath := filepath.Join(centralRoot, configFileName)
+	return saveShared(cfg, sharedPath)
+}
+
+// ConfigPath returns ~/.ticket/config.yaml.
+func ConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, configDirName, configFileName), nil
+}
+
+// SharedConfigPath returns <central_root>/config.yaml.
+func SharedConfigPath() (string, error) {
+	root, err := CentralStoreRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, configFileName), nil
+}
+
+// UpsertProject inserts or updates a project entry.
+func (cfg *Config) UpsertProject(name string, project ProjectConfig) {
+	if cfg.Projects == nil {
+		cfg.Projects = map[string]ProjectConfig{}
+	}
+	cfg.Projects[name] = project
+}
+
+// CentralStoreRoot returns the central ticket store root directory.
+// Reads local config only (not merged) to avoid circular dependency.
+func CentralStoreRoot() (string, error) {
+	local, err := loadLocalOnly()
+	if err == nil {
+		return centralStoreRootFromLocal(local), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".tickets"), nil
+}
+
+// CentralProjectDir returns <centralRoot>/<projectName>.
+func CentralProjectDir(projectName string) (string, error) {
+	root, err := CentralStoreRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, projectName), nil
+}
+
+// --- Internal helpers ---
+
+// loadLocalOnly reads ~/.ticket/config.yaml without merging shared config.
+func loadLocalOnly() (Config, error) {
+	path, err := ConfigPath()
+	if err != nil {
+		return Config{}, err
+	}
+	return loadFile(path)
+}
+
+// loadFile reads a single config YAML file. Missing or empty returns empty config.
+func loadFile(path string) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -61,13 +153,102 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// Save writes ~/.tk/config.yaml atomically (write to temp, rename).
-func Save(cfg Config) error {
+// centralStoreRootFromLocal extracts central_root from a config, falling back to ~/.tickets.
+func centralStoreRootFromLocal(cfg Config) string {
+	if cfg.CentralRoot != "" && filepath.IsAbs(cfg.CentralRoot) {
+		return cfg.CentralRoot
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".tickets"
+	}
+	return filepath.Join(home, ".tickets")
+}
+
+// mergeConfigs combines local and shared configs. Local provides top-level fields
+// and per-project path. Shared provides per-project store, auto_link, auto_close,
+// registered_at. Projects present in either source are included.
+func mergeConfigs(local, shared Config) Config {
+	merged := Config{
+		CentralRoot:  local.CentralRoot,
+		GitEmail:     local.GitEmail,
+		GitName:      local.GitName,
+		DefaultStore: local.DefaultStore,
+		SyncInterval: local.SyncInterval,
+		Projects:     map[string]ProjectConfig{},
+	}
+
+	// Start with shared projects (store, auto_link, auto_close, registered_at)
+	for name, sp := range shared.Projects {
+		merged.Projects[name] = ProjectConfig{
+			Store:        sp.Store,
+			AutoLink:     sp.AutoLink,
+			AutoClose:    sp.AutoClose,
+			RegisteredAt: sp.RegisteredAt,
+		}
+	}
+
+	// Overlay local projects (path, and fill in shared fields if not in shared)
+	for name, lp := range local.Projects {
+		if existing, ok := merged.Projects[name]; ok {
+			existing.Path = lp.Path
+			merged.Projects[name] = existing
+		} else {
+			// Local-only project (backward compat)
+			merged.Projects[name] = lp
+		}
+	}
+
+	return merged
+}
+
+// saveLocal writes ~/.ticket/config.yaml with local-only fields.
+func saveLocal(cfg Config) error {
 	path, err := ConfigPath()
 	if err != nil {
 		return err
 	}
 
+	localCfg := Config{
+		CentralRoot:  cfg.CentralRoot,
+		GitEmail:     cfg.GitEmail,
+		GitName:      cfg.GitName,
+		DefaultStore: cfg.DefaultStore,
+		SyncInterval: cfg.SyncInterval,
+		Projects:     map[string]ProjectConfig{},
+	}
+
+	for name, p := range cfg.Projects {
+		if p.Path != "" {
+			localCfg.Projects[name] = ProjectConfig{Path: p.Path}
+		}
+	}
+
+	return writeFileAtomic(path, localCfg)
+}
+
+// saveShared writes <central_root>/config.yaml with shared-only fields.
+func saveShared(cfg Config, path string) error {
+	sharedCfg := Config{
+		Projects: map[string]ProjectConfig{},
+	}
+
+	for name, p := range cfg.Projects {
+		if p.Store != "" {
+			sharedCfg.Projects[name] = ProjectConfig{
+				Store:        p.Store,
+				AutoLink:     p.AutoLink,
+				AutoClose:    p.AutoClose,
+				RegisteredAt: p.RegisteredAt,
+			}
+		}
+	}
+
+	return writeFileAtomic(path, sharedCfg)
+}
+
+// writeFileAtomic writes a config to path via temp file + rename.
+func writeFileAtomic(path string, cfg Config) error {
 	if cfg.Projects == nil {
 		cfg.Projects = map[string]ProjectConfig{}
 	}
@@ -99,46 +280,4 @@ func Save(cfg Config) error {
 	}
 
 	return os.Rename(tmpName, path)
-}
-
-// ConfigPath returns ~/.tk/config.yaml.
-func ConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, configDirName, configFileName), nil
-}
-
-// UpsertProject inserts or updates a project entry.
-func (cfg *Config) UpsertProject(name string, project ProjectConfig) {
-	if cfg.Projects == nil {
-		cfg.Projects = map[string]ProjectConfig{}
-	}
-	cfg.Projects[name] = project
-}
-
-// CentralStoreRoot returns the central ticket store root directory.
-// Checks ~/.ticket/config.yaml for central_root, falls back to ~/.tickets.
-func CentralStoreRoot() (string, error) {
-	cfg, err := Load()
-	if err == nil && cfg.CentralRoot != "" {
-		if filepath.IsAbs(cfg.CentralRoot) {
-			return cfg.CentralRoot, nil
-		}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".tickets"), nil
-}
-
-// CentralProjectDir returns <centralRoot>/<projectName>.
-func CentralProjectDir(projectName string) (string, error) {
-	root, err := CentralStoreRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, projectName), nil
 }

@@ -131,6 +131,57 @@ func TestTicketsDirCentral(t *testing.T) {
 	}
 }
 
+func TestTicketsDirNoLocalPath(t *testing.T) {
+	home := setupTestHome(t)
+
+	centralRoot := filepath.Join(home, ".tickets")
+	os.MkdirAll(filepath.Join(centralRoot, "ticket"), 0o755)
+
+	// Write shared config with project but no local path
+	sharedCfg := project.Config{Projects: map[string]project.ProjectConfig{
+		"ticket": {Store: "central"},
+	}}
+	sharedPath := filepath.Join(centralRoot, "config.yaml")
+	os.MkdirAll(filepath.Dir(sharedPath), 0o755)
+	data, _ := os.ReadFile(sharedPath) // may not exist
+	_ = data
+
+	// Write shared config manually
+	import_yaml_data := []byte("projects:\n    ticket:\n        store: central\n")
+	os.WriteFile(sharedPath, import_yaml_data, 0o644)
+	_ = sharedCfg
+
+	// No local config — ticketsDirFromConfig should still resolve via git remote
+	// Since we're in the ticket repo, git remote gives us "ticket"
+	oldDir, _ := os.Getwd()
+	projDir := filepath.Join(home, "fakerepo")
+	os.MkdirAll(projDir, 0o755)
+	runGit(t, projDir, "init")
+	runGit(t, projDir, "config", "user.email", "t@t.com")
+	runGit(t, projDir, "config", "user.name", "t")
+	os.Chdir(projDir)
+	defer os.Chdir(oldDir)
+
+	// ticketsDirFromConfig resolves via ResolveName (dirname fallback)
+	// which matches the shared config's "ticket" project... but our dir
+	// is "fakerepo" not "ticket". Let's use a dir named "ticket".
+	projDir2 := filepath.Join(home, "ticket")
+	os.MkdirAll(projDir2, 0o755)
+	runGit(t, projDir2, "init")
+	runGit(t, projDir2, "config", "user.email", "t@t.com")
+	runGit(t, projDir2, "config", "user.name", "t")
+	os.Chdir(projDir2)
+
+	dir, ok := ticketsDirFromConfig()
+	if !ok {
+		t.Fatal("ticketsDirFromConfig should resolve via shared config + dirname")
+	}
+	expected := filepath.Join(centralRoot, "ticket")
+	if dir != expected {
+		t.Errorf("ticketsDirFromConfig = %q, want %q", dir, expected)
+	}
+}
+
 func TestTicketsDirPrecedence(t *testing.T) {
 	home := setupTestHome(t)
 

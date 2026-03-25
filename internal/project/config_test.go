@@ -206,3 +206,285 @@ func TestCentralProjectDir(t *testing.T) {
 		t.Errorf("CentralProjectDir = %q, want %q", dir, expected)
 	}
 }
+
+func TestSharedConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	cfg := Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]ProjectConfig{
+			"proj": {
+				Path:         "/local/proj",
+				Store:        "central",
+				AutoLink:     true,
+				RegisteredAt: "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	Save(cfg)
+
+	// Read shared config directly
+	shared, err := loadFile(filepath.Join(centralRoot, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile shared: %v", err)
+	}
+	sp := shared.Projects["proj"]
+	if sp.Store != "central" {
+		t.Errorf("shared store = %q, want central", sp.Store)
+	}
+	if !sp.AutoLink {
+		t.Error("shared auto_link should be true")
+	}
+	if sp.RegisteredAt != "2026-01-01T00:00:00Z" {
+		t.Errorf("shared registered_at = %q", sp.RegisteredAt)
+	}
+}
+
+func TestLocalConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	cfg := Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]ProjectConfig{
+			"proj": {
+				Path:  "/local/proj",
+				Store: "central",
+			},
+		},
+	}
+	Save(cfg)
+
+	// Read local config directly
+	local, err := loadLocalOnly()
+	if err != nil {
+		t.Fatalf("loadLocalOnly: %v", err)
+	}
+	lp := local.Projects["proj"]
+	if lp.Path != "/local/proj" {
+		t.Errorf("local path = %q, want /local/proj", lp.Path)
+	}
+
+	// Read shared config — should NOT have path
+	shared, _ := loadFile(filepath.Join(centralRoot, configFileName))
+	sp := shared.Projects["proj"]
+	if sp.Path != "" {
+		t.Errorf("shared config should not have path, got %q", sp.Path)
+	}
+}
+
+func TestLoadMerge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	// Write shared config with project store info
+	sharedCfg := Config{Projects: map[string]ProjectConfig{
+		"proj": {Store: "central", AutoLink: true, RegisteredAt: "2026-01-01T00:00:00Z"},
+	}}
+	writeFileAtomic(filepath.Join(centralRoot, configFileName), sharedCfg)
+
+	// Write local config with path and central_root
+	localCfg := Config{
+		CentralRoot: centralRoot,
+		GitEmail:    "me@example.com",
+		Projects: map[string]ProjectConfig{
+			"proj": {Path: "/my/local/path"},
+		},
+	}
+	localPath, _ := ConfigPath()
+	writeFileAtomic(localPath, localCfg)
+
+	// Load should merge
+	merged, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := merged.Projects["proj"]
+	if p.Path != "/my/local/path" {
+		t.Errorf("path = %q, want /my/local/path", p.Path)
+	}
+	if p.Store != "central" {
+		t.Errorf("store = %q, want central", p.Store)
+	}
+	if !p.AutoLink {
+		t.Error("auto_link should be true from shared")
+	}
+	if merged.GitEmail != "me@example.com" {
+		t.Errorf("git_email = %q, want me@example.com", merged.GitEmail)
+	}
+}
+
+func TestLoadSharedOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, ".tickets")
+	os.MkdirAll(centralRoot, 0o755)
+
+	// Write shared config only — no local config
+	sharedCfg := Config{Projects: map[string]ProjectConfig{
+		"proj": {Store: "central", RegisteredAt: "2026-01-01T00:00:00Z"},
+	}}
+	writeFileAtomic(filepath.Join(centralRoot, configFileName), sharedCfg)
+
+	// No local config exists
+	merged, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := merged.Projects["proj"]
+	if p.Store != "central" {
+		t.Errorf("store = %q, want central", p.Store)
+	}
+	if p.Path != "" {
+		t.Errorf("path should be empty, got %q", p.Path)
+	}
+}
+
+func TestLoadLocalOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// No shared config — central root doesn't exist
+	cfg := Config{
+		Projects: map[string]ProjectConfig{
+			"proj": {Path: "/local/proj", Store: "local"},
+		},
+	}
+	localPath, _ := ConfigPath()
+	writeFileAtomic(localPath, cfg)
+
+	merged, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := merged.Projects["proj"]
+	if p.Path != "/local/proj" {
+		t.Errorf("path = %q, want /local/proj", p.Path)
+	}
+	if p.Store != "local" {
+		t.Errorf("store = %q, want local", p.Store)
+	}
+}
+
+func TestSharedConfigExclusions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	cfg := Config{
+		CentralRoot:  centralRoot,
+		GitEmail:     "me@example.com",
+		GitName:      "Me",
+		DefaultStore: "central",
+		SyncInterval: "10s",
+		Projects: map[string]ProjectConfig{
+			"proj": {
+				Path:         "/local/proj",
+				Store:        "central",
+				RegisteredAt: "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	Save(cfg)
+
+	// Read shared config directly
+	shared, err := loadFile(filepath.Join(centralRoot, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile shared: %v", err)
+	}
+
+	// Top-level local-only fields should NOT be in shared
+	if shared.CentralRoot != "" {
+		t.Errorf("shared has central_root: %q", shared.CentralRoot)
+	}
+	if shared.GitEmail != "" {
+		t.Errorf("shared has git_email: %q", shared.GitEmail)
+	}
+	if shared.GitName != "" {
+		t.Errorf("shared has git_name: %q", shared.GitName)
+	}
+	if shared.DefaultStore != "" {
+		t.Errorf("shared has default_store: %q", shared.DefaultStore)
+	}
+	if shared.SyncInterval != "" {
+		t.Errorf("shared has sync_interval: %q", shared.SyncInterval)
+	}
+
+	// Path should NOT be in shared projects
+	sp := shared.Projects["proj"]
+	if sp.Path != "" {
+		t.Errorf("shared project has path: %q", sp.Path)
+	}
+}
+
+func TestNewMachineFlow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	// Simulate: shared config exists from cloning forge-data
+	sharedCfg := Config{Projects: map[string]ProjectConfig{
+		"proj": {Store: "central", AutoLink: true, RegisteredAt: "2026-01-01T00:00:00Z"},
+	}}
+	writeFileAtomic(filepath.Join(centralRoot, configFileName), sharedCfg)
+
+	// Simulate: user runs tk init on new machine, creating local config
+	localCfg := Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]ProjectConfig{
+			"proj": {Path: "/new-machine/proj"},
+		},
+	}
+	localPath, _ := ConfigPath()
+	writeFileAtomic(localPath, localCfg)
+
+	// Load should merge shared + local
+	merged, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	p := merged.Projects["proj"]
+	if p.Path != "/new-machine/proj" {
+		t.Errorf("path = %q, want /new-machine/proj", p.Path)
+	}
+	if p.Store != "central" {
+		t.Errorf("store = %q, want central (from shared)", p.Store)
+	}
+	if !p.AutoLink {
+		t.Error("auto_link should be true (from shared)")
+	}
+
+	// Save should preserve the split
+	Save(merged)
+
+	// Verify shared still has store info
+	shared, _ := loadFile(filepath.Join(centralRoot, configFileName))
+	if shared.Projects["proj"].Store != "central" {
+		t.Error("shared store lost after save")
+	}
+
+	// Verify local still has path
+	local, _ := loadLocalOnly()
+	if local.Projects["proj"].Path != "/new-machine/proj" {
+		t.Error("local path lost after save")
+	}
+}
