@@ -130,7 +130,7 @@ Global flags:
   --json           Output in JSON format
 
 Partial ID matching: 'tk show 5c4' matches 'nw-5c46'
-Tickets stored as markdown in .tickets/`
+Run 'tk setup' to configure. Run 'tk init' to register a project.`
 
 // Version is set via -ldflags at build time.
 var Version = "dev"

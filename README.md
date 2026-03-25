@@ -2,7 +2,7 @@
 
 A git-backed issue tracker for AI agents. Rooted in the Unix Philosophy, `tk` is inspired by Joe Armstrong's [Minimal Viable Program](https://joearms.github.io/published/2014-06-25-minimal-viable-program.html) with additional quality of life features for managing and querying against complex issue dependency graphs.
 
-Tickets are markdown files with YAML frontmatter in `.tickets/`. This allows AI agents to easily search them for relevant content without dumping ten thousand character JSONL lines into their context window.
+Tickets are markdown files with YAML frontmatter stored in a central repository. This allows AI agents to easily search them for relevant content without dumping ten thousand character JSONL lines into their context window.
 
 ## Install
 
@@ -50,21 +50,50 @@ tk version
 # dev (a1b2c3d, dirty)
 ```
 
+## Getting Started
+
+After installing, run setup to configure the central ticket store:
+
+```bash
+# First machine — create a new central store
+tk setup --central-root ~/code/forge-data/tickets
+
+# Register each project
+cd ~/code/myproject
+tk init --store central
+```
+
+On a second machine, point at the same repo:
+
+```bash
+# Clone the repo that holds your tickets
+git clone git@github.com:YourOrg/forge-data.git ~/code/forge-data
+
+# Point tk at it
+tk setup --central-root ~/code/forge-data/tickets
+
+# Register local projects
+cd ~/code/myproject && tk init
+```
+
 ## Configuration
 
-Set `TICKETS_DIR` to store tickets in a custom location (default: `.tickets`):
+Config lives in `~/.ticket/config.yaml` (created by `tk setup`):
 
-```bash
-export TICKETS_DIR=".tasks"
-tk create "my ticket"
+```yaml
+central_root: /Users/you/code/forge-data/tickets
+git_email: tk@local
+git_name: tk
+default_store: central
+sync_interval: 5s
+projects:
+    myproject:
+        path: /Users/you/code/myproject
 ```
 
-Use `--repo` to operate on a different repo from anywhere:
+Shared project registry (store type, auto_link, etc.) is stored in `<central_root>/config.yaml` and synced via git alongside tickets.
 
-```bash
-tk ls --repo ~/code/other-project
-tk show fix-auth --repo ~/code/other-project
-```
+`TICKETS_DIR` env var overrides all config-based resolution. `--repo` flag overrides everything.
 
 ## Agent Setup
 
@@ -183,6 +212,16 @@ tk query '.stage == "triage"' | jq -r '.id' | xargs -I{} tk revert {} --to backl
 ```
 
 Partial ID matching: `tk show 5c4` matches `nw-5c46`.
+
+### Git Sync
+
+`tk serve` automatically commits and pushes ticket changes every 5 seconds. For manual sync:
+
+```bash
+tk sync
+```
+
+If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is blocked and a `.tk-sync-blocked` marker is written. Resolve the conflict manually, then sync resumes on the next cycle.
 
 ## Releasing
 
