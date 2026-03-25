@@ -80,6 +80,7 @@ Setup:
   init [--store central|local] [--project <name>] [--yes] [--json]
                                Register a project with the central store
   sync                         Sync ticket changes to git (stage, commit, push)
+  status                       Show tk system status and project overview
 
 Interactive:
   ui                         Interactive ticket browser (TUI)

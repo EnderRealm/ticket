@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- CLI: `tk status` command — system health overview with version, config paths, data repo state, sync status, and per-project ticket counts
+
 ## [5.1.0] - 2026-03-24
 
 ### Added
