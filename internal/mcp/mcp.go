@@ -268,6 +268,19 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return textResult(string(data))
 }
 
+// filterByProject returns only tickets belonging to the given project.
+// Uses ParseNamespacedID to extract the project from each ticket's ID.
+func filterByProject(tickets []*ticket.Ticket, project string) []*ticket.Ticket {
+	var filtered []*ticket.Ticket
+	for _, t := range tickets {
+		proj, _ := ticket.ParseNamespacedID(t.ID)
+		if proj == project {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
@@ -286,6 +299,7 @@ type listArgs struct {
 	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee name"`
 	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
 	Parent   string `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
+	Project  string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
 	Offset   *int   `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
 	Limit    *int   `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
 }
@@ -339,6 +353,9 @@ func registerList(server *mcp.Server, store ticket.Store) {
 		}
 
 		tickets = ticket.Filter(tickets, opts)
+		if args.Project != "" {
+			tickets = filterByProject(tickets, args.Project)
+		}
 		ticket.SortByStagePriorityID(tickets)
 
 		total := len(tickets)
@@ -409,6 +426,7 @@ type createArgs struct {
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
 	Risk        string            `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
+	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
 	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; walks up to find .tickets/ directory (like CLI --repo flag)"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 }
@@ -505,6 +523,10 @@ func registerCreate(server *mcp.Server, store ticket.Store) {
 			body.WriteString("\n## Acceptance Criteria\n\n" + args.Acceptance + "\n")
 		}
 		t.Body = body.String()
+
+		if args.Project != "" {
+			t.ID = ticket.FormatNamespacedID(args.Project, t.ID)
+		}
 
 		if err := targetStore.Create(t); err != nil {
 			r, _ := errResult("failed to create ticket: %v", err)
@@ -757,6 +779,7 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 type readyArgs struct {
 	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee"`
 	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Project  string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
 }
 
 func registerReady(server *mcp.Server, store ticket.Store) {
@@ -778,6 +801,9 @@ func registerReady(server *mcp.Server, store ticket.Store) {
 			opts.Tag = args.Tag
 		}
 		ready = ticket.Filter(ready, opts)
+		if args.Project != "" {
+			ready = filterByProject(ready, args.Project)
+		}
 		ticket.SortByPriorityID(ready)
 
 		result := []ticketJSON{}
@@ -1126,7 +1152,9 @@ func registerMigrate(server *mcp.Server, store ticket.Store) {
 	})
 }
 
-type inboxArgs struct{}
+type inboxArgs struct {
+	Project string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+}
 
 func registerInbox(server *mcp.Server, store ticket.Store) {
 	mcp.AddTool(server, &mcp.Tool{
@@ -1147,6 +1175,12 @@ func registerInbox(server *mcp.Server, store ticket.Store) {
 
 		var result []inboxItemJSON
 		for _, item := range items {
+			if args.Project != "" {
+				proj, _ := ticket.ParseNamespacedID(item.Ticket.ID)
+				if proj != args.Project {
+					continue
+				}
+			}
 			result = append(result, inboxItemJSON{
 				Ticket: toJSON(item.Ticket),
 				Action: string(item.Action),
