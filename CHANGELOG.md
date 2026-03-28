@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.6.0] - 2026-03-28
 
 ### Added
 - Journal: `pkg/journal` package for commit-to-ticket linking via JSONL append-only journal
