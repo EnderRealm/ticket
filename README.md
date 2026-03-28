@@ -224,6 +224,17 @@ tk sync
 
 If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is blocked and a `.tk-sync-blocked` marker is written. Resolve the conflict manually, then sync resumes on the next cycle.
 
+### Multi-Project Serving
+
+`tk serve --central` starts the MCP server with a `MultiStore` that serves all projects from the central ticket store. Ticket IDs are namespaced as `project/ticket-id`.
+
+**Default project scoping:**
+- When run from inside a project repo, tools default to that project's tickets (same behavior as single-project mode)
+- When run outside any repo, tools return tickets from all projects
+- The `project` parameter on `ticket_list`, `ticket_create`, `ticket_ready`, and `ticket_inbox` overrides the default
+
+Other tools (`ticket_show`, `ticket_edit`, `ticket_advance`, etc.) accept namespaced IDs directly — pass `forge/my-ticket-1234` to operate on a specific project's ticket.
+
 ## Development
 
 ### Testing the MCP server locally

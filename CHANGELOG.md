@@ -1,15 +1,23 @@
 # Changelog
 
-## [Unreleased]
+## [5.3.0] - 2026-03-28
 
 ### Added
+- Core: `Store` interface extracted from `FileStore` — MCP server and all ticket operations now accept the interface
 - Core: `MultiStore` for multi-project ticket storage with namespaced IDs (`project/ticket-id`) and cross-project resolution
 - Core: `ParseNamespacedID` and `FormatNamespacedID` utilities for namespaced ticket ID handling
 - MCP: Optional `project` parameter on `ticket_create`, `ticket_list`, `ticket_ready`, `ticket_inbox` for multi-project filtering
+- MCP: Default project scoping in `--central` mode — resolves from CWD when in a repo, all projects when not
 - CLI: `tk serve --central` flag to serve all projects from the central ticket store via MultiStore
+- Dev: `.mcp.json` with `tk-dev` and `tk-dev-central` entries for local MCP testing
+- Tests: `UpdateSection` round-trip regression tests
+- Tests: `Serialize` notes duplication regression test
+
+### Fixed
+- CLI: Removed dead notes body-stripping workaround in `tk edit --note` (Parse already handles this)
 
 ### Changed
-- Core: Extract `Store` interface from `FileStore` — MCP server and all ticket operations now accept the interface, enabling future multi-project store backends
+- MCP: `NewServer` accepts a `defaultProject` parameter for CWD-based project scoping
 
 ## [5.2.0] - 2026-03-24
 
