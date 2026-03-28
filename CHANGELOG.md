@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.5.0] - 2026-03-28
 
 ### Added
 - MCP: `ticket_store_info` tool returns central store root and per-project ticket directory paths
