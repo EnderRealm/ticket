@@ -709,3 +709,74 @@ func TestExtra_InvalidCharsRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateSection_ReplacesExisting(t *testing.T) {
+	body := "\nOriginal description.\n\n## Acceptance Criteria\n\nOld criteria\n"
+	updated := UpdateSection(body, "Acceptance Criteria", "New criteria")
+	count := strings.Count(updated, "## Acceptance Criteria")
+	if count != 1 {
+		t.Errorf("expected 1 Acceptance Criteria section, got %d.\nBody:\n%s", count, updated)
+	}
+	if !strings.Contains(updated, "New criteria") {
+		t.Errorf("expected new content in body:\n%s", updated)
+	}
+	if strings.Contains(updated, "Old criteria") {
+		t.Errorf("expected old content to be replaced:\n%s", updated)
+	}
+}
+
+func TestUpdateSection_RoundTrip(t *testing.T) {
+	tk := &Ticket{
+		ID:       "test-roundtrip-1234",
+		Stage:    StageTriage,
+		Type:     TypeTask,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Round trip test",
+		Body:     "\nDescription here.\n",
+	}
+
+	// First edit: add acceptance criteria
+	tk.Body = UpdateSection(tk.Body, "Acceptance Criteria", "First AC")
+
+	// Serialize and parse (simulates write to disk + read back)
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk2, err := parseBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second edit: update acceptance criteria
+	tk2.Body = UpdateSection(tk2.Body, "Acceptance Criteria", "Updated AC")
+
+	// Serialize again and parse
+	data2, err := Serialize(tk2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk3, err := parseBytes(data2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count := strings.Count(tk3.Body, "## Acceptance Criteria")
+	if count != 1 {
+		t.Errorf("expected 1 Acceptance Criteria section after round-trip, got %d.\nBody:\n%s", count, tk3.Body)
+	}
+	if !strings.Contains(tk3.Body, "Updated AC") {
+		t.Errorf("expected updated content:\n%s", tk3.Body)
+	}
+	if strings.Contains(tk3.Body, "First AC") {
+		t.Errorf("expected old content replaced:\n%s", tk3.Body)
+	}
+}
+
+func parseBytes(data []byte) (*Ticket, error) {
+	r := strings.NewReader(string(data))
+	return Parse(r)
+}
