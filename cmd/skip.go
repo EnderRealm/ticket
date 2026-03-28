@@ -45,5 +45,8 @@ func runSkip(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  skipped: %s\n", strings.Join(names, ", "))
 		fmt.Printf("  reason: %s\n", reason)
 	}
+	for _, c := range result.Propagated {
+		fmt.Printf("  -> %s: %s → %s\n", c.ID, c.OldStage, c.NewStage)
+	}
 	return nil
 }

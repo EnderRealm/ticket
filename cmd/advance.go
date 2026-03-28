@@ -60,15 +60,8 @@ func runAdvance(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  skipped: %s\n", strings.Join(names, ", "))
 	}
 
-	// Propagate stage to parent if advancing to done.
-	if result.To == ticket.StageDone {
-		changes, err := ticket.PropagateStage(store, id)
-		if err != nil {
-			return err
-		}
-		for _, c := range changes {
-			fmt.Printf("  -> %s: %s → %s\n", c.ID, c.OldStage, c.NewStage)
-		}
+	for _, c := range result.Propagated {
+		fmt.Printf("  -> %s: %s → %s\n", c.ID, c.OldStage, c.NewStage)
 	}
 
 	return nil

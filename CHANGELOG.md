@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Core: Move `PropagateStage` into `Advance()` — epics now auto-close via MCP when all children reach done
+
+### Changed
+- Core: `AdvanceResult` includes `Propagated []StageChange` for parent stage changes
+
 ## [5.3.0] - 2026-03-28
 
 ### Added

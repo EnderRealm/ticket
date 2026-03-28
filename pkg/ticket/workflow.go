@@ -18,8 +18,9 @@ type AdvanceOptions struct {
 type AdvanceResult struct {
 	From       Stage
 	To         Stage
-	Skipped    []Stage // Stages that were skipped (if SkipTo was used).
-	GateErrors []error // Gate failures (empty on success or force).
+	Skipped    []Stage       // Stages that were skipped (if SkipTo was used).
+	GateErrors []error       // Gate failures (empty on success or force).
+	Propagated []StageChange // Parent stages propagated (e.g. epic auto-closed).
 }
 
 // Advance moves a ticket to its next pipeline stage, enforcing gate checks.
@@ -94,6 +95,16 @@ func Advance(store Store, id string, opts AdvanceOptions) (*AdvanceResult, error
 
 	if err := store.Update(t); err != nil {
 		return nil, err
+	}
+
+	// Propagate stage to parent when advancing to done.
+	if to == StageDone {
+		changes, err := PropagateStage(store, id)
+		if err != nil {
+			result.Propagated = changes
+			return result, err
+		}
+		result.Propagated = changes
 	}
 
 	return result, nil
