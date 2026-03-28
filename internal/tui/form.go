@@ -46,6 +46,7 @@ type formModel struct {
 	priority int
 	stageIdx int
 	stages   []ticket.Stage // valid stages for ticket type
+	offset   int
 	width    int
 	height   int
 }
@@ -124,6 +125,14 @@ func extractDescription(body string) string {
 func (m *formModel) setSize(w, h int) {
 	m.width = w
 	m.height = h
+}
+
+func (m formModel) visibleRows() int {
+	rows := m.height - 2 // help bar + blank line before it
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
 }
 
 func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
@@ -219,6 +228,16 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				}
 			}
 		}
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.offset -= 3
+			if m.offset < 0 {
+				m.offset = 0
+			}
+		case tea.MouseButtonWheelDown:
+			m.offset += 3
+		}
 	}
 	return m, nil
 }
@@ -244,9 +263,10 @@ func (m formModel) submit() tea.Msg {
 }
 
 func (m formModel) view() string {
-	var b strings.Builder
+	// Render all form content into lines first, then apply viewport clipping.
+	var lines []string
 
-	b.WriteString("\n")
+	lines = append(lines, "") // leading blank
 
 	labels := [fieldCount]string{"Title:", "Description:", "Type:", "Priority:", "Assignee:", "Stage:", "Note:"}
 	last := m.lastField()
@@ -268,7 +288,7 @@ func (m formModel) view() string {
 				}
 				parts = append(parts, s)
 			}
-			b.WriteString(cursor + label + " " + strings.Join(parts, "  ") + "\n")
+			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
 		case fieldPriority:
 			var parts []string
 			for j := 0; j < 5; j++ {
@@ -280,7 +300,7 @@ func (m formModel) view() string {
 				}
 				parts = append(parts, s)
 			}
-			b.WriteString(cursor + label + " " + strings.Join(parts, "  ") + "\n")
+			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
 		case fieldStage:
 			var parts []string
 			for j, s := range m.stages {
@@ -292,7 +312,7 @@ func (m formModel) view() string {
 				}
 				parts = append(parts, styled)
 			}
-			b.WriteString(cursor + label + " " + strings.Join(parts, "  ") + "\n")
+			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
 		default:
 			// Text fields: wrap long text across multiple lines at word boundaries.
 			text := m.fields[i]
@@ -349,9 +369,9 @@ func (m formModel) view() string {
 						}
 						before := string(lineRunes[:col])
 						after := string(lineRunes[col:])
-						b.WriteString(prefix + formActiveStyle.Render(before) + formCursorStyle.Render("█") + formActiveStyle.Render(after) + "\n")
+						lines = append(lines, prefix+formActiveStyle.Render(before)+formCursorStyle.Render("█")+formActiveStyle.Render(after))
 					} else {
-						b.WriteString(prefix + formActiveStyle.Render(wl.text) + "\n")
+						lines = append(lines, prefix+formActiveStyle.Render(wl.text))
 					}
 				}
 			} else {
@@ -360,13 +380,38 @@ func (m formModel) view() string {
 					if j == 0 {
 						prefix = cursor + label + " "
 					}
-					b.WriteString(prefix + wl.text + "\n")
+					lines = append(lines, prefix+wl.text)
 				}
 			}
 		}
 	}
 
-	b.WriteString("\n")
+	// Viewport clipping.
+	visible := m.visibleRows()
+	maxOffset := len(lines) - visible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	offset := m.offset
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+
+	end := offset + visible
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var b strings.Builder
+	for i := offset; i < end; i++ {
+		b.WriteString(lines[i])
+		b.WriteString("\n")
+	}
+	// Pad remaining rows.
+	for i := end - offset; i < visible; i++ {
+		b.WriteString("\n")
+	}
+
 	help := "tab/↑↓ fields  ←→ move/cycle  ctrl+j newline  ctrl+s/enter save  esc cancel"
 	b.WriteString(formHelpStyle.Render(help))
 

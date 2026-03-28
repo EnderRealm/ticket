@@ -153,6 +153,20 @@ func (m detailModel) update(msg tea.Msg) (detailModel, tea.Cmd) {
 		case "G":
 			m.offset = maxOffset
 		}
+	case tea.MouseMsg:
+		maxOffset := max(0, len(m.lines)-m.visibleRows())
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.offset -= 3
+			if m.offset < 0 {
+				m.offset = 0
+			}
+		case tea.MouseButtonWheelDown:
+			m.offset += 3
+			if m.offset > maxOffset {
+				m.offset = maxOffset
+			}
+		}
 	}
 	return m, nil
 }
