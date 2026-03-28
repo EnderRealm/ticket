@@ -12,7 +12,8 @@ import (
 var (
 	formLabelStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Width(14)
 	formActiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	formCursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	formCursorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	formTextCursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3"))
 	formHelpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
@@ -284,7 +285,7 @@ func (m formModel) view() string {
 			for j, tt := range ticketTypes {
 				s := lipgloss.NewStyle().Foreground(typeColors[tt]).Render(string(tt))
 				if j == m.typeIdx {
-					s = formCursorStyle.Render("[" + s + "]")
+					s = formTextCursorStyle.Render(" " + s + " ")
 				}
 				parts = append(parts, s)
 			}
@@ -296,7 +297,7 @@ func (m formModel) view() string {
 					strings.Repeat("P", 1) + string(rune('0'+j)),
 				)
 				if j == m.priority {
-					s = formCursorStyle.Render("[" + s + "]")
+					s = formTextCursorStyle.Render(" " + s + " ")
 				}
 				parts = append(parts, s)
 			}
@@ -308,7 +309,7 @@ func (m formModel) view() string {
 				stageColor := stageColors[s]
 				styled := lipgloss.NewStyle().Foreground(stageColor).Render(text)
 				if j == m.stageIdx {
-					styled = formCursorStyle.Render("[" + styled + "]")
+					styled = formTextCursorStyle.Render(" " + styled + " ")
 				}
 				parts = append(parts, styled)
 			}
@@ -368,8 +369,14 @@ func (m formModel) view() string {
 							col = len(lineRunes)
 						}
 						before := string(lineRunes[:col])
-						after := string(lineRunes[col:])
-						lines = append(lines, prefix+formActiveStyle.Render(before)+formCursorStyle.Render("█")+formActiveStyle.Render(after))
+						cursorChar := " "
+						afterStart := col
+						if col < len(lineRunes) {
+							cursorChar = string(lineRunes[col])
+							afterStart = col + 1
+						}
+						after := string(lineRunes[afterStart:])
+						lines = append(lines, prefix+formActiveStyle.Render(before)+formTextCursorStyle.Render(cursorChar)+formActiveStyle.Render(after))
 					} else {
 						lines = append(lines, prefix+formActiveStyle.Render(wl.text))
 					}

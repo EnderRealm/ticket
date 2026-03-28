@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- TUI: Form cursor highlights character at position instead of inserting block that displaced text
+- TUI: Picker selection uses background highlight instead of brackets
+
 ## [5.5.0] - 2026-03-28
 
 ### Added
