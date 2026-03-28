@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- Journal: `pkg/journal` package for commit-to-ticket linking via JSONL append-only journal
+- CLI: `tk watch start|stop|status|logs` — background daemon that polls git log and links commits to tickets via `[ticket-id]` bracket refs
+- CLI: `tk recompute [--project=NAME]` — rebuild commit journal from full git history
+- Journal: Auto-close tickets when commits contain `Closes: [id]` or `Fixes: [id]`
+- Journal: Diff stats tracking (lines added/removed, files changed) per commit
+- Journal: Work duration estimation for live commits
+
 ### Fixed
 - TUI: Form cursor highlights character at position instead of inserting block that displaced text
 - TUI: Picker selection uses background highlight instead of brackets

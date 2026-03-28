@@ -86,6 +86,13 @@ Interactive:
   ui                         Interactive ticket browser (TUI)
   serve                      Start MCP server on stdio
 
+Journal:
+  watch start [--interval=5s]  Start background git commit watcher
+  watch stop                   Stop the background watcher
+  watch status                 Show watcher status
+  watch logs [-n 50]           Show watcher log output
+  recompute [--project=NAME]   Rebuild commit journal from git history
+
 Other:
   workflow                   Ticket workflow guide (types, stages, conventions)
 
