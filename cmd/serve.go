@@ -3,13 +3,16 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/EnderRealm/ticket/internal/mcp"
 	"github.com/EnderRealm/ticket/internal/project"
+	"github.com/EnderRealm/ticket/pkg/journal"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -40,6 +43,9 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
+		// Start watch goroutine for commit journal
+		go watchLoop(ctx, syncInterval())
+
 		var store ticket.Store
 		var defaultProject string
 		var centralRoot string
@@ -69,4 +75,50 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().BoolVar(&centralFlag, "central", false, "serve all projects from the central ticket store")
 	rootCmd.AddCommand(serveCmd)
+}
+
+// watchLoop runs journal watch cycles on a ticker until ctx is cancelled.
+func watchLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cfg, err := project.Load()
+			if err != nil {
+				log.Printf("watch: load config: %v", err)
+				continue
+			}
+			for name, entry := range cfg.Projects {
+				if !entry.AutoLink && !entry.AutoClose {
+					continue
+				}
+				var store ticket.Store
+				if entry.Store == "central" {
+					dir, err := project.CentralProjectDir(name)
+					if err != nil {
+						log.Printf("watch: %s: resolve store: %v", name, err)
+						continue
+					}
+					store = ticket.NewFileStore(dir)
+				} else if entry.Path != "" {
+					store = ticket.NewFileStore(filepath.Join(entry.Path, ".tickets"))
+				}
+				result, err := journal.RunWatchCycle(name, entry, store)
+				if err != nil {
+					log.Printf("watch: %s: %v", name, err)
+					continue
+				}
+				if result.Appended > 0 || result.Closed > 0 {
+					log.Printf("watch: %s: appended %d, closed %d", name, result.Appended, result.Closed)
+				}
+				for _, w := range result.Warnings {
+					log.Printf("watch: %s: %s", name, w)
+				}
+			}
+		}
+	}
 }

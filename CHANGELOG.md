@@ -9,6 +9,7 @@
 - Journal: Auto-close tickets when commits contain `Closes: [id]` or `Fixes: [id]`
 - Journal: Diff stats tracking (lines added/removed, files changed) per commit
 - Journal: Work duration estimation for live commits
+- Journal: Watch cycle runs automatically inside `tk serve` alongside sync
 
 ### Fixed
 - TUI: Form cursor highlights character at position instead of inserting block that displaced text
