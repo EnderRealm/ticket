@@ -180,7 +180,7 @@ var gateExempt = map[string]bool{
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
-	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "path to repo root (walks up to find .tickets/)")
+	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "path to repo root (resolves via .tickets/ or central store config)")
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		fmt.Println(helpText)
 	})
@@ -218,7 +218,11 @@ func TicketsDir() string {
 		if dir, ok := ticket.FindTicketsDir(abs); ok {
 			return dir
 		}
-		fmt.Fprintf(os.Stderr, "Error: no .tickets/ directory found under %s\n", abs)
+		// No .tickets/ dir — try central store config for this repo path.
+		if dir, ok := ticketsDirFromConfigFor(abs); ok {
+			return dir
+		}
+		fmt.Fprintf(os.Stderr, "Error: no ticket store found for %s\n", abs)
 		os.Exit(1)
 	}
 	if dir := os.Getenv("TICKETS_DIR"); dir != "" {
@@ -234,12 +238,15 @@ func TicketsDir() string {
 }
 
 func ticketsDirFromConfig() (string, bool) {
+	return ticketsDirFromConfigFor(mustGetwd())
+}
+
+func ticketsDirFromConfigFor(dir string) (string, bool) {
 	cfg, err := project.Load()
 	if err != nil {
 		return "", false
 	}
-	cwd := mustGetwd()
-	name, _ := project.ResolveName(cfg, cwd, "")
+	name, _ := project.ResolveName(cfg, dir, "")
 	if name == "" {
 		return "", false
 	}
@@ -247,11 +254,11 @@ func ticketsDirFromConfig() (string, bool) {
 	if !ok || p.Store != "central" {
 		return "", false
 	}
-	dir, err := project.CentralProjectDir(name)
+	ticketsDir, err := project.CentralProjectDir(name)
 	if err != nil {
 		return "", false
 	}
-	return dir, true
+	return ticketsDir, true
 }
 
 func mustGetwd() string {

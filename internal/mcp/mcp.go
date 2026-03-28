@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EnderRealm/ticket/internal/project"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -315,6 +316,29 @@ type listResultJSON struct {
 	Limit   int                 `json:"limit"`
 }
 
+// resolveTicketsDirFromConfig resolves the tickets directory for a repo path
+// using the central store config. Returns ("", false) if the path doesn't match
+// a known central-mode project.
+func resolveTicketsDirFromConfig(repoPath string) (string, bool) {
+	cfg, err := project.Load()
+	if err != nil {
+		return "", false
+	}
+	name, _ := project.ResolveName(cfg, repoPath, "")
+	if name == "" {
+		return "", false
+	}
+	p, ok := cfg.Projects[name]
+	if !ok || p.Store != "central" {
+		return "", false
+	}
+	dir, err := project.CentralProjectDir(name)
+	if err != nil {
+		return "", false
+	}
+	return dir, true
+}
+
 // resolveProject returns the effective project: explicit arg > default > empty.
 func resolveProject(explicit, defaultProject string) string {
 	if explicit != "" {
@@ -437,7 +461,7 @@ type createArgs struct {
 	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
 	Risk        string            `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
 	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
-	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; walks up to find .tickets/ directory (like CLI --repo flag)"`
+	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; resolves ticket store via .tickets/ directory or central store config"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 }
 
@@ -460,7 +484,11 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			}
 			dir, ok := ticket.FindTicketsDir(abs)
 			if !ok {
-				r, _ := errResult("no .tickets/ directory found under %s", abs)
+				// No .tickets/ dir — try central store config for this repo path.
+				dir, ok = resolveTicketsDirFromConfig(abs)
+			}
+			if !ok {
+				r, _ := errResult("no ticket store found for %s", abs)
 				return r, nil, nil
 			}
 			targetStore = ticket.NewFileStore(dir)

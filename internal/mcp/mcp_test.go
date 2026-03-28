@@ -1249,8 +1249,8 @@ func TestCreateTicketRemoteRepoNotFound(t *testing.T) {
 		t.Error("expected error when .tickets/ not found")
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
-	if !strings.Contains(text, "no .tickets/ directory found") {
-		t.Errorf("error message = %q, want substring %q", text, "no .tickets/ directory found")
+	if !strings.Contains(text, "no ticket store found") {
+		t.Errorf("error message = %q, want substring %q", text, "no ticket store found")
 	}
 }
 

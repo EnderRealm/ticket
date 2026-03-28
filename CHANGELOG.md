@@ -4,6 +4,7 @@
 
 ### Fixed
 - Core: Move `PropagateStage` into `Advance()` — epics now auto-close via MCP when all children reach done
+- CLI/MCP: `--repo` flag and MCP `repo` parameter now resolve central store projects instead of only looking for `.tickets/` directories
 
 ### Changed
 - Core: `AdvanceResult` includes `Propagated []StageChange` for parent stage changes
