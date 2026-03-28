@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 ## Task Management
-'tk' is a CLI tool on PATH for task management. This project uses tickets to persistently manage all work items. Run 'tk help' for available commands and syntax. Tickets live in '.tickets/'.
+'tk' is a CLI tool on PATH for task management. This project uses tickets to persistently manage all work items. Run 'tk help' for available commands and syntax. Tickets live in the central store (`<central_root>/tickets/<project>/`).
 
 When adding/changing commands or flags, update:
 1. The help text in `cmd/root.go`
@@ -11,10 +11,12 @@ When adding/changing commands or flags, update:
 
 Go binary. Four layers sharing one core library:
 
-- `pkg/ticket/` — Core library (types, store, format, deps, filter, id, workflow, pipeline, gates)
+- `pkg/ticket/` — Core library (types, store, multistore, format, deps, filter, id, workflow, pipeline, gates)
 - `cmd/` — CLI commands via cobra
 - `internal/tui/` — Bubbletea TUI for interactive browse and edit
 - `internal/mcp/` — MCP server for AI agent access via `tk serve`
+
+`Store` is the interface; `FileStore` (single project) and `MultiStore` (central store, all projects) implement it. `tk serve --central` uses `MultiStore` with namespaced IDs (`project/ticket-id`).
 
 Tickets are markdown files with YAML frontmatter in `.tickets/` (configurable via `TICKETS_DIR` env var). Core YAML fields: `id`, `status`, `stage`, `deps`, `links`, `created`, `type`, `priority`, `assignee`, `parent`, `tags`, `review`, `risk`.
 
@@ -41,7 +43,20 @@ result, err := session.CallTool(ctx, &mcp.CallToolParams{
 })
 ```
 
-Do not replace the installed `tk` binary for testing — this machine runs MCP servers for other agents. Always use the in-process harness.
+Do not replace the installed `tk` binary for testing — this machine runs MCP servers for other agents. Always use the in-process harness for unit tests.
+
+### Live MCP testing
+
+`.mcp.json` provides two disabled dev servers pointing to the locally built `./tk` binary:
+
+- **`tk-dev`** — single-project mode (`./tk serve`)
+- **`tk-dev-central`** — multi-project mode (`./tk serve --central`)
+
+To test MCP changes live:
+1. `go build -o tk .`
+2. In `/mcp`, disable `plugin:forge:tk`, enable `tk-dev` or `tk-dev-central`
+3. Test via MCP tool calls
+4. Swap back when done
 
 ## Changelog
 
