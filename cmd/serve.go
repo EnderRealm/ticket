@@ -42,11 +42,13 @@ var serveCmd = &cobra.Command{
 
 		var store ticket.Store
 		var defaultProject string
+		var centralRoot string
 		if centralFlag {
 			root, err := project.CentralStoreRoot()
 			if err != nil {
 				return fmt.Errorf("--central requires a configured central store: %w", err)
 			}
+			centralRoot = root
 			store = ticket.NewMultiStore(filepath.Join(root, "tickets"))
 
 			// Resolve default project from CWD — scopes tools when
@@ -59,7 +61,7 @@ var serveCmd = &cobra.Command{
 			store = ticket.NewFileStore(TicketsDir())
 		}
 
-		server := mcp.NewServer(store, defaultProject)
+		server := mcp.NewServer(store, defaultProject, centralRoot)
 		return server.Run(ctx, &gomcp.StdioTransport{})
 	},
 }

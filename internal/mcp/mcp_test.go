@@ -18,7 +18,7 @@ func testServer(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	dir := t.TempDir()
 	store := ticket.NewFileStore(dir)
-	server := ticketmcp.NewServer(store, "")
+	server := ticketmcp.NewServer(store, "", "")
 
 	st, ct := mcp.NewInMemoryTransports()
 
@@ -1474,5 +1474,130 @@ func TestEditExtraReservedKey(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected error for reserved key 'stage'")
+	}
+}
+
+func testCentralServer(t *testing.T, projects ...string) (*mcp.ClientSession, string) {
+	t.Helper()
+	root := t.TempDir()
+	ticketsDir := filepath.Join(root, "tickets")
+	if err := os.MkdirAll(ticketsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range projects {
+		if err := os.MkdirAll(filepath.Join(ticketsDir, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := ticket.NewMultiStore(ticketsDir)
+	server := ticketmcp.NewServer(store, "", root)
+
+	st, ct := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	go server.Run(ctx, st)
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
+	session, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	return session, root
+}
+
+func TestStoreInfo(t *testing.T) {
+	session, root := testCentralServer(t, "alpha", "beta")
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_store_info",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var info map[string]any
+	if err := json.Unmarshal([]byte(text), &info); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if info["central_root"] != root {
+		t.Errorf("central_root = %q, want %q", info["central_root"], root)
+	}
+
+	projects, ok := info["projects"].(map[string]any)
+	if !ok {
+		t.Fatalf("projects is not an object: %T", info["projects"])
+	}
+
+	if len(projects) != 2 {
+		t.Errorf("expected 2 projects, got %d", len(projects))
+	}
+
+	for _, name := range []string{"alpha", "beta"} {
+		path, ok := projects[name].(string)
+		if !ok {
+			t.Errorf("project %q missing", name)
+			continue
+		}
+		expected := filepath.Join(root, "tickets", name)
+		if path != expected {
+			t.Errorf("project %q path = %q, want %q", name, path, expected)
+		}
+	}
+}
+
+func TestStoreInfoNonCentral(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_store_info",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error for non-central server")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "central mode") {
+		t.Errorf("error = %q, want mention of central mode", text)
+	}
+}
+
+func TestStoreInfoEmpty(t *testing.T) {
+	session, _ := testCentralServer(t)
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_store_info",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var info map[string]any
+	if err := json.Unmarshal([]byte(text), &info); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	projects, ok := info["projects"].(map[string]any)
+	if !ok {
+		t.Fatalf("projects is not an object: %T", info["projects"])
+	}
+	if len(projects) != 0 {
+		t.Errorf("expected 0 projects, got %d", len(projects))
 	}
 }

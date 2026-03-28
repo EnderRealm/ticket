@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- MCP: `ticket_store_info` tool returns central store root and per-project ticket directory paths
+
+### Changed
+- MCP: `NewServer` accepts `centralRoot` parameter for store info tool
+
 ## [5.4.0] - 2026-03-28
 
 ### Fixed

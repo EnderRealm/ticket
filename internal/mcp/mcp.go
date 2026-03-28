@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 // NewServer creates an MCP server with all ticket management tools registered.
 // defaultProject scopes tools to a specific project when the caller doesn't
 // provide an explicit project parameter. Empty string means no default (all projects).
-func NewServer(store ticket.Store, defaultProject string) *mcp.Server {
+func NewServer(store ticket.Store, defaultProject string, centralRoot string) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "tk", Version: "0.1.0"},
 		nil,
@@ -40,6 +41,7 @@ func NewServer(store ticket.Store, defaultProject string) *mcp.Server {
 	registerRevert(server, store)
 	registerMigrate(server, store)
 	registerInbox(server, store, defaultProject)
+	registerStoreInfo(server, centralRoot)
 
 	return server
 }
@@ -1228,6 +1230,40 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 		}
 
 		r, jsonErr := jsonResult(result)
+		return r, nil, jsonErr
+	})
+}
+
+func registerStoreInfo(server *mcp.Server, centralRoot string) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ticket_store_info",
+		Description: "Return central store root path and per-project ticket directory paths. Only available in central mode.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
+		if centralRoot == "" {
+			r, _ := errResult("ticket_store_info requires central mode (tk serve --central)")
+			return r, nil, nil
+		}
+
+		ticketsDir := filepath.Join(centralRoot, "tickets")
+		entries, err := os.ReadDir(ticketsDir)
+		if err != nil {
+			r, _ := errResult("failed to read tickets directory: %v", err)
+			return r, nil, nil
+		}
+
+		projects := map[string]string{}
+		for _, e := range entries {
+			if e.IsDir() {
+				projects[e.Name()] = filepath.Join(ticketsDir, e.Name())
+			}
+		}
+
+		info := map[string]any{
+			"central_root": centralRoot,
+			"projects":     projects,
+		}
+
+		r, jsonErr := jsonResult(info)
 		return r, nil, jsonErr
 	})
 }
