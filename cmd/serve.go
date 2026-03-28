@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/EnderRealm/ticket/internal/mcp"
@@ -13,9 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var centralFlag bool
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start MCP server on stdio",
+	Long:  "Start MCP server on stdio. Use --central to serve all projects from the central ticket store.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -35,12 +40,31 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		store := ticket.NewFileStore(TicketsDir())
-		server := mcp.NewServer(store)
+		var store ticket.Store
+		var defaultProject string
+		if centralFlag {
+			root, err := project.CentralStoreRoot()
+			if err != nil {
+				return fmt.Errorf("--central requires a configured central store: %w", err)
+			}
+			store = ticket.NewMultiStore(filepath.Join(root, "tickets"))
+
+			// Resolve default project from CWD — scopes tools when
+			// no explicit project param is provided. Empty string
+			// (not in a known repo) means all projects.
+			cfg, _ := project.Load()
+			cwd, _ := os.Getwd()
+			defaultProject, _ = project.ResolveName(cfg, cwd, "")
+		} else {
+			store = ticket.NewFileStore(TicketsDir())
+		}
+
+		server := mcp.NewServer(store, defaultProject)
 		return server.Run(ctx, &gomcp.StdioTransport{})
 	},
 }
 
 func init() {
+	serveCmd.Flags().BoolVar(&centralFlag, "central", false, "serve all projects from the central ticket store")
 	rootCmd.AddCommand(serveCmd)
 }

@@ -14,20 +14,22 @@ import (
 )
 
 // NewServer creates an MCP server with all ticket management tools registered.
-func NewServer(store ticket.Store) *mcp.Server {
+// defaultProject scopes tools to a specific project when the caller doesn't
+// provide an explicit project parameter. Empty string means no default (all projects).
+func NewServer(store ticket.Store, defaultProject string) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "tk", Version: "0.1.0"},
 		nil,
 	)
 
-	registerList(server, store)
+	registerList(server, store, defaultProject)
 	registerShow(server, store)
-	registerCreate(server, store)
+	registerCreate(server, store, defaultProject)
 	registerEdit(server, store)
 	registerAddNote(server, store)
 	registerDep(server, store)
 	registerLink(server, store)
-	registerReady(server, store)
+	registerReady(server, store, defaultProject)
 	registerBlocked(server, store)
 	registerWorkflow(server)
 	registerPipelines(server)
@@ -36,7 +38,7 @@ func NewServer(store ticket.Store) *mcp.Server {
 	registerSkip(server, store)
 	registerRevert(server, store)
 	registerMigrate(server, store)
-	registerInbox(server, store)
+	registerInbox(server, store, defaultProject)
 
 	return server
 }
@@ -313,7 +315,15 @@ type listResultJSON struct {
 	Limit   int                 `json:"limit"`
 }
 
-func registerList(server *mcp.Server, store ticket.Store) {
+// resolveProject returns the effective project: explicit arg > default > empty.
+func resolveProject(explicit, defaultProject string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return defaultProject
+}
+
+func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_list",
 		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate.",
@@ -353,8 +363,8 @@ func registerList(server *mcp.Server, store ticket.Store) {
 		}
 
 		tickets = ticket.Filter(tickets, opts)
-		if args.Project != "" {
-			tickets = filterByProject(tickets, args.Project)
+		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			tickets = filterByProject(tickets, proj)
 		}
 		ticket.SortByStagePriorityID(tickets)
 
@@ -431,7 +441,7 @@ type createArgs struct {
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 }
 
-func registerCreate(server *mcp.Server, store ticket.Store) {
+func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_create",
 		Description: "Create a new ticket. Supports optional repo parameter for cross-repo creation.",
@@ -524,8 +534,8 @@ func registerCreate(server *mcp.Server, store ticket.Store) {
 		}
 		t.Body = body.String()
 
-		if args.Project != "" {
-			t.ID = ticket.FormatNamespacedID(args.Project, t.ID)
+		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			t.ID = ticket.FormatNamespacedID(proj, t.ID)
 		}
 
 		if err := targetStore.Create(t); err != nil {
@@ -782,7 +792,7 @@ type readyArgs struct {
 	Project  string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
 }
 
-func registerReady(server *mcp.Server, store ticket.Store) {
+func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
 		Description: "List tickets that are ready to work on (all deps resolved, parent in_progress).",
@@ -801,8 +811,8 @@ func registerReady(server *mcp.Server, store ticket.Store) {
 			opts.Tag = args.Tag
 		}
 		ready = ticket.Filter(ready, opts)
-		if args.Project != "" {
-			ready = filterByProject(ready, args.Project)
+		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			ready = filterByProject(ready, proj)
 		}
 		ticket.SortByPriorityID(ready)
 
@@ -1156,7 +1166,7 @@ type inboxArgs struct {
 	Project string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
 }
 
-func registerInbox(server *mcp.Server, store ticket.Store) {
+func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ticket_inbox",
 		Description: "Show tickets needing human attention, sorted by priority then age.",
@@ -1174,10 +1184,11 @@ func registerInbox(server *mcp.Server, store ticket.Store) {
 		}
 
 		var result []inboxItemJSON
+		effectiveProject := resolveProject(args.Project, defaultProject)
 		for _, item := range items {
-			if args.Project != "" {
+			if effectiveProject != "" {
 				proj, _ := ticket.ParseNamespacedID(item.Ticket.ID)
-				if proj != args.Project {
+				if proj != effectiveProject {
 					continue
 				}
 			}

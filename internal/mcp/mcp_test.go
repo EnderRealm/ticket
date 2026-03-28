@@ -18,7 +18,7 @@ func testServer(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	dir := t.TempDir()
 	store := ticket.NewFileStore(dir)
-	server := ticketmcp.NewServer(store)
+	server := ticketmcp.NewServer(store, "")
 
 	st, ct := mcp.NewInMemoryTransports()
 

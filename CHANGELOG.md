@@ -6,6 +6,7 @@
 - Core: `MultiStore` for multi-project ticket storage with namespaced IDs (`project/ticket-id`) and cross-project resolution
 - Core: `ParseNamespacedID` and `FormatNamespacedID` utilities for namespaced ticket ID handling
 - MCP: Optional `project` parameter on `ticket_create`, `ticket_list`, `ticket_ready`, `ticket_inbox` for multi-project filtering
+- CLI: `tk serve --central` flag to serve all projects from the central ticket store via MultiStore
 
 ### Changed
 - Core: Extract `Store` interface from `FileStore` — MCP server and all ticket operations now accept the interface, enabling future multi-project store backends

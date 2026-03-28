@@ -159,6 +159,7 @@ Setup:
 Interactive:
   ui                         Terminal UI (list + pipeline kanban view)
   serve                      MCP server for AI agent integration
+  serve --central             Serve all projects from central ticket store
 
 Other:
   workflow                   Ticket workflow guide
@@ -222,6 +223,28 @@ tk sync
 ```
 
 If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is blocked and a `.tk-sync-blocked` marker is written. Resolve the conflict manually, then sync resumes on the next cycle.
+
+## Development
+
+### Testing the MCP server locally
+
+`.mcp.json` includes two dev server entries (both disabled by default) that point to the locally built `./tk` binary:
+
+- **`tk-dev`** — single-project mode (`./tk serve`)
+- **`tk-dev-central`** — multi-project mode (`./tk serve --central`)
+
+To test MCP changes:
+
+1. Build the binary:
+   ```bash
+   go build -o tk .
+   ```
+
+2. In Claude Code, open `/mcp` and:
+   - Disable the global `plugin:forge:tk` server
+   - Enable `tk-dev` (single-project) or `tk-dev-central` (multi-project)
+
+3. When done, swap back: disable the dev server, re-enable `plugin:forge:tk`.
 
 ## Releasing
 
