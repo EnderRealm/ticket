@@ -138,11 +138,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			Timestamp: time.Now().UTC(),
 			Text:      v,
 		})
-		if idx := strings.Index(t.Body, "\n## Notes\n"); idx >= 0 {
-			t.Body = t.Body[:idx+1]
-		} else if strings.HasPrefix(t.Body, "## Notes\n") {
-			t.Body = "\n"
-		}
 		changed = true
 	}
 

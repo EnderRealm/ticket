@@ -780,3 +780,58 @@ func parseBytes(data []byte) (*Ticket, error) {
 	r := strings.NewReader(string(data))
 	return Parse(r)
 }
+
+func TestSerialize_NotesDuplication(t *testing.T) {
+	tk := &Ticket{
+		ID:       "test-notes-dup",
+		Stage:    StageTriage,
+		Type:     TypeTask,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Notes dup test",
+		Body:     "\nDescription.\n",
+	}
+
+	// Add first note
+	tk.Notes = append(tk.Notes, Note{
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Text:      "First note",
+	})
+
+	// Round trip 1: Serialize → Parse
+	data1, err := Serialize(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk2, err := parseBytes(data1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add second note (simulates MCP ticket_add_note without body stripping)
+	tk2.Notes = append(tk2.Notes, Note{
+		Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		Text:      "Second note",
+	})
+
+	// Round trip 2: Serialize → Parse
+	data2, err := Serialize(tk2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count := strings.Count(string(data2), "First note")
+	if count != 1 {
+		t.Errorf("expected 'First note' to appear once, got %d times.\nSerialized:\n%s", count, string(data2))
+	}
+
+	tk3, err := parseBytes(data2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tk3.Notes) != 2 {
+		t.Errorf("expected 2 notes, got %d", len(tk3.Notes))
+	}
+}
