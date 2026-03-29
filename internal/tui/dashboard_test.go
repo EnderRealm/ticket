@@ -7,15 +7,15 @@ import (
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
-func TestDashboardHeaderThreeSpacesBetweenIDAndTitle(t *testing.T) {
+func TestDashboardHeaderContainsPRIAndTITLE(t *testing.T) {
 	m := dashboardModel{width: 80, height: 10}
 	output := m.view()
-	if !strings.Contains(output, "ID   TITLE") {
-		t.Errorf("header should contain 'ID   TITLE' (3 spaces), got:\n%s", output)
+	if !strings.Contains(output, "PRI") || !strings.Contains(output, "TITLE") {
+		t.Errorf("header should contain 'PRI' and 'TITLE', got:\n%s", output)
 	}
 }
 
-func TestRenderRowThreeSpacesBetweenIDAndTitle(t *testing.T) {
+func TestRenderRowContainsIDSuffixAndTitle(t *testing.T) {
 	tk := &ticket.Ticket{
 		ID:    "test-abcd",
 		Title: "My title",
@@ -24,13 +24,16 @@ func TestRenderRowThreeSpacesBetweenIDAndTitle(t *testing.T) {
 	}
 	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionHumanInput}
 	m := dashboardModel{width: 80, height: 10}
-	row := m.renderRow(item, false, len(tk.ID))
-	if !strings.Contains(row, tk.ID+"   "+tk.Title) {
-		t.Errorf("row should contain %q, got:\n%s", tk.ID+"   "+tk.Title, row)
+	row := m.renderRow(item, false, 0)
+	if !strings.Contains(row, "abcd") {
+		t.Errorf("row should contain ID suffix 'abcd', got:\n%s", row)
+	}
+	if !strings.Contains(row, tk.Title) {
+		t.Errorf("row should contain title %q, got:\n%s", tk.Title, row)
 	}
 }
 
-func TestRenderRowReviewPendingThreeSpaces(t *testing.T) {
+func TestRenderRowReviewPendingShowsIndicator(t *testing.T) {
 	tk := &ticket.Ticket{
 		ID:     "test-abcd",
 		Title:  "My title",
@@ -40,16 +43,16 @@ func TestRenderRowReviewPendingThreeSpaces(t *testing.T) {
 	}
 	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionHumanReview}
 	m := dashboardModel{width: 80, height: 10}
-	row := m.renderRow(item, false, len(tk.ID))
-	if !strings.Contains(row, tk.ID+"   "+tk.Title) {
-		t.Errorf("row should contain %q, got:\n%s", tk.ID+"   "+tk.Title, row)
+	row := m.renderRow(item, false, 0)
+	if !strings.Contains(row, "●") {
+		t.Errorf("row should contain review indicator '●', got:\n%s", row)
 	}
 }
 
 func TestDashboardEmptyNoPanic(t *testing.T) {
 	m := dashboardModel{width: 80, height: 10}
 	output := m.view()
-	if !strings.Contains(output, "ID   TITLE") {
-		t.Errorf("empty dashboard header should contain 'ID   TITLE' (3 spaces), got:\n%s", output)
+	if !strings.Contains(output, "PRI") {
+		t.Errorf("empty dashboard header should contain 'PRI', got:\n%s", output)
 	}
 }

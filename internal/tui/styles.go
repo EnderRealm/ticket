@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -13,19 +14,22 @@ import (
 // Uses lipgloss.AdaptiveColor for light/dark terminal support.
 
 var (
-	// Core palette
-	colorRed     = lipgloss.Color("1")
-	colorGreen   = lipgloss.Color("2")
-	colorYellow  = lipgloss.Color("3")
-	colorBlue    = lipgloss.Color("4")
-	colorMagenta = lipgloss.Color("5")
-	colorCyan    = lipgloss.Color("6")
-	colorWhite   = lipgloss.Color("7")
-	colorGray    = lipgloss.Color("8")
-	colorBlack   = lipgloss.Color("0")
+	// Core palette — muted 256-color values for a modern dark theme.
+	colorRed     = lipgloss.Color("#d75f5f") // soft red
+	colorGreen   = lipgloss.Color("#87af5f") // muted green
+	colorYellow  = lipgloss.Color("#d7af5f") // warm amber
+	colorBlue    = lipgloss.Color("#5f87af") // slate blue
+	colorMagenta = lipgloss.Color("#af87af") // muted purple
+	colorCyan    = lipgloss.Color("#5fafaf") // teal
+	colorWhite   = lipgloss.Color("#d0d0d0") // soft white
+	colorGray    = lipgloss.Color("#767676") // medium gray
+	colorBlack   = lipgloss.Color("#303030") // near-black
 
 	// Surfaces
-	colorSurface = lipgloss.Color("237") // dark gray background for selection
+	colorSurface  = lipgloss.Color("#3a3a3a") // selection background
+	colorSubtle   = lipgloss.Color("#4e4e4e") // subtle borders/separators
+	colorBadgeBg  = lipgloss.Color("#444444") // badge background
+
 	// Semantic aliases
 	colorDanger  = colorRed
 	colorSuccess = colorGreen
@@ -100,7 +104,7 @@ var (
 	StyleUnderline = lipgloss.NewStyle().Underline(true)
 
 	// Tab bar
-	StyleTabActive = lipgloss.NewStyle().Bold(true).Underline(true)
+	StyleTabActive = lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Underline(true).UnderlineSpaces(true)
 	StyleTabDim    = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// List rows
@@ -143,13 +147,19 @@ var (
 //
 // Render small colored badges for priority, type, stage, and review.
 
-// PriorityBadge renders a priority label like "P0" in the appropriate color.
+// PriorityBadge renders "P0" as a colored pill badge.
 func PriorityBadge(p int) string {
 	c, ok := PriorityColors[p]
 	if !ok {
 		c = colorWhite
 	}
-	return lipgloss.NewStyle().Foreground(c).Render(priorityLabel(p))
+	label := priorityLabel(p)
+	return lipgloss.NewStyle().
+		Foreground(colorBlack).
+		Background(c).
+		Bold(true).
+		Padding(0, 1).
+		Render(label)
 }
 
 func priorityLabel(p int) string {
@@ -169,17 +179,18 @@ func priorityLabel(p int) string {
 	}
 }
 
-// TypeBadge renders a ticket type in the appropriate color.
+// TypeBadge renders a ticket type as a fixed-width colored pill.
 func TypeBadge(t ticket.TicketType) string {
 	c, ok := TypeColors[t]
 	if !ok {
 		c = colorWhite
 	}
-	label := string(t)
-	if len(label) > 5 {
-		label = label[:5]
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(label)
+	label := fmt.Sprintf("%-5s", strings.ToUpper(shortType(t)))
+	return lipgloss.NewStyle().
+		Foreground(c).
+		Background(colorBadgeBg).
+		Padding(0, 1).
+		Render(label)
 }
 
 // StageBadge renders a pipeline stage in the appropriate color.
@@ -209,6 +220,14 @@ func ReviewBadge(r ticket.ReviewState) string {
 		symbol = "?"
 	}
 	return lipgloss.NewStyle().Foreground(c).Render(symbol)
+}
+
+// IDSuffix returns just the 4-character hex suffix of a ticket ID.
+func IDSuffix(id string) string {
+	if idx := strings.LastIndex(id, "-"); idx >= 0 && idx+1 < len(id) {
+		return id[idx+1:]
+	}
+	return id
 }
 
 // ─── Colorize Helpers ───────────────────────────────────────────────────────
@@ -249,6 +268,37 @@ func ColorReview(r ticket.ReviewState, text string) string {
 		c = colorWhite
 	}
 	return lipgloss.NewStyle().Foreground(c).Render(text)
+}
+
+// ─── Layout Utilities ───────────────────────────────────────────────────────
+
+// padRight pads a rendered string to a target visual width.
+func padRight(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+// ─── Text Helpers ───────────────────────────────────────────────────────────
+
+// shortType returns a compact label for a ticket type.
+func shortType(t ticket.TicketType) string {
+	switch t {
+	case ticket.TypeFeature:
+		return "feat"
+	case ticket.TypeBug:
+		return "bug"
+	case ticket.TypeTask:
+		return "task"
+	case ticket.TypeEpic:
+		return "epic"
+	case ticket.TypeChore:
+		return "chore"
+	default:
+		return string(t)
+	}
 }
 
 // ─── Layout Helpers ─────────────────────────────────────────────────────────

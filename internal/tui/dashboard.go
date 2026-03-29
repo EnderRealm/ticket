@@ -6,33 +6,19 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 // Aliases to centralized styles (styles.go)
 var (
-	tabActiveStyle = StyleTabActive
-	tabDimStyle    = StyleTabDim
-	dashRowSel     = StyleRowSelected
-	dashHelpStyle  = StyleHelp
+	dashRowSel = StyleRowSelected
 )
-
-type inboxTab int
-
-const (
-	tabBacklog inboxTab = iota
-	tabTriage
-	tabInbox
-	tabDone
-	tabAll
-)
-
-var tabLabels = []string{"backlog", "triage", "inbox", "done", "all"}
 
 type dashboardModel struct {
 	all            []*ticket.Ticket
 	items          []ticket.InboxItem
-	tab            inboxTab
+	activeTab      tabID // set by app-level tab switching
 	cursor         int
 	offset         int
 	width          int
@@ -47,7 +33,7 @@ type dashboardModel struct {
 func newDashboardModel(tickets []*ticket.Ticket, w, h int) dashboardModel {
 	m := dashboardModel{
 		all:    tickets,
-		tab:    tabTriage,
+		activeTab: tabTriage,
 		width:  w,
 		height: h,
 	}
@@ -89,7 +75,7 @@ func (m *dashboardModel) buildItems() {
 		}
 
 		// Per-tab stage filtering.
-		switch m.tab {
+		switch m.activeTab {
 		case tabBacklog:
 			if t.Stage != ticket.StageBacklog {
 				continue
@@ -126,7 +112,7 @@ func (m *dashboardModel) buildItems() {
 		item := ticket.NextAction(t)
 
 		// Inbox tab only shows human-actionable tickets.
-		if m.tab == tabInbox {
+		if m.activeTab == tabInbox {
 			if item.Action != ticket.ActionHumanReview && item.Action != ticket.ActionHumanInput {
 				continue
 			}
@@ -175,8 +161,8 @@ func (m *dashboardModel) clampOffset() {
 }
 
 func (m dashboardModel) visibleRows() int {
-	// Reserve: 1 tabs, 1 header, 1 filter line, 1 help bar.
-	rows := m.height - 4
+	// Reserve: 1 header. Filter and help bar are rendered by app shell.
+	rows := m.height - 1
 	if rows < 1 {
 		rows = 1
 	}
@@ -223,12 +209,6 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "tab":
-			m.tab = inboxTab((int(m.tab) + 1) % len(tabLabels))
-			m.buildItems()
-		case "shift+tab":
-			m.tab = inboxTab((int(m.tab) - 1 + len(tabLabels)) % len(tabLabels))
-			m.buildItems()
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -301,29 +281,15 @@ func (m dashboardModel) view() string {
 
 	var b strings.Builder
 
-	// Tabs.
-	var tabs []string
-	for i, label := range tabLabels {
-		if inboxTab(i) == m.tab {
-			tabs = append(tabs, tabActiveStyle.Render(label))
-		} else {
-			tabs = append(tabs, tabDimStyle.Render(label))
-		}
-	}
-	b.WriteString(strings.Join(tabs, "  "))
-	b.WriteString("\n")
-
-	// Compute ID column width from widest ticket ID.
-	idWidth := 2 // minimum: "ID" header
-	for _, item := range m.items {
-		if w := len(item.Ticket.ID); w > idWidth {
-			idWidth = w
-		}
-	}
-
-	// Header.
-	headerStyle := StyleBold
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-6s %-10s %-*s   %s", "P", "TYPE", "STAGE", idWidth, "ID", "TITLE")))
+	// Column header.
+	hdrStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	b.WriteString(fmt.Sprintf("  %s%s%s%s %s",
+		padRight(hdrStyle.Render("ID"), 6),
+		padRight(hdrStyle.Render("PRI"), 6),
+		padRight(hdrStyle.Render("TYPE"), 10),
+		padRight(hdrStyle.Render("STAGE"), 12),
+		hdrStyle.Render("TITLE"),
+	))
 	b.WriteString("\n")
 
 	// Rows.
@@ -334,7 +300,7 @@ func (m dashboardModel) view() string {
 	}
 
 	for i := m.offset; i < end; i++ {
-		b.WriteString(m.renderRow(m.items[i], i == m.cursor, idWidth))
+		b.WriteString(m.renderRow(m.items[i], i == m.cursor, 0))
 		b.WriteString("\n")
 	}
 
@@ -343,54 +309,42 @@ func (m dashboardModel) view() string {
 		b.WriteString("\n")
 	}
 
-	// Filter line.
-	var filterLine string
-	if m.filterActive {
-		filterLine = filterStyle.Render("/ " + m.filterText + "█")
-	} else if m.filterText != "" {
-		filterLine = filterStyle.Render("filter: " + m.filterText + "  (/ to edit, esc clears)")
-	} else {
-		var parts []string
-		if m.typeFilter != "" {
-			parts = append(parts, fmt.Sprintf("type: %s", m.typeFilter))
-		} else {
-			parts = append(parts, "all types")
-		}
-		parts = append(parts, "(t type, / search)")
-		filterLine = filterStyle.Render(strings.Join(parts, "  "))
-	}
-	b.WriteString(filterLine)
-	b.WriteString("\n")
-
-	// Help bar / delete confirmation.
+	// Delete confirmation only — filter/help rendered by app shell.
 	if m.confirmDelete {
 		prompt := fmt.Sprintf("Delete %s? (y)es / (n)o", m.deleteTargetID)
 		b.WriteString(StyleDanger.Bold(true).Render(prompt))
-	} else {
-		help := "tab ↑↓  │  enter (o)pen (c)reate (e)dit (r)eview  │  (p)riority (m)ove (d)elete  │  (q)uit"
-		b.WriteString(dashHelpStyle.Render(help))
 	}
 
 	return b.String()
 }
 
-func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, idWidth int) string {
+func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) string {
 	t := item.Ticket
 
-	pri := ColorPriority(t.Priority, fmt.Sprintf("P%d", t.Priority))
-	typ := ColorType(t.Type, fmt.Sprintf("%-6s", shortType(t.Type)))
-	stg := ColorStage(t.Stage, fmt.Sprintf("%-10s", string(t.Stage)))
+	id := padRight(StyleDim.Render(IDSuffix(t.ID)), 6)
+	pri := padRight(PriorityBadge(t.Priority), 6)
+	typ := padRight(TypeBadge(t.Type), 10)
+	stg := padRight(ColorStage(t.Stage, string(t.Stage)), 12)
 
 	// Review indicator.
-	var rev string
+	rev := ""
 	if t.Review == ticket.ReviewPending {
-		rev = ReviewBadge(t.Review) + " "
+		rev = " " + ReviewBadge(t.Review)
 	}
 
-	idText := fmt.Sprintf("%-*s", idWidth, t.ID)
+	line := fmt.Sprintf("  %s%s%s%s %s%s", id, pri, typ, stg, t.Title, rev)
+
+	// Pad to full width for selection highlight.
+	if m.width > 0 {
+		rendered := lipgloss.Width(line)
+		if rendered < m.width {
+			line += strings.Repeat(" ", m.width-rendered)
+		}
+	}
+
 	if selected {
-		idText = dashRowSel.Render(idText)
+		return dashRowSel.Render(line)
 	}
-
-	return fmt.Sprintf("%s  %s %s %s%s   %s", pri, typ, stg, rev, idText, t.Title)
+	return line
 }
+

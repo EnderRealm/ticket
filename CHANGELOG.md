@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- TUI: Two-tab layout (Epics / Tickets) replacing old dashboard/pipeline views
+- TUI: Header with project name and ticket count stats
+- TUI: Command bar (Ctrl+K) with search and /command stub
+- TUI: Overlay infrastructure for detail, form, and review views
+- TUI: Epics tab placeholder with progress bars
+
+### Changed
+- TUI: Detail, form, and review views now open as overlays instead of full view switches
+- TUI: Pipeline view removed (replaced by Epics tab)
+
 ## [5.6.0] - 2026-03-28
 
 ### Added
