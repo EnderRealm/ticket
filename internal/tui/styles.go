@@ -26,7 +26,7 @@ var (
 	colorBlack   = lipgloss.Color("#303030") // near-black
 
 	// Surfaces
-	colorSurface  = lipgloss.Color("#3a3a3a") // selection background
+	colorSurface  = lipgloss.Color("#4a4a4a") // selection background — visible against dark terminals
 	colorSubtle   = lipgloss.Color("#4e4e4e") // subtle borders/separators
 	colorBadgeBg  = lipgloss.Color("#444444") // badge background
 
@@ -149,11 +149,23 @@ var (
 
 // PriorityBadge renders "P0" as a colored pill badge.
 func PriorityBadge(p int) string {
+	return priorityBadge(p, false)
+}
+
+func priorityBadge(p int, selected bool) string {
 	c, ok := PriorityColors[p]
 	if !ok {
 		c = colorWhite
 	}
 	label := priorityLabel(p)
+	if selected {
+		return lipgloss.NewStyle().
+			Foreground(c).
+			Background(colorSurface).
+			Bold(true).
+			Padding(0, 1).
+			Render(label)
+	}
 	return lipgloss.NewStyle().
 		Foreground(colorBlack).
 		Background(c).
@@ -181,14 +193,22 @@ func priorityLabel(p int) string {
 
 // TypeBadge renders a ticket type as a fixed-width colored pill.
 func TypeBadge(t ticket.TicketType) string {
+	return typeBadge(t, false)
+}
+
+func typeBadge(t ticket.TicketType, selected bool) string {
 	c, ok := TypeColors[t]
 	if !ok {
 		c = colorWhite
 	}
 	label := fmt.Sprintf("%-5s", strings.ToUpper(shortType(t)))
+	bg := colorBadgeBg
+	if selected {
+		bg = colorSurface
+	}
 	return lipgloss.NewStyle().
 		Foreground(c).
-		Background(colorBadgeBg).
+		Background(bg).
 		Padding(0, 1).
 		Render(label)
 }
@@ -274,11 +294,20 @@ func ColorReview(r ticket.ReviewState, text string) string {
 
 // padRight pads a rendered string to a target visual width.
 func padRight(s string, width int) string {
+	return padRightBg(s, width, nil)
+}
+
+// padRightBg pads with a background style applied to the padding spaces.
+func padRightBg(s string, width int, bg *lipgloss.Style) string {
 	w := lipgloss.Width(s)
 	if w >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-w)
+	pad := strings.Repeat(" ", width-w)
+	if bg != nil {
+		pad = bg.Render(pad)
+	}
+	return s + pad
 }
 
 // ─── Text Helpers ───────────────────────────────────────────────────────────

@@ -10,10 +10,6 @@ import (
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
-// Aliases to centralized styles (styles.go)
-var (
-	dashRowSel = StyleRowSelected
-)
 
 type dashboardModel struct {
 	all            []*ticket.Ticket
@@ -321,30 +317,43 @@ func (m dashboardModel) view() string {
 func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) string {
 	t := item.Ticket
 
-	id := padRight(StyleDim.Render(IDSuffix(t.ID)), 6)
-	pri := padRight(PriorityBadge(t.Priority), 6)
-	typ := padRight(TypeBadge(t.Type), 10)
-	stg := padRight(ColorStage(t.Stage, string(t.Stage)), 12)
+	selBg := lipgloss.NewStyle()
+	if selected {
+		selBg = lipgloss.NewStyle().Background(colorSurface)
+	}
+	var bg *lipgloss.Style
+	if selected {
+		bg = &selBg
+	}
+
+	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(t.ID)), 6, bg)
+	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
+	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
+	stg := padRightBg(selBg.Foreground(StageColors[t.Stage]).Render(string(t.Stage)), 12, bg)
+	title := selBg.Foreground(colorWhite).Render(t.Title)
 
 	// Review indicator.
 	rev := ""
 	if t.Review == ticket.ReviewPending {
-		rev = " " + ReviewBadge(t.Review)
+		rev = " " + selBg.Foreground(ReviewColors[t.Review]).Render("●")
 	}
 
-	line := fmt.Sprintf("  %s%s%s%s %s%s", id, pri, typ, stg, t.Title, rev)
+	sp := "  "
+	gap := " "
+	if selected {
+		sp = selBg.Render("  ")
+		gap = selBg.Render(" ")
+	}
+	line := sp + id + pri + typ + stg + gap + title + rev
 
 	// Pad to full width for selection highlight.
-	if m.width > 0 {
+	if selected && m.width > 0 {
 		rendered := lipgloss.Width(line)
 		if rendered < m.width {
-			line += strings.Repeat(" ", m.width-rendered)
+			line += selBg.Render(strings.Repeat(" ", m.width-rendered))
 		}
 	}
 
-	if selected {
-		return dashRowSel.Render(line)
-	}
 	return line
 }
 

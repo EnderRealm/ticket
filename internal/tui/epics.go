@@ -287,52 +287,75 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 		}
 	}
 
-	id := padRight(StyleDim.Render(IDSuffix(r.epic.ID)), 6)
-	pri := padRight(PriorityBadge(r.epic.Priority), 6)
-	typ := padRight(TypeBadge(r.epic.Type), 10)
-	stg := padRight(ColorStage(r.epic.Stage, string(r.epic.Stage)), 12)
-	title := r.epic.Title
-	progress := ""
-	if total > 0 {
-		progress = fmt.Sprintf("  %s  %s", StyleDim.Render(fmt.Sprintf("%d/%d", done, total)), ProgressBar(done, total, 15))
+	selBg := lipgloss.NewStyle()
+	if selected {
+		selBg = lipgloss.NewStyle().Background(colorSurface)
+	}
+	var bg *lipgloss.Style
+	if selected {
+		bg = &selBg
 	}
 
-	line := fmt.Sprintf("%s %s%s%s%s %s%s", indicator, id, pri, typ, stg, title, progress)
+	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(r.epic.ID)), 6, bg)
+	pri := padRightBg(priorityBadge(r.epic.Priority, selected), 6, bg)
+	typ := padRightBg(typeBadge(r.epic.Type, selected), 10, bg)
+	stg := padRightBg(selBg.Foreground(StageColors[r.epic.Stage]).Render(string(r.epic.Stage)), 12, bg)
+	title := selBg.Foreground(colorWhite).Render(r.epic.Title)
+	progress := ""
+	if total > 0 {
+		progress = selBg.Render(fmt.Sprintf("  %s  %s", StyleDim.Render(fmt.Sprintf("%d/%d", done, total)), ProgressBar(done, total, 15)))
+	}
+
+	sp := " "
+	if selected {
+		sp = selBg.Render(" ")
+	}
+	ind := selBg.Render(indicator)
+	line := ind + sp + id + pri + typ + stg + sp + title + progress
 
 	// Pad to full width for selection highlight.
-	if m.width > 0 {
+	if selected && m.width > 0 {
 		rendered := lipgloss.Width(line)
 		if rendered < m.width {
-			line += strings.Repeat(" ", m.width-rendered)
+			line += selBg.Render(strings.Repeat(" ", m.width-rendered))
 		}
 	}
 
-	if selected {
-		return StyleRowSelected.Render(line)
-	}
 	return line
 }
 
 func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
-	line := fmt.Sprintf("  %s%s%s%s %s",
-		padRight(StyleDim.Render(IDSuffix(t.ID)), 6),
-		padRight(PriorityBadge(t.Priority), 6),
-		padRight(TypeBadge(t.Type), 10),
-		padRight(ColorStage(t.Stage, string(t.Stage)), 12),
-		t.Title,
-	)
+	selBg := lipgloss.NewStyle()
+	if selected {
+		selBg = lipgloss.NewStyle().Background(colorSurface)
+	}
+	var bg *lipgloss.Style
+	if selected {
+		bg = &selBg
+	}
+
+	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(t.ID)), 6, bg)
+	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
+	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
+	stg := padRightBg(selBg.Foreground(StageColors[t.Stage]).Render(string(t.Stage)), 12, bg)
+	title := selBg.Foreground(colorWhite).Render(t.Title)
+
+	sp := "  "
+	gap := " "
+	if selected {
+		sp = selBg.Render("  ")
+		gap = selBg.Render(" ")
+	}
+	line := sp + id + pri + typ + stg + gap + title
 
 	// Pad to full width for selection highlight.
-	if m.width > 0 {
+	if selected && m.width > 0 {
 		rendered := lipgloss.Width(line)
 		if rendered < m.width {
-			line += strings.Repeat(" ", m.width-rendered)
+			line += selBg.Render(strings.Repeat(" ", m.width-rendered))
 		}
 	}
 
-	if selected {
-		return StyleRowSelected.Render(line)
-	}
 	return line
 }
 
