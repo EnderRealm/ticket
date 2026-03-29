@@ -6,16 +6,15 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
+// Aliases to centralized styles (styles.go)
 var (
-	tabActiveStyle = lipgloss.NewStyle().Bold(true).Underline(true)
-	tabDimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	dashRowStyle   = lipgloss.NewStyle()
-	dashRowSel     = lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("237"))
-	dashHelpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	tabActiveStyle = StyleTabActive
+	tabDimStyle    = StyleTabDim
+	dashRowSel     = StyleRowSelected
+	dashHelpStyle  = StyleHelp
 )
 
 type inboxTab int
@@ -323,7 +322,7 @@ func (m dashboardModel) view() string {
 	}
 
 	// Header.
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
+	headerStyle := StyleBold
 	b.WriteString(headerStyle.Render(fmt.Sprintf("%-3s %-6s %-10s %-*s   %s", "P", "TYPE", "STAGE", idWidth, "ID", "TITLE")))
 	b.WriteString("\n")
 
@@ -366,7 +365,7 @@ func (m dashboardModel) view() string {
 	// Help bar / delete confirmation.
 	if m.confirmDelete {
 		prompt := fmt.Sprintf("Delete %s? (y)es / (n)o", m.deleteTargetID)
-		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(prompt))
+		b.WriteString(StyleDanger.Bold(true).Render(prompt))
 	} else {
 		help := "tab ↑↓  │  enter (o)pen (c)reate (e)dit (r)eview  │  (p)riority (m)ove (d)elete  │  (q)uit"
 		b.WriteString(dashHelpStyle.Render(help))
@@ -377,21 +376,15 @@ func (m dashboardModel) view() string {
 
 func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, idWidth int) string {
 	t := item.Ticket
-	pStyle := lipgloss.NewStyle().Foreground(priorityColors[t.Priority])
-	tStyle := lipgloss.NewStyle().Foreground(typeColors[t.Type])
 
-	stage := string(t.Stage)
-	stageColor := stageColors[t.Stage]
-	sStyle := lipgloss.NewStyle().Foreground(stageColor)
-
-	pri := pStyle.Render(fmt.Sprintf("P%d", t.Priority))
-	typ := tStyle.Render(fmt.Sprintf("%-6s", shortType(t.Type)))
-	stg := sStyle.Render(fmt.Sprintf("%-10s", stage))
+	pri := ColorPriority(t.Priority, fmt.Sprintf("P%d", t.Priority))
+	typ := ColorType(t.Type, fmt.Sprintf("%-6s", shortType(t.Type)))
+	stg := ColorStage(t.Stage, fmt.Sprintf("%-10s", string(t.Stage)))
 
 	// Review indicator.
 	var rev string
 	if t.Review == ticket.ReviewPending {
-		rev = lipgloss.NewStyle().Foreground(reviewColors[t.Review]).Render("● ")
+		rev = ReviewBadge(t.Review) + " "
 	}
 
 	idText := fmt.Sprintf("%-*s", idWidth, t.ID)

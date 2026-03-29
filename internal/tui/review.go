@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
@@ -254,7 +253,7 @@ func (m reviewModel) view() string {
 	return b.String()
 }
 
-var reviewHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
+var reviewHeaderStyle = StyleSuccess.Bold(true)
 
 func (m reviewModel) renderReview() []string {
 	t := m.ticket

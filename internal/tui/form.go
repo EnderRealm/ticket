@@ -5,16 +5,16 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
+// Aliases to centralized styles (styles.go)
 var (
-	formLabelStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Width(14)
-	formActiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	formCursorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	formTextCursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3"))
-	formHelpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	formLabelStyle      = StyleFieldKey
+	formActiveStyle     = StyleInputText
+	formCursorStyle     = StyleCursor
+	formTextCursorStyle = StyleTextCursor
+	formHelpStyle       = StyleHelp
 )
 
 var ticketTypes = []ticket.TicketType{
@@ -283,7 +283,7 @@ func (m formModel) view() string {
 		case fieldType:
 			var parts []string
 			for j, tt := range ticketTypes {
-				s := lipgloss.NewStyle().Foreground(typeColors[tt]).Render(string(tt))
+				s := ColorType(tt, string(tt))
 				if j == m.typeIdx {
 					s = formTextCursorStyle.Render(" " + s + " ")
 				}
@@ -293,9 +293,7 @@ func (m formModel) view() string {
 		case fieldPriority:
 			var parts []string
 			for j := 0; j < 5; j++ {
-				s := lipgloss.NewStyle().Foreground(priorityColors[j]).Render(
-					strings.Repeat("P", 1) + string(rune('0'+j)),
-				)
+				s := ColorPriority(j, "P"+string(rune('0'+j)))
 				if j == m.priority {
 					s = formTextCursorStyle.Render(" " + s + " ")
 				}
@@ -306,8 +304,7 @@ func (m formModel) view() string {
 			var parts []string
 			for j, s := range m.stages {
 				text := string(s)
-				stageColor := stageColors[s]
-				styled := lipgloss.NewStyle().Foreground(stageColor).Render(text)
+				styled := ColorStage(s, text)
 				if j == m.stageIdx {
 					styled = formTextCursorStyle.Render(" " + styled + " ")
 				}

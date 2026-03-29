@@ -8,17 +8,17 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
+// Aliases to centralized styles (styles.go)
 var (
-	fieldKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Width(14)
-	fieldValStyle   = lipgloss.NewStyle()
-	sectionStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	timestampStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	detailHelpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	inputLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	fieldKeyStyle   = StyleFieldKey
+	fieldValStyle   = StyleFieldVal
+	sectionStyle    = StyleSection
+	timestampStyle  = StyleTimestamp
+	detailHelpStyle = StyleHelp
+	inputLabelStyle = StyleInputLabel
 )
 
 type inputMode int
@@ -317,20 +317,16 @@ func (m detailModel) render() []string {
 	lines = append(lines, m.field("Title", t.Title))
 	lines = append(lines, m.field("ID", t.ID))
 	if t.Stage != "" {
-		stageStyle := lipgloss.NewStyle().Foreground(stageColors[t.Stage])
-		lines = append(lines, m.field("Stage", stageStyle.Render(string(t.Stage))))
+		lines = append(lines, m.field("Stage", StageBadge(t.Stage)))
 	}
 	if t.Review != "" {
-		reviewStyle := lipgloss.NewStyle().Foreground(reviewColors[t.Review])
-		lines = append(lines, m.field("Review", reviewStyle.Render(string(t.Review))))
+		lines = append(lines, m.field("Review", ReviewBadge(t.Review)+" "+ColorReview(t.Review, string(t.Review))))
 	}
 	if t.Risk != "" {
 		lines = append(lines, m.field("Risk", string(t.Risk)))
 	}
-	typeStyle := lipgloss.NewStyle().Foreground(typeColors[t.Type])
-	lines = append(lines, m.field("Type", typeStyle.Render(string(t.Type))))
-	priStyle := lipgloss.NewStyle().Foreground(priorityColors[t.Priority])
-	lines = append(lines, m.field("Priority", priStyle.Render(fmt.Sprintf("P%d", t.Priority))))
+	lines = append(lines, m.field("Type", TypeBadge(t.Type)))
+	lines = append(lines, m.field("Priority", PriorityBadge(t.Priority)))
 
 	if t.Assignee != "" {
 		lines = append(lines, m.field("Assignee", t.Assignee))

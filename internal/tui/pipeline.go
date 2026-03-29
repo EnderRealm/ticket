@@ -9,48 +9,13 @@ import (
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
+// Aliases to centralized styles (styles.go)
 var (
-	stageColors = map[ticket.Stage]lipgloss.Color{
-		ticket.StageBacklog:      "8", // gray
-		ticket.StageTriage:       "7", // white
-		ticket.StageSpec:         "6", // cyan
-		ticket.StageDesign:       "5", // magenta
-		ticket.StageDesignReview: "5", // magenta (same family as design)
-		ticket.StageImplement:    "3", // yellow
-		ticket.StageCodeReview:   "3", // yellow (same family as implement)
-		ticket.StageTest:         "4", // blue
-		ticket.StageVerify:       "2", // green
-		ticket.StageDone:         "8", // gray
-	}
-
-	reviewColors = map[ticket.ReviewState]lipgloss.Color{
-		ticket.ReviewPending:  "3", // yellow
-		ticket.ReviewApproved: "2", // green
-		ticket.ReviewRejected: "1", // red
-	}
-
-	priorityColors = map[int]lipgloss.Color{
-		0: "1", // red - critical
-		1: "3", // yellow - high
-		2: "7", // white - normal
-		3: "8", // gray - low
-		4: "8", // gray - backlog
-	}
-
-	typeColors = map[ticket.TicketType]lipgloss.Color{
-		ticket.TypeBug:     "1", // red
-		ticket.TypeFeature: "2", // green
-		ticket.TypeEpic:    "5", // magenta
-		ticket.TypeTask:    "4", // blue
-		ticket.TypeChore:   "8", // gray
-	}
-
-	filterStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	colHeaderStyle = lipgloss.NewStyle().Bold(true).Underline(true)
-	cardStyle      = lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
-	cardSelected   = lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1).
-			Bold(true).Background(lipgloss.Color("237"))
-	pipeHelpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	filterStyle    = StyleFilter
+	colHeaderStyle = StyleColHeader
+	cardStyle      = StyleCard
+	cardSelected   = StyleCardSelected
+	pipeHelpStyle  = StyleHelp
 )
 
 // allStages defines the display order for pipeline columns (from config, excludes done).
@@ -288,7 +253,10 @@ func (m pipelineModel) view() string {
 }
 
 func (m pipelineModel) renderColumn(colIdx int, col pipelineColumn, colWidth, maxH int) string {
-	stageColor := stageColors[col.stage]
+	stageColor, ok := StageColors[col.stage]
+	if !ok {
+		stageColor = colorWhite
+	}
 	style := colHeaderStyle.Foreground(stageColor)
 
 	header := style.Render(fmt.Sprintf(" %s (%d)", col.stage, len(col.tickets)))
@@ -319,22 +287,15 @@ func (m pipelineModel) renderColumn(colIdx int, col pipelineColumn, colWidth, ma
 }
 
 func (m pipelineModel) renderCard(t *ticket.Ticket, colWidth int, selected bool) string {
-	pStyle := lipgloss.NewStyle().Foreground(priorityColors[t.Priority])
-	tStyle := lipgloss.NewStyle().Foreground(typeColors[t.Type])
-
 	// Compact format: "P1 feat tic-xxxx"
-	pri := pStyle.Render(fmt.Sprintf("P%d", t.Priority))
-	typ := tStyle.Render(fmt.Sprintf("%-6s", shortType(t.Type)))
+	pri := ColorPriority(t.Priority, fmt.Sprintf("P%d", t.Priority))
+	typ := ColorType(t.Type, fmt.Sprintf("%-6s", shortType(t.Type)))
 	id := t.ID
 
 	// Review indicator.
 	var rev string
-	if t.Review == ticket.ReviewPending {
-		rev = lipgloss.NewStyle().Foreground(reviewColors[t.Review]).Render(" ●")
-	} else if t.Review == ticket.ReviewApproved {
-		rev = lipgloss.NewStyle().Foreground(reviewColors[t.Review]).Render(" ✓")
-	} else if t.Review == ticket.ReviewRejected {
-		rev = lipgloss.NewStyle().Foreground(reviewColors[t.Review]).Render(" ✗")
+	if t.Review != "" {
+		rev = " " + ReviewBadge(t.Review)
 	}
 
 	line := fmt.Sprintf("%s %s %s%s", pri, typ, id, rev)
