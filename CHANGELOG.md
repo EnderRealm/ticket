@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [6.0.1] - 2026-04-06
 
 ### Fixed
 - TUI: Search/filter mode no longer triggers global shortcuts (quit, create, open) on overlapping key presses
