@@ -4,6 +4,7 @@
 
 ### Fixed
 - TUI: Search/filter mode no longer triggers global shortcuts (quit, create, open) on overlapping key presses
+- TUI: Epics tab hides done epics and sorts by stage (pipeline order); header count excludes done
 
 ## [6.0.0] - 2026-04-05
 

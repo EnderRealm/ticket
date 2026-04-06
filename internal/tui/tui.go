@@ -598,7 +598,7 @@ func (a App) tabCounts() map[tabID]int {
 		default:
 			// Non-backlog, non-done = inbox candidate.
 		}
-		if t.Type == ticket.TypeEpic {
+		if t.Type == ticket.TypeEpic && t.Stage != ticket.StageDone {
 			counts[tabEpics]++
 		}
 		if t.Stage != ticket.StageDone {

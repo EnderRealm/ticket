@@ -46,16 +46,21 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 		}
 	}
 
-	// Collect epics.
+	// Collect epics, excluding done.
 	var epics []*ticket.Ticket
 	for _, t := range tickets {
-		if t.Type == ticket.TypeEpic {
+		if t.Type == ticket.TypeEpic && t.Stage != ticket.StageDone {
 			epics = append(epics, t)
 		}
 	}
 
-	// Sort by priority (ascending), then by title.
+	// Sort by stage (pipeline order), then priority, then title.
 	sort.SliceStable(epics, func(i, j int) bool {
+		si := ticket.StageIndex(epics[i].Type, epics[i].Stage)
+		sj := ticket.StageIndex(epics[j].Type, epics[j].Stage)
+		if si != sj {
+			return si < sj
+		}
 		if epics[i].Priority != epics[j].Priority {
 			return epics[i].Priority < epics[j].Priority
 		}
