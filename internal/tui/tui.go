@@ -408,6 +408,12 @@ func (a App) delegateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ─── Tab Updates ────────────────────────────────────────────────────────────
 
 func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When dashboard has active input (filter or delete confirm), delegate
+	// immediately so keystrokes reach the input instead of triggering shortcuts.
+	if a.activeTab != tabEpics && a.dashboard.inputActive() {
+		return a.delegateTab(msg)
+	}
+
 	// Global keys.
 	switch msg.String() {
 	case "q":
@@ -445,9 +451,6 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	} else {
 		// Ticket tabs (backlog, triage, inbox, done, all).
-		if a.dashboard.inputActive() {
-			return a.delegateTab(msg)
-		}
 		switch msg.String() {
 		case "enter", "o":
 			if t := a.dashboard.selected(); t != nil {
