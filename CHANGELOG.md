@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [6.0.0] - 2026-04-05
 
 ### Added
 - TUI: Two-tab layout (Epics / Tickets) replacing old dashboard/pipeline views
