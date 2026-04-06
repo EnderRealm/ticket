@@ -9,6 +9,9 @@
 - TUI: Overlay infrastructure for detail, form, and review views
 - TUI: Epics tab placeholder with progress bars
 
+### Fixed
+- `tk init --store central` wrote project directories to central store root instead of `tickets/` subdirectory
+
 ### Changed
 - TUI: Detail, form, and review views now open as overlays instead of full view switches
 - TUI: Pipeline view removed (replaced by Epics tab)

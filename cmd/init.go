@@ -93,7 +93,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		centralDir = filepath.Join(centralRoot, projectName)
+		centralDir, err = project.CentralProjectDir(projectName)
+		if err != nil {
+			return err
+		}
 		if err := os.MkdirAll(centralDir, 0o755); err != nil {
 			return err
 		}
