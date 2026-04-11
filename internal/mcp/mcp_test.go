@@ -41,7 +41,7 @@ func TestCreateTicket(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title":       "Test ticket from MCP",
-			"type":        "task",
+			"type":        "feature",
 			"description": "Created via in-process MCP test",
 		},
 	})
@@ -65,54 +65,12 @@ func TestCreateTicket(t *testing.T) {
 	if ticket["title"] != "Test ticket from MCP" {
 		t.Errorf("title = %q, want %q", ticket["title"], "Test ticket from MCP")
 	}
-	if ticket["stage"] != "backlog" {
-		t.Errorf("stage = %q, want %q", ticket["stage"], "backlog")
+	if ticket["status"] != "backlog" {
+		t.Errorf("status = %q, want %q", ticket["status"], "backlog")
 	}
 	created, _ := ticket["created"].(string)
 	if created == "" || created == "0001-01-01T00:00:00Z" {
 		t.Errorf("created = %q, want non-zero timestamp", created)
-	}
-}
-
-func TestAdvanceFromBacklog(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	// Create a ticket with description and risk (to pass backlog>triage gates).
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_create",
-		Arguments: map[string]any{
-			"title":       "Advance from backlog",
-			"type":        "task",
-			"description": "Has a description",
-			"risk":        "low",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	var created map[string]any
-	json.Unmarshal([]byte(text), &created)
-	id := created["id"].(string)
-
-	// Advance from backlog → triage.
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "ticket_advance",
-		Arguments: map[string]any{"id": id},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("advance failed: %v", result.Content)
-	}
-	text = result.Content[0].(*mcp.TextContent).Text
-	var resp map[string]any
-	json.Unmarshal([]byte(text), &resp)
-	tk := resp["ticket"].(map[string]any)
-	if tk["stage"] != "triage" {
-		t.Errorf("stage after advance = %q, want triage", tk["stage"])
 	}
 }
 
@@ -125,7 +83,7 @@ func TestReadyExcludesBacklog(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Backlog idea",
-			"type":  "task",
+			"type":  "feature",
 		},
 	})
 
@@ -153,7 +111,7 @@ func TestListExcludesBacklog(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Backlog item",
-			"type":  "task",
+			"type":  "feature",
 		},
 	})
 
@@ -174,7 +132,7 @@ func TestListExcludesBacklog(t *testing.T) {
 	}
 }
 
-func TestListFilterBacklog(t *testing.T) {
+func TestListFilterByStatus(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
 
@@ -183,14 +141,14 @@ func TestListFilterBacklog(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Backlog item",
-			"type":  "task",
+			"type":  "feature",
 		},
 	})
 
-	// Explicit stage filter should include it.
+	// Explicit status filter should include it.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"stage": "backlog"},
+		Arguments: map[string]any{"status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -200,11 +158,11 @@ func TestListFilterBacklog(t *testing.T) {
 	json.Unmarshal([]byte(text), &resp)
 	tickets := resp["tickets"].([]any)
 	if len(tickets) != 1 {
-		t.Errorf("ticket_list with stage=backlog should return 1, got %d", len(tickets))
+		t.Errorf("ticket_list with status=backlog should return 1, got %d", len(tickets))
 	}
 }
 
-func TestEditStage(t *testing.T) {
+func TestEditStatus(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
 
@@ -212,8 +170,8 @@ func TestEditStage(t *testing.T) {
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name: "ticket_create",
 		Arguments: map[string]any{
-			"title": "Stage edit test",
-			"type":  "task",
+			"title": "Status edit test",
+			"type":  "feature",
 		},
 	})
 	if err != nil {
@@ -224,12 +182,12 @@ func TestEditStage(t *testing.T) {
 	json.Unmarshal([]byte(text), &created)
 	id := created["id"].(string)
 
-	// Edit stage to triage.
+	// Edit status to open.
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name: "ticket_edit",
 		Arguments: map[string]any{
-			"id":    id,
-			"stage": "triage",
+			"id":     id,
+			"status": "open",
 		},
 	})
 	if err != nil {
@@ -238,66 +196,23 @@ func TestEditStage(t *testing.T) {
 	text = result.Content[0].(*mcp.TextContent).Text
 	var edited map[string]any
 	json.Unmarshal([]byte(text), &edited)
-	if edited["stage"] != "triage" {
-		t.Errorf("stage after edit = %q, want triage", edited["stage"])
+	if edited["status"] != "open" {
+		t.Errorf("status after edit = %q, want open", edited["status"])
 	}
 
-	// Invalid stage should fail.
+	// Invalid status should fail.
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name: "ticket_edit",
 		Arguments: map[string]any{
-			"id":    id,
-			"stage": "invalid",
+			"id":     id,
+			"status": "invalid",
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.IsError {
-		t.Error("editing to invalid stage should return error")
-	}
-}
-
-func TestEditBacklogTicketNonStageField(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	// Create a ticket (defaults to backlog).
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "ticket_create",
-		Arguments: map[string]any{"title": "Backlog edit test", "type": "task"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	var created map[string]any
-	json.Unmarshal([]byte(text), &created)
-	id := created["id"].(string)
-	if created["stage"] != "backlog" {
-		t.Fatalf("new ticket stage = %q, want backlog", created["stage"])
-	}
-
-	// Editing a non-stage field on a backlog ticket must succeed.
-	// Regression: previously failed with "invalid stage backlog: not defined in pipeline configuration".
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "ticket_edit",
-		Arguments: map[string]any{"id": id, "risk": "high"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("editing risk on backlog ticket failed: %v", result.Content)
-	}
-	text = result.Content[0].(*mcp.TextContent).Text
-	var edited map[string]any
-	json.Unmarshal([]byte(text), &edited)
-	if edited["stage"] != "backlog" {
-		t.Errorf("stage after edit = %q, want backlog", edited["stage"])
-	}
-	if edited["risk"] != "high" {
-		t.Errorf("risk after edit = %q, want high", edited["risk"])
+		t.Error("editing to invalid status should return error")
 	}
 }
 
@@ -308,7 +223,7 @@ func TestAddNotePreservesNewlines(t *testing.T) {
 	// Create a ticket.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_create",
-		Arguments: map[string]any{"title": "Note test", "type": "task"},
+		Arguments: map[string]any{"title": "Note test", "type": "feature"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -369,7 +284,7 @@ func TestAddMultipleNotes(t *testing.T) {
 	// Create a ticket.
 	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_create",
-		Arguments: map[string]any{"title": "Multi note test", "type": "task"},
+		Arguments: map[string]any{"title": "Multi note test", "type": "feature"},
 	})
 	text := result.Content[0].(*mcp.TextContent).Text
 	var created map[string]any
@@ -552,7 +467,7 @@ func TestEditTicketBranch(t *testing.T) {
 	// Create a ticket without branch.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_create",
-		Arguments: map[string]any{"title": "Edit branch test", "type": "task"},
+		Arguments: map[string]any{"title": "Edit branch test", "type": "feature"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -691,94 +606,6 @@ func TestEditDesignLongLine(t *testing.T) {
 	}
 }
 
-func TestRiskField(t *testing.T) {
-	ctx := context.Background()
-	session := testServer(t)
-
-	// Create with risk.
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_create",
-		Arguments: map[string]any{
-			"title": "Risk test",
-			"type":  "feature",
-			"risk":  "high",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	var created map[string]any
-	json.Unmarshal([]byte(text), &created)
-
-	if created["risk"] != "high" {
-		t.Errorf("create risk = %q, want %q", created["risk"], "high")
-	}
-
-	id := created["id"].(string)
-
-	// Edit risk.
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_edit",
-		Arguments: map[string]any{
-			"id":   id,
-			"risk": "critical",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("edit error: %v", result.Content)
-	}
-
-	text = result.Content[0].(*mcp.TextContent).Text
-	var edited map[string]any
-	json.Unmarshal([]byte(text), &edited)
-
-	if edited["risk"] != "critical" {
-		t.Errorf("edit risk = %q, want %q", edited["risk"], "critical")
-	}
-}
-
-// createAndAdvanceTo is a test helper that creates a feature ticket and advances it
-// to the given stage (using skip to bypass gates). Returns the ticket ID.
-func createAndAdvanceTo(t *testing.T, session *mcp.ClientSession, stage string) string {
-	t.Helper()
-	ctx := context.Background()
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_create",
-		Arguments: map[string]any{
-			"title":       "Revert test ticket",
-			"type":        "feature",
-			"description": "A feature for testing revert",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	var created map[string]any
-	json.Unmarshal([]byte(text), &created)
-	id := created["id"].(string)
-
-	if stage != "backlog" {
-		_, err = session.CallTool(ctx, &mcp.CallToolParams{
-			Name: "ticket_skip",
-			Arguments: map[string]any{
-				"id":     id,
-				"to":     stage,
-				"reason": "test setup",
-			},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	return id
-}
-
 func TestListEmptyReturnsArray(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
@@ -786,7 +613,7 @@ func TestListEmptyReturnsArray(t *testing.T) {
 	// List with a filter that matches nothing.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"assignee": "nonexistent-person"},
+		Arguments: map[string]any{"tag": "nonexistent-tag"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -831,7 +658,7 @@ func TestListReturnsSummaryFields(t *testing.T) {
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"stage": "backlog"},
+		Arguments: map[string]any{"status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -856,12 +683,12 @@ func TestListReturnsSummaryFields(t *testing.T) {
 	if tk["type"] != "feature" {
 		t.Errorf("type = %q, want %q", tk["type"], "feature")
 	}
-	if tk["stage"] == nil {
-		t.Error("missing stage")
+	if tk["status"] == nil {
+		t.Error("missing status")
 	}
 
 	// Body fields absent.
-	for _, field := range []string{"description", "design", "acceptance_criteria", "test_results", "notes", "reviews"} {
+	for _, field := range []string{"description", "design", "acceptance_criteria", "test_results", "notes"} {
 		if tk[field] != nil {
 			t.Errorf("list response should not include %q, got %v", field, tk[field])
 		}
@@ -878,7 +705,7 @@ func TestListPagination(t *testing.T) {
 			Name: "ticket_create",
 			Arguments: map[string]any{
 				"title": fmt.Sprintf("Pagination ticket %d", i),
-				"type":  "task",
+				"type":  "feature",
 			},
 		})
 		if err != nil {
@@ -889,7 +716,7 @@ func TestListPagination(t *testing.T) {
 	// List with limit=2.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"limit": 2, "stage": "backlog"},
+		Arguments: map[string]any{"limit": 2, "status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -912,7 +739,7 @@ func TestListPagination(t *testing.T) {
 	// List with offset=3, limit=10.
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"offset": 3, "limit": 10, "stage": "backlog"},
+		Arguments: map[string]any{"offset": 3, "limit": 10, "status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -931,7 +758,7 @@ func TestListPagination(t *testing.T) {
 	// List with limit=0 (unlimited).
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"limit": 0, "stage": "backlog"},
+		Arguments: map[string]any{"limit": 0, "status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -955,7 +782,7 @@ func TestListDefaultLimitUnderCap(t *testing.T) {
 			Name: "ticket_create",
 			Arguments: map[string]any{
 				"title": fmt.Sprintf("Default limit ticket %d", i),
-				"type":  "task",
+				"type":  "feature",
 			},
 		})
 	}
@@ -963,7 +790,7 @@ func TestListDefaultLimitUnderCap(t *testing.T) {
 	// List without explicit limit — should use default (50), return all 3.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"stage": "backlog"},
+		Arguments: map[string]any{"status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -991,7 +818,7 @@ func TestListDefaultLimitCapsResults(t *testing.T) {
 			Name: "ticket_create",
 			Arguments: map[string]any{
 				"title": fmt.Sprintf("Cap test ticket %d", i),
-				"type":  "task",
+				"type":  "feature",
 			},
 		})
 	}
@@ -999,7 +826,7 @@ func TestListDefaultLimitCapsResults(t *testing.T) {
 	// List without explicit limit — should cap at 50.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"stage": "backlog"},
+		Arguments: map[string]any{"status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1014,128 +841,6 @@ func TestListDefaultLimitCapsResults(t *testing.T) {
 	}
 	if resp["total"] != float64(55) {
 		t.Errorf("total = %v, want 55", resp["total"])
-	}
-}
-
-func TestRevertSuccess(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	id := createAndAdvanceTo(t, session, "implement")
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_revert",
-		Arguments: map[string]any{
-			"id":     id,
-			"to":     "spec",
-			"reason": "acceptance criteria incomplete",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("revert returned error: %v", result.Content)
-	}
-
-	text := result.Content[0].(*mcp.TextContent).Text
-	var resp map[string]any
-	json.Unmarshal([]byte(text), &resp)
-
-	if resp["from"] != "implement" {
-		t.Errorf("from = %q, want %q", resp["from"], "implement")
-	}
-	if resp["to"] != "spec" {
-		t.Errorf("to = %q, want %q", resp["to"], "spec")
-	}
-
-	ticket := resp["ticket"].(map[string]any)
-	if ticket["stage"] != "spec" {
-		t.Errorf("ticket stage = %q, want %q", ticket["stage"], "spec")
-	}
-	review, _ := ticket["review"].(string)
-	if review != "" {
-		t.Errorf("review should be reset, got %q", review)
-	}
-
-	// Verify audit note was appended.
-	notes, _ := ticket["notes"].([]any)
-	if len(notes) == 0 {
-		t.Fatal("expected at least one audit note")
-	}
-	lastNote := notes[len(notes)-1].(map[string]any)
-	noteText := lastNote["text"].(string)
-	if !strings.Contains(noteText, "Reverted from implement to spec") {
-		t.Errorf("audit note missing revert info: %q", noteText)
-	}
-	if !strings.Contains(noteText, "acceptance criteria incomplete") {
-		t.Errorf("audit note missing reason: %q", noteText)
-	}
-}
-
-func TestRevertForwardFails(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	id := createAndAdvanceTo(t, session, "spec")
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_revert",
-		Arguments: map[string]any{
-			"id":     id,
-			"to":     "implement",
-			"reason": "should fail",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Error("expected error when reverting forward")
-	}
-}
-
-func TestRevertSameStageFails(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	id := createAndAdvanceTo(t, session, "implement")
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_revert",
-		Arguments: map[string]any{
-			"id":     id,
-			"to":     "implement",
-			"reason": "should fail",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Error("expected error when reverting to same stage")
-	}
-}
-
-func TestRevertWithoutReasonFails(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	id := createAndAdvanceTo(t, session, "implement")
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_revert",
-		Arguments: map[string]any{
-			"id":     id,
-			"to":     "triage",
-			"reason": "",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Error("expected error when reason is empty")
 	}
 }
 
@@ -1155,7 +860,7 @@ func TestCreateTicketRemoteRepo(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Remote repo ticket",
-			"type":  "task",
+			"type":  "feature",
 			"repo":  altDir,
 		},
 	})
@@ -1202,7 +907,7 @@ func TestCreateTicketRemoteRepo(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Default store ticket",
-			"type":  "task",
+			"type":  "feature",
 		},
 	})
 	if err != nil {
@@ -1214,7 +919,7 @@ func TestCreateTicketRemoteRepo(t *testing.T) {
 
 	listResult, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"stage": "backlog"},
+		Arguments: map[string]any{"status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1238,7 +943,7 @@ func TestCreateTicketRemoteRepoNotFound(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Should fail",
-			"type":  "task",
+			"type":  "feature",
 			"repo":  noTicketsDir,
 		},
 	})
@@ -1254,28 +959,6 @@ func TestCreateTicketRemoteRepoNotFound(t *testing.T) {
 	}
 }
 
-func TestRevertToInvalidStageFails(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	id := createAndAdvanceTo(t, session, "implement")
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_revert",
-		Arguments: map[string]any{
-			"id":     id,
-			"to":     "nonexistent",
-			"reason": "should fail",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Error("expected error for invalid stage")
-	}
-}
-
 func TestCreateExtraFields(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
@@ -1284,7 +967,7 @@ func TestCreateExtraFields(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Extra fields create",
-			"type":  "task",
+			"type":  "feature",
 			"set":   map[string]any{"env": "staging", "team": "backend"},
 		},
 	})
@@ -1314,7 +997,7 @@ func TestEditExtraFields(t *testing.T) {
 	// Create a ticket.
 	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_create",
-		Arguments: map[string]any{"title": "Extra edit test", "type": "task"},
+		Arguments: map[string]any{"title": "Extra edit test", "type": "feature"},
 	})
 	text := result.Content[0].(*mcp.TextContent).Text
 	var created map[string]any
@@ -1392,7 +1075,7 @@ func TestShowExtraFields(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Show extra test",
-			"type":  "task",
+			"type":  "feature",
 			"set":   map[string]any{"env": "dev"},
 		},
 	})
@@ -1422,14 +1105,14 @@ func TestListExtraFields(t *testing.T) {
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "List extra test",
-			"type":  "task",
+			"type":  "feature",
 			"set":   map[string]any{"env": "prod"},
 		},
 	})
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"stage": "backlog"},
+		Arguments: map[string]any{"status": "backlog"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1455,7 +1138,7 @@ func TestEditExtraReservedKey(t *testing.T) {
 
 	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_create",
-		Arguments: map[string]any{"title": "Reserved key test", "type": "task"},
+		Arguments: map[string]any{"title": "Reserved key test", "type": "feature"},
 	})
 	text := result.Content[0].(*mcp.TextContent).Text
 	var created map[string]any
@@ -1466,14 +1149,14 @@ func TestEditExtraReservedKey(t *testing.T) {
 		Name: "ticket_edit",
 		Arguments: map[string]any{
 			"id":  id,
-			"set": map[string]any{"stage": "done"},
+			"set": map[string]any{"status": "done"},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.IsError {
-		t.Error("expected error for reserved key 'stage'")
+		t.Error("expected error for reserved key 'status'")
 	}
 }
 

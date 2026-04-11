@@ -24,13 +24,12 @@ func init() {
 // ticketJSON mirrors the bash query output format.
 type ticketJSON struct {
 	ID          string   `json:"id"`
-	Stage       string   `json:"stage"`
+	Status      string   `json:"status"`
 	Deps        []string `json:"deps"`
 	Links       []string `json:"links"`
 	Created     string   `json:"created"`
 	Type        string   `json:"type"`
 	Priority    int      `json:"priority"`
-	Assignee    string   `json:"assignee,omitempty"`
 	ExternalRef string   `json:"external-ref,omitempty"`
 	Parent      string   `json:"parent,omitempty"`
 	Tags  []string          `json:"tags,omitempty"`
@@ -69,13 +68,12 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	for _, t := range tickets {
 		j := ticketJSON{
 			ID:          t.ID,
-			Stage:       string(t.Stage),
+			Status:      string(t.Status),
 			Deps:        t.Deps,
 			Links:       t.Links,
 			Created:     t.Created.UTC().Format("2006-01-02T15:04:05Z"),
 			Type:        string(t.Type),
 			Priority:    t.Priority,
-			Assignee:    t.Assignee,
 			ExternalRef: t.ExternalRef,
 			Parent:      t.Parent,
 			Tags:        t.Tags,

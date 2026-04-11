@@ -11,14 +11,17 @@ When adding/changing commands or flags, update:
 
 Go binary. Four layers sharing one core library:
 
-- `pkg/ticket/` — Core library (types, store, multistore, format, deps, filter, id, workflow, pipeline, gates)
+- `pkg/ticket/` — Core library (types, store, multistore, format, deps, filter, id, inbox, move)
 - `cmd/` — CLI commands via cobra
 - `internal/tui/` — Bubbletea TUI for interactive browse and edit
 - `internal/mcp/` — MCP server for AI agent access via `tk serve`
 
-`Store` is the interface; `FileStore` (single project) and `MultiStore` (central store, all projects) implement it. `tk serve --central` uses `MultiStore` with namespaced IDs (`project/ticket-id`).
+`Store` is the interface; `FileStore` (single project) and `MultiStore` (central store, all projects) implement it. `tk serve` uses `MultiStore` with namespaced IDs (`project/ticket-id`).
 
-Tickets are markdown files with YAML frontmatter in `.tickets/` (configurable via `TICKETS_DIR` env var). Core YAML fields: `id`, `status`, `stage`, `deps`, `links`, `created`, `type`, `priority`, `assignee`, `parent`, `tags`, `review`, `risk`.
+Tickets are markdown files with YAML frontmatter. Core YAML fields: `id`, `status`, `deps`, `links`, `created`, `type`, `priority`, `parent`, `tags`.
+
+Statuses: `backlog`, `ready`, `open`, `done`, `closed`.
+Types: `epic`, `feature`, `bug`.
 
 ## Testing
 
@@ -39,7 +42,7 @@ MCP tools are tested in-process using the go-sdk's `NewInMemoryTransports`. The 
 session := testServer(t)
 result, err := session.CallTool(ctx, &mcp.CallToolParams{
     Name:      "ticket_create",
-    Arguments: map[string]any{"title": "Test", "type": "task"},
+    Arguments: map[string]any{"title": "Test", "type": "feature"},
 })
 ```
 
@@ -47,14 +50,13 @@ Do not replace the installed `tk` binary for testing — this machine runs MCP s
 
 ### Live MCP testing
 
-`.mcp.json` provides two disabled dev servers pointing to the locally built `./tk` binary:
+`.mcp.json` provides a disabled dev server pointing to the locally built `./tk` binary:
 
-- **`tk-dev`** — single-project mode (`./tk serve`)
-- **`tk-dev-central`** — multi-project mode (`./tk serve --central`)
+- **`tk-dev`** — multi-project mode (`./tk serve`)
 
 To test MCP changes live:
 1. `go build -o tk .`
-2. In `/mcp`, disable `plugin:forge:tk`, enable `tk-dev` or `tk-dev-central`
+2. In `/mcp`, disable `plugin:forge:tk`, enable `tk-dev`
 3. Test via MCP tool calls
 4. Swap back when done
 

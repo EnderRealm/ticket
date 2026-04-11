@@ -4,11 +4,6 @@
       "command": "./tk",
       "args": ["serve"],
       "disabled": true
-    },
-    "tk-dev-central": {
-      "command": "./tk",
-      "args": ["serve", "--central"],
-      "disabled": true
     }
   }
 }

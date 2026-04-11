@@ -42,10 +42,9 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	}
 
 	if metadataOnly {
-		// Serialize only frontmatter + title + description (no notes, reviews, relationships).
+		// Serialize only frontmatter + title + description (no notes, relationships).
 		meta := *t
 		meta.Notes = nil
-		meta.Reviews = nil
 		data, err := ticket.Serialize(&meta)
 		if err != nil {
 			return err
@@ -80,11 +79,11 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 
 	fmt.Print(output)
 
-	// Blockers: deps not at done stage.
+	// Blockers: deps not at done status.
 	var blockers []string
 	for _, depID := range t.Deps {
 		dep, ok := byID[depID]
-		if !ok || dep.Stage != ticket.StageDone {
+		if !ok || dep.Status != ticket.StatusDone {
 			blockers = append(blockers, depID)
 		}
 	}
@@ -92,7 +91,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Blockers\n\n")
 		for _, id := range blockers {
 			if dep, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, dep.Stage, dep.Title)
+				fmt.Printf("- %s [%s] %s\n", id, dep.Status, dep.Title)
 			} else {
 				fmt.Printf("- %s [unknown]\n", id)
 			}
@@ -102,7 +101,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	// Blocking: tickets that depend on this one and aren't done.
 	var blocking []string
 	for _, tk := range allTickets {
-		if tk.Stage == ticket.StageDone {
+		if tk.Status == ticket.StatusDone {
 			continue
 		}
 		for _, depID := range tk.Deps {
@@ -116,7 +115,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Blocking\n\n")
 		for _, id := range blocking {
 			if tk, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Stage, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
 			}
 		}
 	}
@@ -132,7 +131,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Children\n\n")
 		for _, id := range children {
 			if tk, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Stage, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
 			}
 		}
 	}
@@ -142,7 +141,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Linked\n\n")
 		for _, id := range t.Links {
 			if tk, ok := byID[id]; ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Stage, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
 			} else {
 				fmt.Printf("- %s [unknown]\n", id)
 			}

@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/EnderRealm/ticket/internal/project"
@@ -246,11 +244,9 @@ func TestInitNonInteractive(t *testing.T) {
 
 	// Call runInit directly via the cobra command's RunE
 	initCmd.Flags().Set("yes", "true")
-	initCmd.Flags().Set("store", "")
 	initCmd.Flags().Set("project", "niproject")
 	defer func() {
 		initCmd.Flags().Set("yes", "false")
-		initCmd.Flags().Set("store", "")
 		initCmd.Flags().Set("project", "")
 	}()
 
@@ -267,50 +263,7 @@ func TestInitNonInteractive(t *testing.T) {
 		t.Fatal("project not found in config after --yes init")
 	}
 	if p.Store != "central" {
-		t.Errorf("store = %q, want central (--yes should default to central)", p.Store)
-	}
-}
-
-func TestInitNonInteractiveDefaultStoreLocal(t *testing.T) {
-	home := setupTestHome(t)
-
-	// Set default_store to local in config
-	cfg := project.Config{DefaultStore: "local", Projects: map[string]project.ProjectConfig{}}
-	project.Save(cfg)
-
-	projDir := filepath.Join(home, "localproj")
-	os.MkdirAll(projDir, 0o755)
-	runGit(t, projDir, "init")
-	runGit(t, projDir, "config", "user.email", "test@test.com")
-	runGit(t, projDir, "config", "user.name", "test")
-
-	oldDir, _ := os.Getwd()
-	os.Chdir(projDir)
-	defer os.Chdir(oldDir)
-
-	initCmd.Flags().Set("yes", "true")
-	initCmd.Flags().Set("store", "")
-	initCmd.Flags().Set("project", "localproj")
-	defer func() {
-		initCmd.Flags().Set("yes", "false")
-		initCmd.Flags().Set("store", "")
-		initCmd.Flags().Set("project", "")
-	}()
-
-	if err := runInit(initCmd, nil); err != nil {
-		t.Fatalf("runInit --yes with default_store local: %v", err)
-	}
-
-	cfg, err := project.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	p, ok := cfg.Projects["localproj"]
-	if !ok {
-		t.Fatal("project not found")
-	}
-	if p.Store != "local" {
-		t.Errorf("store = %q, want local (default_store: local should override)", p.Store)
+		t.Errorf("store = %q, want central", p.Store)
 	}
 }
 
@@ -341,81 +294,6 @@ func TestInitBootstrapGitConfigIdentity(t *testing.T) {
 	name, _ := execCommand("git", "-C", centralRoot, "config", "--get", "user.name")
 	if name != "Custom User" {
 		t.Errorf("git name = %q, want Custom User", name)
-	}
-}
-
-func TestInitJSON(t *testing.T) {
-	home := setupTestHome(t)
-
-	// Need central_root for tk init --store central
-	centralRoot := filepath.Join(home, "central")
-	os.MkdirAll(centralRoot, 0o755)
-	cfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}}
-	project.Save(cfg)
-
-	projDir := filepath.Join(home, "jsonproject")
-	os.MkdirAll(projDir, 0o755)
-	runGit(t, projDir, "init")
-	runGit(t, projDir, "config", "user.email", "test@test.com")
-	runGit(t, projDir, "config", "user.name", "test")
-
-	oldDir, _ := os.Getwd()
-	os.Chdir(projDir)
-	defer os.Chdir(oldDir)
-
-	// Capture stdout
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	jsonOutput = true
-	initCmd.Flags().Set("yes", "true")
-	initCmd.Flags().Set("project", "jsonproject")
-	defer func() {
-		jsonOutput = false
-		initCmd.Flags().Set("yes", "false")
-		initCmd.Flags().Set("project", "")
-	}()
-
-	err := runInit(initCmd, nil)
-
-	w.Close()
-	os.Stdout = oldStdout
-
-	if err != nil {
-		t.Fatalf("runInit --json: %v", err)
-	}
-
-	buf := make([]byte, 8192)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
-
-	var result map[string]any
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("json parse output: %v\noutput: %s", err, output)
-	}
-
-	required := []string{"project", "path", "store", "config", "has_git", "copied_local_to_central"}
-	for _, key := range required {
-		if _, ok := result[key]; !ok {
-			t.Errorf("missing JSON field: %s", key)
-		}
-	}
-}
-
-func TestInitInvalidStore(t *testing.T) {
-	setupTestHome(t)
-
-	initCmd.Flags().Set("store", "invalid")
-	initCmd.Flags().Set("project", "")
-	defer initCmd.Flags().Set("store", "")
-
-	err := runInit(initCmd, nil)
-	if err == nil {
-		t.Fatal("expected error for invalid store value")
-	}
-	if !strings.Contains(err.Error(), "store must be central or local") {
-		t.Errorf("error = %q, want 'store must be central or local'", err.Error())
 	}
 }
 

@@ -23,33 +23,17 @@ Usage: tk <command> [args]
 Viewing:
   show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
-  backlog [filters]          List tickets in the backlog
-  ready [filters]            Tickets with all deps resolved and parent in_progress
-  blocked [filters]          Tickets with unresolved deps
-  done [--limit=N] [filters]    Recently done (default limit: 20)
 
 Creating & Editing:
-  create [title] [options]   Create ticket (interactive if no title)
+  create [title] [options]   Create ticket
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
-
-Pipeline:
-  advance <id> [--to <stage>] [--force]  Advance ticket to next pipeline stage
-  skip <id> --to <stage> --reason '...'  Skip to a later stage with justification
-  revert <id> --to <stage> --reason '..' Revert to an earlier stage with justification
-  review <id> --approve|--reject         Record review verdict on current stage
-  log <id>                               Show stage transition and review history
-  pipeline [--stage <stage>]             Show tickets grouped by pipeline stage
-  inbox                                  Show tickets needing human attention
-  next                                   Show per-project next actions
-  migrate [--dry-run]                    Migrate legacy tickets to stage pipeline
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency (id depends on dep-id)
   undep <id> <dep-id>        Remove dependency
   dep tree [--full] <id>     Show dependency tree
-  dep cycle                  Find cycles in open tickets
   link <id> <id> [id...]     Link tickets (symmetric)
   unlink <id> <target-id>    Remove link
 
@@ -61,25 +45,20 @@ Query (JSON):
   Always use single quotes for the filter to avoid bash issues with ! and ".
 
   tk query                                        # all tickets as JSONL
-  tk query '.stage == "triage"'                    # filter by field
+  tk query '.status == "open"'                     # filter by field
   tk query '.type == "bug" and .priority <= 1'    # compound filter
   tk query '.title | test("deploy"; "i")'         # regex search
 
-  JSON fields: id, stage, type, priority, title, description,
+  JSON fields: id, status, type, priority, title, description,
     design, acceptance_criteria, deps[], links[], tags[],
-    created, assignee, parent, notes, external_ref, review, risk,
+    created, parent, notes, external_ref,
     plus any custom extra fields (flattened to top level)
   Body sections (## Heading) become snake_case fields.
 
-Analytics:
-  stats                      Project health at a glance
-  timeline [--weeks=N]       Tickets closed by week (default: 4 weeks)
-
 Setup:
-  setup [--central-root <path>]  First-run configuration (required before use)
-  init [--store central|local] [--project <name>] [--yes] [--json]
-                               Register a project with the central store
-  sync                         Sync ticket changes to git (stage, commit, push)
+  init [--project <name>] [--central-root <path>] [--yes]
+                               Initialize tk and register a project
+  sync                         Sync ticket changes to git
   status                       Show tk system status and project overview
 
 Interactive:
@@ -93,52 +72,35 @@ Journal:
   watch logs [-n 50]           Show watcher log output
   recompute [--project=NAME]   Rebuild commit journal from git history
 
-Other:
-  workflow                   Ticket workflow guide (types, stages, conventions)
-
 Filter flags for ls:
-  --stage=X          backlog | triage | spec | design | implement | test | verify | done
-  -t, --type=X       bug | feature | task | epic | chore
+  --status=X         backlog | ready | open | done | closed
+  -t, --type=X       bug | feature | epic
   -P, --priority=X   0 (critical) through 4 (backlog)
-  -a, --assignee=X   Filter by assignee
   -T, --tag=X        Filter by tag
   --parent=X         Children of ticket X
-  --group-by=X       Group by: workflow | pipeline | type | priority
+  --group-by=X       Group by: workflow | type | priority
   --flat             Flat list (no grouping)
-
-Filter flags for ready, blocked, done:
-  -a, --assignee=X   Filter by assignee
-  -T, --tag=X        Filter by tag
-  ready also accepts: --open (skip parent hierarchy checks)
 
 Create & edit options:
   -d, --description    Description text
-  --design             Design notes
-  --acceptance         Acceptance criteria
-  -t, --type           bug | feature | task | epic | chore [default: task]
+  -t, --type           bug | feature | epic [default: feature]
   -p, --priority       0-4, 0=highest [default: 2]
-  --stage              Pipeline stage (edit only)
-  --review             Review state: pending | approved | rejected (edit only)
-  --risk               Risk level: low | normal | high | critical (edit only)
+  --status             Ticket status (edit only)
   --title              New title (edit only)
-  -a, --assignee       Assignee
   --parent             Parent ticket ID
   --tags               Comma-separated (e.g., --tags ui,backend)
   --external-ref       External reference (e.g., gh-123)
   --branch             Git branch name (edit only)
   --set key=value      Set extra field (repeatable, blank value removes)
 
-Stages: backlog → triage → spec → design → design-review → implement → code-review → test → verify → done
-  Pipelines are type-dependent and risk-dependent.
-  Default pipelines (low risk) omit review stages.
-  Normal/high/critical add design-review and code-review stages.
+Statuses: backlog, ready, open, done, closed
 
 Global flags:
-  --repo <path>    Operate on a different repo (walks up to find .tickets/)
+  --repo <path>    Operate on a different repo
   --json           Output in JSON format
 
 Partial ID matching: 'tk show 5c4' matches 'nw-5c46'
-Run 'tk setup' to configure. Run 'tk init' to register a project.`
+Run 'tk init' to configure and register a project.`
 
 // Version is set via -ldflags at build time.
 var Version = "dev"
@@ -180,7 +142,7 @@ var rootCmd = &cobra.Command{
 
 // Commands exempt from the config gate.
 var gateExempt = map[string]bool{
-	"setup":   true,
+	"init":    true,
 	"help":    true,
 	"version": true,
 }
@@ -199,7 +161,7 @@ func init() {
 		if !project.IsConfigured() {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			fmt.Fprintln(os.Stderr, "tk is not configured. Run `tk setup` to get started.")
+			fmt.Fprintln(os.Stderr, "tk is not configured. Run `tk init` to get started.")
 			os.Exit(1)
 		}
 		return nil

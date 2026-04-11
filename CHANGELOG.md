@@ -1,5 +1,32 @@
 # Changelog
 
+## [7.0.0] - 2026-04-11
+
+### Changed
+- Core: Replaced 10-stage pipeline system with flat status model (backlog, ready, open, done, closed)
+- Core: Simplified ticket types to epic, feature, bug (removed task, chore)
+- Core: Removed pipeline, gates, workflow, risk levels, and formal review system
+- Core: Central store is now the only storage mode (removed local .tickets/ support)
+- CLI: Removed commands: advance, skip, revert, pipeline, migrate, workflow, review
+- CLI: `tk serve` always uses MultiStore (removed --central flag)
+- CLI: `tk init` always uses central store (removed --store flag)
+- CLI: Filter flag `--stage` replaced with `--status`
+- CLI: Default ticket type changed from task to feature
+- MCP: Removed tools: ticket_advance, ticket_skip, ticket_revert, ticket_migrate, ticket_pipelines, ticket_review, ticket_workflow
+- MCP: JSON output uses `status` field instead of `stage`; removed `review`, `risk`, `skipped` fields
+- TUI: Simplified tabs to Inbox, Backlog, Epics, Done, All (removed Triage tab)
+- TUI: Removed review overlay
+- Journal: Auto-close uses direct status update instead of pipeline Skip()
+- CLI: `tk init` now handles first-run setup (folded in from removed `tk setup`)
+
+### Removed
+- CLI commands: backlog, ready, blocked, done, log, inbox, next, stats, timeline, setup, review, dep cycle
+- `pkg/ticket/pipeline.go`, `pipelines.json`, `gates.go`, `config.go`, `workflow.go`, `migrate.go`
+- Ticket fields: Stage, Review, Risk, Skipped, Reviews, Assignee, Conversations
+- ReviewState, RiskLevel, ReviewRecord types
+- Stage type and all stage constants
+- Create/edit flags: `--design`, `--acceptance`, `--assignee`
+
 ## [6.0.1] - 2026-04-06
 
 ### Fixed

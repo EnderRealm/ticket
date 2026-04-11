@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/EnderRealm/ticket/internal/project"
 	"github.com/EnderRealm/ticket/pkg/ticket"
@@ -77,7 +78,7 @@ func TestWatchCycle_AutoClose(t *testing.T) {
 		ID:       ticket.GenerateID("Test ticket"),
 		Title:    "Test ticket",
 		Type:     "feature",
-		Stage:    "implement",
+		Status:   ticket.StatusOpen,
 		Priority: 2,
 	}
 	if err := store.Create(tk); err != nil {
@@ -112,8 +113,8 @@ func TestWatchCycle_AutoClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Stage != "done" {
-		t.Errorf("ticket stage = %q, want done", updated.Stage)
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("ticket status = %q, want done", updated.Status)
 	}
 }
 
@@ -152,10 +153,20 @@ func runTestWatchCycle(t *testing.T, repoDir, jPath string, cfg project.ProjectC
 
 		for ticketID, action := range actions {
 			if action == "close" && cfg.AutoClose && store != nil {
-				if _, err := ticket.Skip(store, ticketID, "done", "auto-closed by commit"); err != nil {
+				tk, err := store.Get(ticketID)
+				if err != nil {
 					result.Warnings = append(result.Warnings, err.Error())
 				} else {
-					result.Closed++
+					tk.Status = ticket.StatusDone
+					tk.Notes = append(tk.Notes, ticket.Note{
+						Timestamp: time.Now().UTC(),
+						Text:      "auto-closed by commit",
+					})
+					if err := store.Update(tk); err != nil {
+						result.Warnings = append(result.Warnings, err.Error())
+					} else {
+						result.Closed++
+					}
 				}
 			}
 			if cfg.AutoLink {

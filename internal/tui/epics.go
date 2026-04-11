@@ -46,18 +46,18 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 		}
 	}
 
-	// Collect epics, excluding done.
+	// Collect epics, excluding done/closed.
 	var epics []*ticket.Ticket
 	for _, t := range tickets {
-		if t.Type == ticket.TypeEpic && t.Stage != ticket.StageDone {
+		if t.Type == ticket.TypeEpic && t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
 			epics = append(epics, t)
 		}
 	}
 
-	// Sort by stage (pipeline order), then priority, then title.
+	// Sort by status order, then priority, then title.
 	sort.SliceStable(epics, func(i, j int) bool {
-		si := ticket.StageIndex(epics[i].Type, epics[i].Stage)
-		sj := ticket.StageIndex(epics[j].Type, epics[j].Stage)
+		si := ticket.StatusOrder(epics[i].Status)
+		sj := ticket.StatusOrder(epics[j].Status)
 		if si != sj {
 			return si < sj
 		}
@@ -231,7 +231,7 @@ func (m epicsModel) view() string {
 		padRight(hdrStyle.Render("ID"), 6),
 		padRight(hdrStyle.Render("PRI"), 6),
 		padRight(hdrStyle.Render("TYPE"), 10),
-		padRight(hdrStyle.Render("STAGE"), 12),
+		padRight(hdrStyle.Render("STATUS"), 12),
 		hdrStyle.Render("TITLE"),
 	))
 
@@ -287,7 +287,7 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 	var done, total int
 	for _, child := range r.children {
 		total++
-		if child.Stage == ticket.StageDone {
+		if child.Status == ticket.StatusDone || child.Status == ticket.StatusClosed {
 			done++
 		}
 	}
@@ -304,7 +304,7 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(r.epic.ID)), 6, bg)
 	pri := padRightBg(priorityBadge(r.epic.Priority, selected), 6, bg)
 	typ := padRightBg(typeBadge(r.epic.Type, selected), 10, bg)
-	stg := padRightBg(selBg.Foreground(StageColors[r.epic.Stage]).Render(string(r.epic.Stage)), 12, bg)
+	sts := padRightBg(selBg.Foreground(StatusColors[r.epic.Status]).Render(string(r.epic.Status)), 12, bg)
 	title := selBg.Foreground(colorWhite).Render(r.epic.Title)
 	progress := ""
 	if total > 0 {
@@ -316,7 +316,7 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 		sp = selBg.Render(" ")
 	}
 	ind := selBg.Render(indicator)
-	line := ind + sp + id + pri + typ + stg + sp + title + progress
+	line := ind + sp + id + pri + typ + sts + sp + title + progress
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {
@@ -342,7 +342,7 @@ func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
 	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(t.ID)), 6, bg)
 	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
 	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
-	stg := padRightBg(selBg.Foreground(StageColors[t.Stage]).Render(string(t.Stage)), 12, bg)
+	sts := padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), 12, bg)
 	title := selBg.Foreground(colorWhite).Render(t.Title)
 
 	sp := "  "
@@ -351,7 +351,7 @@ func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
 		sp = selBg.Render("  ")
 		gap = selBg.Render(" ")
 	}
-	line := sp + id + pri + typ + stg + gap + title
+	line := sp + id + pri + typ + sts + gap + title
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {

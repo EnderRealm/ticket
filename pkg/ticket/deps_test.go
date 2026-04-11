@@ -16,14 +16,14 @@ func depStore(t *testing.T, tickets ...*Ticket) *FileStore {
 	return store
 }
 
-func mk(id string, stage Stage, deps ...string) *Ticket {
+func mk(id string, status Status, deps ...string) *Ticket {
 	if deps == nil {
 		deps = []string{}
 	}
 	return &Ticket{
 		ID:       id,
-		Stage:    stage,
-		Type:     TypeTask,
+		Status:   status,
+		Type:     TypeFeature,
 		Priority: 2,
 		Deps:     deps,
 		Links:    []string{},
@@ -33,14 +33,14 @@ func mk(id string, stage Stage, deps ...string) *Ticket {
 	}
 }
 
-func mkWithParent(id string, stage Stage, parent string, deps ...string) *Ticket {
-	t := mk(id, stage, deps...)
+func mkWithParent(id string, status Status, parent string, deps ...string) *Ticket {
+	t := mk(id, status, deps...)
 	t.Parent = parent
 	return t
 }
 
 func TestIsBlocked_NoDeps(t *testing.T) {
-	s := depStore(t, mk("t-1", StageTriage))
+	s := depStore(t, mk("t-1", StatusReady))
 	tk, _ := s.Get("t-1")
 	if IsBlocked(s, tk) {
 		t.Error("ticket with no deps should not be blocked")
@@ -49,8 +49,8 @@ func TestIsBlocked_NoDeps(t *testing.T) {
 
 func TestIsBlocked_AllDone(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-dep"),
-		mk("t-dep", StageDone),
+		mk("t-1", StatusReady, "t-dep"),
+		mk("t-dep", StatusDone),
 	)
 	tk, _ := s.Get("t-1")
 	if IsBlocked(s, tk) {
@@ -60,8 +60,8 @@ func TestIsBlocked_AllDone(t *testing.T) {
 
 func TestIsBlocked_OpenDep(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-dep"),
-		mk("t-dep", StageTriage),
+		mk("t-1", StatusReady, "t-dep"),
+		mk("t-dep", StatusReady),
 	)
 	tk, _ := s.Get("t-1")
 	if !IsBlocked(s, tk) {
@@ -71,7 +71,7 @@ func TestIsBlocked_OpenDep(t *testing.T) {
 
 func TestIsBlocked_MissingDep(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-gone"),
+		mk("t-1", StatusReady, "t-gone"),
 	)
 	tk, _ := s.Get("t-1")
 	if !IsBlocked(s, tk) {
@@ -81,10 +81,10 @@ func TestIsBlocked_MissingDep(t *testing.T) {
 
 func TestBlockingDeps(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-a", "t-b", "t-c"),
-		mk("t-a", StageDone),
-		mk("t-b", StageTriage),
-		mk("t-c", StageImplement),
+		mk("t-1", StatusReady, "t-a", "t-b", "t-c"),
+		mk("t-a", StatusDone),
+		mk("t-b", StatusReady),
+		mk("t-c", StatusOpen),
 	)
 	tk, _ := s.Get("t-1")
 	blocking := BlockingDeps(s, tk)
@@ -95,8 +95,8 @@ func TestBlockingDeps(t *testing.T) {
 
 func TestIsReady_Simple(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-dep"),
-		mk("t-dep", StageDone),
+		mk("t-1", StatusReady, "t-dep"),
+		mk("t-dep", StatusDone),
 	)
 	tk, _ := s.Get("t-1")
 	if !IsReady(s, tk) {
@@ -105,10 +105,10 @@ func TestIsReady_Simple(t *testing.T) {
 }
 
 func TestIsReady_ParentGating(t *testing.T) {
-	// Parent epic is at done stage → child not ready (parent done = work complete).
-	epic := mk("t-epic", StageDone)
+	// Parent epic is done → child not ready (parent done = work complete).
+	epic := mk("t-epic", StatusDone)
 	epic.Type = TypeEpic
-	child := mkWithParent("t-child", StageTriage, "t-epic")
+	child := mkWithParent("t-child", StatusReady, "t-epic")
 
 	s := depStore(t, epic, child)
 	tk, _ := s.Get("t-child")
@@ -118,9 +118,9 @@ func TestIsReady_ParentGating(t *testing.T) {
 }
 
 func TestIsReady_ParentActive(t *testing.T) {
-	epic := mk("t-epic", StageImplement)
+	epic := mk("t-epic", StatusOpen)
 	epic.Type = TypeEpic
-	child := mkWithParent("t-child", StageTriage, "t-epic")
+	child := mkWithParent("t-child", StatusReady, "t-epic")
 
 	s := depStore(t, epic, child)
 	tk, _ := s.Get("t-child")
@@ -130,9 +130,9 @@ func TestIsReady_ParentActive(t *testing.T) {
 }
 
 func TestIsReadyOpen_BypassesParentGate(t *testing.T) {
-	epic := mk("t-epic", StageDone)
+	epic := mk("t-epic", StatusDone)
 	epic.Type = TypeEpic
-	child := mkWithParent("t-child", StageTriage, "t-epic")
+	child := mkWithParent("t-child", StatusReady, "t-epic")
 
 	s := depStore(t, epic, child)
 	tk, _ := s.Get("t-child")
@@ -142,7 +142,7 @@ func TestIsReadyOpen_BypassesParentGate(t *testing.T) {
 }
 
 func TestIsReady_DoneNotReady(t *testing.T) {
-	s := depStore(t, mk("t-1", StageDone))
+	s := depStore(t, mk("t-1", StatusDone))
 	tk, _ := s.Get("t-1")
 	if IsReady(s, tk) {
 		t.Error("done ticket should not be ready")
@@ -150,7 +150,7 @@ func TestIsReady_DoneNotReady(t *testing.T) {
 }
 
 func TestIsReady_BacklogNotReady(t *testing.T) {
-	s := depStore(t, mk("t-1", StageBacklog))
+	s := depStore(t, mk("t-1", StatusBacklog))
 	tk, _ := s.Get("t-1")
 	if IsReady(s, tk) {
 		t.Error("backlog ticket should not be ready")
@@ -162,9 +162,9 @@ func TestIsReady_BacklogNotReady(t *testing.T) {
 
 func TestReadyTickets(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage),
-		mk("t-2", StageTriage, "t-3"),
-		mk("t-3", StageTriage),
+		mk("t-1", StatusReady),
+		mk("t-2", StatusReady, "t-3"),
+		mk("t-3", StatusReady),
 	)
 	ready, err := ReadyTickets(s)
 	if err != nil {
@@ -178,9 +178,9 @@ func TestReadyTickets(t *testing.T) {
 
 func TestBlockedTickets(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage),
-		mk("t-2", StageTriage, "t-3"),
-		mk("t-3", StageTriage),
+		mk("t-1", StatusReady),
+		mk("t-2", StatusReady, "t-3"),
+		mk("t-3", StatusReady),
 	)
 	blocked, err := BlockedTickets(s)
 	if err != nil {
@@ -193,9 +193,9 @@ func TestBlockedTickets(t *testing.T) {
 
 func TestFindCycles_NoCycles(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-2"),
-		mk("t-2", StageTriage, "t-3"),
-		mk("t-3", StageTriage),
+		mk("t-1", StatusReady, "t-2"),
+		mk("t-2", StatusReady, "t-3"),
+		mk("t-3", StatusReady),
 	)
 	cycles, err := FindCycles(s)
 	if err != nil {
@@ -208,8 +208,8 @@ func TestFindCycles_NoCycles(t *testing.T) {
 
 func TestFindCycles_SimpleCycle(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-2"),
-		mk("t-2", StageTriage, "t-1"),
+		mk("t-1", StatusReady, "t-2"),
+		mk("t-2", StatusReady, "t-1"),
 	)
 	cycles, err := FindCycles(s)
 	if err != nil {
@@ -225,8 +225,8 @@ func TestFindCycles_SimpleCycle(t *testing.T) {
 
 func TestFindCycles_IgnoresDone(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageDone, "t-2"),
-		mk("t-2", StageDone, "t-1"),
+		mk("t-1", StatusDone, "t-2"),
+		mk("t-2", StatusDone, "t-1"),
 	)
 	cycles, err := FindCycles(s)
 	if err != nil {
@@ -239,9 +239,9 @@ func TestFindCycles_IgnoresDone(t *testing.T) {
 
 func TestDepTree(t *testing.T) {
 	s := depStore(t,
-		mk("t-1", StageTriage, "t-2", "t-3"),
-		mk("t-2", StageTriage, "t-3"),
-		mk("t-3", StageDone),
+		mk("t-1", StatusReady, "t-2", "t-3"),
+		mk("t-2", StatusReady, "t-3"),
+		mk("t-3", StatusDone),
 	)
 	nodes, err := DepTree(s, "t-1", false)
 	if err != nil {
@@ -263,7 +263,7 @@ func TestDepTree(t *testing.T) {
 }
 
 func TestAddDep(t *testing.T) {
-	tk := mk("t-1", StageTriage)
+	tk := mk("t-1", StatusReady)
 	if err := AddDep(tk, "t-2"); err != nil {
 		t.Fatalf("AddDep: %v", err)
 	}
@@ -280,14 +280,14 @@ func TestAddDep(t *testing.T) {
 }
 
 func TestAddDep_Self(t *testing.T) {
-	tk := mk("t-1", StageTriage)
+	tk := mk("t-1", StatusReady)
 	if err := AddDep(tk, "t-1"); err == nil {
 		t.Error("self-dep should fail")
 	}
 }
 
 func TestRemoveDep(t *testing.T) {
-	tk := mk("t-1", StageTriage, "t-2", "t-3")
+	tk := mk("t-1", StatusReady, "t-2", "t-3")
 	RemoveDep(tk, "t-2")
 	if len(tk.Deps) != 1 || tk.Deps[0] != "t-3" {
 		t.Errorf("Deps = %v, want [t-3]", tk.Deps)
@@ -295,8 +295,8 @@ func TestRemoveDep(t *testing.T) {
 }
 
 func TestAddRemoveLink(t *testing.T) {
-	a := mk("t-1", StageTriage)
-	b := mk("t-2", StageTriage)
+	a := mk("t-1", StatusReady)
+	b := mk("t-2", StatusReady)
 	AddLink(a, b)
 	if len(a.Links) != 1 || a.Links[0] != "t-2" {
 		t.Errorf("a.Links = %v, want [t-2]", a.Links)

@@ -8,22 +8,22 @@ import (
 func makeTickets() []*Ticket {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return []*Ticket{
-		{ID: "t-001", Stage: StageTriage, Type: TypeTask, Priority: 2, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"backend"}, Assignee: "Alice"},
-		{ID: "t-002", Stage: StageImplement, Type: TypeBug, Priority: 0, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"frontend"}, Assignee: "Bob"},
-		{ID: "t-003", Stage: StageTriage, Type: TypeFeature, Priority: 1, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"backend"}, Parent: "t-epic"},
-		{ID: "t-004", Stage: StageDone, Type: TypeEpic, Priority: 1, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{}},
-		{ID: "t-005", Stage: StageImplement, Type: TypeChore, Priority: 3, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"backend", "ci"}, Assignee: "Alice"},
+		{ID: "t-001", Status: StatusReady, Type: TypeFeature, Priority: 2, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"backend"}},
+		{ID: "t-002", Status: StatusOpen, Type: TypeBug, Priority: 0, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"frontend"}},
+		{ID: "t-003", Status: StatusReady, Type: TypeFeature, Priority: 1, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"backend"}, Parent: "t-epic"},
+		{ID: "t-004", Status: StatusDone, Type: TypeEpic, Priority: 1, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{}},
+		{ID: "t-005", Status: StatusOpen, Type: TypeFeature, Priority: 3, Created: now, Deps: []string{}, Links: []string{}, Tags: []string{"backend", "ci"}},
 	}
 }
 
-func TestFilter_ByStage(t *testing.T) {
-	result := Filter(makeTickets(), ListOptions{Stage: StageTriage, Priority: -1})
+func TestFilter_ByStatus(t *testing.T) {
+	result := Filter(makeTickets(), ListOptions{Status: StatusReady, Priority: -1})
 	if len(result) != 2 {
 		t.Errorf("len = %d, want 2", len(result))
 	}
 	for _, tk := range result {
-		if tk.Stage != StageTriage {
-			t.Errorf("got stage %q, want triage", tk.Stage)
+		if tk.Status != StatusReady {
+			t.Errorf("got status %q, want ready", tk.Status)
 		}
 	}
 }
@@ -42,13 +42,6 @@ func TestFilter_ByPriority(t *testing.T) {
 	}
 }
 
-func TestFilter_ByAssignee(t *testing.T) {
-	result := Filter(makeTickets(), ListOptions{Assignee: "alice", Priority: -1})
-	if len(result) != 2 {
-		t.Errorf("len = %d, want 2 (case-insensitive)", len(result))
-	}
-}
-
 func TestFilter_ByTag(t *testing.T) {
 	result := Filter(makeTickets(), ListOptions{Tag: "backend", Priority: -1})
 	if len(result) != 3 {
@@ -64,14 +57,14 @@ func TestFilter_ByParent(t *testing.T) {
 }
 
 func TestFilter_Combined(t *testing.T) {
-	result := Filter(makeTickets(), ListOptions{Stage: StageTriage, Tag: "backend", Priority: -1})
+	result := Filter(makeTickets(), ListOptions{Status: StatusReady, Tag: "backend", Priority: -1})
 	if len(result) != 2 {
 		t.Errorf("len = %d, want 2", len(result))
 	}
 }
 
 func TestFilter_NoMatch(t *testing.T) {
-	result := Filter(makeTickets(), ListOptions{Stage: StageDone, Type: TypeBug, Priority: -1})
+	result := Filter(makeTickets(), ListOptions{Status: StatusDone, Type: TypeBug, Priority: -1})
 	if len(result) != 0 {
 		t.Errorf("len = %d, want 0", len(result))
 	}
@@ -85,15 +78,13 @@ func TestFilter_NoFilters(t *testing.T) {
 	}
 }
 
-func TestSortByStagePriorityID(t *testing.T) {
+func TestSortByStatusPriorityID(t *testing.T) {
 	tickets := makeTickets()
-	SortByStagePriorityID(tickets)
+	SortByStatusPriorityID(tickets)
 
-	// Stage order is pipeline-dependent. StageIndex for each ticket's type:
-	// t-003: feature triage=1, t-001: task triage=1, t-002: bug implement=2,
-	// t-004: epic done=4, t-005: chore implement=5
-	// Within same stage index, lower priority number first.
-	expected := []string{"t-003", "t-001", "t-002", "t-004", "t-005"}
+	// StatusOrder: open=0, ready=1, backlog=2, done=3, closed=4.
+	// t-002: open P0, t-005: open P3, t-003: ready P1, t-001: ready P2, t-004: done P1
+	expected := []string{"t-002", "t-005", "t-003", "t-001", "t-004"}
 	got := ids(tickets)
 	for i, id := range expected {
 		if got[i] != id {
@@ -107,7 +98,7 @@ func TestSortByPriorityID(t *testing.T) {
 	tickets := makeTickets()
 	SortByPriorityID(tickets)
 
-	// Just priority then ID, stage ignored.
+	// Just priority then ID, status ignored.
 	expected := []string{"t-002", "t-003", "t-004", "t-001", "t-005"}
 	got := ids(tickets)
 	for i, id := range expected {

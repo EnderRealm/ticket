@@ -9,12 +9,9 @@ import (
 type ActionKind string
 
 const (
-	ActionHumanReview ActionKind = "human-review"
-	ActionAgentReview ActionKind = "agent-review"
-	ActionHumanInput  ActionKind = "human-input"
-	ActionAgentWork   ActionKind = "agent-work"
-	ActionBlocked     ActionKind = "blocked"
-	ActionReady       ActionKind = "ready"
+	ActionWork    ActionKind = "work"
+	ActionBlocked ActionKind = "blocked"
+	ActionReady   ActionKind = "ready"
 )
 
 // InboxItem represents a ticket needing attention, with context about what's needed.
@@ -25,69 +22,29 @@ type InboxItem struct {
 	Since  time.Time // When this action became pending.
 }
 
-// ConversationalStages marks stages where human back-and-forth is expected.
-var ConversationalStages = map[Stage]bool{
-	StageTriage: true,
-	StageSpec:   true,
-	StageVerify: true,
-}
-
 // NextAction computes the next action needed for a single ticket.
 func NextAction(t *Ticket) InboxItem {
 	item := InboxItem{Ticket: t, Since: t.Created}
 
-	if t.Stage == "" || t.Stage == StageDone || t.Stage == StageBacklog {
+	switch t.Status {
+	case StatusBacklog, StatusDone, StatusClosed, "":
 		item.Action = ActionReady
 		item.Detail = "no action needed"
-		return item
-	}
-
-	// Check review state first.
-	switch t.Review {
-	case ReviewPending:
-		if ConversationalStages[t.Stage] {
-			item.Action = ActionHumanReview
-			item.Detail = "awaiting human review at " + string(t.Stage)
-		} else {
-			item.Action = ActionAgentReview
-			item.Detail = "awaiting agent review at " + string(t.Stage)
-		}
-		return item
-	case ReviewRejected:
-		item.Action = ActionAgentWork
-		item.Detail = "review rejected at " + string(t.Stage) + " — needs rework"
-		return item
-	}
-
-	// No pending review — determine action by stage.
-	switch t.Stage {
-	case StageTriage:
-		item.Action = ActionHumanInput
-		item.Detail = "needs triage"
-	case StageSpec:
-		item.Action = ActionAgentWork
-		item.Detail = "spec needs drafting"
-	case StageDesign:
-		item.Action = ActionAgentWork
-		item.Detail = "design needs drafting"
-	case StageImplement:
-		item.Action = ActionAgentWork
-		item.Detail = "ready for implementation"
-	case StageTest:
-		item.Action = ActionAgentWork
-		item.Detail = "ready for testing"
-	case StageVerify:
-		item.Action = ActionHumanReview
-		item.Detail = "ready for human verification"
+	case StatusReady:
+		item.Action = ActionWork
+		item.Detail = "ready for work"
+	case StatusOpen:
+		item.Action = ActionWork
+		item.Detail = "in progress"
 	default:
 		item.Action = ActionReady
-		item.Detail = "at stage " + string(t.Stage)
+		item.Detail = "unknown status"
 	}
 
 	return item
 }
 
-// Inbox returns tickets needing human attention, sorted by priority then age.
+// Inbox returns actionable tickets (ready or open), sorted by priority then age.
 func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -96,11 +53,11 @@ func Inbox(store Store) ([]InboxItem, error) {
 
 	var items []InboxItem
 	for _, t := range tickets {
-		if t.Stage == "" || t.Stage == StageDone || t.Stage == StageBacklog {
+		if t.Status == StatusDone || t.Status == StatusClosed || t.Status == StatusBacklog {
 			continue
 		}
 		item := NextAction(t)
-		if item.Action == ActionHumanReview || item.Action == ActionHumanInput {
+		if item.Action == ActionWork {
 			items = append(items, item)
 		}
 	}
@@ -117,11 +74,11 @@ func Inbox(store Store) ([]InboxItem, error) {
 
 // ProjectSummary aggregates progress for an epic/parent ticket.
 type ProjectSummary struct {
-	Epic           *Ticket
-	Total          int
-	StageBreakdown map[Stage]int
-	NextActions    []InboxItem
-	CompletionPct  float64
+	Epic            *Ticket
+	Total           int
+	StatusBreakdown map[Status]int
+	NextActions     []InboxItem
+	CompletionPct   float64
 }
 
 // Projects returns active epics with their child progress, sorted by
@@ -135,7 +92,7 @@ func Projects(store Store) ([]ProjectSummary, error) {
 	// Find epics.
 	epics := make(map[string]*Ticket)
 	for _, t := range tickets {
-		if t.Type == TypeEpic && t.Stage != StageDone {
+		if t.Type == TypeEpic && t.Status != StatusDone && t.Status != StatusClosed {
 			epics[t.ID] = t
 		}
 	}
@@ -154,21 +111,20 @@ func Projects(store Store) ([]ProjectSummary, error) {
 	for id, epic := range epics {
 		kids := children[id]
 		summary := ProjectSummary{
-			Epic:           epic,
-			Total:          len(kids),
-			StageBreakdown: make(map[Stage]int),
+			Epic:            epic,
+			Total:           len(kids),
+			StatusBreakdown: make(map[Status]int),
 		}
 
 		doneCount := 0
 		for _, kid := range kids {
-			stage := kid.Stage
-			summary.StageBreakdown[stage]++
-			if stage == StageDone {
+			summary.StatusBreakdown[kid.Status]++
+			if kid.Status == StatusDone || kid.Status == StatusClosed {
 				doneCount++
 			}
 
 			action := NextAction(kid)
-			if action.Action == ActionHumanReview || action.Action == ActionHumanInput {
+			if action.Action == ActionWork {
 				summary.NextActions = append(summary.NextActions, action)
 			}
 		}

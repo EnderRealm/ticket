@@ -12,6 +12,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// legacyStageToStatus maps old pipeline stage values to the new status model.
+var legacyStageToStatus = map[string]Status{
+	"backlog":       StatusBacklog,
+	"triage":        StatusReady,
+	"spec":          StatusReady,
+	"design":        StatusReady,
+	"design-review": StatusReady,
+	"implement":     StatusOpen,
+	"code-review":   StatusOpen,
+	"test":          StatusOpen,
+	"verify":        StatusOpen,
+	"done":          StatusDone,
+}
+
+// legacyStatusToStatus maps old status field values to the new model.
+var legacyStatusToStatus = map[string]Status{
+	"open":          StatusOpen,
+	"in_progress":   StatusOpen,
+	"needs_testing": StatusOpen,
+	"closed":        StatusDone,
+}
+
 // Parse reads a ticket from markdown with YAML frontmatter.
 func Parse(r io.Reader) (*Ticket, error) {
 	front, body, err := splitFrontmatter(r)
@@ -24,13 +46,31 @@ func Parse(r io.Reader) (*Ticket, error) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
-	// Second pass: capture unknown keys into Extra.
+	// Second pass: capture unknown keys into Extra, and handle legacy fields.
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(front, &raw); err == nil {
 		t.Extra = map[string]string{}
 		for k, v := range raw {
-			if !reservedKeys[k] {
+			if !reservedKeys[k] && !legacyKeys[k] {
 				t.Extra[k] = fmt.Sprintf("%v", v)
+			}
+		}
+
+		// Migrate legacy stage → status if status is not already set.
+		if t.Status == "" {
+			if stage, ok := raw["stage"]; ok {
+				if s, ok := stage.(string); ok {
+					if mapped, ok := legacyStageToStatus[s]; ok {
+						t.Status = mapped
+					}
+				}
+			}
+		}
+
+		// Migrate legacy old-style status values.
+		if t.Status != "" && !validStatuses[t.Status] {
+			if mapped, ok := legacyStatusToStatus[string(t.Status)]; ok {
+				t.Status = mapped
 			}
 		}
 	}
@@ -45,52 +85,38 @@ func Parse(r io.Reader) (*Ticket, error) {
 	if t.Tags == nil {
 		t.Tags = []string{}
 	}
-	if t.Skipped == nil {
-		t.Skipped = []Stage{}
-	}
-	if t.Conversations == nil {
-		t.Conversations = []string{}
-	}
 	if t.Extra == nil {
 		t.Extra = map[string]string{}
 	}
 
-	// Auto-migrate legacy tickets that have status but no stage.
-	if t.Status != "" && t.Stage == "" {
-		MigrateTicket(&t)
+	// Migrate legacy types.
+	if t.Type == "task" || t.Type == "chore" {
+		t.Type = TypeFeature
 	}
 
 	parseBody(&t, body)
 	return &t, nil
 }
 
+// legacyKeys are YAML keys from the old pipeline model that should be
+// silently dropped on read rather than captured as Extra fields.
+var legacyKeys = map[string]bool{
+	"stage": true, "review": true, "risk": true, "skipped": true,
+	"assignee": true, "conversations": true,
+}
+
 // Serialize writes a ticket to canonical markdown+YAML format.
-// Field order matches the bash implementation for consistency.
 func Serialize(t *Ticket) ([]byte, error) {
 	var buf bytes.Buffer
 
 	buf.WriteString("---\n")
 	writeField(&buf, "id", t.ID)
-
-	// Write stage if present, fall back to status for legacy tickets.
-	if t.Stage != "" {
-		writeField(&buf, "stage", string(t.Stage))
-	}
-	if t.Review != ReviewNone {
-		writeField(&buf, "review", string(t.Review))
-	}
-	if t.Risk != "" {
-		writeField(&buf, "risk", string(t.Risk))
-	}
-
+	writeField(&buf, "status", string(t.Status))
 	writeFlowArray(&buf, "deps", t.Deps)
 	writeFlowArray(&buf, "links", t.Links)
 	writeField(&buf, "created", t.Created.UTC().Format(time.RFC3339))
 	writeField(&buf, "type", string(t.Type))
 	writeField(&buf, "priority", fmt.Sprintf("%d", t.Priority))
-	if t.Assignee != "" {
-		writeField(&buf, "assignee", t.Assignee)
-	}
 	if t.ExternalRef != "" {
 		writeField(&buf, "external-ref", t.ExternalRef)
 	}
@@ -102,16 +128,6 @@ func Serialize(t *Ticket) ([]byte, error) {
 	}
 	if len(t.Tags) > 0 {
 		writeFlowArray(&buf, "tags", t.Tags)
-	}
-	if len(t.Skipped) > 0 {
-		strs := make([]string, len(t.Skipped))
-		for i, s := range t.Skipped {
-			strs[i] = string(s)
-		}
-		writeFlowArray(&buf, "skipped", strs)
-	}
-	if len(t.Conversations) > 0 {
-		writeFlowArray(&buf, "conversations", t.Conversations)
 	}
 	if len(t.Extra) > 0 {
 		keys := make([]string, 0, len(t.Extra))
@@ -132,21 +148,6 @@ func Serialize(t *Ticket) ([]byte, error) {
 		buf.WriteString(t.Body)
 		if !strings.HasSuffix(t.Body, "\n") {
 			buf.WriteString("\n")
-		}
-	}
-
-	if len(t.Reviews) > 0 {
-		if !strings.Contains(t.Body, "## Review Log") {
-			buf.WriteString("\n## Review Log\n")
-		}
-		for _, r := range t.Reviews {
-			buf.WriteString("\n**" + r.Timestamp.UTC().Format(time.RFC3339) + " [" + r.Reviewer + "]**\n")
-			verdict := strings.ToUpper(r.Verdict)
-			if r.Comment != "" {
-				buf.WriteString(verdict + " — " + r.Comment + "\n")
-			} else {
-				buf.WriteString(verdict + "\n")
-			}
 		}
 	}
 
@@ -218,19 +219,19 @@ func parseBody(t *Ticket, body string) {
 	}
 
 	// Everything after the title line is the body.
-	// Split off Review Log and Notes sections (both are parsed into struct fields).
+	// Split off Notes section (parsed into struct field).
 	rest := strings.Join(lines[titleIdx+1:], "\n")
-
-	// Extract ## Review Log section.
-	reviewIdx := strings.Index(rest, "\n## Review Log\n")
-	if reviewIdx == -1 && strings.HasPrefix(rest, "## Review Log\n") {
-		reviewIdx = 0
-	}
 
 	// Extract ## Notes section.
 	notesIdx := strings.Index(rest, "\n## Notes\n")
 	if notesIdx == -1 && strings.HasPrefix(rest, "## Notes\n") {
 		notesIdx = 0
+	}
+
+	// Strip legacy ## Review Log section from body (no longer parsed).
+	reviewIdx := strings.Index(rest, "\n## Review Log\n")
+	if reviewIdx == -1 && strings.HasPrefix(rest, "## Review Log\n") {
+		reviewIdx = 0
 	}
 
 	// Determine body end: the earliest of review log or notes.
@@ -243,25 +244,17 @@ func parseBody(t *Ticket, body string) {
 	}
 	t.Body = rest[:bodyEnd]
 
-	if reviewIdx >= 0 {
-		// Find where the review section ends (at next ## or end of rest).
-		sectionStart := reviewIdx + len("\n## Review Log\n")
-		if reviewIdx == 0 {
-			sectionStart = len("## Review Log\n")
-		}
-		sectionEnd := len(rest)
-		if notesIdx > reviewIdx {
-			sectionEnd = notesIdx
-		}
-		t.Reviews = parseReviewLog(rest[sectionStart:sectionEnd])
-	}
-
 	if notesIdx >= 0 {
 		sectionStart := notesIdx + len("\n## Notes\n")
 		if notesIdx == 0 {
 			sectionStart = len("## Notes\n")
 		}
-		t.Notes = parseNotes(rest[sectionStart:])
+		// Notes section ends at the next structural section or end.
+		sectionEnd := len(rest)
+		if reviewIdx > notesIdx {
+			sectionEnd = reviewIdx
+		}
+		t.Notes = parseNotes(rest[sectionStart:sectionEnd])
 	}
 
 	t.Body = strings.TrimSpace(t.Body) + "\n"
@@ -306,65 +299,12 @@ func parseNotes(section string) []Note {
 	return notes
 }
 
-// parseReviewLog extracts ReviewRecord structs from the Review Log section.
-// Format:
-//
-//	**2026-02-25T12:00:00Z [design-review-agent]**
-//	APPROVED — All file paths verified.
-func parseReviewLog(section string) []ReviewRecord {
-	var reviews []ReviewRecord
-	lines := strings.Split(section, "\n")
-	var current *ReviewRecord
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") {
-			// Flush previous record.
-			if current != nil {
-				reviews = append(reviews, *current)
-			}
-			inner := strings.Trim(line, "*")
-			// Parse "2026-02-25T12:00:00Z [reviewer-name]"
-			bracketOpen := strings.Index(inner, "[")
-			bracketClose := strings.Index(inner, "]")
-			if bracketOpen < 0 || bracketClose < 0 {
-				current = nil
-				continue
-			}
-			tsStr := strings.TrimSpace(inner[:bracketOpen])
-			reviewer := inner[bracketOpen+1 : bracketClose]
-			ts, err := time.Parse(time.RFC3339, tsStr)
-			if err != nil {
-				current = nil
-				continue
-			}
-			current = &ReviewRecord{
-				Timestamp: ts,
-				Reviewer:  reviewer,
-			}
-		} else if current != nil && strings.TrimSpace(line) != "" {
-			// Parse "VERDICT — comment" or just "VERDICT"
-			parts := strings.SplitN(line, " — ", 2)
-			current.Verdict = strings.ToLower(strings.TrimSpace(parts[0]))
-			if len(parts) > 1 {
-				current.Comment = strings.TrimSpace(parts[1])
-			}
-			// Infer stage from context — will be set by workflow logic.
-		}
-	}
-	if current != nil {
-		reviews = append(reviews, *current)
-	}
-	return reviews
-}
-
 // structuralSections lists the heading prefixes that delimit ticket body sections.
-// User content within sections may contain arbitrary ## headings without conflict.
 var structuralSections = []string{
 	"\n## Design",
 	"\n## Acceptance Criteria",
 	"\n## Test Results",
 	"\n## Notes",
-	"\n## Review Log",
 }
 
 // nextStructuralSection returns the index of the next known structural section

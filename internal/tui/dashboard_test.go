@@ -17,12 +17,12 @@ func TestDashboardHeaderContainsPRIAndTITLE(t *testing.T) {
 
 func TestRenderRowContainsIDSuffixAndTitle(t *testing.T) {
 	tk := &ticket.Ticket{
-		ID:    "test-abcd",
-		Title: "My title",
-		Stage: ticket.StageTriage,
-		Type:  ticket.TypeFeature,
+		ID:     "test-abcd",
+		Title:  "My title",
+		Status: ticket.StatusOpen,
+		Type:   ticket.TypeFeature,
 	}
-	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionHumanInput}
+	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionWork}
 	m := dashboardModel{width: 80, height: 10}
 	row := m.renderRow(item, false, 0)
 	if !strings.Contains(row, "abcd") {
@@ -30,22 +30,6 @@ func TestRenderRowContainsIDSuffixAndTitle(t *testing.T) {
 	}
 	if !strings.Contains(row, tk.Title) {
 		t.Errorf("row should contain title %q, got:\n%s", tk.Title, row)
-	}
-}
-
-func TestRenderRowReviewPendingShowsIndicator(t *testing.T) {
-	tk := &ticket.Ticket{
-		ID:     "test-abcd",
-		Title:  "My title",
-		Stage:  ticket.StageTriage,
-		Type:   ticket.TypeFeature,
-		Review: ticket.ReviewPending,
-	}
-	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionHumanReview}
-	m := dashboardModel{width: 80, height: 10}
-	row := m.renderRow(item, false, 0)
-	if !strings.Contains(row, "●") {
-		t.Errorf("row should contain review indicator '●', got:\n%s", row)
 	}
 }
 

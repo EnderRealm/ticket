@@ -52,15 +52,12 @@ tk version
 
 ## Getting Started
 
-After installing, run setup to configure the central ticket store:
+After installing, initialize from any project directory:
 
 ```bash
-# First machine — create a new central store
-tk setup --central-root ~/code/forge-data/tickets
-
-# Register each project
+# First project — creates central store and registers the project
 cd ~/code/myproject
-tk init --store central
+tk init --central-root ~/code/forge-data/tickets
 ```
 
 On a second machine, point at the same repo:
@@ -69,16 +66,16 @@ On a second machine, point at the same repo:
 # Clone the repo that holds your tickets
 git clone git@github.com:YourOrg/forge-data.git ~/code/forge-data
 
-# Point tk at it
-tk setup --central-root ~/code/forge-data/tickets
-
-# Register local projects
-cd ~/code/myproject && tk init
+# Initialize and register projects
+cd ~/code/myproject
+tk init --central-root ~/code/forge-data/tickets
 ```
+
+Subsequent projects on the same machine just need `tk init` (central root is remembered).
 
 ## Configuration
 
-Config lives in `~/.ticket/config.yaml` (created by `tk setup`):
+Config lives in `~/.ticket/config.yaml` (created by `tk init`):
 
 ```yaml
 central_root: /Users/you/code/forge-data/tickets
@@ -93,7 +90,7 @@ projects:
 
 Shared project registry (store type, auto_link, etc.) is stored in `<central_root>/config.yaml` and synced via git alongside tickets.
 
-`TICKETS_DIR` env var overrides all config-based resolution. `--repo` flag overrides everything.
+`--repo` flag overrides project resolution for a single command.
 
 ## Agent Setup
 
@@ -113,53 +110,32 @@ Run `tk help` for the full command reference. Key commands:
 Viewing:
   show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
-  backlog [filters]          List tickets in the backlog
-  ready [filters]            Tickets with all deps resolved and parent in_progress
-  blocked [filters]          Tickets with unresolved deps
-  done [--limit=N]           Recently done tickets
 
 Creating & Editing:
-  create [title] [options]   Create ticket (interactive if no title)
+  create [title] [options]   Create ticket
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
-
-Pipeline:
-  advance <id> [--to stage]  Advance to next pipeline stage
-  skip <id> --to <stage>     Skip ahead with --reason justification
-  revert <id> --to <stage>   Revert to earlier stage with --reason
-  review <id> --approve      Record review verdict (--approve or --reject)
-  log <id>                   Show stage/review history
-  pipeline [--stage X]       Show tickets grouped by pipeline stage
-  inbox                      Show tickets needing human attention
-  next                       Per-project next actions
-  migrate [--dry-run]        Migrate legacy tickets to stage pipeline
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency
   undep <id> <dep-id>        Remove dependency
   dep tree [--full] <id>     Show dependency tree
-  dep cycle                  Find cycles in open tickets
   link <id> <id> [id...]     Link tickets (symmetric)
   unlink <id> <target-id>    Remove link
 
 Query:
   query [jq-filter]          Output tickets as JSONL (pipe to jq)
 
-Analytics:
-  stats                      Project health dashboard
-  timeline [--weeks=N]       Tickets closed by week
-
 Setup:
-  setup [--central-root <path>]  First-run config (required before use)
-  init [--store X] [--project X] [--yes] [--json]
-                               Register a project with the central store
+  init [--project <name>] [--central-root <path>] [--yes]
+                               Initialize tk and register a project
   sync                         Sync ticket changes to git
+  status                       Show tk system status
 
 Interactive:
-  ui                         Terminal UI (list + pipeline kanban view)
+  ui                         Terminal UI
   serve                      MCP server for AI agent integration
-  serve --central             Serve all projects from central ticket store
 
 Journal:
   watch start [--interval=5s]  Start background git commit watcher
@@ -167,35 +143,37 @@ Journal:
   watch status                 Show watcher status
   watch logs [-n 50]           Show watcher log output
   recompute [--project=NAME]   Rebuild commit journal from git history
-
-Other:
-  workflow                   Ticket workflow guide
 ```
 
-### Pipeline Stages
+### Statuses
 
-Tickets progress through type-dependent stage pipelines:
+Tickets use a simple status model:
 
-| Type | Pipeline |
-|------|----------|
-| feature | backlog → triage → spec → design → design-review → implement → code-review → test → verify → done |
-| bug | backlog → triage → implement → code-review → test → verify → done |
-| task | backlog → triage → done |
-| chore | backlog → triage → spec → design → design-review → implement → code-review → test → verify → done |
-| epic | backlog → triage → spec → design → done |
+| Status | Meaning |
+|--------|---------|
+| backlog | Waiting for grooming |
+| ready | Available to work |
+| open | Currently being worked on |
+| done | Completed |
+| closed | Not an issue, duplicate, etc. |
 
-These are the default (normal risk) pipelines. Risk level controls pipeline shape: low-risk skips review stages, high/critical-risk bugs get the full feature pipeline (spec, design, design-review). Gate checks enforce preconditions at stage transitions (e.g., acceptance criteria before spec → design, review approval before design-review → implement).
+### Types
+
+| Type | Purpose |
+|------|---------|
+| epic | Container for related features |
+| feature | New functionality |
+| bug | Defect fix |
 
 ### Filter Flags
 
 ```
---stage X         Filter by pipeline stage
--t, --type X      bug | feature | task | epic | chore
+--status X        Filter by status (backlog, ready, open, done, closed)
+-t, --type X      bug | feature | epic
 -P, --priority X  0 (critical) through 4 (backlog)
--a, --assignee X  Filter by assignee
 -T, --tag X       Filter by tag
 --parent X        Children of ticket X
---group-by X      Group by: workflow | pipeline | type | priority
+--group-by X      Group by: workflow | type | priority
 --flat            Flat list (no grouping)
 ```
 
@@ -213,10 +191,10 @@ Extra fields appear in `tk show` output, `tk query` JSONL (under `extra`), and M
 
 ### Bulk Operations
 
-Move all triage tickets to backlog:
+Move all ready tickets to backlog:
 
 ```bash
-tk query '.stage == "triage"' | jq -r '.id' | xargs -I{} tk revert {} --to backlog --reason "moving to backlog"
+tk query '.status == "ready"' | jq -r '.id' | xargs -I{} tk edit {} --status backlog
 ```
 
 Partial ID matching: `tk show 5c4` matches `nw-5c46`.
@@ -233,23 +211,22 @@ If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is
 
 ### Multi-Project Serving
 
-`tk serve --central` starts the MCP server with a `MultiStore` that serves all projects from the central ticket store. Ticket IDs are namespaced as `project/ticket-id`.
+`tk serve` starts the MCP server with a `MultiStore` that serves all projects from the central ticket store. Ticket IDs are namespaced as `project/ticket-id`.
 
 **Default project scoping:**
-- When run from inside a project repo, tools default to that project's tickets (same behavior as single-project mode)
+- When run from inside a project repo, tools default to that project's tickets
 - When run outside any repo, tools return tickets from all projects
 - The `project` parameter on `ticket_list`, `ticket_create`, `ticket_ready`, and `ticket_inbox` overrides the default
 
-Other tools (`ticket_show`, `ticket_edit`, `ticket_advance`, etc.) accept namespaced IDs directly — pass `forge/my-ticket-1234` to operate on a specific project's ticket.
+Other tools (`ticket_show`, `ticket_edit`, etc.) accept namespaced IDs directly — pass `forge/my-ticket-1234` to operate on a specific project's ticket.
 
 ## Development
 
 ### Testing the MCP server locally
 
-`.mcp.json` includes two dev server entries (both disabled by default) that point to the locally built `./tk` binary:
+`.mcp.json` includes a dev server entry (disabled by default) pointing to the locally built `./tk` binary:
 
-- **`tk-dev`** — single-project mode (`./tk serve`)
-- **`tk-dev-central`** — multi-project mode (`./tk serve --central`)
+- **`tk-dev`** — multi-project mode (`./tk serve`)
 
 To test MCP changes:
 
@@ -260,7 +237,7 @@ To test MCP changes:
 
 2. In Claude Code, open `/mcp` and:
    - Disable the global `plugin:forge:tk` server
-   - Enable `tk-dev` (single-project) or `tk-dev-central` (multi-project)
+   - Enable `tk-dev`
 
 3. When done, swap back: disable the dev server, re-enable `plugin:forge:tk`.
 

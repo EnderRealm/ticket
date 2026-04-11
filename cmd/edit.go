@@ -20,14 +20,9 @@ func init() {
 	f := editCmd.Flags()
 	f.String("title", "", "new title")
 	f.StringP("description", "d", "", "description text")
-	f.String("design", "", "design notes")
-	f.String("acceptance", "", "acceptance criteria")
-	f.String("stage", "", "pipeline stage (backlog, triage, spec, design, implement, test, verify, done)")
-	f.String("review", "", "review state (pending, approved, rejected)")
-	f.String("risk", "", "risk level (low, normal, high, critical)")
+	f.String("status", "", "ticket status (backlog, ready, open, done, closed)")
 	f.StringP("type", "t", "", "ticket type")
 	f.StringP("priority", "p", "", "priority (0-4)")
-	f.StringP("assignee", "a", "", "assignee name")
 	f.String("external-ref", "", "external reference")
 	f.String("branch", "", "git branch name")
 	f.String("parent", "", "parent ticket ID")
@@ -53,26 +48,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		t.Title = v
 		changed = true
 	}
-	if v, _ := cmd.Flags().GetString("stage"); cmd.Flags().Changed("stage") {
-		if err := ticket.ValidateStage(ticket.Stage(v)); err != nil {
+	if v, _ := cmd.Flags().GetString("status"); cmd.Flags().Changed("status") {
+		if err := ticket.ValidateStatus(ticket.Status(v)); err != nil {
 			return err
 		}
-		t.Stage = ticket.Stage(v)
-		t.Review = ticket.ReviewNone
-		changed = true
-	}
-	if v, _ := cmd.Flags().GetString("review"); cmd.Flags().Changed("review") {
-		if err := ticket.ValidateReviewState(ticket.ReviewState(v)); err != nil {
-			return err
-		}
-		t.Review = ticket.ReviewState(v)
-		changed = true
-	}
-	if v, _ := cmd.Flags().GetString("risk"); cmd.Flags().Changed("risk") {
-		if err := ticket.ValidateRiskLevel(ticket.RiskLevel(v)); err != nil {
-			return err
-		}
-		t.Risk = ticket.RiskLevel(v)
+		t.Status = ticket.Status(v)
 		changed = true
 	}
 	if v, _ := cmd.Flags().GetString("type"); cmd.Flags().Changed("type") {
@@ -91,10 +71,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		t.Priority = p
-		changed = true
-	}
-	if v, _ := cmd.Flags().GetString("assignee"); cmd.Flags().Changed("assignee") {
-		t.Assignee = v
 		changed = true
 	}
 	if v, _ := cmd.Flags().GetString("external-ref"); cmd.Flags().Changed("external-ref") {
@@ -123,14 +99,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	if v, _ := cmd.Flags().GetString("description"); cmd.Flags().Changed("description") {
 		t.Body = ticket.UpdateSection(t.Body, "", v)
-		changed = true
-	}
-	if v, _ := cmd.Flags().GetString("design"); cmd.Flags().Changed("design") {
-		t.Body = ticket.UpdateSection(t.Body, "Design", v)
-		changed = true
-	}
-	if v, _ := cmd.Flags().GetString("acceptance"); cmd.Flags().Changed("acceptance") {
-		t.Body = ticket.UpdateSection(t.Body, "Acceptance Criteria", v)
 		changed = true
 	}
 	if v, _ := cmd.Flags().GetString("note"); cmd.Flags().Changed("note") {

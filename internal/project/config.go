@@ -113,14 +113,14 @@ func IsConfigured() bool {
 }
 
 // CentralStoreRoot returns the central ticket store root directory.
-// Returns an error if central_root is not configured — run `tk setup` first.
+// Returns an error if central_root is not configured — run `tk init` first.
 func CentralStoreRoot() (string, error) {
 	local, err := loadLocalOnly()
 	if err != nil {
 		return "", fmt.Errorf("tk is not configured: %w", err)
 	}
 	if local.CentralRoot == "" || !filepath.IsAbs(local.CentralRoot) {
-		return "", fmt.Errorf("central_root is not configured. Run `tk setup` to get started")
+		return "", fmt.Errorf("central_root is not configured. Run `tk init` to get started")
 	}
 	return local.CentralRoot, nil
 }

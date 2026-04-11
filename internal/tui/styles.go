@@ -45,23 +45,12 @@ var (
 // how priorities, types, stages, and reviews are colored.
 
 var (
-	StageColors = map[ticket.Stage]lipgloss.Color{
-		ticket.StageBacklog:      colorGray,
-		ticket.StageTriage:       colorWhite,
-		ticket.StageSpec:         colorCyan,
-		ticket.StageDesign:       colorMagenta,
-		ticket.StageDesignReview: colorMagenta,
-		ticket.StageImplement:    colorYellow,
-		ticket.StageCodeReview:   colorYellow,
-		ticket.StageTest:         colorBlue,
-		ticket.StageVerify:       colorGreen,
-		ticket.StageDone:         colorGray,
-	}
-
-	ReviewColors = map[ticket.ReviewState]lipgloss.Color{
-		ticket.ReviewPending:  colorYellow,
-		ticket.ReviewApproved: colorGreen,
-		ticket.ReviewRejected: colorRed,
+	StatusColors = map[ticket.Status]lipgloss.Color{
+		ticket.StatusBacklog: colorGray,
+		ticket.StatusReady:   colorCyan,
+		ticket.StatusOpen:    colorYellow,
+		ticket.StatusDone:    colorGreen,
+		ticket.StatusClosed:  colorGray,
 	}
 
 	PriorityColors = map[int]lipgloss.Color{
@@ -76,8 +65,6 @@ var (
 		ticket.TypeBug:     colorRed,
 		ticket.TypeFeature: colorGreen,
 		ticket.TypeEpic:    colorMagenta,
-		ticket.TypeTask:    colorBlue,
-		ticket.TypeChore:   colorGray,
 	}
 )
 
@@ -213,33 +200,13 @@ func typeBadge(t ticket.TicketType, selected bool) string {
 		Render(label)
 }
 
-// StageBadge renders a pipeline stage in the appropriate color.
-func StageBadge(s ticket.Stage) string {
-	c, ok := StageColors[s]
+// StatusBadge renders a status in the appropriate color.
+func StatusBadge(s ticket.Status) string {
+	c, ok := StatusColors[s]
 	if !ok {
 		c = colorWhite
 	}
 	return lipgloss.NewStyle().Foreground(c).Render(string(s))
-}
-
-// ReviewBadge renders a review state with indicator symbol.
-func ReviewBadge(r ticket.ReviewState) string {
-	c, ok := ReviewColors[r]
-	if !ok {
-		c = colorWhite
-	}
-	var symbol string
-	switch r {
-	case ticket.ReviewPending:
-		symbol = "●"
-	case ticket.ReviewApproved:
-		symbol = "✓"
-	case ticket.ReviewRejected:
-		symbol = "✗"
-	default:
-		symbol = "?"
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(symbol)
 }
 
 // IDSuffix returns just the 4-character hex suffix of a ticket ID.
@@ -272,18 +239,9 @@ func ColorType(t ticket.TicketType, text string) string {
 	return lipgloss.NewStyle().Foreground(c).Render(text)
 }
 
-// ColorStage renders text in the stage's color.
-func ColorStage(s ticket.Stage, text string) string {
-	c, ok := StageColors[s]
-	if !ok {
-		c = colorWhite
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(text)
-}
-
-// ColorReview renders text in the review state's color.
-func ColorReview(r ticket.ReviewState, text string) string {
-	c, ok := ReviewColors[r]
+// ColorStatus renders text in the status's color.
+func ColorStatus(s ticket.Status, text string) string {
+	c, ok := StatusColors[s]
 	if !ok {
 		c = colorWhite
 	}
@@ -319,12 +277,8 @@ func shortType(t ticket.TicketType) string {
 		return "feat"
 	case ticket.TypeBug:
 		return "bug"
-	case ticket.TypeTask:
-		return "task"
 	case ticket.TypeEpic:
 		return "epic"
-	case ticket.TypeChore:
-		return "chore"
 	default:
 		return string(t)
 	}

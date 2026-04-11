@@ -33,13 +33,6 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerLink(server, store)
 	registerReady(server, store, defaultProject)
 	registerBlocked(server, store)
-	registerWorkflow(server)
-	registerPipelines(server)
-	registerAdvance(server, store)
-	registerReview(server, store)
-	registerSkip(server, store)
-	registerRevert(server, store)
-	registerMigrate(server, store)
 	registerInbox(server, store, defaultProject)
 	registerStoreInfo(server, centralRoot)
 
@@ -50,12 +43,9 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 type ticketSummaryJSON struct {
 	ID       string   `json:"id"`
 	Title    string   `json:"title"`
-	Stage    string   `json:"stage,omitempty"`
-	Review   string   `json:"review,omitempty"`
-	Risk     string   `json:"risk,omitempty"`
+	Status   string   `json:"status"`
 	Type     string   `json:"type"`
 	Priority int      `json:"priority"`
-	Assignee string   `json:"assignee,omitempty"`
 	Parent   string   `json:"parent,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 	Deps    []string          `json:"deps"`
@@ -88,12 +78,9 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 	return ticketSummaryJSON{
 		ID:       t.ID,
 		Title:    t.Title,
-		Stage:    string(t.Stage),
-		Review:   string(t.Review),
-		Risk:     string(t.Risk),
+		Status:   string(t.Status),
 		Type:     string(t.Type),
 		Priority: t.Priority,
-		Assignee: t.Assignee,
 		Parent:   t.Parent,
 		Tags:     t.Tags,
 		Deps:     nonNil(t.Deps),
@@ -105,30 +92,24 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 
 // Full JSON representation of a ticket for MCP responses.
 type ticketJSON struct {
-	ID            string       `json:"id"`
-	Stage         string       `json:"stage,omitempty"`
-	Review        string       `json:"review,omitempty"`
-	Risk          string       `json:"risk,omitempty"`
-	Deps          []string     `json:"deps"`
-	Links         []string     `json:"links"`
-	Created       string       `json:"created"`
-	Type          string       `json:"type"`
-	Priority      int          `json:"priority"`
-	Assignee      string       `json:"assignee,omitempty"`
-	ExternalRef   string       `json:"external_ref,omitempty"`
-	Branch        string       `json:"branch,omitempty"`
-	Parent        string       `json:"parent,omitempty"`
-	Tags          []string     `json:"tags,omitempty"`
-	Skipped       []string     `json:"skipped,omitempty"`
-	Conversations []string     `json:"conversations,omitempty"`
-	Title         string       `json:"title"`
-	Description   string       `json:"description,omitempty"`
-	Design        string       `json:"design,omitempty"`
-	Acceptance    string       `json:"acceptance_criteria,omitempty"`
-	TestResults   string       `json:"test_results,omitempty"`
-	Notes   []noteJSON        `json:"notes,omitempty"`
-	Reviews []reviewJSON      `json:"reviews,omitempty"`
-	Extra   map[string]string `json:"-"`
+	ID            string   `json:"id"`
+	Status        string   `json:"status"`
+	Deps          []string `json:"deps"`
+	Links         []string `json:"links"`
+	Created       string   `json:"created"`
+	Type          string   `json:"type"`
+	Priority      int      `json:"priority"`
+	ExternalRef   string   `json:"external_ref,omitempty"`
+	Branch        string   `json:"branch,omitempty"`
+	Parent        string   `json:"parent,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Title         string   `json:"title"`
+	Description   string   `json:"description,omitempty"`
+	Design        string   `json:"design,omitempty"`
+	Acceptance    string   `json:"acceptance_criteria,omitempty"`
+	TestResults   string   `json:"test_results,omitempty"`
+	Notes []noteJSON        `json:"notes,omitempty"`
+	Extra map[string]string `json:"-"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -151,14 +132,6 @@ func (j ticketJSON) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-type reviewJSON struct {
-	Timestamp string `json:"timestamp"`
-	Reviewer  string `json:"reviewer"`
-	Verdict   string `json:"verdict"`
-	Comment   string `json:"comment,omitempty"`
-	Stage     string `json:"stage,omitempty"`
-}
-
 type noteJSON struct {
 	Timestamp string `json:"timestamp"`
 	Text      string `json:"text"`
@@ -167,25 +140,17 @@ type noteJSON struct {
 func toJSON(t *ticket.Ticket) ticketJSON {
 	j := ticketJSON{
 		ID:            t.ID,
-		Stage:         string(t.Stage),
-		Review:        string(t.Review),
-		Risk:          string(t.Risk),
+		Status:        string(t.Status),
 		Deps:          nonNil(t.Deps),
 		Links:         nonNil(t.Links),
 		Created:       t.Created.UTC().Format("2006-01-02T15:04:05Z"),
 		Type:          string(t.Type),
 		Priority:      t.Priority,
-		Assignee:      t.Assignee,
 		ExternalRef:   t.ExternalRef,
 		Branch:        t.Branch,
 		Parent:        t.Parent,
 		Tags:          t.Tags,
-		Conversations: t.Conversations,
 		Title:         t.Title,
-	}
-
-	for _, s := range t.Skipped {
-		j.Skipped = append(j.Skipped, string(s))
 	}
 
 	j.Extra = t.Extra
@@ -200,16 +165,6 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		j.Notes = append(j.Notes, noteJSON{
 			Timestamp: n.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
 			Text:      n.Text,
-		})
-	}
-
-	for _, r := range t.Reviews {
-		j.Reviews = append(j.Reviews, reviewJSON{
-			Timestamp: r.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-			Reviewer:  r.Reviewer,
-			Verdict:   r.Verdict,
-			Comment:   r.Comment,
-			Stage:     string(r.Stage),
 		})
 	}
 
@@ -298,10 +253,9 @@ func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 // --- Tool registrations ---
 
 type listArgs struct {
-	Stage    string `json:"stage,omitempty" jsonschema:"filter by stage: backlog, triage, spec, design, implement, test, verify, done"`
-	Type     string `json:"type,omitempty" jsonschema:"filter by type: bug, feature, task, epic, chore"`
+	Status   string `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
+	Type     string `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
 	Priority *int   `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
-	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee name"`
 	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
 	Parent   string `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
 	Project  string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
@@ -361,12 +315,12 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		}
 
 		opts := ticket.DefaultListOptions()
-		if args.Stage != "" {
-			opts.Stage = ticket.Stage(args.Stage)
+		if args.Status != "" {
+			opts.Status = ticket.Status(args.Status)
 		} else {
 			var filtered []*ticket.Ticket
 			for _, t := range tickets {
-				if t.Stage != ticket.StageDone && t.Stage != ticket.StageBacklog {
+				if t.Status != ticket.StatusDone && t.Status != ticket.StatusBacklog {
 					filtered = append(filtered, t)
 				}
 			}
@@ -377,9 +331,6 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		}
 		if args.Priority != nil {
 			opts.Priority = *args.Priority
-		}
-		if args.Assignee != "" {
-			opts.Assignee = args.Assignee
 		}
 		if args.Tag != "" {
 			opts.Tag = args.Tag
@@ -392,7 +343,7 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		if proj := resolveProject(args.Project, defaultProject); proj != "" {
 			tickets = filterByProject(tickets, proj)
 		}
-		ticket.SortByStagePriorityID(tickets)
+		ticket.SortByStatusPriorityID(tickets)
 
 		total := len(tickets)
 
@@ -454,14 +405,12 @@ type createArgs struct {
 	Description string `json:"description,omitempty" jsonschema:"description text"`
 	Design      string `json:"design,omitempty" jsonschema:"design notes"`
 	Acceptance  string `json:"acceptance,omitempty" jsonschema:"acceptance criteria"`
-	Type        string `json:"type,omitempty" jsonschema:"ticket type: bug, feature, task, epic, chore (default: task)"`
+	Type        string `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
 	Priority    *int   `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
-	Assignee    string `json:"assignee,omitempty" jsonschema:"assignee name"`
 	Parent      string `json:"parent,omitempty" jsonschema:"parent ticket ID"`
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
-	Risk        string            `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
 	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
 	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; resolves ticket store via .tickets/ directory or central store config"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
@@ -499,7 +448,7 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		t := &ticket.Ticket{
 			ID:       ticket.GenerateID(args.Title),
 			Title:    args.Title,
-			Stage:    ticket.StageBacklog,
+			Status:   ticket.StatusBacklog,
 			Priority: 2,
 			Created:  time.Now().UTC(),
 		}
@@ -507,13 +456,10 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		if args.Type != "" {
 			t.Type = ticket.TicketType(args.Type)
 		} else {
-			t.Type = ticket.TypeTask
+			t.Type = ticket.TypeFeature
 		}
 		if args.Priority != nil {
 			t.Priority = *args.Priority
-		}
-		if args.Assignee != "" {
-			t.Assignee = args.Assignee
 		}
 		if args.Parent != "" {
 			t.Parent = args.Parent
@@ -523,9 +469,6 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		}
 		if args.Branch != "" {
 			t.Branch = args.Branch
-		}
-		if args.Risk != "" {
-			t.Risk = ticket.RiskLevel(args.Risk)
 		}
 		if args.Tags != "" {
 			t.Tags = strings.Split(args.Tags, ",")
@@ -581,10 +524,9 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 type editArgs struct {
 	ID          string `json:"id" jsonschema:"ticket ID"`
 	Title       string `json:"title,omitempty" jsonschema:"new title"`
-	Stage       string `json:"stage,omitempty" jsonschema:"pipeline stage (bypasses pipeline ordering): backlog, triage, spec, design, implement, test, verify, done"`
+	Status      string `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed"`
 	Type        string `json:"type,omitempty" jsonschema:"new type"`
 	Priority    *int   `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
-	Assignee    string `json:"assignee,omitempty" jsonschema:"new assignee"`
 	Parent      string `json:"parent,omitempty" jsonschema:"new parent ticket ID"`
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
@@ -593,7 +535,6 @@ type editArgs struct {
 	Design      string `json:"design,omitempty" jsonschema:"new design text"`
 	Acceptance  string `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
 	TestResults string            `json:"test_results,omitempty" jsonschema:"test results to record"`
-	Risk        string            `json:"risk,omitempty" jsonschema:"risk level: low, normal, high, critical"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
 }
 
@@ -611,22 +552,18 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 		if args.Title != "" {
 			t.Title = args.Title
 		}
-		if args.Stage != "" {
-			if err := ticket.ValidateStage(ticket.Stage(args.Stage)); err != nil {
-				r, _ := errResult("invalid stage: %v", err)
+		if args.Status != "" {
+			if err := ticket.ValidateStatus(ticket.Status(args.Status)); err != nil {
+				r, _ := errResult("invalid status: %v", err)
 				return r, nil, nil
 			}
-			t.Stage = ticket.Stage(args.Stage)
-			t.Review = ticket.ReviewNone
+			t.Status = ticket.Status(args.Status)
 		}
 		if args.Type != "" {
 			t.Type = ticket.TicketType(args.Type)
 		}
 		if args.Priority != nil {
 			t.Priority = *args.Priority
-		}
-		if args.Assignee != "" {
-			t.Assignee = args.Assignee
 		}
 		if args.Parent != "" {
 			t.Parent = args.Parent
@@ -636,9 +573,6 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 		}
 		if args.Branch != "" {
 			t.Branch = args.Branch
-		}
-		if args.Risk != "" {
-			t.Risk = ticket.RiskLevel(args.Risk)
 		}
 		if args.Tags != "" {
 			t.Tags = strings.Split(args.Tags, ",")
@@ -817,9 +751,8 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 }
 
 type readyArgs struct {
-	Assignee string `json:"assignee,omitempty" jsonschema:"filter by assignee"`
-	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Project  string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+	Tag     string `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Project string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
 }
 
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
@@ -834,9 +767,6 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 		}
 
 		opts := ticket.DefaultListOptions()
-		if args.Assignee != "" {
-			opts.Assignee = args.Assignee
-		}
 		if args.Tag != "" {
 			opts.Tag = args.Tag
 		}
@@ -868,9 +798,6 @@ func registerBlocked(server *mcp.Server, store ticket.Store) {
 		}
 
 		opts := ticket.DefaultListOptions()
-		if args.Assignee != "" {
-			opts.Assignee = args.Assignee
-		}
 		if args.Tag != "" {
 			opts.Tag = args.Tag
 		}
@@ -888,309 +815,6 @@ func registerBlocked(server *mcp.Server, store ticket.Store) {
 }
 
 type emptyArgs struct{}
-
-func registerWorkflow(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_workflow",
-		Description: "Show the ticket workflow guide (types, stages, pipelines, conventions).",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
-		guide := "Ticket Workflow Guide\n\n"
-		guide += "Types: feature, bug, task, epic, chore\n\n"
-		guide += "Stage Pipelines (default, type-dependent):\n"
-		guide += ticket.PipelineDescription()
-		guide += "\nRisk levels: low, normal, high, critical\n"
-		guide += "  Risk determines pipeline variant (e.g., normal adds review stages).\n"
-		guide += "  Use ticket_pipelines for full variant details.\n\n"
-		guide += "Review states: pending, approved, rejected\n\n"
-		guide += "Commands:\n"
-		guide += "- ticket_advance: move ticket to next stage (enforces gates)\n"
-		guide += "- ticket_review: record approve/reject verdict\n"
-		guide += "- ticket_skip: jump to a stage with reason\n"
-		guide += "- ticket_revert: revert to an earlier stage with reason\n"
-		guide += "- ticket_inbox: show items needing human attention\n"
-		guide += "- ticket_pipelines: full pipeline config (stages, variants, gates)\n\n"
-		guide += "Conventions:\n"
-		guide += "- Epics group related work; set parent to nest tasks under epics\n"
-		guide += "- Dependencies gate readiness: a ticket is \"ready\" when all deps are done\n"
-		guide += "- Gate checks enforce prerequisites at each stage transition\n"
-		guide += "- Priority: 0=critical, 1=high, 2=normal, 3=low, 4=backlog"
-
-		r, err := textResult(guide)
-		return r, nil, err
-	})
-}
-
-type pipelinesArgs struct {
-	Type string `json:"type,omitempty" jsonschema:"filter to a specific ticket type (feature, bug, task, epic, chore)"`
-	Risk string `json:"risk,omitempty" jsonschema:"filter to a specific risk level (low, normal, high, critical)"`
-}
-
-func registerPipelines(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_pipelines",
-		Description: "Return the full pipeline configuration: stages, pipeline variants by type and risk, and gate definitions. Machine-readable structured output for orchestrators.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args pipelinesArgs) (*mcp.CallToolResult, any, error) {
-		cfg := ticket.Config()
-
-		type stageJSON struct {
-			Name string `json:"name"`
-			Role string `json:"role"`
-		}
-
-		type gateJSON struct {
-			Transition string   `json:"transition"`
-			Structural []string `json:"structural,omitempty"`
-			Agentic    []string `json:"agentic,omitempty"`
-		}
-
-		type pipelineResult struct {
-			Stages    []stageJSON                    `json:"stages"`
-			Pipelines map[string]map[string][]string `json:"pipelines"`
-			Gates     []gateJSON                     `json:"gates"`
-		}
-
-		var stages []stageJSON
-		for _, name := range cfg.StageOrder {
-			sc := cfg.Stages[name]
-			stages = append(stages, stageJSON{Name: name, Role: sc.Role})
-		}
-
-		result := pipelineResult{
-			Stages:    stages,
-			Pipelines: cfg.Pipelines,
-		}
-
-		// Filter by type if requested.
-		if args.Type != "" {
-			if variants, ok := cfg.Pipelines[args.Type]; ok {
-				result.Pipelines = map[string]map[string][]string{args.Type: variants}
-				// Filter further by risk if requested.
-				if args.Risk != "" {
-					if stages, ok := variants[args.Risk]; ok {
-						result.Pipelines = map[string]map[string][]string{
-							args.Type: {args.Risk: stages},
-						}
-					}
-				}
-			} else {
-				r, _ := errResult("unknown ticket type %q", args.Type)
-				return r, nil, nil
-			}
-		}
-
-		// Build gates list.
-		for transition, gc := range cfg.Gates {
-			g := gateJSON{Transition: transition}
-			if len(gc.Structural) > 0 {
-				g.Structural = gc.Structural
-			}
-			if len(gc.Agentic) > 0 {
-				g.Agentic = gc.Agentic
-			}
-			result.Gates = append(result.Gates, g)
-		}
-
-		r, err := jsonResult(result)
-		return r, nil, err
-	})
-}
-
-type advanceArgs struct {
-	ID       string            `json:"id" jsonschema:"ticket ID"`
-	To       string            `json:"to,omitempty" jsonschema:"target stage (default: next in pipeline)"`
-	Reason   string            `json:"reason,omitempty" jsonschema:"reason for skip (required when skipping)"`
-	Force    bool              `json:"force,omitempty" jsonschema:"bypass gate checks"`
-	Evidence map[string]string `json:"evidence,omitempty" jsonschema:"attestations for agentic gates (gate description -> evidence text)"`
-}
-
-type advanceResultJSON struct {
-	Ticket ticketJSON          `json:"ticket"`
-	From   string              `json:"from"`
-	To     string              `json:"to"`
-	Gates  []ticket.GateResult `json:"gates,omitempty"`
-}
-
-func registerAdvance(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_advance",
-		Description: "Advance a ticket to its next pipeline stage. Enforces structural gate checks. Agentic gates require evidence attestation. Use force=true to bypass all gates.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args advanceArgs) (*mcp.CallToolResult, any, error) {
-		// Read the ticket to evaluate gates before advancing.
-		t, err := store.Get(args.ID)
-		if err != nil {
-			r, _ := errResult("ticket not found: %v", err)
-			return r, nil, nil
-		}
-
-		opts := ticket.AdvanceOptions{Force: args.Force}
-		if args.To != "" {
-			opts.SkipTo = ticket.Stage(args.To)
-			opts.Reason = args.Reason
-		}
-
-		// Determine target stage for gate evaluation.
-		var targetStage ticket.Stage
-		if opts.SkipTo != "" {
-			targetStage = opts.SkipTo
-		} else {
-			risk := t.Risk
-			pipeline, pErr := ticket.PipelineFor(t.Type, risk)
-			if pErr != nil {
-				r, _ := errResult("%v", pErr)
-				return r, nil, nil
-			}
-			next, ok := ticket.NextStageInPipeline(pipeline, t.Stage)
-			if !ok {
-				r, _ := errResult("ticket %s is already at final stage %s", args.ID, t.Stage)
-				return r, nil, nil
-			}
-			targetStage = next
-		}
-
-		// Evaluate gates for structured response.
-		evidence := args.Evidence
-		if evidence == nil {
-			evidence = map[string]string{}
-		}
-		gateResults := ticket.EvaluateGates(t, targetStage, evidence)
-
-		result, err := ticket.Advance(store, args.ID, opts)
-		if err != nil {
-			resp := advanceResultJSON{
-				Ticket: toJSON(t),
-				From:   string(t.Stage),
-				To:     string(targetStage),
-				Gates:  gateResults,
-			}
-			r, _ := jsonResult(resp)
-			// Mark as error.
-			r.IsError = true
-			return r, nil, nil
-		}
-
-		t, _ = store.Get(args.ID)
-		resp := advanceResultJSON{
-			Ticket: toJSON(t),
-			From:   string(result.From),
-			To:     string(result.To),
-			Gates:  gateResults,
-		}
-		r, jsonErr := jsonResult(resp)
-		return r, nil, jsonErr
-	})
-}
-
-type reviewArgs struct {
-	ID       string `json:"id" jsonschema:"ticket ID"`
-	Approve  bool   `json:"approve,omitempty" jsonschema:"approve the current stage"`
-	Reject   bool   `json:"reject,omitempty" jsonschema:"reject the current stage"`
-	Comment  string `json:"comment,omitempty" jsonschema:"review comment"`
-	Reviewer string `json:"reviewer,omitempty" jsonschema:"reviewer identity (e.g. human:steve, agent:code-review)"`
-}
-
-func registerReview(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_review",
-		Description: "Record a review verdict (approve or reject) on a ticket's current stage.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args reviewArgs) (*mcp.CallToolResult, any, error) {
-		if args.Approve == args.Reject {
-			r, _ := errResult("specify exactly one of approve or reject")
-			return r, nil, nil
-		}
-
-		reviewer := args.Reviewer
-		if reviewer == "" {
-			reviewer = "agent:mcp"
-		}
-
-		var verdict ticket.ReviewState
-		if args.Approve {
-			verdict = ticket.ReviewApproved
-		} else {
-			verdict = ticket.ReviewRejected
-		}
-
-		if err := ticket.SetReview(store, args.ID, reviewer, verdict, args.Comment); err != nil {
-			r, _ := errResult("review failed: %v", err)
-			return r, nil, nil
-		}
-
-		t, _ := store.Get(args.ID)
-		r, jsonErr := jsonResult(toJSON(t))
-		return r, nil, jsonErr
-	})
-}
-
-type skipArgs struct {
-	ID     string `json:"id" jsonschema:"ticket ID"`
-	To     string `json:"to" jsonschema:"target stage to skip to"`
-	Reason string `json:"reason" jsonschema:"reason for skipping stages"`
-}
-
-func registerSkip(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_skip",
-		Description: "Skip a ticket to a named stage with an audit trail.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args skipArgs) (*mcp.CallToolResult, any, error) {
-		_, err := ticket.Skip(store, args.ID, ticket.Stage(args.To), args.Reason)
-		if err != nil {
-			r, _ := errResult("skip failed: %v", err)
-			return r, nil, nil
-		}
-
-		t, _ := store.Get(args.ID)
-		r, jsonErr := jsonResult(toJSON(t))
-		return r, nil, jsonErr
-	})
-}
-
-type revertArgs struct {
-	ID     string `json:"id" jsonschema:"ticket ID"`
-	To     string `json:"to" jsonschema:"target stage to revert to (must be earlier than current)"`
-	Reason string `json:"reason" jsonschema:"reason for reverting"`
-}
-
-func registerRevert(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_revert",
-		Description: "Revert a ticket to an earlier pipeline stage with an audit trail. Use when a later stage reveals issues requiring rework.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args revertArgs) (*mcp.CallToolResult, any, error) {
-		result, err := ticket.Revert(store, args.ID, ticket.Stage(args.To), args.Reason)
-		if err != nil {
-			r, _ := errResult("revert failed: %v", err)
-			return r, nil, nil
-		}
-
-		t, _ := store.Get(args.ID)
-		resp := struct {
-			Ticket ticketJSON `json:"ticket"`
-			From   string     `json:"from"`
-			To     string     `json:"to"`
-		}{
-			Ticket: toJSON(t),
-			From:   string(result.From),
-			To:     string(result.To),
-		}
-		r, jsonErr := jsonResult(resp)
-		return r, nil, jsonErr
-	})
-}
-
-func registerMigrate(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ticket_migrate",
-		Description: "Migrate all status-based tickets to stage pipeline. Idempotent.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
-		count, err := ticket.MigrateAll(store)
-		if err != nil {
-			r, _ := errResult("migration failed: %v", err)
-			return r, nil, nil
-		}
-
-		r, err := textResult(fmt.Sprintf("Migrated %d ticket(s)", count))
-		return r, nil, err
-	})
-}
 
 type inboxArgs struct {
 	Project string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`

@@ -19,7 +19,6 @@ type tabID int
 
 const (
 	tabInbox tabID = iota
-	tabTriage
 	tabBacklog
 	tabEpics
 	tabDone
@@ -27,7 +26,7 @@ const (
 	tabCount // sentinel for cycling
 )
 
-var tabNames = []string{"inbox", "triage", "backlog", "epics", "done", "all"}
+var tabNames = []string{"inbox", "backlog", "epics", "done", "all"}
 
 type overlayID int
 
@@ -35,7 +34,6 @@ const (
 	overlayNone overlayID = iota
 	overlayDetail
 	overlayForm
-	overlayReview
 )
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -54,7 +52,6 @@ type App struct {
 	epics     epicsModel     // Epics tab
 	detail    detailModel
 	form      formModel
-	review    reviewModel
 
 	// Command bar
 	cmdBar    textinput.Model
@@ -103,39 +100,9 @@ type clearStatusMsg struct{}
 
 type cyclePriorityMsg struct{ id string }
 
-type setAssigneeMsg struct {
-	id       string
-	assignee string
-}
-
 type addNoteMsg struct {
 	id   string
 	text string
-}
-
-type advanceMsg struct {
-	id    string
-	force bool
-}
-
-type reviewMsg struct {
-	id      string
-	verdict ticket.ReviewState
-}
-
-type reviewApproveMsg struct {
-	id    string
-	notes string
-}
-
-type reviewRejectMsg struct {
-	id    string
-	notes string
-	stage ticket.Stage
-}
-
-type skipMsg struct {
-	id string
 }
 
 type deleteTicketMsg struct {
@@ -153,7 +120,7 @@ func loadTickets(store *ticket.FileStore) tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		ticket.SortByStagePriorityID(tickets)
+		ticket.SortByStatusPriorityID(tickets)
 		return ticketsLoadedMsg(tickets)
 	}
 }
@@ -185,7 +152,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.epics.setSize(a.width, contentH)
 		a.detail.setSize(a.width, a.height) // overlays use full height
 		a.form.setSize(a.width, a.height)
-		a.review.setSize(a.width, a.height)
 		return a, nil
 
 	case fileChangedMsg:
@@ -213,20 +179,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.status = "Ticket removed"
 			}
 		}
-		if a.overlay == overlayReview && a.review.ticket != nil {
-			found := false
-			for _, t := range a.tickets {
-				if t.ID == a.review.ticket.ID {
-					a.review = newReviewModel(t, a.width, a.contentHeight())
-					found = true
-					break
-				}
-			}
-			if !found {
-				a.overlay = overlayNone
-				a.status = "Ticket removed"
-			}
-		}
 		return a, nil
 
 	case errMsg:
@@ -244,8 +196,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Mutation messages
 	case cyclePriorityMsg:
 		return a, a.handleCyclePriority(msg.id)
-	case setAssigneeMsg:
-		return a, a.handleSetAssignee(msg.id, msg.assignee)
 	case addNoteMsg:
 		return a, a.handleAddNote(msg.id, msg.text)
 	case formSubmitMsg:
@@ -253,16 +203,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.handleEditTicket(msg)
 		}
 		return a, a.handleCreateTicket(msg)
-	case advanceMsg:
-		return a, a.handleAdvance(msg.id, msg.force)
-	case reviewMsg:
-		return a, a.handleReview(msg.id, msg.verdict)
-	case reviewApproveMsg:
-		return a, a.handleReviewApprove(msg.id, msg.notes)
-	case reviewRejectMsg:
-		return a, a.handleReviewReject(msg.id, msg.notes, msg.stage)
-	case skipMsg:
-		return a, a.handleSkip(msg.id)
 	case deleteTicketMsg:
 		return a, a.handleDelete(msg.id)
 	case moveTicketMsg:
@@ -351,9 +291,6 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		case "p":
 			return a, func() tea.Msg { return cyclePriorityMsg{id: a.detail.ticket.ID} }
-		case "a":
-			a.detail.startInput(inputAssignee)
-			return a, nil
 		case "n":
 			a.detail.startInput(inputNote)
 			return a, nil
@@ -369,18 +306,6 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case overlayForm:
 		// Form handles its own keys; just check for escape.
 		// (formCancelMsg and formSubmitMsg handled at App level)
-
-	case overlayReview:
-		if a.review.inputActive() {
-			break // let review handle input
-		}
-		switch msg.String() {
-		case "esc":
-			a.overlay = overlayNone
-			return a, nil
-		case "q":
-			return a, tea.Quit
-		}
 	}
 
 	// Delegate to overlay model.
@@ -396,10 +321,6 @@ func (a App) delegateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case overlayForm:
 		var cmd tea.Cmd
 		a.form, cmd = a.form.update(msg)
-		return a, cmd
-	case overlayReview:
-		var cmd tea.Cmd
-		a.review, cmd = a.review.update(msg)
 		return a, cmd
 	}
 	return a, nil
@@ -480,22 +401,6 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "p":
 			if t := a.dashboard.selected(); t != nil {
 				return a, func() tea.Msg { return cyclePriorityMsg{id: t.ID} }
-			}
-		case "v":
-			if t := a.dashboard.selected(); t != nil && t.Stage == ticket.StageVerify {
-				return a, a.handleVerify(t.ID)
-			}
-		case "r":
-			if t := a.dashboard.selected(); t != nil && t.Stage == ticket.StageVerify {
-				a.review = newReviewModel(t, a.width, a.height)
-				a.overlay = overlayReview
-				return a, nil
-			}
-		case "R":
-			if t := a.dashboard.selected(); t != nil && t.Review == ticket.ReviewPending {
-				return a, func() tea.Msg {
-					return reviewMsg{id: t.ID, verdict: ticket.ReviewApproved}
-				}
 			}
 		}
 	}
@@ -578,7 +483,6 @@ func (a App) View() string {
 
 var tabColors = []lipgloss.Color{
 	colorCyan,    // inbox
-	colorWhite,   // triage
 	colorGray,    // backlog
 	colorMagenta, // epics
 	colorGreen,   // done
@@ -588,30 +492,22 @@ var tabColors = []lipgloss.Color{
 func (a App) tabCounts() map[tabID]int {
 	counts := make(map[tabID]int)
 	for _, t := range a.tickets {
-		switch t.Stage {
-		case ticket.StageBacklog:
+		switch t.Status {
+		case ticket.StatusBacklog:
 			counts[tabBacklog]++
-		case ticket.StageTriage:
-			counts[tabTriage]++
-		case ticket.StageDone:
+		case ticket.StatusDone, ticket.StatusClosed:
 			counts[tabDone]++
-		default:
-			// Non-backlog, non-done = inbox candidate.
 		}
-		if t.Type == ticket.TypeEpic && t.Stage != ticket.StageDone {
+		if t.Type == ticket.TypeEpic && t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
 			counts[tabEpics]++
 		}
-		if t.Stage != ticket.StageDone {
+		if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
 			counts[tabAll]++
 		}
 	}
-	// Inbox: count actionable tickets.
+	// Inbox: open + ready tickets.
 	for _, t := range a.tickets {
-		if t.Stage == ticket.StageDone || t.Stage == ticket.StageBacklog {
-			continue
-		}
-		item := ticket.NextAction(t)
-		if item.Action == ticket.ActionHumanReview || item.Action == ticket.ActionHumanInput {
+		if t.Status == ticket.StatusOpen || t.Status == ticket.StatusReady {
 			counts[tabInbox]++
 		}
 	}
@@ -647,8 +543,6 @@ func (a App) renderOverlay() string {
 		return a.detail.view()
 	case overlayForm:
 		return a.form.view()
-	case overlayReview:
-		return a.review.view()
 	}
 	return ""
 }
@@ -734,24 +628,6 @@ func (a *App) handleCyclePriority(id string) tea.Cmd {
 	)
 }
 
-func (a *App) handleSetAssignee(id, assignee string) tea.Cmd {
-	t, err := a.store.Get(id)
-	if err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	t.Assignee = assignee
-	if err := a.store.Update(t); err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	msg := fmt.Sprintf("%s assignee -> %s", id, assignee)
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}
-
 func (a *App) handleAddNote(id, text string) tea.Cmd {
 	t, err := a.store.Get(id)
 	if err != nil {
@@ -780,62 +656,6 @@ func (a *App) handleAddNote(id, text string) tea.Cmd {
 	)
 }
 
-func (a *App) handleAdvance(id string, force bool) tea.Cmd {
-	opts := ticket.AdvanceOptions{Force: force}
-	result, err := ticket.Advance(a.store, id, opts)
-	if err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	msg := fmt.Sprintf("%s: %s → %s", id, result.From, result.To)
-	if len(result.GateErrors) > 0 {
-		msg += fmt.Sprintf(" (%d gates overridden)", len(result.GateErrors))
-	}
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}
-
-func (a *App) handleReview(id string, verdict ticket.ReviewState) tea.Cmd {
-	reviewer := "tui"
-	if err := ticket.SetReview(a.store, id, reviewer, verdict, ""); err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	msg := fmt.Sprintf("%s: review → %s", id, verdict)
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}
-
-func (a *App) handleSkip(id string) tea.Cmd {
-	t, err := a.store.Get(id)
-	if err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	nextStage, ok := ticket.NextStage(t.Type, t.Stage)
-	if !ok {
-		return func() tea.Msg { return statusMsg(id + ": already at final stage") }
-	}
-	skipTo, ok := ticket.NextStage(t.Type, nextStage)
-	if !ok {
-		skipTo = nextStage
-	}
-
-	result, err := ticket.Skip(a.store, id, skipTo, "skipped via TUI")
-	if err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	msg := fmt.Sprintf("%s: %s → %s (skipped %v)", id, result.From, result.To, result.Skipped)
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}
 
 func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 	t := &ticket.Ticket{
@@ -843,9 +663,7 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 		Title:    msg.title,
 		Type:     msg.ticketType,
 		Priority: msg.priority,
-		Assignee: msg.assignee,
-		Status:   ticket.StatusOpen,
-		Stage:    ticket.StageBacklog,
+		Status:   ticket.StatusBacklog,
 		Created:  time.Now().UTC(),
 	}
 
@@ -874,9 +692,8 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 	t.Title = msg.title
 	t.Type = msg.ticketType
 	t.Priority = msg.priority
-	t.Assignee = msg.assignee
-	if msg.stage != "" {
-		t.Stage = msg.stage
+	if msg.status != "" {
+		t.Status = msg.status
 	}
 
 	t.Body = ticket.UpdateSection(t.Body, "", msg.description)
@@ -938,58 +755,3 @@ func (a *App) handleMove(id, targetRepo string) tea.Cmd {
 	)
 }
 
-func (a *App) handleVerify(id string) tea.Cmd {
-	if err := ticket.SetReview(a.store, id, "human:tui", ticket.ReviewApproved, "verified via TUI"); err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	msg := fmt.Sprintf("%s: verified ✓", id)
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}
-
-func (a *App) handleReviewApprove(id, notes string) tea.Cmd {
-	if err := ticket.SetReview(a.store, id, "human:tui", ticket.ReviewApproved, notes); err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	result, err := ticket.Advance(a.store, id, ticket.AdvanceOptions{})
-	a.overlay = overlayNone
-	if err != nil {
-		msg := fmt.Sprintf("%s: approved (advance failed: %s)", id, err.Error())
-		return tea.Batch(
-			loadTickets(a.store),
-			func() tea.Msg { return statusMsg(msg) },
-		)
-	}
-
-	msg := fmt.Sprintf("%s: approved, %s -> %s", id, result.From, result.To)
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}
-
-func (a *App) handleReviewReject(id, notes string, stage ticket.Stage) tea.Cmd {
-	if err := ticket.SetReview(a.store, id, "human:tui", ticket.ReviewRejected, notes); err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
-
-	result, err := ticket.Revert(a.store, id, stage, notes)
-	a.overlay = overlayNone
-	if err != nil {
-		msg := fmt.Sprintf("%s: rejected (revert failed: %s)", id, err.Error())
-		return tea.Batch(
-			loadTickets(a.store),
-			func() tea.Msg { return statusMsg(msg) },
-		)
-	}
-
-	msg := fmt.Sprintf("%s: rejected, reverted to %s", id, result.To)
-	return tea.Batch(
-		loadTickets(a.store),
-		func() tea.Msg { return statusMsg(msg) },
-	)
-}

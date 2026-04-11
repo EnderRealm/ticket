@@ -4,10 +4,10 @@ import "fmt"
 
 // DepNode represents one entry in a dependency tree.
 type DepNode struct {
-	ID    string
-	Title string
-	Stage Stage
-	Depth int
+	ID     string
+	Title  string
+	Status Status
+	Depth  int
 }
 
 // DepTree walks the dependency graph for the given ticket ID.
@@ -24,10 +24,10 @@ func DepTree(store Store, id string, full bool) ([]DepNode, error) {
 	var walk func(t *Ticket, depth int)
 	walk = func(t *Ticket, depth int) {
 		nodes = append(nodes, DepNode{
-			ID:    t.ID,
-			Title: t.Title,
-			Stage: t.Stage,
-			Depth: depth,
+			ID:     t.ID,
+			Title:  t.Title,
+			Status: t.Status,
+			Depth:  depth,
 		})
 		for _, depID := range t.Deps {
 			if !full && seen[depID] {
@@ -67,7 +67,7 @@ func (c Cycle) String() string {
 	return s + " -> " + c.IDs[0]
 }
 
-// FindCycles detects dependency cycles among open (non-closed) tickets.
+// FindCycles detects dependency cycles among open (non-done/closed) tickets.
 // Uses DFS with white(0)/gray(1)/black(2) coloring.
 func FindCycles(store Store) ([]Cycle, error) {
 	tickets, err := store.List()
@@ -75,10 +75,10 @@ func FindCycles(store Store) ([]Cycle, error) {
 		return nil, err
 	}
 
-	// Index only non-done tickets.
+	// Index only non-terminal tickets.
 	byID := map[string]*Ticket{}
 	for _, t := range tickets {
-		if t.Stage != StageDone {
+		if t.Status != StatusDone && t.Status != StatusClosed {
 			byID[t.ID] = t
 		}
 	}
@@ -154,8 +154,12 @@ func normalizeCycle(ids []string) string {
 	return key
 }
 
-// IsBlocked returns true if any of the ticket's dependencies are not closed.
-// Only meaningful for open/in_progress tickets.
+// isTerminal returns true if a ticket is in a terminal state.
+func isTerminal(t *Ticket) bool {
+	return t.Status == StatusDone || t.Status == StatusClosed
+}
+
+// IsBlocked returns true if any of the ticket's dependencies are not done/closed.
 func IsBlocked(store Store, t *Ticket) bool {
 	if len(t.Deps) == 0 {
 		return false
@@ -166,14 +170,14 @@ func IsBlocked(store Store, t *Ticket) bool {
 			// Missing dep is treated as blocking.
 			return true
 		}
-		if dep.Stage != StageDone {
+		if !isTerminal(dep) {
 			return true
 		}
 	}
 	return false
 }
 
-// BlockingDeps returns the IDs of dependencies that are not done.
+// BlockingDeps returns the IDs of dependencies that are not done/closed.
 func BlockingDeps(store Store, t *Ticket) []string {
 	var blocking []string
 	for _, depID := range t.Deps {
@@ -182,17 +186,17 @@ func BlockingDeps(store Store, t *Ticket) []string {
 			blocking = append(blocking, depID)
 			continue
 		}
-		if dep.Stage != StageDone {
+		if !isTerminal(dep) {
 			blocking = append(blocking, depID)
 		}
 	}
 	return blocking
 }
 
-// IsReady returns true if the ticket is actionable: not done,
-// all deps done, and parent chain is active (all ancestors not done).
+// IsReady returns true if the ticket is actionable: not terminal,
+// not backlog, all deps done, and parent chain is active.
 func IsReady(store Store, t *Ticket) bool {
-	if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
+	if isTerminal(t) || t.Status == StatusBacklog {
 		return false
 	}
 	if IsBlocked(store, t) {
@@ -202,16 +206,16 @@ func IsReady(store Store, t *Ticket) bool {
 }
 
 // IsReadyOpen is like IsReady but bypasses parent gating.
-// Shows all unblocked non-done tickets regardless of epic status.
+// Shows all unblocked non-terminal tickets regardless of epic status.
 func IsReadyOpen(store Store, t *Ticket) bool {
-	if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
+	if isTerminal(t) || t.Status == StatusBacklog {
 		return false
 	}
 	return !IsBlocked(store, t)
 }
 
 // parentChainActive checks that every ancestor (via parent field) is
-// in_progress. If a parent is not found in the store, it's treated as active.
+// not terminal. If a parent is not found in the store, it's treated as active.
 func parentChainActive(store Store, id string, visited map[string]bool) bool {
 	if visited[id] {
 		return true // avoid infinite loops
@@ -229,7 +233,7 @@ func parentChainActive(store Store, id string, visited map[string]bool) bool {
 	if err != nil {
 		return true // parent not in store — treat as active
 	}
-	if parent.Stage == StageDone {
+	if isTerminal(parent) {
 		return false
 	}
 	return parentChainActive(store, parent.ID, visited)
@@ -266,7 +270,7 @@ func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 	return ready, nil
 }
 
-// BlockedTickets returns all open/in_progress tickets with unresolved deps.
+// BlockedTickets returns all non-terminal, non-backlog tickets with unresolved deps.
 func BlockedTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -275,7 +279,7 @@ func BlockedTickets(store Store) ([]*Ticket, error) {
 
 	var blocked []*Ticket
 	for _, t := range tickets {
-		if t.Stage == StageDone || t.Stage == "" || t.Stage == StageBacklog {
+		if isTerminal(t) || t.Status == StatusBacklog {
 			continue
 		}
 		if IsBlocked(store, t) {

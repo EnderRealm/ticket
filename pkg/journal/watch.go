@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/EnderRealm/ticket/internal/project"
 	"github.com/EnderRealm/ticket/pkg/ticket"
@@ -101,10 +102,20 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 			action := actions[ticketID]
 
 			if action == "close" && cfg.AutoClose && store != nil {
-				if _, err := ticket.Skip(store, ticketID, ticket.Stage("done"), "auto-closed by commit"); err != nil {
+				t, err := store.Get(ticketID)
+				if err != nil {
 					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
 				} else {
-					result.Closed++
+					t.Status = ticket.StatusDone
+					t.Notes = append(t.Notes, ticket.Note{
+						Timestamp: time.Now().UTC(),
+						Text:      "auto-closed by commit",
+					})
+					if err := store.Update(t); err != nil {
+						result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
+					} else {
+						result.Closed++
+					}
 				}
 			}
 

@@ -10,13 +10,12 @@ import (
 
 const sampleTicketYAML = `---
 id: t-abc1
-stage: triage
+status: ready
 deps: [t-dep1, t-dep2]
 links: []
 created: 2026-02-22T00:57:39Z
-type: task
+type: feature
 priority: 1
-assignee: Steve Macbeth
 parent: t-0f08
 tags: [phase-1]
 ---
@@ -42,17 +41,14 @@ func TestParse_BasicFields(t *testing.T) {
 	if tk.ID != "t-abc1" {
 		t.Errorf("ID = %q, want %q", tk.ID, "t-abc1")
 	}
-	if tk.Stage != StageTriage {
-		t.Errorf("Stage = %q, want %q", tk.Stage, StageTriage)
+	if tk.Status != StatusReady {
+		t.Errorf("Status = %q, want %q", tk.Status, StatusReady)
 	}
-	if tk.Type != TypeTask {
-		t.Errorf("Type = %q, want %q", tk.Type, TypeTask)
+	if tk.Type != TypeFeature {
+		t.Errorf("Type = %q, want %q", tk.Type, TypeFeature)
 	}
 	if tk.Priority != 1 {
 		t.Errorf("Priority = %d, want 1", tk.Priority)
-	}
-	if tk.Assignee != "Steve Macbeth" {
-		t.Errorf("Assignee = %q, want %q", tk.Assignee, "Steve Macbeth")
 	}
 	if tk.Parent != "t-0f08" {
 		t.Errorf("Parent = %q, want %q", tk.Parent, "t-0f08")
@@ -74,11 +70,11 @@ func TestParse_BasicFields(t *testing.T) {
 func TestParse_Notes(t *testing.T) {
 	input := `---
 id: t-note1
-stage: triage
+status: ready
 deps: []
 links: []
 created: 2026-01-01T00:00:00Z
-type: task
+type: feature
 priority: 2
 ---
 # Ticket with notes
@@ -125,10 +121,9 @@ func TestParse_MissingFrontmatter(t *testing.T) {
 func TestSerialize_RoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-abc1",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 1,
-		Assignee: "Steve Macbeth",
 		Parent:   "t-0f08",
 		Deps:     []string{"t-dep1"},
 		Links:    []string{},
@@ -155,8 +150,8 @@ func TestSerialize_RoundTrip(t *testing.T) {
 	if parsed.Title != tk.Title {
 		t.Errorf("Title = %q, want %q", parsed.Title, tk.Title)
 	}
-	if parsed.Stage != tk.Stage {
-		t.Errorf("Stage = %q, want %q", parsed.Stage, tk.Stage)
+	if parsed.Status != tk.Status {
+		t.Errorf("Status = %q, want %q", parsed.Status, tk.Status)
 	}
 	if len(parsed.Deps) != 1 || parsed.Deps[0] != "t-dep1" {
 		t.Errorf("Deps = %v, want [t-dep1]", parsed.Deps)
@@ -166,7 +161,7 @@ func TestSerialize_RoundTrip(t *testing.T) {
 func TestSerialize_EmptyArrays(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-test",
-		Stage:    StageTriage,
+		Status:   StatusReady,
 		Type:     TypeBug,
 		Priority: 2,
 		Deps:     []string{},
@@ -191,8 +186,8 @@ func TestSerialize_EmptyArrays(t *testing.T) {
 func TestSerialize_WithNotes(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-test",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 2,
 		Deps:     []string{},
 		Links:    []string{},
@@ -257,22 +252,18 @@ func TestParse_RealTicketFiles(t *testing.T) {
 	t.Logf("successfully parsed %d ticket files", parsed)
 }
 
-func TestSerialize_StageFields(t *testing.T) {
+func TestSerialize_StatusFields(t *testing.T) {
 	tk := &Ticket{
-		ID:            "t-stage",
-		Stage:         StageDesign,
-		Review:        ReviewPending,
-		Risk:          RiskHigh,
-		Type:          TypeFeature,
-		Priority:      1,
-		Deps:          []string{},
-		Links:         []string{},
-		Tags:          []string{},
-		Skipped:       []Stage{StageSpec},
-		Conversations: []string{"sess-abc123"},
-		Created:       time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
-		Title:         "Stage test",
-		Body:          "\nDescription.\n",
+		ID:       "t-status",
+		Status:   StatusOpen,
+		Type:     TypeFeature,
+		Priority: 1,
+		Deps:     []string{},
+		Links:    []string{},
+		Tags:     []string{},
+		Created:  time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
+		Title:    "Status test",
+		Body:     "\nDescription.\n",
 	}
 
 	data, err := Serialize(tk)
@@ -281,36 +272,20 @@ func TestSerialize_StageFields(t *testing.T) {
 	}
 	s := string(data)
 
-	if !strings.Contains(s, "stage: design") {
-		t.Error("missing stage field")
-	}
-	if !strings.Contains(s, "review: pending") {
-		t.Error("missing review field")
-	}
-	if !strings.Contains(s, "risk: high") {
-		t.Error("missing risk field")
-	}
-	if !strings.Contains(s, "skipped: [spec]") {
-		t.Error("missing skipped field")
-	}
-	if !strings.Contains(s, "conversations: [sess-abc123]") {
-		t.Error("missing conversations field")
+	if !strings.Contains(s, "status: open") {
+		t.Error("missing status field")
 	}
 }
 
-func TestSerialize_StageRoundTrip(t *testing.T) {
+func TestSerialize_StatusRoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:            "t-rt",
-		Stage:         StageImplement,
-		Review:        ReviewApproved,
-		Risk:          RiskNormal,
+		Status:        StatusOpen,
 		Type:          TypeBug,
 		Priority:      2,
-		Deps:          []string{},
-		Links:         []string{},
-		Skipped:       []Stage{},
-		Conversations: []string{},
-		Created:       time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
 		Title:         "Round trip",
 		Body:          "\nBug description.\n",
 	}
@@ -325,101 +300,13 @@ func TestSerialize_StageRoundTrip(t *testing.T) {
 		t.Fatalf("Parse after Serialize: %v", err)
 	}
 
-	if parsed.Stage != StageImplement {
-		t.Errorf("Stage = %s, want implement", parsed.Stage)
-	}
-	if parsed.Review != ReviewApproved {
-		t.Errorf("Review = %s, want approved", parsed.Review)
-	}
-	if parsed.Risk != RiskNormal {
-		t.Errorf("Risk = %s, want normal", parsed.Risk)
-	}
-}
-
-func TestSerialize_ReviewLog(t *testing.T) {
-	tk := &Ticket{
-		ID:       "t-revlog",
-		Stage:    StageDesign,
-		Type:     TypeFeature,
-		Priority: 1,
-		Deps:     []string{},
-		Links:    []string{},
-		Created:  time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
-		Title:    "With reviews",
-		Body:     "\nDescription.\n",
-		Reviews: []ReviewRecord{
-			{
-				Timestamp: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC),
-				Reviewer:  "agent:design-reviewer",
-				Verdict:   "approved",
-				Comment:   "All file paths verified.",
-			},
-		},
-	}
-
-	data, err := Serialize(tk)
-	if err != nil {
-		t.Fatalf("Serialize: %v", err)
-	}
-	s := string(data)
-
-	if !strings.Contains(s, "## Review Log") {
-		t.Error("missing Review Log section")
-	}
-	if !strings.Contains(s, "[agent:design-reviewer]") {
-		t.Error("missing reviewer in review log")
-	}
-	if !strings.Contains(s, "APPROVED") {
-		t.Error("missing verdict in review log")
-	}
-}
-
-func TestParse_ReviewLog(t *testing.T) {
-	input := `---
-id: t-revlog
-stage: design
-deps: []
-links: []
-created: 2026-02-25T10:00:00Z
-type: feature
-priority: 1
----
-# With reviews
-
-Description.
-
-## Review Log
-
-**2026-02-25T12:00:00Z [agent:design-reviewer]**
-APPROVED — All file paths verified.
-
-**2026-02-25T14:00:00Z [human:steve]**
-APPROVED — Proceed to implementation.
-`
-	tk, err := Parse(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	if len(tk.Reviews) != 2 {
-		t.Fatalf("len(Reviews) = %d, want 2", len(tk.Reviews))
-	}
-	if tk.Reviews[0].Reviewer != "agent:design-reviewer" {
-		t.Errorf("Reviews[0].Reviewer = %q, want agent:design-reviewer", tk.Reviews[0].Reviewer)
-	}
-	if tk.Reviews[0].Verdict != "approved" {
-		t.Errorf("Reviews[0].Verdict = %q, want approved", tk.Reviews[0].Verdict)
-	}
-	if tk.Reviews[0].Comment != "All file paths verified." {
-		t.Errorf("Reviews[0].Comment = %q", tk.Reviews[0].Comment)
-	}
-	if tk.Reviews[1].Reviewer != "human:steve" {
-		t.Errorf("Reviews[1].Reviewer = %q, want human:steve", tk.Reviews[1].Reviewer)
+	if parsed.Status != StatusOpen {
+		t.Errorf("Status = %s, want open", parsed.Status)
 	}
 }
 
 func TestParse_BackwardCompat_StatusOnly(t *testing.T) {
-	// Legacy ticket with only status field — should auto-migrate to stage.
+	// Legacy ticket with only old status field — should auto-migrate.
 	input := `---
 id: t-legacy
 status: open
@@ -437,29 +324,54 @@ Description.
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if tk.Stage != StageTriage {
-		t.Errorf("Stage = %q, want triage (auto-migrated from status open)", tk.Stage)
+	if tk.Status != StatusOpen {
+		t.Errorf("Status = %q, want open", tk.Status)
 	}
 }
 
-func TestParse_ReviewLogAndNotes(t *testing.T) {
+func TestParse_BackwardCompat_LegacyStage(t *testing.T) {
+	// Legacy ticket with stage field — should auto-migrate to status.
 	input := `---
-id: t-both
+id: t-legacy2
 stage: implement
+deps: []
+links: []
+created: 2026-01-01T00:00:00Z
+type: task
+priority: 2
+---
+# Legacy stage ticket
+
+Description.
+`
+	tk, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if tk.Status != StatusOpen {
+		t.Errorf("Status = %q, want open (auto-migrated from stage implement)", tk.Status)
+	}
+}
+
+func TestParse_BackwardCompat_LegacyReviewLogStripped(t *testing.T) {
+	// Legacy ticket with Review Log section — should be silently stripped.
+	input := `---
+id: t-revlog
+status: open
 deps: []
 links: []
 created: 2026-02-25T10:00:00Z
 type: feature
 priority: 1
 ---
-# Both sections
+# With reviews
 
 Description.
 
 ## Review Log
 
-**2026-02-25T12:00:00Z [agent:code-review]**
-APPROVED — Code looks good.
+**2026-02-25T12:00:00Z [agent:design-reviewer]**
+APPROVED — All file paths verified.
 
 ## Notes
 
@@ -472,14 +384,14 @@ Decision: use JWT for auth.
 		t.Fatalf("Parse: %v", err)
 	}
 
-	if len(tk.Reviews) != 1 {
-		t.Fatalf("len(Reviews) = %d, want 1", len(tk.Reviews))
+	// Review Log should be stripped from body.
+	if strings.Contains(tk.Body, "Review Log") {
+		t.Errorf("body should not contain Review Log section:\n%s", tk.Body)
 	}
+
+	// Notes should still work.
 	if len(tk.Notes) != 1 {
 		t.Fatalf("len(Notes) = %d, want 1", len(tk.Notes))
-	}
-	if tk.Reviews[0].Reviewer != "agent:code-review" {
-		t.Errorf("review reviewer = %q", tk.Reviews[0].Reviewer)
 	}
 	if !strings.Contains(tk.Notes[0].Text, "JWT") {
 		t.Errorf("note text = %q, should contain JWT", tk.Notes[0].Text)
@@ -490,7 +402,7 @@ func TestSerialize_BodyNoBlankLineAccumulation(t *testing.T) {
 	// Start with a leading newline in Body — the form that triggered the bug.
 	tk := &Ticket{
 		ID:       "t-accum",
-		Stage:    StageImplement,
+		Status:   StatusOpen,
 		Type:     TypeBug,
 		Priority: 0,
 		Deps:     []string{},
@@ -504,7 +416,7 @@ func TestSerialize_BodyNoBlankLineAccumulation(t *testing.T) {
 		}},
 	}
 
-	// Simulate 10 round-trips (parse → serialize → parse → ...).
+	// Simulate 10 round-trips (parse -> serialize -> parse -> ...).
 	for i := 0; i < 10; i++ {
 		data, err := Serialize(tk)
 		if err != nil {
@@ -543,11 +455,11 @@ func TestSerialize_BodyNoBlankLineAccumulation(t *testing.T) {
 func TestExtraFields_RoundTrip(t *testing.T) {
 	input := `---
 id: t-extra1
-stage: triage
+status: ready
 deps: []
 links: []
 created: 2026-01-01T00:00:00Z
-type: task
+type: feature
 priority: 2
 env: production
 team: backend
@@ -591,8 +503,8 @@ Description.
 func TestSerialize_ExtraFieldOrdering(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-order",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 2,
 		Deps:     []string{},
 		Links:    []string{},
@@ -634,8 +546,8 @@ func TestSerialize_ExtraFieldOrdering(t *testing.T) {
 func TestSerialize_NoExtraFieldsUnchanged(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-noextra",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 2,
 		Deps:     []string{},
 		Links:    []string{},
@@ -658,7 +570,7 @@ func TestSerialize_NoExtraFieldsUnchanged(t *testing.T) {
 }
 
 func TestExtra_ReservedKeyRejected(t *testing.T) {
-	reserved := []string{"id", "stage", "type", "priority", "assignee", "deps", "created", "external-ref"}
+	reserved := []string{"id", "status", "type", "priority", "deps", "created", "external-ref"}
 	for _, key := range reserved {
 		if err := ValidateExtraKey(key); err == nil {
 			t.Errorf("ValidateExtraKey(%q) should return error", key)
@@ -728,8 +640,8 @@ func TestUpdateSection_ReplacesExisting(t *testing.T) {
 func TestUpdateSection_RoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:       "test-roundtrip-1234",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 2,
 		Deps:     []string{},
 		Links:    []string{},
@@ -784,8 +696,8 @@ func parseBytes(data []byte) (*Ticket, error) {
 func TestSerialize_NotesDuplication(t *testing.T) {
 	tk := &Ticket{
 		ID:       "test-notes-dup",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 2,
 		Deps:     []string{},
 		Links:    []string{},
@@ -800,7 +712,7 @@ func TestSerialize_NotesDuplication(t *testing.T) {
 		Text:      "First note",
 	})
 
-	// Round trip 1: Serialize → Parse
+	// Round trip 1: Serialize -> Parse
 	data1, err := Serialize(tk)
 	if err != nil {
 		t.Fatal(err)
@@ -816,7 +728,7 @@ func TestSerialize_NotesDuplication(t *testing.T) {
 		Text:      "Second note",
 	})
 
-	// Round trip 2: Serialize → Parse
+	// Round trip 2: Serialize -> Parse
 	data2, err := Serialize(tk2)
 	if err != nil {
 		t.Fatal(err)

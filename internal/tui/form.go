@@ -18,11 +18,9 @@ var (
 )
 
 var ticketTypes = []ticket.TicketType{
-	ticket.TypeTask,
 	ticket.TypeFeature,
 	ticket.TypeBug,
 	ticket.TypeEpic,
-	ticket.TypeChore,
 }
 
 type formField int
@@ -32,39 +30,45 @@ const (
 	fieldDescription
 	fieldType
 	fieldPriority
-	fieldAssignee
-	fieldStage
+	fieldStatus
 	fieldNote
 	fieldCount
 )
 
+var allStatuses = []ticket.Status{
+	ticket.StatusBacklog,
+	ticket.StatusReady,
+	ticket.StatusOpen,
+	ticket.StatusDone,
+	ticket.StatusClosed,
+}
+
 type formModel struct {
-	editID   string // non-empty = edit mode
-	fields   [fieldCount]string
-	cursors  [fieldCount]int // cursor position per text field
-	focus    formField
-	typeIdx  int
-	priority int
-	stageIdx int
-	stages   []ticket.Stage // valid stages for ticket type
-	offset   int
-	width    int
-	height   int
+	editID    string // non-empty = edit mode
+	fields    [fieldCount]string
+	cursors   [fieldCount]int // cursor position per text field
+	focus     formField
+	typeIdx   int
+	priority  int
+	statusIdx int
+	offset    int
+	width     int
+	height    int
 }
 
 func (m formModel) lastField() formField {
 	if m.editID != "" {
 		return fieldNote
 	}
-	return fieldAssignee
+	return fieldPriority
 }
 
 func (m formModel) isEditOnlyField(f formField) bool {
-	return f == fieldStage || f == fieldNote
+	return f == fieldStatus || f == fieldNote
 }
 
 func (m formModel) isTextField(f formField) bool {
-	return f == fieldTitle || f == fieldDescription || f == fieldAssignee || f == fieldNote
+	return f == fieldTitle || f == fieldDescription || f == fieldNote
 }
 
 func (m formModel) isMultilineField(f formField) bool {
@@ -73,7 +77,7 @@ func (m formModel) isMultilineField(f formField) bool {
 
 func newFormModel(w, h int) formModel {
 	return formModel{
-		typeIdx:  0, // task
+		typeIdx:  0, // feature
 		priority: 2,
 		width:    w,
 		height:   h,
@@ -88,30 +92,26 @@ func newEditFormModel(t *ticket.Ticket, w, h int) formModel {
 			break
 		}
 	}
-	stages, _ := ticket.PipelineFor(t.Type, t.Risk)
-	stageIdx := 0
-	for i, s := range stages {
-		if s == t.Stage {
-			stageIdx = i
+	statusIdx := 0
+	for i, s := range allStatuses {
+		if s == t.Status {
+			statusIdx = i
 			break
 		}
 	}
 
 	m := formModel{
-		editID:   t.ID,
-		typeIdx:  typeIdx,
-		priority: t.Priority,
-		stageIdx: stageIdx,
-		stages:   stages,
-		width:    w,
-		height:   h,
+		editID:    t.ID,
+		typeIdx:   typeIdx,
+		priority:  t.Priority,
+		statusIdx: statusIdx,
+		width:     w,
+		height:    h,
 	}
 	m.fields[fieldTitle] = t.Title
 	m.fields[fieldDescription] = extractDescription(t.Body)
-	m.fields[fieldAssignee] = t.Assignee
 	m.cursors[fieldTitle] = len(m.fields[fieldTitle])
 	m.cursors[fieldDescription] = len(m.fields[fieldDescription])
-	m.cursors[fieldAssignee] = len(m.fields[fieldAssignee])
 	return m
 }
 
@@ -166,8 +166,8 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				m.typeIdx = (m.typeIdx + 1) % len(ticketTypes)
 			} else if m.focus == fieldPriority {
 				m.priority = (m.priority + 1) % 5
-			} else if m.focus == fieldStage && len(m.stages) > 0 {
-				m.stageIdx = (m.stageIdx + 1) % len(m.stages)
+			} else if m.focus == fieldStatus {
+				m.statusIdx = (m.statusIdx + 1) % len(allStatuses)
 			} else {
 				return m, m.submit
 			}
@@ -183,8 +183,8 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				if m.priority > 0 {
 					m.priority--
 				}
-			} else if m.focus == fieldStage && len(m.stages) > 0 {
-				m.stageIdx = (m.stageIdx - 1 + len(m.stages)) % len(m.stages)
+			} else if m.focus == fieldStatus {
+				m.statusIdx = (m.statusIdx - 1 + len(allStatuses)) % len(allStatuses)
 			}
 		case "right":
 			if m.isTextField(m.focus) {
@@ -197,8 +197,8 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				if m.priority < 4 {
 					m.priority++
 				}
-			} else if m.focus == fieldStage && len(m.stages) > 0 {
-				m.stageIdx = (m.stageIdx + 1) % len(m.stages)
+			} else if m.focus == fieldStatus {
+				m.statusIdx = (m.statusIdx + 1) % len(allStatuses)
 			}
 		case "home", "ctrl+a":
 			if m.isTextField(m.focus) {
@@ -254,11 +254,10 @@ func (m formModel) submit() tea.Msg {
 		description: strings.TrimSpace(m.fields[fieldDescription]),
 		ticketType:  ticketTypes[m.typeIdx],
 		priority:    m.priority,
-		assignee:    strings.TrimSpace(m.fields[fieldAssignee]),
 		note:        strings.TrimSpace(m.fields[fieldNote]),
 	}
-	if len(m.stages) > 0 {
-		msg.stage = m.stages[m.stageIdx]
+	if m.editID != "" {
+		msg.status = allStatuses[m.statusIdx]
 	}
 	return msg
 }
@@ -269,7 +268,7 @@ func (m formModel) view() string {
 
 	lines = append(lines, "") // leading blank
 
-	labels := [fieldCount]string{"Title:", "Description:", "Type:", "Priority:", "Assignee:", "Stage:", "Note:"}
+	labels := [fieldCount]string{"Title:", "Description:", "Type:", "Priority:", "Status:", "Note:"}
 	last := m.lastField()
 
 	for i := formField(0); i <= last; i++ {
@@ -300,12 +299,12 @@ func (m formModel) view() string {
 				parts = append(parts, s)
 			}
 			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
-		case fieldStage:
+		case fieldStatus:
 			var parts []string
-			for j, s := range m.stages {
+			for j, s := range allStatuses {
 				text := string(s)
-				styled := ColorStage(s, text)
-				if j == m.stageIdx {
+				styled := ColorStatus(s, text)
+				if j == m.statusIdx {
 					styled = formTextCursorStyle.Render(" " + styled + " ")
 				}
 				parts = append(parts, styled)
@@ -429,8 +428,7 @@ type formSubmitMsg struct {
 	description string
 	ticketType  ticket.TicketType
 	priority    int
-	assignee    string
-	stage       ticket.Stage
+	status      ticket.Status
 	note        string
 }
 

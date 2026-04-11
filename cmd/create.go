@@ -19,11 +19,8 @@ var createCmd = &cobra.Command{
 func init() {
 	f := createCmd.Flags()
 	f.StringP("description", "d", "", "ticket description")
-	f.String("design", "", "design notes")
-	f.String("acceptance", "", "acceptance criteria")
-	f.StringP("type", "t", "task", "ticket type (task, feature, bug, epic, chore)")
+	f.StringP("type", "t", "feature", "ticket type (feature, bug, epic)")
 	f.StringP("priority", "p", "2", "priority (0-4)")
-	f.StringP("assignee", "a", "", "assignee name")
 	f.String("external-ref", "", "external reference")
 	f.String("parent", "", "parent ticket ID")
 	f.String("tags", "", "comma-separated tags")
@@ -57,14 +54,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	assignee, _ := cmd.Flags().GetString("assignee")
-	if assignee == "" {
-		assignee = gitUserName()
-	}
-
 	description, _ := cmd.Flags().GetString("description")
-	design, _ := cmd.Flags().GetString("design")
-	acceptance, _ := cmd.Flags().GetString("acceptance")
 	externalRef, _ := cmd.Flags().GetString("external-ref")
 	parent, _ := cmd.Flags().GetString("parent")
 	tagsStr, _ := cmd.Flags().GetString("tags")
@@ -84,12 +74,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	var body strings.Builder
 	if description != "" {
 		body.WriteString("\n" + description + "\n")
-	}
-	if design != "" {
-		body.WriteString("\n## Design\n\n" + design + "\n")
-	}
-	if acceptance != "" {
-		body.WriteString("\n## Acceptance Criteria\n\n" + acceptance + "\n")
 	}
 	if body.Len() == 0 {
 		body.WriteString("\n")
@@ -112,10 +96,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	t := &ticket.Ticket{
 		ID:          id,
-		Stage:       ticket.StageBacklog,
+		Status:      ticket.StatusBacklog,
 		Type:        ticket.TicketType(typeStr),
 		Priority:    priority,
-		Assignee:    assignee,
 		Parent:      parent,
 		Deps:        []string{},
 		Links:       []string{},
@@ -132,13 +115,4 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	return showTicket(store, id, false)
-}
-
-func gitUserName() string {
-	// Quick check for git user.name, ignore errors.
-	out, err := execCommand("git", "config", "user.name")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
 }

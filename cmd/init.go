@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,25 +21,67 @@ var initCmd = &cobra.Command{
 
 func init() {
 	f := initCmd.Flags()
-	f.String("store", "", "storage type: central or local")
 	f.String("project", "", "project name (default: auto-detect)")
-	f.Bool("yes", false, "non-interactive mode (defaults to central)")
+	f.Bool("yes", false, "non-interactive mode")
+	f.String("central-root", "", "path to central ticket store root")
 
 	rootCmd.AddCommand(initCmd)
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	storeFlag, _ := cmd.Flags().GetString("store")
 	projectFlag, _ := cmd.Flags().GetString("project")
+	centralRootFlag, _ := cmd.Flags().GetString("central-root")
 	yes, _ := cmd.Flags().GetBool("yes")
-
-	if storeFlag != "" && storeFlag != "central" && storeFlag != "local" {
-		return fmt.Errorf("store must be central or local")
-	}
 
 	cfg, err := project.Load()
 	if err != nil {
 		return err
+	}
+
+	// If central store isn't configured, set it up now.
+	centralRoot, err := project.CentralStoreRoot()
+	if err != nil {
+		// Not configured yet — need a central root path.
+		if centralRootFlag != "" {
+			centralRoot = centralRootFlag
+		} else if yes {
+			return fmt.Errorf("central store not configured: use --central-root to specify path")
+		} else {
+			fmt.Print("Central ticket store path: ")
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				centralRoot = strings.TrimSpace(scanner.Text())
+			}
+			if centralRoot == "" {
+				return fmt.Errorf("central store path is required")
+			}
+		}
+
+		// Expand ~ if present.
+		if strings.HasPrefix(centralRoot, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			centralRoot = filepath.Join(home, centralRoot[2:])
+		}
+
+		abs, err := filepath.Abs(centralRoot)
+		if err != nil {
+			return err
+		}
+		centralRoot = abs
+
+		// Persist the central root into config.
+		cfg.CentralRoot = centralRoot
+		if err := project.Save(cfg); err != nil {
+			return err
+		}
+		// Reload config after saving central root.
+		cfg, err = project.Load()
+		if err != nil {
+			return err
+		}
 	}
 
 	cwd, err := os.Getwd()
@@ -50,32 +91,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	repoPath := project.DetectProjectPath(cwd)
 	localTicketsDir := filepath.Join(repoPath, ".tickets")
 	hasLocalTickets := dirExists(localTicketsDir)
-	hasGit := dirExists(filepath.Join(repoPath, ".git"))
 
-	store := storeFlag
-	copyLocalToCentral := false
-
-	if store == "" {
-		if yes {
-			store = "central"
-			if cfg.DefaultStore == "local" || cfg.DefaultStore == "central" {
-				store = cfg.DefaultStore
-			}
-			if hasLocalTickets {
-				copyLocalToCentral = true
-			}
-		} else {
-			store, err = promptStoreChoice(hasLocalTickets)
-			if err != nil {
-				return err
-			}
-			if store == "central" && hasLocalTickets {
-				copyLocalToCentral = true
-			}
-		}
-	} else if store == "central" && hasLocalTickets {
-		copyLocalToCentral = true
-	}
+	copyLocalToCentral := hasLocalTickets
 
 	projectName, _ := project.ResolveName(cfg, repoPath, projectFlag)
 	if projectName == "" {
@@ -87,37 +104,25 @@ func runInit(cmd *cobra.Command, args []string) error {
 		registeredAt = existing.RegisteredAt
 	}
 
-	var centralDir string
-	if store == "central" {
-		centralRoot, err := project.CentralStoreRoot()
-		if err != nil {
-			return err
-		}
-		centralDir, err = project.CentralProjectDir(projectName)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(centralDir, 0o755); err != nil {
-			return err
-		}
-		if copyLocalToCentral {
-			if err := copyTicketFiles(localTicketsDir, centralDir); err != nil {
-				return err
-			}
-		}
-		if err := bootstrapCentralStoreGit(centralRoot); err != nil {
+	centralDir, err := project.CentralProjectDir(projectName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(centralDir, 0o755); err != nil {
+		return err
+	}
+	if copyLocalToCentral {
+		if err := copyTicketFiles(localTicketsDir, centralDir); err != nil {
 			return err
 		}
 	}
-	if store == "local" && !dirExists(localTicketsDir) {
-		if err := os.MkdirAll(localTicketsDir, 0o755); err != nil {
-			return err
-		}
+	if err := bootstrapCentralStoreGit(centralRoot); err != nil {
+		return err
 	}
 
 	cfg.UpsertProject(projectName, project.ProjectConfig{
 		Path:         repoPath,
-		Store:        store,
+		Store:        "central",
 		AutoLink:     false,
 		AutoClose:    false,
 		RegisteredAt: registeredAt,
@@ -126,20 +131,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if jsonOutput {
-		return emitInitJSON(projectName, repoPath, store, cfg.Projects[projectName], hasGit, copyLocalToCentral)
-	}
-
 	fmt.Println()
 	fmt.Println("── Setup complete ──")
 	fmt.Println()
-	if store == "central" {
-		fmt.Printf("  project:  %s\n", projectName)
-		fmt.Printf("  store:    central (%s)\n", centralDir)
-	} else {
-		fmt.Printf("  project:  %s\n", projectName)
-		fmt.Printf("  store:    local (%s)\n", localTicketsDir)
-	}
+	fmt.Printf("  project:  %s\n", projectName)
+	fmt.Printf("  store:    central (%s)\n", centralDir)
 	if copyLocalToCentral {
 		fmt.Println("  migrated: tickets copied to central store")
 		fmt.Println("            original .tickets/ kept as backup")
@@ -147,34 +143,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	return nil
-}
-
-func promptStoreChoice(hasLocalTickets bool) (string, error) {
-	reader := bufio.NewReader(os.Stdin)
-
-	if hasLocalTickets {
-		fmt.Println("Existing tickets found in .tickets/")
-		fmt.Println()
-		fmt.Println("  [1] Copy to central store (recommended)")
-		fmt.Println("  [2] Keep local in .tickets/")
-	} else {
-		fmt.Println("Where should tickets be stored?")
-		fmt.Println()
-		fmt.Println("  [1] Central store (recommended)")
-		fmt.Println("  [2] Local .tickets/ inside this repo")
-	}
-
-	fmt.Println()
-	fmt.Print("Choose [1/2]: ")
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "central", nil
-	}
-	choice := strings.TrimSpace(line)
-	if choice == "2" {
-		return "local", nil
-	}
-	return "central", nil
 }
 
 func bootstrapCentralStoreGit(storeRoot string) error {
@@ -258,20 +226,4 @@ func copyTicketFiles(src, dst string) error {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
-}
-
-func emitInitJSON(projectName, repoPath, store string, config project.ProjectConfig, hasGit, copiedLocal bool) error {
-	data, err := json.MarshalIndent(map[string]any{
-		"project":                 projectName,
-		"path":                    repoPath,
-		"store":                   store,
-		"config":                  config,
-		"has_git":                 hasGit,
-		"copied_local_to_central": copiedLocal,
-	}, "", "  ")
-	if err != nil {
-		return err
-	}
-	fmt.Println(string(data))
-	return nil
 }

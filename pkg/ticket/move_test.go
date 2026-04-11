@@ -14,24 +14,19 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 	dst := &FileStore{Dir: dstDir}
 
 	original := &Ticket{
-		ID:          "test-ticket-1234",
-		Stage:       StageDesign,
-		Review:      ReviewApproved,
-		Risk:        "high",
-		Type:        TypeFeature,
-		Priority:    1,
-		Assignee:    "steve",
-		Tags:        []string{"frontend", "urgent"},
-		ExternalRef: "GH-42",
-		Branch:      "feature/foo",
-		Created:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		Title:       "Test ticket with all fields",
-		Body:        "Some body text.",
-		Notes:       []Note{{Timestamp: time.Now().UTC(), Text: "initial note"}},
-		Deps:        []string{},
-		Links:       []string{},
-		Skipped:     []Stage{StageSpec},
-		Conversations: []string{"conv-abc"},
+		ID:            "test-ticket-1234",
+		Status:        StatusReady,
+		Type:          TypeFeature,
+		Priority:      1,
+		Tags:          []string{"frontend", "urgent"},
+		ExternalRef:   "GH-42",
+		Branch:        "feature/foo",
+		Created:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:         "Test ticket with all fields",
+		Body:          "Some body text.",
+		Notes:         []Note{{Timestamp: time.Now().UTC(), Text: "initial note"}},
+		Deps:          []string{},
+		Links:         []string{},
 	}
 
 	if err := src.Create(original); err != nil {
@@ -61,34 +56,18 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 	if moved.Priority != 1 {
 		t.Errorf("Priority: got %d, want 1", moved.Priority)
 	}
-	if moved.Assignee != "steve" {
-		t.Errorf("Assignee: got %q, want %q", moved.Assignee, "steve")
-	}
 	if moved.ExternalRef != "GH-42" {
 		t.Errorf("ExternalRef: got %q, want %q", moved.ExternalRef, "GH-42")
 	}
 	if moved.Branch != "feature/foo" {
 		t.Errorf("Branch: got %q, want %q", moved.Branch, "feature/foo")
 	}
-	if moved.Risk != "high" {
-		t.Errorf("Risk: got %q, want %q", moved.Risk, "high")
-	}
 	if len(moved.Tags) != 2 || moved.Tags[0] != "frontend" || moved.Tags[1] != "urgent" {
 		t.Errorf("Tags: got %v, want [frontend urgent]", moved.Tags)
 	}
-	if len(moved.Skipped) != 0 {
-		t.Errorf("Skipped: got %v, want [] (should be cleared on move)", moved.Skipped)
-	}
-	if len(moved.Conversations) != 1 || moved.Conversations[0] != "conv-abc" {
-		t.Errorf("Conversations: got %v, want [conv-abc]", moved.Conversations)
-	}
-
 	// Fields that should be reset.
-	if moved.Stage != StageTriage {
-		t.Errorf("Stage: got %q, want %q (should reset to triage)", moved.Stage, StageTriage)
-	}
-	if moved.Review != ReviewNone {
-		t.Errorf("Review: got %q, want %q (should be cleared)", moved.Review, ReviewNone)
+	if moved.Status != StatusBacklog {
+		t.Errorf("Status: got %q, want %q (should reset to backlog)", moved.Status, StatusBacklog)
 	}
 
 	// Should have provenance note.
@@ -107,8 +86,8 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get original: %v", err)
 	}
-	if orig.Stage != StageDone {
-		t.Errorf("original stage: got %q, want %q", orig.Stage, StageDone)
+	if orig.Status != StatusDone {
+		t.Errorf("original status: got %q, want %q", orig.Status, StatusDone)
 	}
 }
 
@@ -121,8 +100,8 @@ func TestMoveTicketCreatesFileInBothDirs(t *testing.T) {
 
 	original := &Ticket{
 		ID:       "iso-test-abcd",
-		Stage:    StageTriage,
-		Type:     TypeTask,
+		Status:   StatusReady,
+		Type:     TypeFeature,
 		Priority: 2,
 		Created:  time.Now().UTC(),
 		Title:    "Isolation test",

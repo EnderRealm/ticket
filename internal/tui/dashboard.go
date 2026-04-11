@@ -29,7 +29,7 @@ type dashboardModel struct {
 func newDashboardModel(tickets []*ticket.Ticket, w, h int) dashboardModel {
 	m := dashboardModel{
 		all:    tickets,
-		activeTab: tabTriage,
+		activeTab: tabInbox,
 		width:  w,
 		height: h,
 	}
@@ -66,31 +66,27 @@ func (m *dashboardModel) buildItems() {
 	needle := strings.ToLower(m.filterText)
 
 	for _, t := range m.all {
-		if t.Stage == "" {
+		if t.Status == "" {
 			continue
 		}
 
-		// Per-tab stage filtering.
+		// Per-tab status filtering.
 		switch m.activeTab {
 		case tabBacklog:
-			if t.Stage != ticket.StageBacklog {
-				continue
-			}
-		case tabTriage:
-			if t.Stage != ticket.StageTriage {
+			if t.Status != ticket.StatusBacklog {
 				continue
 			}
 		case tabInbox:
-			if t.Stage == ticket.StageDone || t.Stage == ticket.StageBacklog {
+			if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady {
 				continue
 			}
 		case tabDone:
-			if t.Stage != ticket.StageDone {
+			if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
 				continue
 			}
 		case tabAll:
-			// Show everything except done.
-			if t.Stage == ticket.StageDone {
+			// Show everything except done/closed.
+			if t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed {
 				continue
 			}
 		}
@@ -106,14 +102,6 @@ func (m *dashboardModel) buildItems() {
 		}
 
 		item := ticket.NextAction(t)
-
-		// Inbox tab only shows human-actionable tickets.
-		if m.activeTab == tabInbox {
-			if item.Action != ticket.ActionHumanReview && item.Action != ticket.ActionHumanInput {
-				continue
-			}
-		}
-
 		m.items = append(m.items, item)
 	}
 
@@ -234,7 +222,7 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.cursor = max(0, len(m.items)-1)
 			m.clampOffset()
 		case "t":
-			types := []ticket.TicketType{"", ticket.TypeFeature, ticket.TypeBug, ticket.TypeTask, ticket.TypeEpic, ticket.TypeChore}
+			types := []ticket.TicketType{"", ticket.TypeFeature, ticket.TypeBug, ticket.TypeEpic}
 			for i, tt := range types {
 				if tt == m.typeFilter {
 					m.typeFilter = types[(i+1)%len(types)]
@@ -283,7 +271,7 @@ func (m dashboardModel) view() string {
 		padRight(hdrStyle.Render("ID"), 6),
 		padRight(hdrStyle.Render("PRI"), 6),
 		padRight(hdrStyle.Render("TYPE"), 10),
-		padRight(hdrStyle.Render("STAGE"), 12),
+		padRight(hdrStyle.Render("STATUS"), 12),
 		hdrStyle.Render("TITLE"),
 	))
 	b.WriteString("\n")
@@ -329,14 +317,8 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(t.ID)), 6, bg)
 	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
 	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
-	stg := padRightBg(selBg.Foreground(StageColors[t.Stage]).Render(string(t.Stage)), 12, bg)
+	sts := padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), 12, bg)
 	title := selBg.Foreground(colorWhite).Render(t.Title)
-
-	// Review indicator.
-	rev := ""
-	if t.Review == ticket.ReviewPending {
-		rev = " " + selBg.Foreground(ReviewColors[t.Review]).Render("●")
-	}
 
 	sp := "  "
 	gap := " "
@@ -344,7 +326,7 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		sp = selBg.Render("  ")
 		gap = selBg.Render(" ")
 	}
-	line := sp + id + pri + typ + stg + gap + title + rev
+	line := sp + id + pri + typ + sts + gap + title
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {

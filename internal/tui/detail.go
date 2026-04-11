@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,7 +24,6 @@ type inputMode int
 
 const (
 	inputNone inputMode = iota
-	inputAssignee
 	inputNote
 	inputMove
 	inputMovePicker
@@ -67,9 +65,6 @@ func (m detailModel) inputActive() bool {
 func (m *detailModel) startInput(mode inputMode) {
 	m.input = mode
 	m.inputText = ""
-	if mode == inputAssignee {
-		m.inputText = m.ticket.Assignee
-	}
 }
 
 func (m *detailModel) startMovePicker(ticketsDir string) {
@@ -185,10 +180,6 @@ func (m detailModel) updateInput(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 		m.inputText = ""
 
 		switch mode {
-		case inputAssignee:
-			return m, func() tea.Msg {
-				return setAssigneeMsg{id: id, assignee: strings.TrimSpace(text)}
-			}
 		case inputNote:
 			trimmed := strings.TrimSpace(text)
 			if trimmed == "" {
@@ -285,8 +276,6 @@ func (m detailModel) view() string {
 	} else if m.input != inputNone {
 		var label string
 		switch m.input {
-		case inputAssignee:
-			label = "assignee"
 		case inputNote:
 			label = "note"
 		case inputMove:
@@ -302,7 +291,7 @@ func (m detailModel) view() string {
 	} else if m.input != inputNone {
 		help = "enter confirm  esc cancel"
 	} else {
-		help = "↑↓/jk scroll  │  (e)dit (p)riority (a)ssignee (n)ote (m)ove  │  esc back  (q)uit"
+		help = "↑↓/jk scroll  │  (e)dit (p)riority (n)ote (m)ove  │  esc back  (q)uit"
 	}
 	b.WriteString(detailHelpStyle.Render(help))
 
@@ -316,21 +305,12 @@ func (m detailModel) render() []string {
 	// Frontmatter fields.
 	lines = append(lines, m.field("Title", t.Title))
 	lines = append(lines, m.field("ID", t.ID))
-	if t.Stage != "" {
-		lines = append(lines, m.field("Stage", StageBadge(t.Stage)))
-	}
-	if t.Review != "" {
-		lines = append(lines, m.field("Review", ReviewBadge(t.Review)+" "+ColorReview(t.Review, string(t.Review))))
-	}
-	if t.Risk != "" {
-		lines = append(lines, m.field("Risk", string(t.Risk)))
+	if t.Status != "" {
+		lines = append(lines, m.field("Status", StatusBadge(t.Status)))
 	}
 	lines = append(lines, m.field("Type", TypeBadge(t.Type)))
 	lines = append(lines, m.field("Priority", PriorityBadge(t.Priority)))
 
-	if t.Assignee != "" {
-		lines = append(lines, m.field("Assignee", t.Assignee))
-	}
 	if t.Parent != "" {
 		lines = append(lines, m.field("Parent", t.Parent))
 	}
@@ -378,24 +358,6 @@ func (m detailModel) render() []string {
 				}
 			}
 		}
-	}
-
-	// Review log.
-	if len(t.Reviews) > 0 {
-		lines = append(lines, pad+sectionStyle.Render("## Review Log"))
-		lines = append(lines, "")
-		for _, r := range t.Reviews {
-			verdict := strings.ToUpper(r.Verdict)
-			ts := r.Timestamp.Format("2006-01-02 15:04")
-			entry := fmt.Sprintf("[%s] %s %s", r.Reviewer, verdict, ts)
-			if r.Comment != "" {
-				entry += " — " + r.Comment
-			}
-			for _, wl := range wrapText(entry, avail) {
-				lines = append(lines, pad+wl.text)
-			}
-		}
-		lines = append(lines, "")
 	}
 
 	// Notes.

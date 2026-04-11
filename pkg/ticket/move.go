@@ -9,8 +9,8 @@ import (
 
 // MoveResult describes a single ticket move operation.
 type MoveResult struct {
-	OldID       string
-	NewID       string
+	OldID         string
+	NewID         string
 	StrippedDeps  []string
 	StrippedLinks []string
 }
@@ -81,15 +81,11 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		copied := *t
 		newTicket := &copied
 		newTicket.ID = newID
-		newTicket.Stage = StageTriage
-		newTicket.Review = ReviewNone
+		newTicket.Status = StatusBacklog
 		newTicket.Tags = copyStrings(t.Tags)
 		newTicket.Deps = nil
 		newTicket.Links = nil
 		newTicket.Notes = copyNotes(t.Notes)
-		newTicket.Reviews = copyReviews(t.Reviews)
-		newTicket.Skipped = nil
-		newTicket.Conversations = copyStrings(t.Conversations)
 		newTicket.Parent = ""
 
 		// Remap or strip parent.
@@ -147,7 +143,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			Timestamp: now,
 			Text:      closeNote,
 		})
-		t.Stage = StageDone
+		t.Status = StatusDone
 		if err := src.Update(t); err != nil {
 			return nil, fmt.Errorf("closing %s in source: %w", t.ID, err)
 		}
@@ -206,13 +202,3 @@ func copyNotes(notes []Note) []Note {
 	copy(c, notes)
 	return c
 }
-
-func copyReviews(reviews []ReviewRecord) []ReviewRecord {
-	if reviews == nil {
-		return nil
-	}
-	c := make([]ReviewRecord, len(reviews))
-	copy(c, reviews)
-	return c
-}
-

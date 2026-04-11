@@ -62,7 +62,7 @@ func colorizePriority(s string, priority int) string {
 	}
 }
 
-// colorizeType matches TUI typeColors: bug=red, feature=green, epic=magenta, task=blue, chore=gray.
+// colorizeType matches TUI typeColors: bug=red, feature=green, epic=magenta.
 func colorizeType(s string, t ticket.TicketType) string {
 	switch t {
 	case ticket.TypeBug:
@@ -71,33 +71,23 @@ func colorizeType(s string, t ticket.TicketType) string {
 		return colorize(s, ansiGreen)
 	case ticket.TypeEpic:
 		return colorize(s, ansiMagenta)
-	case ticket.TypeTask:
-		return colorize(s, ansiBlue)
-	case ticket.TypeChore:
-		return colorize(s, ansiGray)
 	default:
 		return s
 	}
 }
 
-// colorizeStage matches TUI stageColors.
-func colorizeStage(s string, stage ticket.Stage) string {
-	switch stage {
-	case ticket.StageBacklog:
+// colorizeStatus applies color based on ticket status.
+func colorizeStatus(s string, status ticket.Status) string {
+	switch status {
+	case ticket.StatusBacklog:
 		return colorize(s, ansiGray)
-	case ticket.StageTriage:
-		return colorize(s, ansiWhite)
-	case ticket.StageSpec:
+	case ticket.StatusReady:
 		return colorize(s, ansiCyan)
-	case ticket.StageDesign, ticket.StageDesignReview:
-		return colorize(s, ansiMagenta)
-	case ticket.StageImplement, ticket.StageCodeReview:
+	case ticket.StatusOpen:
 		return colorize(s, ansiYellow)
-	case ticket.StageTest:
-		return colorize(s, ansiBlue)
-	case ticket.StageVerify:
+	case ticket.StatusDone:
 		return colorize(s, ansiGreen)
-	case ticket.StageDone:
+	case ticket.StatusClosed:
 		return colorize(s, ansiGray)
 	default:
 		return s
@@ -126,7 +116,7 @@ func newTableWriter(skip ...string) *tableWriter {
 		{header: "ID", value: func(t *ticket.Ticket) string { return t.ID }},
 		{header: "P", value: func(t *ticket.Ticket) string { return fmt.Sprintf("P%d", t.Priority) }},
 		{header: "TYPE", value: func(t *ticket.Ticket) string { return string(t.Type) }},
-		{header: "STAGE", value: func(t *ticket.Ticket) string { return string(t.Stage) }},
+		{header: "STATUS", value: func(t *ticket.Ticket) string { return string(t.Status) }},
 		{header: "TITLE", value: func(t *ticket.Ticket) string {
 			s := t.Title
 			if n := len(t.Deps); n == 1 {
@@ -202,8 +192,8 @@ func (tw *tableWriter) printRow(t *ticket.Ticket) {
 			display = colorizePriority(val, t.Priority)
 		case "TYPE":
 			display = colorizeType(val, t.Type)
-		case "STAGE":
-			display = colorizeStage(val, t.Stage)
+		case "STATUS":
+			display = colorizeStatus(val, t.Status)
 		}
 
 		if i < len(tw.columns)-1 {

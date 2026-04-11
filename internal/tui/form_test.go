@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 func TestWrapText(t *testing.T) {
@@ -84,12 +83,12 @@ func TestWrapTextNewlineOffsets(t *testing.T) {
 
 func TestFormEditNoteSubmits(t *testing.T) {
 	m := formModel{
-		editID:   "test-123",
-		typeIdx:  0,
-		priority: 2,
-		width:    80,
-		height:   40,
-		stages:   []ticket.Stage{ticket.StageTriage, ticket.StageSpec},
+		editID:    "test-123",
+		typeIdx:   0,
+		priority:  2,
+		width:     80,
+		height:    40,
+		statusIdx: 0,
 	}
 	m.fields[fieldTitle] = "Test ticket"
 	m.fields[fieldDescription] = "description"
@@ -125,12 +124,12 @@ func TestFormEditNoteSubmits(t *testing.T) {
 
 func TestFormCtrlSSubmitsFromChoiceField(t *testing.T) {
 	m := formModel{
-		editID:   "test-456",
-		typeIdx:  1,
-		priority: 2,
-		width:    80,
-		height:   40,
-		stages:   []ticket.Stage{ticket.StageTriage, ticket.StageSpec},
+		editID:    "test-456",
+		typeIdx:   1,
+		priority:  2,
+		width:     80,
+		height:    40,
+		statusIdx: 0,
 	}
 	m.fields[fieldTitle] = "Test ticket"
 

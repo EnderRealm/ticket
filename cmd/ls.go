@@ -18,9 +18,9 @@ var lsCmd = &cobra.Command{
 
 func init() {
 	addFilterFlags(lsCmd)
-	lsCmd.Flags().String("stage", "", "filter by stage")
+	lsCmd.Flags().String("status", "", "filter by status")
 	lsCmd.Flags().String("parent", "", "filter by parent ticket ID")
-	lsCmd.Flags().String("group-by", "", "group by: workflow | pipeline | type | priority")
+	lsCmd.Flags().String("group-by", "", "group by: workflow | type | priority")
 	lsCmd.Flags().Bool("group", false, "shorthand for --group-by=workflow")
 	lsCmd.Flags().Bool("flat", false, "flat list (no grouping)")
 
@@ -42,14 +42,14 @@ func runLs(cmd *cobra.Command, args []string) error {
 		groupBy = "workflow"
 	}
 
-	stageFilter, _ := cmd.Flags().GetString("stage")
-	if stageFilter != "" {
-		opts.Stage = ticket.Stage(stageFilter)
+	statusFilter, _ := cmd.Flags().GetString("status")
+	if statusFilter != "" {
+		opts.Status = ticket.Status(statusFilter)
 	} else {
-		// No explicit stage: exclude done and backlog.
+		// No explicit status: exclude done and backlog.
 		var filtered []*ticket.Ticket
 		for _, t := range tickets {
-			if t.Stage != ticket.StageDone && t.Stage != ticket.StageBacklog {
+			if t.Status != ticket.StatusDone && t.Status != ticket.StatusBacklog {
 				filtered = append(filtered, t)
 			}
 		}
@@ -57,7 +57,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Default to workflow grouping unless flat or explicit group-by.
-	if groupBy == "" && !flat && stageFilter == "" {
+	if groupBy == "" && !flat && statusFilter == "" {
 		groupBy = "workflow"
 	}
 
@@ -76,7 +76,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 		return printGrouped(store, tickets, groupBy)
 	}
 
-	ticket.SortByStagePriorityID(tickets)
+	ticket.SortByStatusPriorityID(tickets)
 	newTableWriter().Print(tickets)
 	return nil
 }
@@ -98,8 +98,6 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 		switch groupBy {
 		case "workflow":
 			name, order = workflowGroup(store, t)
-		case "pipeline":
-			name, order = pipelineGroup(t)
 		case "type":
 			name = string(t.Type)
 			order = ticket.TypeOrder(t.Type)
@@ -107,7 +105,7 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 			name = fmt.Sprintf("P%d", t.Priority)
 			order = t.Priority
 		default:
-			return fmt.Errorf("unknown group-by value: %s (use: workflow, pipeline, type, priority)", groupBy)
+			return fmt.Errorf("unknown group-by value: %s (use: workflow, type, priority)", groupBy)
 		}
 
 		g, ok := groups[name]
@@ -127,8 +125,8 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 	// Determine which column to suppress based on grouping mode.
 	var defaultSkip []string
 	switch groupBy {
-	case "workflow", "pipeline":
-		defaultSkip = append(defaultSkip, "STAGE")
+	case "workflow":
+		defaultSkip = append(defaultSkip, "STATUS")
 	case "type":
 		defaultSkip = append(defaultSkip, "TYPE")
 	case "priority":
@@ -139,7 +137,7 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 	tw := newTableWriter(defaultSkip...)
 	tw.computeWidths(tickets)
 
-	// Blocked group needs STAGE, so it gets its own writer with global widths.
+	// Blocked group needs STATUS, so it gets its own writer with global widths.
 	var blockedTW *tableWriter
 	if groupBy == "workflow" {
 		blockedTW = newTableWriter()
@@ -176,24 +174,15 @@ func workflowGroup(store *ticket.FileStore, t *ticket.Ticket) (string, int) {
 	if ticket.IsBlocked(store, t) {
 		return "Blocked", 99
 	}
-	stage := t.Stage
-	if stage == "" {
+	status := t.Status
+	if status == "" {
 		return "Unknown", 100
 	}
-	return string(stage), ticket.StageIndex(t.Type, stage)
-}
-
-func pipelineGroup(t *ticket.Ticket) (string, int) {
-	stage := t.Stage
-	if stage == "" {
-		return "unknown", 99
-	}
-	return string(stage), ticket.StageIndex(t.Type, stage)
+	return string(status), ticket.StatusOrder(status)
 }
 
 // addFilterFlags registers shared filter flags on a command.
 func addFilterFlags(cmd *cobra.Command) {
-	cmd.Flags().StringP("assignee", "a", "", "filter by assignee")
 	cmd.Flags().StringP("tag", "T", "", "filter by tag")
 	cmd.Flags().StringP("priority", "P", "", "filter by priority")
 	cmd.Flags().StringP("type", "t", "", "filter by type")
@@ -203,9 +192,6 @@ func addFilterFlags(cmd *cobra.Command) {
 func parseFilterFlags(cmd *cobra.Command) ticket.ListOptions {
 	opts := ticket.DefaultListOptions()
 
-	if v, _ := cmd.Flags().GetString("assignee"); v != "" {
-		opts.Assignee = v
-	}
 	if v, _ := cmd.Flags().GetString("tag"); v != "" {
 		opts.Tag = v
 	}
