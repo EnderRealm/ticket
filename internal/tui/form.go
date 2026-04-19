@@ -168,6 +168,11 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				m.priority = (m.priority + 1) % 5
 			} else if m.focus == fieldStatus {
 				m.statusIdx = (m.statusIdx + 1) % len(allStatuses)
+			} else if m.isMultilineField(m.focus) {
+				pos := m.cursors[m.focus]
+				text := m.fields[m.focus]
+				m.fields[m.focus] = text[:pos] + "\n" + text[pos:]
+				m.cursors[m.focus] = pos + 1
 			} else {
 				return m, m.submit
 			}
@@ -417,7 +422,7 @@ func (m formModel) view() string {
 		b.WriteString("\n")
 	}
 
-	help := "tab/↑↓ fields  ←→ move/cycle  ctrl+j newline  ctrl+s/enter save  esc cancel"
+	help := "tab/↑↓ fields  ←→ move/cycle  enter newline (multiline)  ctrl+s save  esc cancel"
 	b.WriteString(formHelpStyle.Render(help))
 
 	return b.String()

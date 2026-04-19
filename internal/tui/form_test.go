@@ -81,7 +81,7 @@ func TestWrapTextNewlineOffsets(t *testing.T) {
 	}
 }
 
-func TestFormEditNoteSubmits(t *testing.T) {
+func TestFormEnterOnMultilineInsertsNewline(t *testing.T) {
 	m := formModel{
 		editID:    "test-123",
 		typeIdx:   0,
@@ -93,31 +93,42 @@ func TestFormEditNoteSubmits(t *testing.T) {
 	m.fields[fieldTitle] = "Test ticket"
 	m.fields[fieldDescription] = "description"
 
-	// Tab to the note field.
+	// Focus the multiline note field.
 	m.focus = fieldNote
 
 	// Type "hello" into the note field.
 	for _, ch := range "hello" {
 		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
 	}
-
 	if m.fields[fieldNote] != "hello" {
 		t.Fatalf("note field: got %q, want %q", m.fields[fieldNote], "hello")
 	}
 
-	// Press enter to submit.
+	// Enter on a multiline field should insert a newline, not submit.
 	var cmd tea.Cmd
 	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("expected submit command, got nil")
+	if cmd != nil {
+		t.Fatalf("expected nil command (no submit), got %v", cmd)
+	}
+	if m.fields[fieldNote] != "hello\n" {
+		t.Errorf("note after enter: got %q, want %q", m.fields[fieldNote], "hello\n")
+	}
+	if m.cursors[fieldNote] != len("hello\n") {
+		t.Errorf("cursor after enter: got %d, want %d", m.cursors[fieldNote], len("hello\n"))
 	}
 
+	// ctrl+s submits.
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("expected submit command from ctrl+s, got nil")
+	}
 	msg := cmd()
 	submit, ok := msg.(formSubmitMsg)
 	if !ok {
 		t.Fatalf("expected formSubmitMsg, got %T", msg)
 	}
 	if submit.note != "hello" {
+		// trailing newline is trimmed by submit().
 		t.Errorf("submitted note: got %q, want %q", submit.note, "hello")
 	}
 }

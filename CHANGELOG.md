@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- TUI: Create/edit form Enter key now inserts a newline on multiline fields (Description, Note) instead of submitting. ctrl+s remains the explicit save; Enter on single-line fields and Type/Priority/Status toggles is unchanged.
+
 ### Fixed
 - TUI: Create/edit form selected chip (type / priority / status) now renders as bold black text on the chip's own domain color instead of layering the domain color over yellow, which produced low-contrast combinations like red-on-yellow
 
