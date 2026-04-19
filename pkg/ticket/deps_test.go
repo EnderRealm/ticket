@@ -294,6 +294,52 @@ func TestRemoveDep(t *testing.T) {
 	}
 }
 
+func TestRemoveDep_NamespacedStoredBareRequested(t *testing.T) {
+	tk := mk("t-1", StatusReady, "ticket/foo-abcd")
+	RemoveDep(tk, "foo-abcd")
+	if len(tk.Deps) != 0 {
+		t.Errorf("RemoveDep should match across namespace forms: deps=%v", tk.Deps)
+	}
+}
+
+func TestRemoveDep_BareStoredNamespacedRequested(t *testing.T) {
+	tk := mk("t-1", StatusReady, "foo-abcd")
+	RemoveDep(tk, "ticket/foo-abcd")
+	if len(tk.Deps) != 0 {
+		t.Errorf("RemoveDep should match across namespace forms: deps=%v", tk.Deps)
+	}
+}
+
+func TestAddDep_DedupAcrossNamespace(t *testing.T) {
+	tk := mk("t-1", StatusReady, "foo-abcd")
+	if err := AddDep(tk, "ticket/foo-abcd"); err != nil {
+		t.Fatalf("AddDep: %v", err)
+	}
+	if len(tk.Deps) != 1 {
+		t.Errorf("AddDep should dedup across namespace forms: deps=%v", tk.Deps)
+	}
+}
+
+func TestAddDep_SelfAcrossNamespace(t *testing.T) {
+	tk := mk("ticket/foo-abcd", StatusReady)
+	if err := AddDep(tk, "foo-abcd"); err == nil {
+		t.Error("AddDep should reject self-dep across namespace forms")
+	}
+}
+
+func TestRemoveLink_AcrossNamespace(t *testing.T) {
+	a := mk("t-1", StatusReady)
+	b := mk("t-2", StatusReady)
+	// Simulate a pre-namespacing stored link.
+	a.Links = []string{"ticket/t-2"}
+	b.Links = []string{"t-1"}
+	// Both sides use the other's current ID, which differs in namespace form.
+	RemoveLink(a, b)
+	if len(a.Links) != 0 || len(b.Links) != 0 {
+		t.Errorf("links should be empty after remove: a=%v b=%v", a.Links, b.Links)
+	}
+}
+
 func TestAddRemoveLink(t *testing.T) {
 	a := mk("t-1", StatusReady)
 	b := mk("t-2", StatusReady)

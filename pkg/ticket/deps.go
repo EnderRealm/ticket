@@ -403,26 +403,42 @@ func allChildrenTerminal(store Store, parentID string) bool {
 	return true
 }
 
+// sameTicketID returns true if two ticket IDs refer to the same ticket,
+// tolerating namespace-prefix mismatches ("project/foo-abcd" matches
+// "foo-abcd"). This matters because deps and links may have been stored
+// in bare form before the namespacing rollout while Get()-resolved IDs
+// come back namespaced; exact-string compare would miss those.
+func sameTicketID(a, b string) bool {
+	if a == b {
+		return true
+	}
+	_, ab := ParseNamespacedID(a)
+	_, bb := ParseNamespacedID(b)
+	return ab == bb
+}
+
 // AddDep adds depID to the ticket's deps list. Returns error if it would
 // create a self-dependency.
 func AddDep(t *Ticket, depID string) error {
-	if t.ID == depID {
+	if sameTicketID(t.ID, depID) {
 		return fmt.Errorf("cannot depend on self")
 	}
 	for _, d := range t.Deps {
-		if d == depID {
-			return nil // already present
+		if sameTicketID(d, depID) {
+			return nil // already present (maybe in the other ID form)
 		}
 	}
 	t.Deps = append(t.Deps, depID)
 	return nil
 }
 
-// RemoveDep removes depID from the ticket's deps list.
+// RemoveDep removes depID from the ticket's deps list. Matching is
+// tolerant of namespace-prefix mismatches between the stored dep ID and
+// the caller's argument.
 func RemoveDep(t *Ticket, depID string) {
 	filtered := t.Deps[:0]
 	for _, d := range t.Deps {
-		if d != depID {
+		if !sameTicketID(d, depID) {
 			filtered = append(filtered, d)
 		}
 	}
@@ -431,33 +447,34 @@ func RemoveDep(t *Ticket, depID string) {
 
 // AddLink adds a symmetric link between two tickets.
 func AddLink(a, b *Ticket) {
-	if !contains(a.Links, b.ID) {
+	if !containsID(a.Links, b.ID) {
 		a.Links = append(a.Links, b.ID)
 	}
-	if !contains(b.Links, a.ID) {
+	if !containsID(b.Links, a.ID) {
 		b.Links = append(b.Links, a.ID)
 	}
 }
 
-// RemoveLink removes a symmetric link between two tickets.
+// RemoveLink removes a symmetric link between two tickets. Matching is
+// tolerant of namespace-prefix mismatches.
 func RemoveLink(a, b *Ticket) {
-	a.Links = removeStr(a.Links, b.ID)
-	b.Links = removeStr(b.Links, a.ID)
+	a.Links = removeID(a.Links, b.ID)
+	b.Links = removeID(b.Links, a.ID)
 }
 
-func contains(ss []string, s string) bool {
+func containsID(ss []string, s string) bool {
 	for _, v := range ss {
-		if v == s {
+		if sameTicketID(v, s) {
 			return true
 		}
 	}
 	return false
 }
 
-func removeStr(ss []string, s string) []string {
+func removeID(ss []string, s string) []string {
 	filtered := ss[:0]
 	for _, v := range ss {
-		if v != s {
+		if !sameTicketID(v, s) {
 			filtered = append(filtered, v)
 		}
 	}

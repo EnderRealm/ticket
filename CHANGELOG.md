@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Core: `AddDep`, `RemoveDep`, `AddLink`, `RemoveLink` now compare ticket IDs tolerantly of `project/` namespace prefixes. Previously `ticket_dep remove` silently no-op'd when the stored dep was in one form (e.g. `foo-abcd`) and the MCP tool resolved it to the other form (`ticket/foo-abcd`).
+
 ### Added
 - Core: Epic status validation — saving a type=epic ticket with status=done is rejected when any child is still non-terminal. Error names the offending children and suggests remediation.
 - Core: Upward status propagation — child → ready bumps a backlog epic to ready; child → open bumps a backlog/ready epic to open; marking the last non-terminal child done auto-marks the parent epic done. Cascades up nested epic chains.
