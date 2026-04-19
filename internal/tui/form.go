@@ -282,32 +282,34 @@ func (m formModel) view() string {
 		case fieldType:
 			var parts []string
 			for j, tt := range ticketTypes {
-				s := ColorType(tt, string(tt))
+				text := string(tt)
 				if j == m.typeIdx {
-					s = formTextCursorStyle.Render(" " + s + " ")
+					parts = append(parts, SelectedChip(TypeColors[tt], text))
+				} else {
+					parts = append(parts, ColorType(tt, text))
 				}
-				parts = append(parts, s)
 			}
 			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
 		case fieldPriority:
 			var parts []string
 			for j := 0; j < 5; j++ {
-				s := ColorPriority(j, "P"+string(rune('0'+j)))
+				text := "P" + string(rune('0'+j))
 				if j == m.priority {
-					s = formTextCursorStyle.Render(" " + s + " ")
+					parts = append(parts, SelectedChip(PriorityColors[j], text))
+				} else {
+					parts = append(parts, ColorPriority(j, text))
 				}
-				parts = append(parts, s)
 			}
 			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
 		case fieldStatus:
 			var parts []string
 			for j, s := range allStatuses {
 				text := string(s)
-				styled := ColorStatus(s, text)
 				if j == m.statusIdx {
-					styled = formTextCursorStyle.Render(" " + styled + " ")
+					parts = append(parts, SelectedChip(StatusColors[s], text))
+				} else {
+					parts = append(parts, ColorStatus(s, text))
 				}
-				parts = append(parts, styled)
 			}
 			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
 		default:

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- TUI: Create/edit form selected chip (type / priority / status) now renders as bold black text on the chip's own domain color instead of layering the domain color over yellow, which produced low-contrast combinations like red-on-yellow
+
 ## [7.1.0] - 2026-04-19
 
 ### Added

@@ -248,6 +248,18 @@ func ColorStatus(s ticket.Status, text string) string {
 	return lipgloss.NewStyle().Foreground(c).Render(text)
 }
 
+// SelectedChip renders a selector chip (type/priority/status) as the highlighted
+// choice: bold black text on the chip's own domain color. High contrast and
+// preserves identity without nesting ANSI fg codes.
+func SelectedChip(bg lipgloss.Color, label string) string {
+	return lipgloss.NewStyle().
+		Foreground(colorBlack).
+		Background(bg).
+		Bold(true).
+		Padding(0, 1).
+		Render(label)
+}
+
 // ─── Layout Utilities ───────────────────────────────────────────────────────
 
 // padRight pads a rendered string to a target visual width.
