@@ -375,6 +375,16 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "enter", "o":
 			if t := a.dashboard.selected(); t != nil {
+				// Epics on the backlog tab are rollups; clicking one jumps
+				// to the epics tab focused on that epic rather than opening
+				// a detail overlay here.
+				if a.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
+					epicID := t.ID
+					a.activeTab = tabEpics
+					a.syncDashboardTab()
+					a.epics.focusEpic(epicID)
+					return a, nil
+				}
 				a.detail = newDetailModel(t, a.width, a.height)
 				a.overlay = overlayDetail
 				return a, nil
@@ -491,24 +501,38 @@ var tabColors = []lipgloss.Color{
 
 func (a App) tabCounts() map[tabID]int {
 	counts := make(map[tabID]int)
+
+	// Mirror dashboard.buildItems filtering so counts match what each tab shows.
+	byID := make(map[string]*ticket.Ticket, len(a.tickets))
 	for _, t := range a.tickets {
+		byID[t.ID] = t
+	}
+
+	for _, t := range a.tickets {
+		isEpic := t.Type == ticket.TypeEpic
+		hasEpicAncestor := !isEpic && nearestEpicAncestor(t, byID) != ""
+		done := t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed
+
 		switch t.Status {
 		case ticket.StatusBacklog:
-			counts[tabBacklog]++
+			// Backlog shows epics as rollups; descendants roll up under them.
+			if !hasEpicAncestor {
+				counts[tabBacklog]++
+			}
 		case ticket.StatusDone, ticket.StatusClosed:
+			// Done includes epics.
 			counts[tabDone]++
+		case ticket.StatusOpen, ticket.StatusReady:
+			if !isEpic {
+				counts[tabInbox]++
+			}
 		}
-		if t.Type == ticket.TypeEpic && t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
+
+		if isEpic && !done {
 			counts[tabEpics]++
 		}
-		if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
+		if !done && !isEpic {
 			counts[tabAll]++
-		}
-	}
-	// Inbox: open + ready tickets.
-	for _, t := range a.tickets {
-		if t.Status == ticket.StatusOpen || t.Status == ticket.StatusReady {
-			counts[tabInbox]++
 		}
 	}
 	return counts

@@ -14,7 +14,8 @@ import (
 type dashboardModel struct {
 	all            []*ticket.Ticket
 	items          []ticket.InboxItem
-	activeTab      tabID // set by app-level tab switching
+	childCounts    map[string]int // epic ID -> total child count (shown on backlog tab)
+	activeTab      tabID          // set by app-level tab switching
 	cursor         int
 	offset         int
 	width          int
@@ -61,14 +62,58 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 	}
 }
 
+// nearestEpicAncestor walks t's parent chain and returns the ID of the closest
+// epic ancestor, or "" if none. Handles missing parents and cycles defensively.
+func nearestEpicAncestor(t *ticket.Ticket, byID map[string]*ticket.Ticket) string {
+	seen := make(map[string]bool)
+	cur := t.Parent
+	for cur != "" {
+		if seen[cur] {
+			return ""
+		}
+		seen[cur] = true
+		p, ok := byID[cur]
+		if !ok {
+			return ""
+		}
+		if p.Type == ticket.TypeEpic {
+			return p.ID
+		}
+		cur = p.Parent
+	}
+	return ""
+}
+
 func (m *dashboardModel) buildItems() {
 	m.items = nil
+	m.childCounts = nil
 	needle := strings.ToLower(m.filterText)
+
+	// Index tickets so we can walk parent chains to find epic ancestors:
+	//  - backlog hides any ticket with an epic anywhere up the chain,
+	//  - backlog shows epics as rollups with a descendant count,
+	//  - inbox/all hide epics themselves.
+	byID := make(map[string]*ticket.Ticket, len(m.all))
+	for _, t := range m.all {
+		byID[t.ID] = t
+	}
+	childCounts := make(map[string]int)
+	for _, t := range m.all {
+		if t.Type == ticket.TypeEpic {
+			continue
+		}
+		if epicID := nearestEpicAncestor(t, byID); epicID != "" {
+			childCounts[epicID]++
+		}
+	}
 
 	for _, t := range m.all {
 		if t.Status == "" {
 			continue
 		}
+
+		isEpic := t.Type == ticket.TypeEpic
+		hasEpicAncestor := !isEpic && nearestEpicAncestor(t, byID) != ""
 
 		// Per-tab status filtering.
 		switch m.activeTab {
@@ -76,17 +121,29 @@ func (m *dashboardModel) buildItems() {
 			if t.Status != ticket.StatusBacklog {
 				continue
 			}
+			// Descendants of epics roll up under the epic; hide them here.
+			if hasEpicAncestor {
+				continue
+			}
 		case tabInbox:
 			if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady {
 				continue
 			}
+			// Epics live in the epics tab.
+			if isEpic {
+				continue
+			}
 		case tabDone:
+			// Done shows every done/closed ticket, including epics.
 			if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
 				continue
 			}
 		case tabAll:
 			// Show everything except done/closed.
 			if t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed {
+				continue
+			}
+			if isEpic {
 				continue
 			}
 		}
@@ -103,6 +160,10 @@ func (m *dashboardModel) buildItems() {
 
 		item := ticket.NextAction(t)
 		m.items = append(m.items, item)
+	}
+
+	if m.activeTab == tabBacklog {
+		m.childCounts = childCounts
 	}
 
 	// Sort by priority ascending, then by age (oldest first within same priority).
@@ -327,6 +388,13 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		gap = selBg.Render(" ")
 	}
 	line := sp + id + pri + typ + sts + gap + title
+
+	// On the backlog tab, show "(N children)" next to epic rows so they act as rollups.
+	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
+		n := m.childCounts[t.ID]
+		label := fmt.Sprintf("  (%d children)", n)
+		line += selBg.Foreground(colorSubtle).Render(label)
+	}
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {

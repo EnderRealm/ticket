@@ -154,6 +154,22 @@ func (m epicsModel) selectedTicket() *ticket.Ticket {
 	return nil
 }
 
+// focusEpic moves the cursor to the epic with the given ID, if present.
+func (m *epicsModel) focusEpic(id string) {
+	line := 0
+	for _, r := range m.rows {
+		if r.epic.ID == id {
+			m.cursor = line
+			m.clampOffset()
+			return
+		}
+		line++
+		if r.expanded {
+			line += len(r.children)
+		}
+	}
+}
+
 // toggleExpand toggles the epic at the cursor.
 func (m *epicsModel) toggleExpand() {
 	line := 0
