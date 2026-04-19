@@ -813,14 +813,23 @@ func TestListDefaultLimitCapsResults(t *testing.T) {
 	ctx := context.Background()
 
 	// Create 55 tickets to exceed the default limit of 50.
+	// Titles vary in the first three non-stopword tokens so each ticket gets a
+	// distinct slug; without this the 4-hex collision tail plus rapid-fire
+	// creation caused occasional collision-exhaustion failures in Create.
 	for i := range 55 {
-		session.CallTool(ctx, &mcp.CallToolParams{
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
 			Name: "ticket_create",
 			Arguments: map[string]any{
-				"title": fmt.Sprintf("Cap test ticket %d", i),
+				"title": fmt.Sprintf("alpha %d beta gamma", i),
 				"type":  "feature",
 			},
 		})
+		if err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		if result.IsError {
+			t.Fatalf("create %d: tool error %v", i, result.Content)
+		}
 	}
 
 	// List without explicit limit — should cap at 50.
