@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.1.0] - 2026-04-19
 
 ### Added
 - test-suite.sh: Summary of failed tests printed at the end of a failing run
