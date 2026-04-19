@@ -5,6 +5,7 @@
 ### Added
 - Core: Epic status validation — saving a type=epic ticket with status=done is rejected when any child is still non-terminal. Error names the offending children and suggests remediation.
 - Core: Upward status propagation — child → ready bumps a backlog epic to ready; child → open bumps a backlog/ready epic to open; marking the last non-terminal child done auto-marks the parent epic done. Cascades up nested epic chains.
+- MCP: Tool input types are now flexible — LLMs that send numeric arguments (priority, offset, limit) as JSON strings have them coerced to integers instead of being rejected at schema validation. Pattern generalises via FlexInt/FlexBool helpers for future fields.
 
 ### Changed
 - TUI: Create/edit form Enter key now inserts a newline on multiline fields (Description, Note) instead of submitting. ctrl+s remains the explicit save; Enter on single-line fields and Type/Priority/Status toggles is unchanged.

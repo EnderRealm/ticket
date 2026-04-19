@@ -253,14 +253,14 @@ func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 // --- Tool registrations ---
 
 type listArgs struct {
-	Status   string `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
-	Type     string `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
-	Priority *int   `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
-	Tag      string `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Parent   string `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
-	Project  string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
-	Offset   *int   `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
-	Limit    *int   `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
+	Status   string    `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
+	Type     string    `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
+	Priority *FlexInt  `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
+	Tag      string    `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Parent   string    `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
+	Project  string    `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+	Offset   *FlexInt  `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
+	Limit    *FlexInt  `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
 }
 
 const defaultListLimit = 50
@@ -304,7 +304,7 @@ func resolveProject(explicit, defaultProject string) string {
 }
 
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
 		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
@@ -330,7 +330,7 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 			opts.Type = ticket.TicketType(args.Type)
 		}
 		if args.Priority != nil {
-			opts.Priority = *args.Priority
+			opts.Priority = int(*args.Priority)
 		}
 		if args.Tag != "" {
 			opts.Tag = args.Tag
@@ -349,15 +349,15 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 
 		// Apply pagination.
 		offset := 0
-		if args.Offset != nil && *args.Offset > 0 {
-			offset = *args.Offset
+		if args.Offset != nil && int(*args.Offset) > 0 {
+			offset = int(*args.Offset)
 		}
 		limit := defaultListLimit
 		if args.Limit != nil {
-			if *args.Limit == 0 {
+			if int(*args.Limit) == 0 {
 				limit = total // 0 = unlimited
-			} else if *args.Limit > 0 {
-				limit = *args.Limit
+			} else if int(*args.Limit) > 0 {
+				limit = int(*args.Limit)
 			}
 		}
 
@@ -385,7 +385,7 @@ type showArgs struct {
 }
 
 func registerShow(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
 		Description: "Show full details of a ticket by ID.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
@@ -405,8 +405,8 @@ type createArgs struct {
 	Description string `json:"description,omitempty" jsonschema:"description text"`
 	Design      string `json:"design,omitempty" jsonschema:"design notes"`
 	Acceptance  string `json:"acceptance,omitempty" jsonschema:"acceptance criteria"`
-	Type        string `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
-	Priority    *int   `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
+	Type        string   `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
+	Priority    *FlexInt `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
 	Parent      string `json:"parent,omitempty" jsonschema:"parent ticket ID"`
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
@@ -417,7 +417,7 @@ type createArgs struct {
 }
 
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
 		Description: "Create a new ticket. Supports optional repo parameter for cross-repo creation.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
@@ -459,7 +459,7 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			t.Type = ticket.TypeFeature
 		}
 		if args.Priority != nil {
-			t.Priority = *args.Priority
+			t.Priority = int(*args.Priority)
 		}
 		if args.Parent != "" {
 			t.Parent = args.Parent
@@ -526,7 +526,7 @@ type editArgs struct {
 	Title       string `json:"title,omitempty" jsonschema:"new title"`
 	Status      string `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed"`
 	Type        string `json:"type,omitempty" jsonschema:"new type"`
-	Priority    *int   `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
+	Priority    *FlexInt `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
 	Parent      string `json:"parent,omitempty" jsonschema:"new parent ticket ID"`
 	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
 	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
@@ -539,7 +539,7 @@ type editArgs struct {
 }
 
 func registerEdit(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
 		Description: "Edit an existing ticket's fields.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
@@ -563,7 +563,7 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 			t.Type = ticket.TicketType(args.Type)
 		}
 		if args.Priority != nil {
-			t.Priority = *args.Priority
+			t.Priority = int(*args.Priority)
 		}
 		if args.Parent != "" {
 			t.Parent = args.Parent
@@ -637,7 +637,7 @@ type addNoteArgs struct {
 }
 
 func registerAddNote(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_add_note",
 		Description: "Append a timestamped note to a ticket.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args addNoteArgs) (*mcp.CallToolResult, any, error) {
@@ -669,7 +669,7 @@ type depArgs struct {
 }
 
 func registerDep(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_dep",
 		Description: "Add or remove a dependency. The ticket (id) depends on dep_id.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args depArgs) (*mcp.CallToolResult, any, error) {
@@ -711,7 +711,7 @@ type linkArgs struct {
 }
 
 func registerLink(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_link",
 		Description: "Add or remove a symmetric link between two tickets.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args linkArgs) (*mcp.CallToolResult, any, error) {
@@ -756,7 +756,7 @@ type readyArgs struct {
 }
 
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
 		Description: "List tickets that are ready to work on (all deps resolved, parent in_progress).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
@@ -787,7 +787,7 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 }
 
 func registerBlocked(server *mcp.Server, store ticket.Store) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_blocked",
 		Description: "List tickets that are blocked by unresolved dependencies.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
@@ -821,7 +821,7 @@ type inboxArgs struct {
 }
 
 func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_inbox",
 		Description: "Show tickets needing human attention, sorted by priority then age.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args inboxArgs) (*mcp.CallToolResult, any, error) {
@@ -859,7 +859,7 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 }
 
 func registerStoreInfo(server *mcp.Server, centralRoot string) {
-	mcp.AddTool(server, &mcp.Tool{
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_store_info",
 		Description: "Return central store root path and per-project ticket directory paths. Only available in central mode.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
