@@ -381,13 +381,42 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 }
 
 type showArgs struct {
-	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+	ID           string    `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+	NotesLimit   *FlexInt  `json:"notes_limit,omitempty" jsonschema:"max number of notes to return, newest first (default 20, 0 for all)"`
+	NotesOffset  *FlexInt  `json:"notes_offset,omitempty" jsonschema:"number of notes to skip, counted from newest (default 0)"`
+	MetadataOnly *FlexBool `json:"metadata_only,omitempty" jsonschema:"when true, omit notes entirely"`
+}
+
+const defaultShowNotesLimit = 20
+
+// showResultJSON wraps ticketJSON with note-paging metadata so a token-
+// conscious caller can tell whether there are more notes to fetch.
+type showResultJSON struct {
+	ticketJSON
+	NotesTotal int `json:"notes_total"`
+	NotesShown int `json:"notes_shown"`
+}
+
+func (s showResultJSON) MarshalJSON() ([]byte, error) {
+	inner, err := json.Marshal(s.ticketJSON)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(inner, &m); err != nil {
+		return nil, err
+	}
+	total, _ := json.Marshal(s.NotesTotal)
+	shown, _ := json.Marshal(s.NotesShown)
+	m["notes_total"] = total
+	m["notes_shown"] = shown
+	return json.Marshal(m)
 }
 
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -395,7 +424,44 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 			return r, nil, nil
 		}
 
-		r, err := jsonResult(toJSON(t))
+		total := len(t.Notes)
+
+		metadataOnly := false
+		if args.MetadataOnly != nil {
+			metadataOnly = bool(*args.MetadataOnly)
+		}
+
+		limit := defaultShowNotesLimit
+		if args.NotesLimit != nil {
+			limit = int(*args.NotesLimit)
+		}
+		offset := 0
+		if args.NotesOffset != nil && int(*args.NotesOffset) > 0 {
+			offset = int(*args.NotesOffset)
+		}
+
+		// Slice a newest-first window of size `limit`, paged back by `offset`.
+		// limit<=0 means "all"; metadata_only wins over both.
+		if metadataOnly {
+			t.Notes = nil
+		} else if limit > 0 {
+			end := total - offset
+			if end < 0 {
+				end = 0
+			}
+			start := end - limit
+			if start < 0 {
+				start = 0
+			}
+			t.Notes = t.Notes[start:end]
+		}
+
+		resp := showResultJSON{
+			ticketJSON: toJSON(t),
+			NotesTotal: total,
+			NotesShown: len(t.Notes),
+		}
+		r, err := jsonResult(resp)
 		return r, nil, err
 	})
 }

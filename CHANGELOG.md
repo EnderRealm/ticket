@@ -5,6 +5,7 @@
 ### Fixed
 - Core: `AddDep`, `RemoveDep`, `AddLink`, `RemoveLink` now compare ticket IDs tolerantly of `project/` namespace prefixes. Previously `ticket_dep remove` silently no-op'd when the stored dep was in one form (e.g. `foo-abcd`) and the MCP tool resolved it to the other form (`ticket/foo-abcd`).
 - TUI: A file-watcher refresh no longer resets an in-flight detail overlay (move picker, note entry, path input). Refreshes skip the rebuild while input is active; the overlay updates on the next load after input closes.
+- MCP: `ticket_show` now trims notes to the 20 newest by default and exposes `notes_limit` (0 = all), `notes_offset`, and `metadata_only` arguments. Response includes `notes_total` and `notes_shown` so callers know whether there is more history to fetch.
 
 ### Added
 - Core: Epic status validation — saving a type=epic ticket with status=done is rejected when any child is still non-terminal. Error names the offending children and suggests remediation.
