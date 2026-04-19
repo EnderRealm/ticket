@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- test-suite.sh: Summary of failed tests printed at the end of a failing run
+
 ### Changed
 - TUI: Inbox, done, and all tabs now exclude epic-type tickets (epics live in the epics tab)
 - TUI: Backlog tab shows epics as rollup rows with a child count and hides epic children; selecting an epic jumps to the epics tab focused on that epic
+- test-suite.sh: Rewritten against v7 commands, runs in an isolated temp central store so local tickets are untouched
 
 ## [7.0.0] - 2026-04-11
 
