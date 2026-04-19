@@ -166,10 +166,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dashboard.refreshTickets(a.tickets)
 		a.epics.refreshTickets(a.tickets)
 		if a.overlay == overlayDetail && a.detail.ticket != nil {
+			// If the user is mid-input (move picker, note entry, etc.), don't
+			// disturb them — a background refresh should never reset their
+			// current action.
+			if a.detail.inputActive() {
+				return a, nil
+			}
 			found := false
 			for _, t := range a.tickets {
 				if t.ID == a.detail.ticket.ID {
+					prev := a.detail
 					a.detail = newDetailModel(t, a.width, a.contentHeight())
+					a.detail.offset = prev.offset
 					found = true
 					break
 				}
