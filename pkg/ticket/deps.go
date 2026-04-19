@@ -1,6 +1,9 @@
 package ticket
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // DepNode represents one entry in a dependency tree.
 type DepNode struct {
@@ -287,6 +290,117 @@ func BlockedTickets(store Store) ([]*Ticket, error) {
 		}
 	}
 	return blocked, nil
+}
+
+// ValidateStateTransition rejects saving an epic as done while any of its
+// children are still non-terminal (not done, not closed). Only checks when
+// t.Type == TypeEpic and t.Status == StatusDone; otherwise it is a no-op.
+//
+// The returned error names the offending children and suggests remediation,
+// so CLI and MCP callers (and LLM agents) can self-correct.
+func ValidateStateTransition(store Store, t *Ticket) error {
+	if t.Type != TypeEpic || t.Status != StatusDone {
+		return nil
+	}
+	tickets, err := store.List()
+	if err != nil {
+		return err
+	}
+	var open []string
+	for _, child := range tickets {
+		if child.ID == t.ID {
+			continue
+		}
+		if child.Parent != t.ID {
+			continue
+		}
+		if !isTerminal(child) {
+			open = append(open, fmt.Sprintf("%s [%s]", child.ID, child.Status))
+		}
+	}
+	if len(open) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"cannot mark epic %s as done: %d child ticket(s) are not done or closed: %s. "+
+			"Close or mark these children done first, or mark the epic closed to abandon it",
+		t.ID, len(open), strings.Join(open, ", "),
+	)
+}
+
+// PropagateStatusUp bumps a parent epic's status in response to a child's
+// status change. Rules:
+//
+//   - child → ready: parent epic backlog → ready (no-op if parent already
+//     ready, open, done, or closed).
+//   - child → open: parent epic backlog or ready → open (no-op if parent
+//     already open, done, or closed).
+//   - child → done: if every child of the parent is now terminal (done or
+//     closed) and the parent is not already terminal, parent → done.
+//
+// Changes cascade up nested epic chains via store.Update, which calls this
+// function again on each write.
+func PropagateStatusUp(store Store, child *Ticket) error {
+	if child.Parent == "" {
+		return nil
+	}
+	parent, err := store.Get(child.Parent)
+	if err != nil {
+		// Parent is missing or ambiguous — nothing to propagate.
+		return nil
+	}
+	if parent.Type != TypeEpic {
+		return nil
+	}
+	newStatus := computePropagatedStatus(store, parent, child)
+	if newStatus == parent.Status {
+		return nil
+	}
+	parent.Status = newStatus
+	return store.Update(parent)
+}
+
+func computePropagatedStatus(store Store, parent, child *Ticket) Status {
+	switch child.Status {
+	case StatusReady:
+		if parent.Status == StatusBacklog {
+			return StatusReady
+		}
+	case StatusOpen:
+		if parent.Status == StatusBacklog || parent.Status == StatusReady {
+			return StatusOpen
+		}
+	case StatusDone:
+		if parent.Status == StatusDone || parent.Status == StatusClosed {
+			return parent.Status
+		}
+		if allChildrenTerminal(store, parent.ID) {
+			return StatusDone
+		}
+	}
+	return parent.Status
+}
+
+// allChildrenTerminal returns true if every ticket whose parent is parentID
+// is in a terminal state (done or closed). Returns true when there are no
+// children — a childless epic is trivially "all terminal."
+func allChildrenTerminal(store Store, parentID string) bool {
+	tickets, err := store.List()
+	if err != nil {
+		return false
+	}
+	hadChild := false
+	for _, t := range tickets {
+		if t.Parent != parentID {
+			continue
+		}
+		hadChild = true
+		if !isTerminal(t) {
+			return false
+		}
+	}
+	_ = hadChild
+	return true
 }
 
 // AddDep adds depID to the ticket's deps list. Returns error if it would

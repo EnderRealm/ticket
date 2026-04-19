@@ -40,6 +40,9 @@ func (s *FileStore) Create(t *Ticket) error {
 	if err := t.Validate(); err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
+	if err := ValidateStateTransition(s, t); err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
 	if err := s.EnsureDir(); err != nil {
 		return err
 	}
@@ -51,6 +54,9 @@ func (s *FileStore) Create(t *Ticket) error {
 	}
 
 	// Retry on hash collision (different title, same 4-char hash).
+	// Propagation is intentionally NOT triggered on Create — adding a new
+	// child does not mean its parent just transitioned; the user can set
+	// parent state explicitly. Propagation fires on Update.
 	const maxRetries = 5
 	for i := 0; i < maxRetries; i++ {
 		path = s.ticketFile(t.ID)
@@ -72,16 +78,33 @@ func (s *FileStore) Get(id string) (*Ticket, error) {
 }
 
 // Update writes a ticket back to disk in canonical format.
+// When t.Status has changed, the write is validated (e.g. epics can't be
+// marked done while children are still open) and the parent epic chain is
+// updated via PropagateStatusUp.
 func (s *FileStore) Update(t *Ticket) error {
 	if err := t.Validate(); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	// Verify the file exists.
+	// Verify the file exists and read the previous status.
 	path := s.ticketFile(t.ID)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("ticket %s not found", t.ID)
 	}
-	return s.writeTicket(t)
+	prev, err := s.readFile(path)
+	statusChanged := err != nil || prev.Status != t.Status
+
+	if statusChanged {
+		if err := ValidateStateTransition(s, t); err != nil {
+			return fmt.Errorf("update: %w", err)
+		}
+	}
+	if err := s.writeTicket(t); err != nil {
+		return err
+	}
+	if statusChanged {
+		return PropagateStatusUp(s, t)
+	}
+	return nil
 }
 
 // Delete removes a ticket file by exact or partial ID.
