@@ -77,7 +77,7 @@ func syncLoop(ctx context.Context, gitDir string, interval time.Duration) {
 	}
 }
 
-// syncCentralStore performs a single sync cycle: stage, commit, push.
+// syncCentralStore performs a single sync cycle: pull, stage, commit, push.
 // Returns a warning message on problems, or empty string on success/no-op.
 func syncCentralStore(gitDir string) string {
 	// Check sync-blocked marker
@@ -87,6 +87,13 @@ func syncCentralStore(gitDir string) string {
 		} else {
 			return blocked
 		}
+	}
+
+	// Pull remote changes first so the push branch never starts from a stale
+	// base. Runs every cycle regardless of local changes — without this, a
+	// machine with no outgoing commits never picks up incoming ones.
+	if msg := pullIfBehind(gitDir); msg != "" {
+		return msg
 	}
 
 	// Stage only tk-managed paths (tickets directory and shared config)
@@ -124,8 +131,9 @@ func syncCentralStore(gitDir string) string {
 		_ = out
 	}
 
-	// Push failed — pull --rebase and retry
-	if out, err := exec.Command("git", "-C", gitDir, "pull", "--rebase").CombinedOutput(); err != nil {
+	// Push failed — pull --rebase --autostash and retry. autostash is safe
+	// because the central store contains only tk-managed files.
+	if out, err := exec.Command("git", "-C", gitDir, "pull", "--rebase", "--autostash").CombinedOutput(); err != nil {
 		exec.Command("git", "-C", gitDir, "rebase", "--abort").Run()
 		msg := fmt.Sprintf("sync blocked: git pull --rebase failed; aborted rebase (%s)", strings.TrimSpace(string(out)))
 		writeSyncBlocked(gitDir, msg)
@@ -137,6 +145,40 @@ func syncCentralStore(gitDir string) string {
 	}
 
 	clearSyncBlocked(gitDir)
+	return ""
+}
+
+// pullIfBehind fetches origin and rebases local commits onto upstream when
+// behind. Returns a warning (and writes the sync-blocked marker) on failure,
+// or empty string on success / no remote / no upstream / already up to date.
+func pullIfBehind(gitDir string) string {
+	remotes, err := gitRemoteNames(gitDir)
+	if err != nil || len(remotes) == 0 {
+		return ""
+	}
+
+	// Skip when no upstream is configured for the current branch.
+	if err := exec.Command("git", "-C", gitDir, "rev-parse", "--abbrev-ref", "@{u}").Run(); err != nil {
+		return ""
+	}
+
+	if out, err := exec.Command("git", "-C", gitDir, "fetch").CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("sync blocked: git fetch failed (%s)", strings.TrimSpace(string(out)))
+		writeSyncBlocked(gitDir, msg)
+		return msg
+	}
+
+	behindOut, err := exec.Command("git", "-C", gitDir, "rev-list", "--count", "HEAD..@{u}").Output()
+	if err != nil || strings.TrimSpace(string(behindOut)) == "0" {
+		return ""
+	}
+
+	if out, err := exec.Command("git", "-C", gitDir, "pull", "--rebase", "--autostash").CombinedOutput(); err != nil {
+		exec.Command("git", "-C", gitDir, "rebase", "--abort").Run()
+		msg := fmt.Sprintf("sync blocked: git pull --rebase --autostash failed; aborted rebase (%s)", strings.TrimSpace(string(out)))
+		writeSyncBlocked(gitDir, msg)
+		return msg
+	}
 	return ""
 }
 

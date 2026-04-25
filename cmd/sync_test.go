@@ -165,6 +165,38 @@ func TestSyncParentRepo(t *testing.T) {
 	}
 }
 
+func TestSyncAutoPull(t *testing.T) {
+	// Bare remote
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--bare")
+
+	// Repo A — the syncing repo, no local changes
+	repoA := setupGitRepo(t)
+	runGit(t, repoA, "remote", "add", "origin", bare)
+	runGit(t, repoA, "push", "-u", "origin", "HEAD")
+
+	// Repo B — another writer pushes a commit
+	repoB := t.TempDir()
+	exec.Command("git", "clone", bare, repoB).Run()
+	exec.Command("git", "-C", repoB, "config", "user.email", "other@test.com").Run()
+	exec.Command("git", "-C", repoB, "config", "user.name", "other").Run()
+	os.MkdirAll(filepath.Join(repoB, "tickets"), 0o755)
+	os.WriteFile(filepath.Join(repoB, "tickets", "from-b.md"), []byte("---\ntitle: From B\n---\n"), 0o644)
+	exec.Command("git", "-C", repoB, "add", "-A").Run()
+	exec.Command("git", "-C", repoB, "commit", "-m", "from B").Run()
+	exec.Command("git", "-C", repoB, "push").Run()
+
+	// Sync from A with no local changes — should pull B's commit
+	warning := syncCentralStore(repoA)
+	if warning != "" {
+		t.Fatalf("syncCentralStore returned warning: %s", warning)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoA, "tickets", "from-b.md")); err != nil {
+		t.Errorf("expected from-b.md to be pulled into repoA, got %v", err)
+	}
+}
+
 func TestSyncBlocked(t *testing.T) {
 	dir := setupGitRepo(t)
 
