@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.2.0] - 2026-04-25
 
 ### Fixed
 - Sync: every cycle now fetches origin and rebases when behind, independent of whether there are local commits to push. Previously a machine with no outgoing changes never picked up incoming ones, letting machines diverge silently. Rebase uses `--autostash` (safe in a tk-only central store) and writes `.tk-sync-blocked` on failure.
