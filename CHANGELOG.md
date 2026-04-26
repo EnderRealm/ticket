@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Sync: refuse to commit when the working tree has unmerged paths or staged blobs contain git conflict markers. `pull --rebase --autostash` exits 0 even on stash-pop conflicts, so 7.2 could commit and push a `config.yaml` with `<<<<<<< / ======= / >>>>>>>` markers when two machines registered a project within seconds of each other. The corrupted shared config then made every project fall back off the central store and `tk list` report them as empty.
+- Config: `project.Load()` no longer silently swallows shared-config parse errors. A missing shared config remains optional, but a corrupt one now returns the parse error so callers see "shared config corrupted at line N" instead of an empty project list.
+
 ## [7.2.0] - 2026-04-25
 
 ### Fixed

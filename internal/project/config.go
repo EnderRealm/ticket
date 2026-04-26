@@ -48,7 +48,15 @@ func Load() (Config, error) {
 	var shared Config
 	if centralRoot != "" {
 		sharedPath := filepath.Join(centralRoot, configFileName)
-		shared, _ = loadFile(sharedPath) // ignore error — shared config is optional
+		// Missing shared config is fine, but a corrupt one (e.g. unresolved
+		// merge conflict markers committed by a misbehaving sync) must surface
+		// loudly — silently dropping it strips every project's `store: central`
+		// and leaves callers thinking projects are empty.
+		s, err := loadFile(sharedPath)
+		if err != nil {
+			return Config{}, err
+		}
+		shared = s
 	} else {
 		shared = Config{Projects: map[string]ProjectConfig{}}
 	}

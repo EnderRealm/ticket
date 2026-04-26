@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +197,89 @@ func TestSyncAutoPull(t *testing.T) {
 		t.Errorf("expected from-b.md to be pulled into repoA, got %v", err)
 	}
 }
+
+func TestSyncRefusesConflictMarkers(t *testing.T) {
+	dir := setupGitRepo(t)
+
+	// Drop a config.yaml containing unresolved git conflict markers, the
+	// exact failure we shipped in 7.2 when autostash pop collided on
+	// registered_at.
+	corrupt := []byte(`projects:
+    loom:
+        store: central
+<<<<<<< Updated upstream
+        registered_at: "2026-04-25T20:38:12Z"
+=======
+        registered_at: "2026-04-25T20:38:35Z"
+>>>>>>> Stashed changes
+`)
+	os.WriteFile(filepath.Join(dir, "config.yaml"), corrupt, 0o644)
+
+	before, _ := execCommand("git", "-C", dir, "rev-list", "--count", "HEAD")
+
+	warning := syncCentralStore(dir)
+	if !contains(warning, "sync blocked") || !contains(warning, "conflict marker") {
+		t.Fatalf("expected conflict-marker block, got %q", warning)
+	}
+
+	after, _ := execCommand("git", "-C", dir, "rev-list", "--count", "HEAD")
+	if before != after {
+		t.Errorf("commit was created with conflict markers (before=%s after=%s)", before, after)
+	}
+
+	if blocked := readSyncBlocked(dir); blocked == "" {
+		t.Error("expected .tk-sync-blocked marker to be written")
+	}
+
+	// Index must not retain the bad blob.
+	staged, _ := execCommand("git", "-C", dir, "diff", "--cached", "--name-only")
+	if contains(staged, "config.yaml") {
+		t.Errorf("config.yaml left staged after refusal: %q", staged)
+	}
+}
+
+func TestSyncRefusesUnmergedPaths(t *testing.T) {
+	dir := setupGitRepo(t)
+
+	// Synthesize an unmerged index entry by writing the same path at
+	// stages 2 and 3 with different blobs. This is what `git ls-files -u`
+	// reports after an autostash pop conflict, even though no rebase
+	// directory exists.
+	os.WriteFile(filepath.Join(dir, "ours.txt"), []byte("ours\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "theirs.txt"), []byte("theirs\n"), 0o644)
+	oursSHA, _ := execCommand("git", "-C", dir, "hash-object", "-w", "ours.txt")
+	theirsSHA, _ := execCommand("git", "-C", dir, "hash-object", "-w", "theirs.txt")
+	oursSHA = trimNL(oursSHA)
+	theirsSHA = trimNL(theirsSHA)
+
+	exec.Command("git", "-C", dir, "rm", "--cached", "-f", "ours.txt").Run()
+	exec.Command("git", "-C", dir, "rm", "--cached", "-f", "theirs.txt").Run()
+
+	idx := "100644 " + oursSHA + " 2\tconfig.yaml\n100644 " + theirsSHA + " 3\tconfig.yaml\n"
+	cmd := exec.Command("git", "-C", dir, "update-index", "--index-info")
+	cmd.Stdin = strings.NewReader(idx)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v (%s)", err, string(out))
+	}
+
+	before, _ := execCommand("git", "-C", dir, "rev-list", "--count", "HEAD")
+
+	warning := syncCentralStore(dir)
+	if !contains(warning, "sync blocked") || !contains(warning, "unmerged") {
+		t.Fatalf("expected unmerged-paths block, got %q", warning)
+	}
+
+	after, _ := execCommand("git", "-C", dir, "rev-list", "--count", "HEAD")
+	if before != after {
+		t.Errorf("commit was created with unmerged paths (before=%s after=%s)", before, after)
+	}
+
+	if blocked := readSyncBlocked(dir); blocked == "" {
+		t.Error("expected .tk-sync-blocked marker to be written")
+	}
+}
+
+func trimNL(s string) string { return strings.TrimSpace(s) }
 
 func TestSyncBlocked(t *testing.T) {
 	dir := setupGitRepo(t)

@@ -3,6 +3,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -112,6 +113,41 @@ func TestLoadMalformed(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for malformed YAML")
+	}
+}
+
+func TestLoadSharedConflictMarkers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	// Local config is well-formed and points at the central root.
+	configDir := filepath.Join(home, configDirName)
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, configFileName),
+		[]byte("central_root: "+centralRoot+"\nprojects: {}\n"), 0o644)
+
+	// Shared config has unresolved git merge conflict markers — exactly the
+	// state the broken 7.2 sync produced.
+	sharedPath := filepath.Join(centralRoot, configFileName)
+	os.WriteFile(sharedPath, []byte(`projects:
+    loom:
+        store: central
+<<<<<<< Updated upstream
+        registered_at: "2026-04-25T20:38:12Z"
+=======
+        registered_at: "2026-04-25T20:38:35Z"
+>>>>>>> Stashed changes
+`), 0o644)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to surface the shared-config parse error")
+	}
+	if !strings.Contains(err.Error(), sharedPath) {
+		t.Errorf("error should mention shared config path; got %v", err)
 	}
 }
 

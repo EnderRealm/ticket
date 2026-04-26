@@ -96,6 +96,15 @@ func syncCentralStore(gitDir string) string {
 		return msg
 	}
 
+	// Refuse to proceed if the working tree has unmerged paths. `pull --rebase
+	// --autostash` exits 0 even when the autostash pop conflicts, so a stash
+	// pop conflict on config.yaml would otherwise be staged and committed
+	// verbatim with the conflict markers intact.
+	if msg := checkUnmergedPaths(gitDir); msg != "" {
+		writeSyncBlocked(gitDir, msg)
+		return msg
+	}
+
 	// Stage only tk-managed paths (tickets directory and shared config)
 	exec.Command("git", "-C", gitDir, "add", "tickets/").Run()
 	exec.Command("git", "-C", gitDir, "add", "config.yaml").Run()
@@ -104,6 +113,15 @@ func syncCentralStore(gitDir string) string {
 	diff := exec.Command("git", "-C", gitDir, "diff", "--cached", "--quiet")
 	if err := diff.Run(); err == nil {
 		return "" // nothing to commit
+	}
+
+	// Belt-and-braces: scan staged blobs for unresolved conflict markers
+	// before committing. Catches any path we might add that slipped through
+	// the unmerged-paths check.
+	if msg := checkStagedConflictMarkers(gitDir); msg != "" {
+		exec.Command("git", "-C", gitDir, "reset").Run()
+		writeSyncBlocked(gitDir, msg)
+		return msg
 	}
 
 	// Commit
@@ -146,6 +164,65 @@ func syncCentralStore(gitDir string) string {
 
 	clearSyncBlocked(gitDir)
 	return ""
+}
+
+// checkUnmergedPaths returns a non-empty warning when the working tree has
+// unmerged entries. Used as a guard before staging — a non-empty result means
+// a previous merge or stash pop left conflicts in the index.
+func checkUnmergedPaths(gitDir string) string {
+	out, err := exec.Command("git", "-C", gitDir, "ls-files", "-u").Output()
+	if err != nil {
+		return ""
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return ""
+	}
+	paths := map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		// Format: <mode> <sha> <stage>\t<path>
+		if i := strings.IndexByte(line, '\t'); i >= 0 {
+			paths[line[i+1:]] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(paths))
+	for p := range paths {
+		names = append(names, p)
+	}
+	return fmt.Sprintf("sync blocked: unmerged paths in working tree (%s); resolve manually", strings.Join(names, ", "))
+}
+
+// checkStagedConflictMarkers scans staged blobs for git merge conflict marker
+// lines. Returns a non-empty warning when any are found.
+func checkStagedConflictMarkers(gitDir string) string {
+	out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only").Output()
+	if err != nil {
+		return ""
+	}
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		blob, err := exec.Command("git", "-C", gitDir, "show", ":"+name).Output()
+		if err != nil {
+			continue
+		}
+		if hasConflictMarker(blob) {
+			return fmt.Sprintf("sync blocked: staged %s contains merge conflict markers; resolve manually", name)
+		}
+	}
+	return ""
+}
+
+func hasConflictMarker(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "<<<<<<< ") ||
+			strings.HasPrefix(line, ">>>>>>> ") ||
+			line == "=======" {
+			return true
+		}
+	}
+	return false
 }
 
 // pullIfBehind fetches origin and rebases local commits onto upstream when
@@ -255,6 +332,11 @@ func syncBlockResolved(gitDir string) bool {
 	}
 	rebaseApplyDir := filepath.Join(gitDir, ".git", "rebase-apply")
 	if _, err := os.Stat(rebaseApplyDir); err == nil {
+		return false
+	}
+	// Also unresolved when the working tree still has unmerged paths (e.g.
+	// after an autostash pop conflict, where no rebase dir exists).
+	if checkUnmergedPaths(gitDir) != "" {
 		return false
 	}
 	return true
