@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.2.1] - 2026-04-27
 
 ### Fixed
 - Sync: refuse to commit when the working tree has unmerged paths or staged blobs contain git conflict markers. `pull --rebase --autostash` exits 0 even on stash-pop conflicts, so 7.2 could commit and push a `config.yaml` with `<<<<<<< / ======= / >>>>>>>` markers when two machines registered a project within seconds of each other. The corrupted shared config then made every project fall back off the central store and `tk list` report them as empty.
