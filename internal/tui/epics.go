@@ -54,7 +54,7 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 		}
 	}
 
-	// Sort by status order, then priority, then title.
+	// Sort by status order, then priority, then newest first.
 	sort.SliceStable(epics, func(i, j int) bool {
 		si := ticket.StatusOrder(epics[i].Status)
 		sj := ticket.StatusOrder(epics[j].Status)
@@ -64,7 +64,7 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 		if epics[i].Priority != epics[j].Priority {
 			return epics[i].Priority < epics[j].Priority
 		}
-		return epics[i].Title < epics[j].Title
+		return epics[i].Created.After(epics[j].Created)
 	})
 
 	m.rows = nil
@@ -243,11 +243,12 @@ func (m epicsModel) view() string {
 
 	// Column header — matches ticket view layout.
 	hdrStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	b.WriteString(fmt.Sprintf("  %s%s%s%s %s\n",
+	b.WriteString(fmt.Sprintf("  %s%s%s%s%s %s\n",
 		padRight(hdrStyle.Render("ID"), 6),
 		padRight(hdrStyle.Render("PRI"), 6),
 		padRight(hdrStyle.Render("TYPE"), 10),
 		padRight(hdrStyle.Render("STATUS"), 12),
+		padRight(hdrStyle.Render("AGE"), 6),
 		hdrStyle.Render("TITLE"),
 	))
 
@@ -321,6 +322,7 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 	pri := padRightBg(priorityBadge(r.epic.Priority, selected), 6, bg)
 	typ := padRightBg(typeBadge(r.epic.Type, selected), 10, bg)
 	sts := padRightBg(selBg.Foreground(StatusColors[r.epic.Status]).Render(string(r.epic.Status)), 12, bg)
+	age := padRightBg(selBg.Foreground(colorGray).Render(formatAge(r.epic.Created)), 6, bg)
 	title := selBg.Foreground(colorWhite).Render(r.epic.Title)
 	progress := ""
 	if total > 0 {
@@ -332,7 +334,7 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 		sp = selBg.Render(" ")
 	}
 	ind := selBg.Render(indicator)
-	line := ind + sp + id + pri + typ + sts + sp + title + progress
+	line := ind + sp + id + pri + typ + sts + age + sp + title + progress
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {
@@ -359,6 +361,7 @@ func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
 	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
 	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
 	sts := padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), 12, bg)
+	age := padRightBg(selBg.Foreground(colorGray).Render(formatAge(t.Created)), 6, bg)
 	title := selBg.Foreground(colorWhite).Render(t.Title)
 
 	sp := "  "
@@ -367,7 +370,7 @@ func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
 		sp = selBg.Render("  ")
 		gap = selBg.Render(" ")
 	}
-	line := sp + id + pri + typ + sts + gap + title
+	line := sp + id + pri + typ + sts + age + gap + title
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {

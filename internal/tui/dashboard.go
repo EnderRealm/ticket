@@ -166,13 +166,10 @@ func (m *dashboardModel) buildItems() {
 		m.childCounts = childCounts
 	}
 
-	// Sort by priority ascending, then by age (oldest first within same priority).
-	// This matches the Inbox() sort order and makes the list predictable.
+	// Sort newest first — the default order. Since equals Created, so later
+	// (more recent) tickets come first.
 	sort.SliceStable(m.items, func(i, j int) bool {
-		if m.items[i].Ticket.Priority != m.items[j].Ticket.Priority {
-			return m.items[i].Ticket.Priority < m.items[j].Ticket.Priority
-		}
-		return m.items[i].Since.Before(m.items[j].Since)
+		return m.items[i].Since.After(m.items[j].Since)
 	})
 
 	if m.cursor >= len(m.items) {
@@ -328,11 +325,12 @@ func (m dashboardModel) view() string {
 
 	// Column header.
 	hdrStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	b.WriteString(fmt.Sprintf("  %s%s%s%s %s",
+	b.WriteString(fmt.Sprintf("  %s%s%s%s%s %s",
 		padRight(hdrStyle.Render("ID"), 6),
 		padRight(hdrStyle.Render("PRI"), 6),
 		padRight(hdrStyle.Render("TYPE"), 10),
 		padRight(hdrStyle.Render("STATUS"), 12),
+		padRight(hdrStyle.Render("AGE"), 6),
 		hdrStyle.Render("TITLE"),
 	))
 	b.WriteString("\n")
@@ -379,6 +377,7 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
 	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
 	sts := padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), 12, bg)
+	age := padRightBg(selBg.Foreground(colorGray).Render(formatAge(t.Created)), 6, bg)
 	title := selBg.Foreground(colorWhite).Render(t.Title)
 
 	sp := "  "
@@ -387,7 +386,7 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		sp = selBg.Render("  ")
 		gap = selBg.Render(" ")
 	}
-	line := sp + id + pri + typ + sts + gap + title
+	line := sp + id + pri + typ + sts + age + gap + title
 
 	// On the backlog tab, show "(N children)" next to epic rows so they act as rollups.
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {

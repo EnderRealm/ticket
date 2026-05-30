@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `tk ui`: age column on all list views
+
+### Changed
+- `tk ui`: default sort is now newest-first
+
 ## [7.3.0] - 2026-05-30
 
 ### Added

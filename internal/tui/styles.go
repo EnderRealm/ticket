@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
@@ -293,6 +294,30 @@ func shortType(t ticket.TicketType) string {
 		return "epic"
 	default:
 		return string(t)
+	}
+}
+
+// formatAge renders a compact ticket age for a narrow table column (no "ago"
+// suffix). Distinct from detail.go's formatRelative, which widens to a full date
+// past 30 days.
+func formatAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours())/24)
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dw", int(d.Hours())/24/7)
+	default:
+		return fmt.Sprintf("%dy", int(d.Hours())/24/365)
 	}
 }
 
