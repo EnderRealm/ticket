@@ -13,7 +13,7 @@ var uiCmd = &cobra.Command{
 	Use:   "ui",
 	Short: "Interactive ticket browser",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		app := tui.New(TicketsDir())
+		app := tui.New(TicketsDir(), version())
 		p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)

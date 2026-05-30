@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,6 +45,8 @@ type App struct {
 	store      *ticket.FileStore
 	ticketsDir string
 	projectName string
+	version    string
+	cwd        string
 	tickets    []*ticket.Ticket
 
 	// Views
@@ -66,7 +69,7 @@ type App struct {
 }
 
 // New creates a new App rooted at the given ticket directory.
-func New(ticketsDir string) App {
+func New(ticketsDir, version string) App {
 	store := ticket.NewFileStore(ticketsDir)
 
 	// Derive project name from tickets directory path.
@@ -78,6 +81,16 @@ func New(ticketsDir string) App {
 		projectName = filepath.Base(filepath.Dir(absDir))
 	}
 
+	// Capture launch directory, abbreviating $HOME to ~.
+	cwd, _ := os.Getwd()
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if cwd == home {
+			cwd = "~"
+		} else if strings.HasPrefix(cwd, home+string(os.PathSeparator)) {
+			cwd = "~" + cwd[len(home):]
+		}
+	}
+
 	// Initialize command bar.
 	ti := textinput.New()
 	ti.Placeholder = "Search or /command..."
@@ -87,6 +100,8 @@ func New(ticketsDir string) App {
 		store:       store,
 		ticketsDir:  ticketsDir,
 		projectName: projectName,
+		version:     version,
+		cwd:         cwd,
 		activeTab:   tabInbox,
 		cmdBar:      ti,
 	}
@@ -458,10 +473,18 @@ func (a App) View() string {
 	var b strings.Builder
 	sepStyle := lipgloss.NewStyle().Foreground(colorSubtle)
 
-	// Project name + tab bar on same line.
+	// Project name + tab bar on same line, with an info segment flush right.
 	name := lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(a.projectName)
 	tabs := a.renderTabBar()
-	b.WriteString(" " + name + "  " + StyleDim.Render("—") + "  " + tabs)
+	left := " " + name + "  " + StyleDim.Render("—") + "  " + tabs
+	right := a.renderHeaderInfo()
+	if right != "" {
+		gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap >= 1 {
+			left += strings.Repeat(" ", gap) + right
+		}
+	}
+	b.WriteString(left)
 	b.WriteString("\n")
 	b.WriteString(sepStyle.Render(strings.Repeat("─", a.width)))
 	b.WriteString("\n")
@@ -574,6 +597,42 @@ func (a App) renderTabBar() string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// renderHeaderInfo builds the right-aligned header segment: cwd, version, and
+// ticket counts by status. Returns "" when there is no room for it.
+func (a App) renderHeaderInfo() string {
+	var open, ready, backlog, done int
+	for _, t := range a.tickets {
+		switch t.Status {
+		case ticket.StatusOpen:
+			open++
+		case ticket.StatusReady:
+			ready++
+		case ticket.StatusBacklog:
+			backlog++
+		case ticket.StatusDone, ticket.StatusClosed:
+			done++
+		}
+	}
+	counts := fmt.Sprintf("open %d · ready %d · backlog %d · done %d", open, ready, backlog, done)
+
+	sep := StyleDim.Render(" · ")
+	var parts []string
+	if a.cwd != "" {
+		parts = append(parts, StyleDim.Render(a.cwd))
+	}
+	if a.version != "" {
+		parts = append(parts, StyleDim.Render(a.version))
+	}
+	parts = append(parts, StyleDim.Render(counts))
+	seg := strings.Join(parts, sep)
+
+	// Drop the segment entirely if it cannot fit alongside a minimal left header.
+	if lipgloss.Width(seg) > a.width {
+		return ""
+	}
+	return seg + " "
 }
 
 func (a App) renderOverlay() string {

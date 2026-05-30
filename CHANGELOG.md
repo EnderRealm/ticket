@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- TUI: header now shows an info segment flush right of the tab bar with the launch directory (HOME abbreviated to `~`), the tk version, and ticket counts by status (open/ready/backlog/done). The segment right-aligns when it fits and is dropped on terminals too narrow to hold it.
 - TUI: `y` (yank) keybinding copies the selected/open ticket's ID to the system clipboard from both the list and detail views, with a transient "Copied ID" confirmation. The ID is the token you paste into `/work` and other tk commands.
 
 ### Fixed
