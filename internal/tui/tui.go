@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -309,6 +310,8 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.form = newEditFormModel(a.detail.ticket, a.width, a.contentHeight())
 			a.overlay = overlayForm
 			return a, nil
+		case "y":
+			return a, yankTitle(a.detail.ticket.Title)
 		}
 
 	case overlayForm:
@@ -419,6 +422,10 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "p":
 			if t := a.dashboard.selected(); t != nil {
 				return a, func() tea.Msg { return cyclePriorityMsg{id: t.ID} }
+			}
+		case "y":
+			if t := a.dashboard.selected(); t != nil {
+				return a, yankTitle(t.Title)
 			}
 		}
 	}
@@ -612,7 +619,7 @@ func (a App) renderHelp() string {
 		if a.dashboard.confirmDelete {
 			return ""
 		}
-		help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete  │  tab/shift+tab  ctrl+k search  (q)uit"
+		help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank  │  tab/shift+tab  ctrl+k search  (q)uit"
 	}
 	return StyleHelp.Render(help)
 }
@@ -638,6 +645,16 @@ func (a App) contentHeight() int {
 		h = 1
 	}
 	return h
+}
+
+// yankTitle copies a ticket title to the system clipboard.
+func yankTitle(title string) tea.Cmd {
+	return func() tea.Msg {
+		if err := clipboard.WriteAll(title); err != nil {
+			return statusMsg("error: " + err.Error())
+		}
+		return statusMsg("Copied title")
+	}
 }
 
 // ─── Mutation Handlers ──────────────────────────────────────────────────────

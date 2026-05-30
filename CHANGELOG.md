@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- TUI: `y` (yank) keybinding copies the selected/open ticket's title to the system clipboard from both the list and detail views, with a transient "Copied title" confirmation.
+
 ### Fixed
 - TUI: Detail view now renders the created date and note timestamps in local time. They are stored as UTC, but `tk ui` was formatting the raw UTC value, so the displayed times were off by the machine's UTC offset. Storage and machine-facing JSON output remain UTC.
 
