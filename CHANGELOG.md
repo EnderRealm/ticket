@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.3.0] - 2026-05-30
 
 ### Added
 - TUI: header now shows an info segment flush right of the tab bar with the launch directory (HOME abbreviated to `~`), the tk version, and ticket counts by status (open/ready/backlog/done). The segment right-aligns when it fits and is dropped on terminals too narrow to hold it.
