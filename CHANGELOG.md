@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- TUI: Detail view now renders the created date and note timestamps in local time. They are stored as UTC, but `tk ui` was formatting the raw UTC value, so the displayed times were off by the machine's UTC offset. Storage and machine-facing JSON output remain UTC.
+
 ## [7.2.1] - 2026-04-27
 
 ### Fixed

@@ -326,7 +326,7 @@ func (m detailModel) render() []string {
 	if t.ExternalRef != "" {
 		lines = append(lines, m.field("External Ref", t.ExternalRef))
 	}
-	lines = append(lines, m.field("Created", t.Created.Format("2006-01-02 15:04")))
+	lines = append(lines, m.field("Created", t.Created.Local().Format("2006-01-02 15:04")))
 
 	if len(t.Extra) > 0 {
 		keys := make([]string, 0, len(t.Extra))
@@ -365,7 +365,7 @@ func (m detailModel) render() []string {
 		lines = append(lines, pad+sectionStyle.Render("## Notes"))
 		lines = append(lines, "")
 		for _, n := range t.Notes {
-			lines = append(lines, pad+timestampStyle.Render(n.Timestamp.Format("2006-01-02 15:04:05")))
+			lines = append(lines, pad+timestampStyle.Render(n.Timestamp.Local().Format("2006-01-02 15:04:05")))
 			for _, wl := range wrapText(n.Text, avail) {
 				lines = append(lines, pad+wl.text)
 			}
