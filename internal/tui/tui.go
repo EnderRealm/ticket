@@ -311,7 +311,7 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.overlay = overlayForm
 			return a, nil
 		case "y":
-			return a, yankTitle(a.detail.ticket.Title)
+			return a, yankID(a.detail.ticket.ID)
 		}
 
 	case overlayForm:
@@ -425,7 +425,7 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "y":
 			if t := a.dashboard.selected(); t != nil {
-				return a, yankTitle(t.Title)
+				return a, yankID(t.ID)
 			}
 		}
 	}
@@ -647,13 +647,14 @@ func (a App) contentHeight() int {
 	return h
 }
 
-// yankTitle copies a ticket title to the system clipboard.
-func yankTitle(title string) tea.Cmd {
+// yankID copies a ticket ID to the system clipboard, ready to paste into
+// /work and other tk commands.
+func yankID(id string) tea.Cmd {
 	return func() tea.Msg {
-		if err := clipboard.WriteAll(title); err != nil {
+		if err := clipboard.WriteAll(id); err != nil {
 			return statusMsg("error: " + err.Error())
 		}
-		return statusMsg("Copied title")
+		return statusMsg("Copied ID")
 	}
 }
 
