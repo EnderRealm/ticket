@@ -9,6 +9,66 @@ import (
 	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
+// emDash is the placeholder rendered when a time value is absent.
+const emDash = "—"
+
+// relDuration renders a duration as a compact relative span, e.g. "now", "5m",
+// "2h", "3d", "5w", "1y". Kept short (≤4 chars typical) for narrow columns.
+func relDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
+	default:
+		return fmt.Sprintf("%dy", int(d.Hours()/(24*365)))
+	}
+}
+
+// shortDate renders a compact local date as MM-DD, or an em-dash for zero time.
+func shortDate(t time.Time) string {
+	if t.IsZero() {
+		return emDash
+	}
+	return t.Local().Format("01-02")
+}
+
+// renderColumnHeader renders the leading-padded column header row, underlining
+// the active sort column and appending an arrow for its direction.
+func renderColumnHeader(cols []column, sortIdx int, dir sortDir) string {
+	hdrStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	var b strings.Builder
+	b.WriteString("  ")
+	for i, c := range cols {
+		label := c.name
+		style := hdrStyle
+		if i == sortIdx {
+			arrow := "↑"
+			if dir == desc {
+				arrow = "↓"
+			}
+			label += arrow
+			style = style.Underline(true)
+		}
+		rendered := style.Render(label)
+		if c.width == 0 {
+			b.WriteString(rendered)
+		} else {
+			b.WriteString(padRight(rendered, c.width))
+		}
+	}
+	return b.String()
+}
+
 // ─── Color Palette ──────────────────────────────────────────────────────────
 //
 // Semantic color names mapped to adaptive terminal colors.

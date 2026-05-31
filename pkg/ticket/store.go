@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Store defines the interface for ticket storage backends.
@@ -195,7 +196,30 @@ func (s *FileStore) readFile(path string) (*Ticket, error) {
 	return Parse(f)
 }
 
+// stampTimestamps maintains the created/updated/completed fields. It is the
+// single write choke point so CLI, MCP, and TUI callers all get consistent
+// timestamps. Rules are stateless (no previous status needed):
+//   - updated is always set to now.
+//   - created is set to now only if unset (a move carries it over).
+//   - completed is set to now when the status is done/closed and it is unset;
+//     it is cleared when the status is neither done nor closed.
+func stampTimestamps(t *Ticket) {
+	now := time.Now().UTC()
+	t.Updated = now
+	if t.Created.IsZero() {
+		t.Created = now
+	}
+	if t.Status == StatusDone || t.Status == StatusClosed {
+		if t.Completed.IsZero() {
+			t.Completed = now
+		}
+	} else {
+		t.Completed = time.Time{}
+	}
+}
+
 func (s *FileStore) writeTicket(t *Ticket) error {
+	stampTimestamps(t)
 	data, err := Serialize(t)
 	if err != nil {
 		return err

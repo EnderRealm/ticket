@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 type epicRow struct {
@@ -17,11 +18,34 @@ type epicRow struct {
 }
 
 type epicsModel struct {
-	rows     []epicRow
-	cursor   int
-	offset   int
-	width    int
-	height   int
+	rows    []epicRow
+	cursor  int
+	offset  int
+	width   int
+	height  int
+	sortIdx int
+	sortDir sortDir
+}
+
+// epicColumns is the column set shown on the epics tab. The progress bar is
+// appended separately after the title.
+var epicColumns = []column{colID, colPri, colType, colStatus, colCreated, colModified, colAge, colTitle}
+
+// epicDefaultSortIdx is the index of AGE in epicColumns (default sort, desc).
+func epicDefaultSortIdx() int {
+	for i, c := range epicColumns {
+		if c.name == "AGE" {
+			return i
+		}
+	}
+	return 0
+}
+
+// resetSort restores the epics tab's default sort (AGE descending). Called on
+// every tab switch so the epics view always opens at its default.
+func (m *epicsModel) resetSort() {
+	m.sortIdx = epicDefaultSortIdx()
+	m.sortDir = desc
 }
 
 func (m *epicsModel) setSize(w, h int) {
@@ -54,19 +78,6 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 		}
 	}
 
-	// Sort by status order, then priority, then newest first.
-	sort.SliceStable(epics, func(i, j int) bool {
-		si := ticket.StatusOrder(epics[i].Status)
-		sj := ticket.StatusOrder(epics[j].Status)
-		if si != sj {
-			return si < sj
-		}
-		if epics[i].Priority != epics[j].Priority {
-			return epics[i].Priority < epics[j].Priority
-		}
-		return epics[i].Created.After(epics[j].Created)
-	})
-
 	m.rows = nil
 	for _, t := range epics {
 		m.rows = append(m.rows, epicRow{
@@ -75,6 +86,7 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 			expanded: expanded[t.ID],
 		})
 	}
+	m.sortRows()
 
 	// Clamp cursor.
 	total := m.totalLines()
@@ -84,6 +96,32 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
+}
+
+// sortRows stably sorts the top-level epic rows by the active column, honoring
+// direction, with priority as a secondary tiebreaker. Children remain grouped
+// under their parent — only the epic rows are reordered.
+func (m *epicsModel) sortRows() {
+	if m.sortIdx < 0 || m.sortIdx >= len(epicColumns) {
+		m.sortIdx = epicDefaultSortIdx()
+	}
+	col := epicColumns[m.sortIdx]
+	if col.less == nil {
+		col = colPri
+	}
+	sort.SliceStable(m.rows, func(i, j int) bool {
+		a, b := m.rows[i].epic, m.rows[j].epic
+		if col.less(a, b) != col.less(b, a) {
+			if m.sortDir == desc {
+				return col.less(b, a)
+			}
+			return col.less(a, b)
+		}
+		if col.name != "PRI" {
+			return a.Priority < b.Priority
+		}
+		return false
+	})
 }
 
 // totalLines returns the total number of visible lines (epic headers + expanded children).
@@ -207,6 +245,17 @@ func (m epicsModel) update(msg tea.Msg) (epicsModel, tea.Cmd) {
 			}
 		case " ", "enter":
 			m.toggleExpand()
+		case "s":
+			m.sortIdx = (m.sortIdx + 1) % len(epicColumns)
+			m.sortDir = asc
+			m.sortRows()
+		case "S":
+			if m.sortDir == asc {
+				m.sortDir = desc
+			} else {
+				m.sortDir = asc
+			}
+			m.sortRows()
 		}
 		m.clampOffset()
 
@@ -241,16 +290,10 @@ func (m epicsModel) view() string {
 
 	var b strings.Builder
 
-	// Column header — matches ticket view layout.
-	hdrStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	b.WriteString(fmt.Sprintf("  %s%s%s%s%s %s\n",
-		padRight(hdrStyle.Render("ID"), 6),
-		padRight(hdrStyle.Render("PRI"), 6),
-		padRight(hdrStyle.Render("TYPE"), 10),
-		padRight(hdrStyle.Render("STATUS"), 12),
-		padRight(hdrStyle.Render("AGE"), 6),
-		hdrStyle.Render("TITLE"),
-	))
+	// Column header — matches ticket view layout. Epic rows prefix a 1-char
+	// expand indicator plus a space (2 cols), matching the header's lead.
+	b.WriteString(renderColumnHeader(epicColumns, m.sortIdx, m.sortDir))
+	b.WriteString("\n")
 
 	visible := m.visibleRows()
 	lineIdx := 0
@@ -318,12 +361,6 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 		bg = &selBg
 	}
 
-	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(r.epic.ID)), 6, bg)
-	pri := padRightBg(priorityBadge(r.epic.Priority, selected), 6, bg)
-	typ := padRightBg(typeBadge(r.epic.Type, selected), 10, bg)
-	sts := padRightBg(selBg.Foreground(StatusColors[r.epic.Status]).Render(string(r.epic.Status)), 12, bg)
-	age := padRightBg(selBg.Foreground(colorGray).Render(formatAge(r.epic.Created)), 6, bg)
-	title := selBg.Foreground(colorWhite).Render(r.epic.Title)
 	progress := ""
 	if total > 0 {
 		progress = selBg.Render(fmt.Sprintf("  %s  %s", StyleDim.Render(fmt.Sprintf("%d/%d", done, total)), ProgressBar(done, total, 15)))
@@ -334,7 +371,12 @@ func (m epicsModel) renderEpicRow(r epicRow, selected bool) string {
 		sp = selBg.Render(" ")
 	}
 	ind := selBg.Render(indicator)
-	line := ind + sp + id + pri + typ + sts + age + sp + title + progress
+	now := time.Now()
+	line := ind + sp
+	for _, c := range epicColumns {
+		line += renderCell(c, r.epic, now, selBg, bg, selected)
+	}
+	line += progress
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {
@@ -357,20 +399,15 @@ func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
 		bg = &selBg
 	}
 
-	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(t.ID)), 6, bg)
-	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
-	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
-	sts := padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), 12, bg)
-	age := padRightBg(selBg.Foreground(colorGray).Render(formatAge(t.Created)), 6, bg)
-	title := selBg.Foreground(colorWhite).Render(t.Title)
-
 	sp := "  "
-	gap := " "
 	if selected {
 		sp = selBg.Render("  ")
-		gap = selBg.Render(" ")
 	}
-	line := sp + id + pri + typ + sts + age + gap + title
+	now := time.Now()
+	line := sp
+	for _, c := range epicColumns {
+		line += renderCell(c, t, now, selBg, bg, selected)
+	}
 
 	// Pad to full width for selection highlight.
 	if selected && m.width > 0 {
@@ -381,11 +418,4 @@ func (m epicsModel) renderChildRow(t *ticket.Ticket, selected bool) string {
 	}
 
 	return line
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-1] + "…"
 }

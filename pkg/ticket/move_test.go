@@ -14,19 +14,19 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 	dst := &FileStore{Dir: dstDir}
 
 	original := &Ticket{
-		ID:            "test-ticket-1234",
-		Status:        StatusReady,
-		Type:          TypeFeature,
-		Priority:      1,
-		Tags:          []string{"frontend", "urgent"},
-		ExternalRef:   "GH-42",
-		Branch:        "feature/foo",
-		Created:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		Title:         "Test ticket with all fields",
-		Body:          "Some body text.",
-		Notes:         []Note{{Timestamp: time.Now().UTC(), Text: "initial note"}},
-		Deps:          []string{},
-		Links:         []string{},
+		ID:          "test-ticket-1234",
+		Status:      StatusReady,
+		Type:        TypeFeature,
+		Priority:    1,
+		Tags:        []string{"frontend", "urgent"},
+		ExternalRef: "GH-42",
+		Branch:      "feature/foo",
+		Created:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:       "Test ticket with all fields",
+		Body:        "Some body text.",
+		Notes:       []Note{{Timestamp: time.Now().UTC(), Text: "initial note"}},
+		Deps:        []string{},
+		Links:       []string{},
 	}
 
 	if err := src.Create(original); err != nil {
@@ -135,5 +135,37 @@ func TestMoveTicketCreatesFileInBothDirs(t *testing.T) {
 	}
 	if len(moved.Tags) != 1 || moved.Tags[0] != "alpha" {
 		t.Errorf("Tags: got %v, want [alpha]", moved.Tags)
+	}
+}
+
+func TestMovePreservesCreated(t *testing.T) {
+	src := &FileStore{Dir: t.TempDir()}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	original := &Ticket{
+		ID:       "keep-created-0001",
+		Status:   StatusBacklog,
+		Type:     TypeFeature,
+		Priority: 2,
+		Title:    "Keep",
+		Deps:     []string{},
+		Links:    []string{},
+	}
+	if err := src.Create(original); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	orig, _ := src.Get("keep-created-0001")
+
+	time.Sleep(10 * time.Millisecond)
+	results, err := MoveTicket(src, dst, "keep-created-0001", false)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+	moved, err := dst.Get(results[0].NewID)
+	if err != nil {
+		t.Fatalf("Get moved: %v", err)
+	}
+	if !moved.Created.Equal(orig.Created) {
+		t.Errorf("Created not preserved on move: was %v, now %v", orig.Created, moved.Created)
 	}
 }

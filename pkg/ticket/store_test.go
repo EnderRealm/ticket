@@ -254,3 +254,108 @@ func TestFileStore_RealTicketsDir(t *testing.T) {
 		}
 	}
 }
+
+func TestStampUpdatedBumpedOnUpdate(t *testing.T) {
+	store, _ := testStore(t)
+	tk := &Ticket{ID: "stamp-0001", Title: "Stamp", Status: StatusBacklog, Type: TypeFeature}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err := store.Get("stamp-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if created.Updated.IsZero() {
+		t.Fatal("Updated should be set on Create")
+	}
+
+	// Backdate the on-disk timestamps so the bump is observable regardless of the
+	// clock's resolution: timestamps serialize at RFC3339 second precision, so a
+	// sub-second sleep would round-trip to the same stored value.
+	created.Created = created.Created.Add(-2 * time.Hour)
+	created.Updated = created.Updated.Add(-2 * time.Hour)
+	data, err := Serialize(created)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Dir, "stamp-0001.md"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	before, err := store.Get("stamp-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	created.Title = "Stamp 2"
+	if err := store.Update(created); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	updated, err := store.Get("stamp-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !updated.Updated.After(before.Updated) {
+		t.Errorf("Updated not bumped: was %v, now %v", before.Updated, updated.Updated)
+	}
+}
+
+func TestStampCompletedSetWhenDone(t *testing.T) {
+	store, _ := testStore(t)
+	tk := &Ticket{ID: "done-0001", Title: "Done", Status: StatusOpen, Type: TypeFeature}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	open, _ := store.Get("done-0001")
+	if !open.Completed.IsZero() {
+		t.Error("Completed should be zero while open")
+	}
+
+	open.Status = StatusDone
+	if err := store.Update(open); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	done, _ := store.Get("done-0001")
+	if done.Completed.IsZero() {
+		t.Error("Completed should be set when status becomes done")
+	}
+}
+
+func TestStampCompletedClearedWhenReopened(t *testing.T) {
+	store, _ := testStore(t)
+	tk := &Ticket{ID: "reopen-0001", Title: "Reopen", Status: StatusDone, Type: TypeFeature}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	done, _ := store.Get("reopen-0001")
+	if done.Completed.IsZero() {
+		t.Fatal("Completed should be set for a done ticket")
+	}
+
+	done.Status = StatusOpen
+	if err := store.Update(done); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	reopened, _ := store.Get("reopen-0001")
+	if !reopened.Completed.IsZero() {
+		t.Errorf("Completed should be cleared when reopened, got %v", reopened.Completed)
+	}
+}
+
+func TestStampCreatedPreservedAcrossUpdate(t *testing.T) {
+	store, _ := testStore(t)
+	tk := &Ticket{ID: "create-0001", Title: "Create", Status: StatusBacklog, Type: TypeFeature}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, _ := store.Get("create-0001")
+
+	time.Sleep(10 * time.Millisecond)
+	created.Title = "Changed"
+	if err := store.Update(created); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	after, _ := store.Get("create-0001")
+	if !after.Created.Equal(created.Created) {
+		t.Errorf("Created changed: was %v, now %v", created.Created, after.Created)
+	}
+}

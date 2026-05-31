@@ -3,10 +3,12 @@
 ## [Unreleased]
 
 ### Added
-- `tk ui`: age column on all list views
+- Persisted `updated` and `completed` timestamps on tickets, stamped on every create and update at the store's single write choke point (CLI, MCP, TUI).
+- TUI dashboard time columns between STATUS and TITLE, varying per tab: CREATED and MODIFIED everywhere, plus AGE (inbox/backlog), COMPLETED and DURATION (done), and an adaptive AGE/DURATION column (all).
+- TUI interactive sorting: `s` cycles the sort column, `S` toggles direction, with the active column's header underlined and arrowed. Applies to the ticket tabs and the epics tab (epics tab defaults to AGE descending and sorts the top-level epic rows only).
 
 ### Changed
-- `tk ui`: default sort is now newest-first
+- TUI dashboard rows and headers are now column-driven so they stay aligned.
 
 ## [7.3.0] - 2026-05-30
 

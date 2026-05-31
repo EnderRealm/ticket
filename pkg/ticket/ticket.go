@@ -103,6 +103,8 @@ type Ticket struct {
 	ExternalRef string     `yaml:"external-ref,omitempty"`
 	Branch      string     `yaml:"branch,omitempty"`
 	Created     time.Time  `yaml:"created"`
+	Updated     time.Time  `yaml:"-"`
+	Completed   time.Time  `yaml:"-"`
 
 	// Custom key/value pairs, handled manually in format.go.
 	Extra map[string]string `yaml:"-"`
@@ -138,7 +140,7 @@ func (t *Ticket) Validate() error {
 var reservedKeys = map[string]bool{
 	// YAML frontmatter fields.
 	"id": true, "status": true,
-	"deps": true, "links": true, "created": true, "type": true, "priority": true,
+	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true,
 	// JSON output fields derived from body sections and markdown heading.
 	"title": true, "description": true, "design": true, "notes": true,

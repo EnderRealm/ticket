@@ -279,15 +279,15 @@ func TestSerialize_StatusFields(t *testing.T) {
 
 func TestSerialize_StatusRoundTrip(t *testing.T) {
 	tk := &Ticket{
-		ID:            "t-rt",
-		Status:        StatusOpen,
-		Type:          TypeBug,
-		Priority:      2,
+		ID:       "t-rt",
+		Status:   StatusOpen,
+		Type:     TypeBug,
+		Priority: 2,
 		Deps:     []string{},
 		Links:    []string{},
 		Created:  time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
-		Title:         "Round trip",
-		Body:          "\nBug description.\n",
+		Title:    "Round trip",
+		Body:     "\nBug description.\n",
 	}
 
 	data, err := Serialize(tk)

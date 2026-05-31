@@ -56,6 +56,14 @@ func Parse(r io.Reader) (*Ticket, error) {
 			}
 		}
 
+		// Updated and Completed use yaml:"-" and are parsed manually here.
+		if v, ok := raw["updated"]; ok {
+			t.Updated = parseTimeValue(v)
+		}
+		if v, ok := raw["completed"]; ok {
+			t.Completed = parseTimeValue(v)
+		}
+
 		// Migrate legacy stage → status if status is not already set.
 		if t.Status == "" {
 			if stage, ok := raw["stage"]; ok {
@@ -115,6 +123,10 @@ func Serialize(t *Ticket) ([]byte, error) {
 	writeFlowArray(&buf, "deps", t.Deps)
 	writeFlowArray(&buf, "links", t.Links)
 	writeField(&buf, "created", t.Created.UTC().Format(time.RFC3339))
+	writeField(&buf, "updated", t.Updated.UTC().Format(time.RFC3339))
+	if !t.Completed.IsZero() {
+		writeField(&buf, "completed", t.Completed.UTC().Format(time.RFC3339))
+	}
 	writeField(&buf, "type", string(t.Type))
 	writeField(&buf, "priority", fmt.Sprintf("%d", t.Priority))
 	if t.ExternalRef != "" {
@@ -349,6 +361,21 @@ func UpdateSection(body, heading, content string) string {
 		return body[:notesIdx] + "\n" + marker + "\n\n" + content + "\n" + body[notesIdx:]
 	}
 	return body + "\n" + marker + "\n\n" + content + "\n"
+}
+
+// parseTimeValue extracts a time.Time from a YAML-decoded frontmatter value,
+// which may already be a time.Time or an RFC3339 string. Returns the zero time
+// if the value cannot be parsed.
+func parseTimeValue(v interface{}) time.Time {
+	switch val := v.(type) {
+	case time.Time:
+		return val
+	case string:
+		if t, err := time.Parse(time.RFC3339, val); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 func writeField(buf *bytes.Buffer, key, value string) {

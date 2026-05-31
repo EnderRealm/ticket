@@ -4,12 +4,28 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
+type sortDir int
+
+const (
+	asc sortDir = iota
+	desc
+)
+
+// column describes one rendered column: its header, fixed width (0 = flexible,
+// used by TITLE), a row renderer, and an ascending comparison for sorting.
+type column struct {
+	name   string
+	width  int
+	render func(t *ticket.Ticket, now time.Time) string
+	less   func(a, b *ticket.Ticket) bool
+}
 
 type dashboardModel struct {
 	all            []*ticket.Ticket
@@ -25,15 +41,146 @@ type dashboardModel struct {
 	typeFilter     ticket.TicketType
 	confirmDelete  bool
 	deleteTargetID string
+	sortIdx        int
+	sortDir        sortDir
+}
+
+// Shared column definitions. ID/PRI/TYPE/STATUS keep their existing widths and
+// rendering; time columns are inserted between STATUS and TITLE.
+var (
+	colID = column{
+		name: "ID", width: 6,
+		render: func(t *ticket.Ticket, _ time.Time) string { return IDSuffix(t.ID) },
+		less:   func(a, b *ticket.Ticket) bool { return a.ID < b.ID },
+	}
+	colPri = column{
+		name: "PRI", width: 6,
+		render: func(t *ticket.Ticket, _ time.Time) string { return priorityLabel(t.Priority) },
+		less:   func(a, b *ticket.Ticket) bool { return a.Priority < b.Priority },
+	}
+	colType = column{
+		name: "TYPE", width: 10,
+		render: func(t *ticket.Ticket, _ time.Time) string { return shortType(t.Type) },
+		less:   func(a, b *ticket.Ticket) bool { return shortType(a.Type) < shortType(b.Type) },
+	}
+	colStatus = column{
+		name: "STATUS", width: 12,
+		render: func(t *ticket.Ticket, _ time.Time) string { return string(t.Status) },
+		less:   func(a, b *ticket.Ticket) bool { return ticket.StatusOrder(a.Status) < ticket.StatusOrder(b.Status) },
+	}
+	colCreated = column{
+		name: "CREATED", width: 9,
+		render: func(t *ticket.Ticket, _ time.Time) string { return shortDate(t.Created) },
+		less:   func(a, b *ticket.Ticket) bool { return a.Created.Before(b.Created) },
+	}
+	colModified = column{
+		name: "MODIFIED", width: 9,
+		render: func(t *ticket.Ticket, now time.Time) string { return relDuration(now.Sub(modifiedTime(t))) },
+		less:   func(a, b *ticket.Ticket) bool { return modifiedTime(a).Before(modifiedTime(b)) },
+	}
+	colAge = column{
+		name: "AGE", width: 6,
+		render: func(t *ticket.Ticket, now time.Time) string { return relDuration(now.Sub(t.Created)) },
+		less:   func(a, b *ticket.Ticket) bool { return a.Created.Before(b.Created) },
+	}
+	colCompleted = column{
+		name: "COMPLETED", width: 11,
+		render: func(t *ticket.Ticket, _ time.Time) string { return shortDate(t.Completed) },
+		less:   func(a, b *ticket.Ticket) bool { return a.Completed.Before(b.Completed) },
+	}
+	colDuration = column{
+		name: "DURATION", width: 9,
+		render: func(t *ticket.Ticket, _ time.Time) string {
+			if t.Completed.IsZero() {
+				return emDash
+			}
+			return relDuration(t.Completed.Sub(t.Created))
+		},
+		less: func(a, b *ticket.Ticket) bool { return durationSpan(a) < durationSpan(b) },
+	}
+	// colAgeOrDuration is the adaptive trailing column on the All tab: render
+	// DURATION when completed, otherwise AGE; sort by the same adaptive span.
+	colAgeOrDuration = column{
+		name: "AGE", width: 6,
+		render: func(t *ticket.Ticket, now time.Time) string {
+			if !t.Completed.IsZero() {
+				return relDuration(t.Completed.Sub(t.Created))
+			}
+			return relDuration(now.Sub(t.Created))
+		},
+		less: func(a, b *ticket.Ticket) bool { return adaptiveSpan(a) < adaptiveSpan(b) },
+	}
+	colTitle = column{
+		name: "TITLE", width: 0,
+		render: func(t *ticket.Ticket, _ time.Time) string { return t.Title },
+	}
+)
+
+// modifiedTime returns Updated, falling back to Created when Updated is zero.
+func modifiedTime(t *ticket.Ticket) time.Time {
+	if t.Updated.IsZero() {
+		return t.Created
+	}
+	return t.Updated
+}
+
+// durationSpan is the completed-minus-created span, or a large sentinel so
+// uncompleted tickets sort consistently.
+func durationSpan(t *ticket.Ticket) time.Duration {
+	if t.Completed.IsZero() {
+		return 1<<63 - 1
+	}
+	return t.Completed.Sub(t.Created)
+}
+
+// adaptiveSpan mirrors colAgeOrDuration: completed span if done, else age.
+func adaptiveSpan(t *ticket.Ticket) time.Duration {
+	if !t.Completed.IsZero() {
+		return t.Completed.Sub(t.Created)
+	}
+	return time.Since(t.Created)
+}
+
+// columnsFor returns the column set for a tab.
+func columnsFor(tab tabID) []column {
+	switch tab {
+	case tabDone:
+		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colCompleted, colDuration, colTitle}
+	case tabAll:
+		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colCompleted, colAgeOrDuration, colTitle}
+	default: // inbox, backlog
+		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colAge, colTitle}
+	}
+}
+
+// defaultSort returns the natural sort column index and direction for a tab.
+func defaultSort(tab tabID) (int, sortDir) {
+	cols := columnsFor(tab)
+	switch tab {
+	case tabDone, tabAll:
+		for i, c := range cols {
+			if c.name == "COMPLETED" {
+				return i, desc
+			}
+		}
+	}
+	// Inbox and backlog default to PRI ascending.
+	for i, c := range cols {
+		if c.name == "PRI" {
+			return i, asc
+		}
+	}
+	return 0, asc
 }
 
 func newDashboardModel(tickets []*ticket.Ticket, w, h int) dashboardModel {
 	m := dashboardModel{
-		all:    tickets,
+		all:       tickets,
 		activeTab: tabInbox,
-		width:  w,
-		height: h,
+		width:     w,
+		height:    h,
 	}
+	m.sortIdx, m.sortDir = defaultSort(tabInbox)
 	m.buildItems()
 	return m
 }
@@ -166,16 +313,40 @@ func (m *dashboardModel) buildItems() {
 		m.childCounts = childCounts
 	}
 
-	// Sort newest first — the default order. Since equals Created, so later
-	// (more recent) tickets come first.
-	sort.SliceStable(m.items, func(i, j int) bool {
-		return m.items[i].Since.After(m.items[j].Since)
-	})
+	m.sortItems()
 
 	if m.cursor >= len(m.items) {
 		m.cursor = max(0, len(m.items)-1)
 	}
 	m.clampOffset()
+}
+
+// sortItems stably sorts items by the active column, honoring direction, with
+// priority as a secondary tiebreaker when priority is not the active column.
+func (m *dashboardModel) sortItems() {
+	cols := columnsFor(m.activeTab)
+	if m.sortIdx < 0 || m.sortIdx >= len(cols) {
+		m.sortIdx = 0
+	}
+	col := cols[m.sortIdx]
+	if col.less == nil {
+		col = colPri
+	}
+	sort.SliceStable(m.items, func(i, j int) bool {
+		a, b := m.items[i].Ticket, m.items[j].Ticket
+		if col.less(a, b) != col.less(b, a) {
+			if m.sortDir == desc {
+				return col.less(b, a)
+			}
+			return col.less(a, b)
+		}
+		// Equal on the active key — fall back to priority ascending unless
+		// priority is already the active key.
+		if col.name != "PRI" {
+			return a.Priority < b.Priority
+		}
+		return false
+	})
 }
 
 func (m dashboardModel) selected() *ticket.Ticket {
@@ -291,6 +462,20 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		case "/":
 			m.filterActive = true
 			m.filterText = ""
+		case "s":
+			cols := columnsFor(m.activeTab)
+			m.sortIdx = (m.sortIdx + 1) % len(cols)
+			m.sortDir = asc
+			m.sortItems()
+			m.clampOffset()
+		case "S":
+			if m.sortDir == asc {
+				m.sortDir = desc
+			} else {
+				m.sortDir = asc
+			}
+			m.sortItems()
+			m.clampOffset()
 		case "esc":
 			if m.filterText != "" {
 				m.filterText = ""
@@ -323,16 +508,7 @@ func (m dashboardModel) view() string {
 
 	var b strings.Builder
 
-	// Column header.
-	hdrStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	b.WriteString(fmt.Sprintf("  %s%s%s%s%s %s",
-		padRight(hdrStyle.Render("ID"), 6),
-		padRight(hdrStyle.Render("PRI"), 6),
-		padRight(hdrStyle.Render("TYPE"), 10),
-		padRight(hdrStyle.Render("STATUS"), 12),
-		padRight(hdrStyle.Render("AGE"), 6),
-		hdrStyle.Render("TITLE"),
-	))
+	b.WriteString(renderColumnHeader(columnsFor(m.activeTab), m.sortIdx, m.sortDir))
 	b.WriteString("\n")
 
 	// Rows.
@@ -361,8 +537,29 @@ func (m dashboardModel) view() string {
 	return b.String()
 }
 
+// renderCell renders one row cell with the column's visual style, padded to the
+// column width (TITLE is flexible). bg/selBg carry the selection highlight.
+func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style, bg *lipgloss.Style, selected bool) string {
+	switch c.name {
+	case "PRI":
+		return padRightBg(priorityBadge(t.Priority, selected), c.width, bg)
+	case "TYPE":
+		return padRightBg(typeBadge(t.Type, selected), c.width, bg)
+	case "STATUS":
+		return padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), c.width, bg)
+	case "ID":
+		return padRightBg(selBg.Foreground(colorGray).Render(c.render(t, now)), c.width, bg)
+	case "TITLE":
+		return selBg.Foreground(colorWhite).Render(c.render(t, now))
+	default:
+		// Time columns: subtle gray text.
+		return padRightBg(selBg.Foreground(colorSubtle).Render(c.render(t, now)), c.width, bg)
+	}
+}
+
 func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) string {
 	t := item.Ticket
+	now := time.Now()
 
 	selBg := lipgloss.NewStyle()
 	if selected {
@@ -373,20 +570,14 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		bg = &selBg
 	}
 
-	id := padRightBg(selBg.Foreground(colorGray).Render(IDSuffix(t.ID)), 6, bg)
-	pri := padRightBg(priorityBadge(t.Priority, selected), 6, bg)
-	typ := padRightBg(typeBadge(t.Type, selected), 10, bg)
-	sts := padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), 12, bg)
-	age := padRightBg(selBg.Foreground(colorGray).Render(formatAge(t.Created)), 6, bg)
-	title := selBg.Foreground(colorWhite).Render(t.Title)
-
 	sp := "  "
-	gap := " "
 	if selected {
 		sp = selBg.Render("  ")
-		gap = selBg.Render(" ")
 	}
-	line := sp + id + pri + typ + sts + age + gap + title
+	line := sp
+	for _, c := range columnsFor(m.activeTab) {
+		line += renderCell(c, t, now, selBg, bg, selected)
+	}
 
 	// On the backlog tab, show "(N children)" next to epic rows so they act as rollups.
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
@@ -405,4 +596,3 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 
 	return line
 }
-

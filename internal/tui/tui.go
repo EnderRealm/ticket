@@ -96,7 +96,7 @@ func New(ticketsDir, version string) App {
 	ti.Placeholder = "Search or /command..."
 	ti.CharLimit = 256
 
-	return App{
+	a := App{
 		store:       store,
 		ticketsDir:  ticketsDir,
 		projectName: projectName,
@@ -105,6 +105,11 @@ func New(ticketsDir, version string) App {
 		activeTab:   tabInbox,
 		cmdBar:      ti,
 	}
+	a.dashboard.activeTab = tabInbox
+	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(tabInbox)
+	a.epics.sortIdx = epicDefaultSortIdx()
+	a.epics.sortDir = desc
+	return a
 }
 
 // ─── Messages ───────────────────────────────────────────────────────────────
@@ -673,12 +678,12 @@ func (a App) renderFilterInfo() string {
 func (a App) renderHelp() string {
 	var help string
 	if a.activeTab == tabEpics {
-		help = "↑↓ select  enter expand  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
+		help = "↑↓ select  enter expand  (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
 	} else {
 		if a.dashboard.confirmDelete {
 			return ""
 		}
-		help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank  │  tab/shift+tab  ctrl+k search  (q)uit"
+		help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 	}
 	return StyleHelp.Render(help)
 }
@@ -693,7 +698,9 @@ func (a *App) syncDashboardTab() {
 	a.dashboard.activeTab = a.activeTab
 	a.dashboard.cursor = 0
 	a.dashboard.offset = 0
+	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(a.activeTab)
 	a.dashboard.buildItems()
+	a.epics.resetSort()
 }
 
 // contentHeight returns the available height for tab/overlay content,
