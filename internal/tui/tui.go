@@ -130,10 +130,6 @@ type deleteTicketMsg struct {
 	id string
 }
 
-type openTicketMsg struct {
-	id string
-}
-
 type moveTicketMsg struct {
 	id         string
 	targetRepo string
@@ -238,14 +234,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleCreateTicket(msg)
 	case deleteTicketMsg:
 		return a, a.handleDelete(msg.id)
-	case openTicketMsg:
-		for _, t := range a.tickets {
-			if t.ID == msg.id {
-				a.openDashboardTicket(t)
-				break
-			}
-		}
-		return a, nil
 	case moveTicketMsg:
 		return a, a.handleMove(msg.id, msg.targetRepo)
 	case formCancelMsg:
@@ -687,7 +675,7 @@ func (a App) renderHelp() string {
 		// While searching, most shortcuts type into the filter; show only the
 		// keys that actually work in search mode.
 		if a.dashboard.filterActive {
-			help = "↑↓ select  enter open  esc clear"
+			help = "↑↓ select  enter apply  esc clear"
 		} else {
 			help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 		}

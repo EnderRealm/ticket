@@ -442,13 +442,9 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 					m.clampOffset()
 				}
 			case "enter":
-				// Open the highlighted result, keeping the filtered view behind
-				// the overlay. With no results, just dismiss the search box.
-				if t := m.selected(); t != nil {
-					id := t.ID
-					m.filterActive = false
-					return m, func() tea.Msg { return openTicketMsg{id: id} }
-				}
+				// Commit the filter: close the search box but keep the list
+				// narrowed so row commands operate on the filtered set. Press
+				// enter/o again to open the highlighted ticket.
 				m.filterActive = false
 			case "backspace":
 				if len(m.filterText) > 0 {

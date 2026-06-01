@@ -14,9 +14,9 @@
 ### Fixed
 - Core: `Serialize` no longer writes the `updated` field when it is the zero value, so legacy/unstamped tickets stop showing `updated: 0001-01-01T00:00:00Z` (matches the existing handling of `completed`).
 - CLI: `tk show` (default) and `tk create` now render the `created`, `updated`, and `completed` frontmatter timestamps in local wall-clock time instead of UTC. Storage, `tk show --metadata`, and machine-facing JSON output remain UTC.
-- TUI: search mode is now navigable. While the filter box is active, arrow keys and the mouse wheel move the selection through the filtered results, and `enter` opens the highlighted ticket (or jumps to the focused epic for backlog rollups) instead of just dismissing the box. Typing still refines the filter, backspace edits, and esc clears.
+- TUI: search mode is now navigable. While the filter box is active, arrow keys and the mouse wheel move the selection through the filtered results, and `enter` commits the filter — closing the search box but keeping the list narrowed so row commands (edit/move/delete/priority/yank) operate on the filtered set. Press `enter`/`o` again to open the highlighted ticket. Typing still refines the filter, backspace edits, and esc clears.
 - TUI: clearing the search with esc now keeps the cursor on the selected row instead of resetting to the top of the list.
-- TUI: while the search box is active, the footer help shows only the keys that work in search mode (navigate, open, clear) instead of the full command list.
+- TUI: while the search box is active, the footer help shows only the keys that work in search mode (navigate, apply, clear) instead of the full command list.
 - TUI: sorting by the TITLE column sorted by priority instead of title. The column had no comparator, so it fell through to the priority fallback; it now sorts alphabetically (case-insensitive).
 - TUI: the active sort arrow on the MODIFIED and DURATION headers touched the next column; both widened so the arrow always has a gap.
 

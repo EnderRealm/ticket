@@ -219,7 +219,7 @@ func TestRenderHelpHidesInertKeysInSearch(t *testing.T) {
 			t.Errorf("search-mode help should not advertise inert key %q, got:\n%s", k, search)
 		}
 	}
-	for _, k := range []string{"select", "open", "clear"} {
+	for _, k := range []string{"select", "apply", "clear"} {
 		if !strings.Contains(search, k) {
 			t.Errorf("search-mode help should mention %q, got:\n%s", k, search)
 		}
@@ -270,28 +270,30 @@ func TestDashboardFilterEscPreservesSelection(t *testing.T) {
 	}
 }
 
-func TestDashboardFilterEnterOpensSelection(t *testing.T) {
+func TestDashboardFilterEnterCommitsFilter(t *testing.T) {
 	m := filterTestModel()
 	m.cursor = 1
 
 	m, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.filterActive {
-		t.Error("after enter: filter should be inactive")
+		t.Error("after enter: filter box should be closed")
 	}
-	if cmd == nil {
-		t.Fatal("after enter: expected a command")
+	if m.filterText != "alpha" {
+		t.Errorf("after enter: filterText = %q, want %q (filter stays applied)", m.filterText, "alpha")
 	}
-	msg := cmd()
-	open, ok := msg.(openTicketMsg)
-	if !ok {
-		t.Fatalf("after enter: expected openTicketMsg, got %T", msg)
+	if m.cursor != 1 {
+		t.Errorf("after enter: cursor = %d, want 1 (cursor unchanged)", m.cursor)
 	}
-	if open.id != "b-0002" {
-		t.Errorf("after enter: open id = %q, want b-0002", open.id)
+	if cmd != nil {
+		t.Error("after enter: expected nil command (no ticket opened)")
+	}
+	// Row commands now act on the committed selection.
+	if sel := m.selected(); sel == nil || sel.ID != "b-0002" {
+		t.Errorf("after enter: selected = %v, want b-0002", sel)
 	}
 }
 
-func TestDashboardFilterEnterNoResultsNoMessage(t *testing.T) {
+func TestDashboardFilterEnterNoResultsCommits(t *testing.T) {
 	m := filterTestModel()
 	m.filterText = "zzz-no-match"
 	m.buildItems()
@@ -304,7 +306,10 @@ func TestDashboardFilterEnterNoResultsNoMessage(t *testing.T) {
 		t.Error("after enter with no results: expected nil command")
 	}
 	if m.filterActive {
-		t.Error("after enter with no results: filter should be inactive")
+		t.Error("after enter with no results: filter box should be closed")
+	}
+	if m.filterText != "zzz-no-match" {
+		t.Errorf("after enter with no results: filterText = %q, want it preserved", m.filterText)
 	}
 }
 
