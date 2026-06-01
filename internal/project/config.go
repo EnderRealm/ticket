@@ -143,6 +143,31 @@ func CentralProjectDir(projectName string) (string, error) {
 	return filepath.Join(root, "tickets", projectName), nil
 }
 
+// ResolveWorkDir returns the project's real repo working directory for a tickets
+// directory. With the central store, ticketsDir is <centralRoot>/tickets/<project>
+// and its parent is the central tickets dir, NOT the repo — so the project's
+// recorded `path` from config is used when available. Falls back to the parent
+// of ticketsDir (correct for a local .tickets/ at the repo root) when the project
+// has no configured path.
+func ResolveWorkDir(ticketsDir string, cfg Config) string {
+	abs, err := filepath.Abs(ticketsDir)
+	if err != nil {
+		abs = ticketsDir
+	}
+
+	// Derive the project name the same way the TUI does: the base of the
+	// tickets dir, or its parent's base when it's a local ".tickets" dir.
+	name := filepath.Base(abs)
+	if name == ".tickets" {
+		name = filepath.Base(filepath.Dir(abs))
+	}
+
+	if p, ok := cfg.Projects[name]; ok && p.Path != "" {
+		return p.Path
+	}
+	return filepath.Dir(abs)
+}
+
 // --- Internal helpers ---
 
 // loadLocalOnly reads ~/.ticket/config.yaml without merging shared config.

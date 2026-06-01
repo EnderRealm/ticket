@@ -70,8 +70,10 @@ type App struct {
 	err    error
 }
 
-// New creates a new App rooted at the given ticket directory.
-func New(ticketsDir, version, spawnCommand string) App {
+// New creates a new App rooted at the given ticket directory. workDir is the
+// project's real repo directory (resolved by the caller from config), used to
+// spawn `/work` sessions in the right place.
+func New(ticketsDir, version, spawnCommand, workDir string) App {
 	store := ticket.NewFileStore(ticketsDir)
 
 	// Derive project name from tickets directory path.
@@ -104,7 +106,7 @@ func New(ticketsDir, version, spawnCommand string) App {
 		projectName:  projectName,
 		version:      version,
 		cwd:          cwd,
-		workDir:      filepath.Dir(absDir),
+		workDir:      workDir,
 		spawnCommand: spawnCommand,
 		activeTab:    tabInbox,
 		cmdBar:       ti,

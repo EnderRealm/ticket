@@ -55,12 +55,10 @@ func TestBuildSpawnCommandDefaultQuotesPathWithSpaces(t *testing.T) {
 	}
 }
 
-func TestNewWorkDirIsParentOfTicketsDir(t *testing.T) {
-	dir := t.TempDir()
-	ticketsDir := filepath.Join(dir, ".tickets")
-	a := New(ticketsDir, "v0", "")
-	absDir, _ := filepath.Abs(ticketsDir)
-	if want := filepath.Dir(absDir); a.workDir != want {
-		t.Errorf("workDir = %q, want %q", a.workDir, want)
+func TestNewStoresWorkDir(t *testing.T) {
+	// New stores the workDir resolved by the caller; spawn uses it verbatim.
+	a := New(filepath.Join(t.TempDir(), ".tickets"), "v0", "", "/repo/root")
+	if a.workDir != "/repo/root" {
+		t.Errorf("workDir = %q, want /repo/root", a.workDir)
 	}
 }

@@ -551,3 +551,32 @@ func TestNewMachineFlow(t *testing.T) {
 		t.Error("local path lost after save")
 	}
 }
+
+func TestResolveWorkDir(t *testing.T) {
+	cfg := Config{
+		Projects: map[string]ProjectConfig{
+			"ticket": {Path: "/Users/steve/code/ticket"},
+			"nopath": {Path: ""},
+		},
+	}
+
+	// Central store: <root>/tickets/<project> → the project's configured path.
+	if got := ResolveWorkDir("/Users/steve/code/tickets-store/tickets/ticket", cfg); got != "/Users/steve/code/ticket" {
+		t.Errorf("central store: got %q, want /Users/steve/code/ticket", got)
+	}
+
+	// No config entry → parent of the tickets dir.
+	if got := ResolveWorkDir("/some/repo/.tickets", cfg); got != "/some/repo" {
+		t.Errorf("local .tickets: got %q, want /some/repo", got)
+	}
+
+	// Project present but empty path → fall back to parent of the tickets dir.
+	if got := ResolveWorkDir("/central/tickets/nopath", cfg); got != "/central/tickets" {
+		t.Errorf("empty path fallback: got %q, want /central/tickets", got)
+	}
+
+	// Unknown project under central store → parent fallback.
+	if got := ResolveWorkDir("/central/tickets/unknown", cfg); got != "/central/tickets" {
+		t.Errorf("unknown project: got %q, want /central/tickets", got)
+	}
+}
