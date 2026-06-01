@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 func TestWrapText(t *testing.T) {
@@ -164,6 +167,77 @@ func TestFormCtrlSSubmitsFromChoiceField(t *testing.T) {
 	}
 	if submit.ticketType != ticketTypes[1] {
 		t.Errorf("submitted type: got %v, want %v", submit.ticketType, ticketTypes[1])
+	}
+}
+
+func TestFormViewSelectorsRenderOptions(t *testing.T) {
+	m := newEditFormModel(&ticket.Ticket{
+		ID:       "test-789",
+		Title:    "Test",
+		Type:     ticket.TypeFeature,
+		Priority: 2,
+		Status:   ticket.StatusOpen,
+	}, 80, 40)
+
+	output := m.view()
+
+	wantLabels := []string{
+		string(ticket.TypeFeature), string(ticket.TypeBug), string(ticket.TypeEpic),
+		"P0", "P1", "P2", "P3", "P4",
+		string(ticket.StatusBacklog), string(ticket.StatusReady), string(ticket.StatusOpen),
+		string(ticket.StatusDone), string(ticket.StatusClosed),
+	}
+	for _, label := range wantLabels {
+		if !strings.Contains(output, label) {
+			t.Errorf("form view missing selector option %q", label)
+		}
+	}
+}
+
+func TestFormViewSelectorFocusChangesRendering(t *testing.T) {
+	// Force a true-color profile so chip styles emit their color codes. Without
+	// it the styled substrings collapse to bare/padded text that collides with
+	// layout spacing, making the negative assertions below unreliable.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	base := newFormModel(80, 40)
+	base.fields[fieldTitle] = "Test"
+
+	focused := base
+	focused.focus = fieldType
+	focusedOut := focused.view()
+
+	unfocused := base
+	unfocused.focus = fieldTitle
+	unfocusedOut := unfocused.view()
+
+	if focusedOut == unfocusedOut {
+		t.Fatal("expected type selector rendering to differ when its row is focused vs not")
+	}
+
+	// Focused: selected option renders as the inverse chip; unfocused: as bold
+	// bright plain text (no chip).
+	selected := ticketTypes[base.typeIdx]
+	focusedChip := StyleChipSelectedFocused.Render(string(selected))
+	if !strings.Contains(focusedOut, focusedChip) {
+		t.Errorf("focused type selector should render selected option as the focused chip %q", focusedChip)
+	}
+	if strings.Contains(unfocusedOut, focusedChip) {
+		t.Errorf("unfocused type selector should not render the focused chip %q", focusedChip)
+	}
+	if !strings.Contains(unfocusedOut, StyleChipSelected.Render(string(selected))) {
+		t.Error("unfocused type selector should render selected option as bold bright text")
+	}
+
+	// An unselected option always uses the dim/muted styling, never a selected chip.
+	unselected := string(ticketTypes[1])
+	if !strings.Contains(focusedOut, StyleChipUnselected.Render(unselected)) {
+		t.Error("unselected option should render with dim/muted styling")
+	}
+	if strings.Contains(focusedOut, StyleChipSelectedFocused.Render(unselected)) {
+		t.Error("unselected option should not be rendered with the focused chip styling")
 	}
 }
 

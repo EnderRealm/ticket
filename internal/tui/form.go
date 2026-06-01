@@ -267,6 +267,24 @@ func (m formModel) submit() tea.Msg {
 	return msg
 }
 
+// renderChips renders a selector row's options with neutral selection/focus
+// highlighting. selectedIdx is the chosen option; focused is whether this
+// selector's row currently has focus.
+func renderChips(options []string, selectedIdx int, focused bool) string {
+	var parts []string
+	for i, opt := range options {
+		switch {
+		case i == selectedIdx && focused:
+			parts = append(parts, StyleChipSelectedFocused.Render(opt))
+		case i == selectedIdx:
+			parts = append(parts, StyleChipSelected.Render(opt))
+		default:
+			parts = append(parts, StyleChipUnselected.Render(opt))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (m formModel) view() string {
 	// Render all form content into lines first, then apply viewport clipping.
 	var lines []string
@@ -285,38 +303,23 @@ func (m formModel) view() string {
 
 		switch i {
 		case fieldType:
-			var parts []string
-			for j, tt := range ticketTypes {
-				text := string(tt)
-				if j == m.typeIdx {
-					parts = append(parts, SelectedChip(TypeColors[tt], text))
-				} else {
-					parts = append(parts, ColorType(tt, text))
-				}
+			var opts []string
+			for _, tt := range ticketTypes {
+				opts = append(opts, string(tt))
 			}
-			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
+			lines = append(lines, cursor+label+" "+renderChips(opts, m.typeIdx, i == m.focus))
 		case fieldPriority:
-			var parts []string
+			var opts []string
 			for j := 0; j < 5; j++ {
-				text := "P" + string(rune('0'+j))
-				if j == m.priority {
-					parts = append(parts, SelectedChip(PriorityColors[j], text))
-				} else {
-					parts = append(parts, ColorPriority(j, text))
-				}
+				opts = append(opts, "P"+string(rune('0'+j)))
 			}
-			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
+			lines = append(lines, cursor+label+" "+renderChips(opts, m.priority, i == m.focus))
 		case fieldStatus:
-			var parts []string
-			for j, s := range allStatuses {
-				text := string(s)
-				if j == m.statusIdx {
-					parts = append(parts, SelectedChip(StatusColors[s], text))
-				} else {
-					parts = append(parts, ColorStatus(s, text))
-				}
+			var opts []string
+			for _, s := range allStatuses {
+				opts = append(opts, string(s))
 			}
-			lines = append(lines, cursor+label+" "+strings.Join(parts, "  "))
+			lines = append(lines, cursor+label+" "+renderChips(opts, m.statusIdx, i == m.focus))
 		default:
 			// Text fields: wrap long text across multiple lines at word boundaries.
 			text := m.fields[i]

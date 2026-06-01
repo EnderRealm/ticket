@@ -159,6 +159,11 @@ var (
 	StyleRow         = lipgloss.NewStyle()
 	StyleRowSelected = lipgloss.NewStyle().Bold(true).Background(colorSurface)
 
+	// Selector chips (form Type/Priority/Status) — neutral, focus-aware.
+	StyleChipUnselected      = lipgloss.NewStyle().Foreground(colorMuted)
+	StyleChipSelected        = lipgloss.NewStyle().Bold(true).Foreground(colorWhite)
+	StyleChipSelectedFocused = lipgloss.NewStyle().Bold(true).Foreground(colorBlack).Background(colorAccent).Padding(0, 1)
+
 	// Field labels (detail view, form)
 	StyleFieldKey = lipgloss.NewStyle().Bold(true).Foreground(colorInfo).Width(14)
 	StyleFieldVal = lipgloss.NewStyle()

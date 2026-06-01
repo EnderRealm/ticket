@@ -9,6 +9,7 @@
 
 ### Changed
 - TUI dashboard rows and headers are now column-driven so they stay aligned.
+- TUI: the create/edit form Type, Priority, and Status selectors now use neutral uniform colors with a focus-aware selection highlight (dim unselected, bold-white selected, inverse accent chip when the row is focused) instead of per-domain colors.
 
 ### Fixed
 - Core: `Serialize` no longer writes the `updated` field when it is the zero value, so legacy/unstamped tickets stop showing `updated: 0001-01-01T00:00:00Z` (matches the existing handling of `completed`).
