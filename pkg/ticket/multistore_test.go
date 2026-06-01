@@ -84,7 +84,7 @@ func TestMultiStoreGetAmbiguous(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ambiguity error, got nil")
 	}
-	if got := err.Error(); !strings.Contains(got,"ambiguous") {
+	if got := err.Error(); !strings.Contains(got, "ambiguous") {
 		t.Errorf("expected ambiguous error, got: %s", got)
 	}
 }
@@ -197,7 +197,7 @@ func TestMultiStoreCreateRequiresProject(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for bare ID create")
 	}
-	if got := err.Error(); !strings.Contains(got,"project is required") {
+	if got := err.Error(); !strings.Contains(got, "project is required") {
 		t.Errorf("expected 'project is required' error, got: %s", got)
 	}
 }

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/EnderRealm/ticket/pkg/ticket"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Aliases to centralized styles (styles.go)

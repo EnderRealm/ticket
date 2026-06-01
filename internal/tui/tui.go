@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 // ─── Tabs & Overlays ────────────────────────────────────────────────────────
@@ -42,12 +42,12 @@ const (
 
 // App is the top-level bubbletea model.
 type App struct {
-	store      *ticket.FileStore
-	ticketsDir string
+	store       *ticket.FileStore
+	ticketsDir  string
 	projectName string
-	version    string
-	cwd        string
-	tickets    []*ticket.Ticket
+	version     string
+	cwd         string
+	tickets     []*ticket.Ticket
 
 	// Views
 	activeTab tabID
@@ -522,7 +522,6 @@ func (a App) View() string {
 
 // ─── Render Components ──────────────────────────────────────────────────────
 
-
 var tabColors = []lipgloss.Color{
 	colorCyan,    // inbox
 	colorGray,    // backlog
@@ -782,7 +781,6 @@ func (a *App) handleAddNote(id, text string) tea.Cmd {
 	)
 }
 
-
 func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 	t := &ticket.Ticket{
 		ID:       ticket.GenerateID(msg.title),
@@ -880,4 +878,3 @@ func (a *App) handleMove(id, targetRepo string) tea.Cmd {
 		func() tea.Msg { return statusMsg(msg) },
 	)
 }
-

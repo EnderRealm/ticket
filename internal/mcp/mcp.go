@@ -41,17 +41,17 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 
 // Summary representation for list responses — metadata only, no body content.
 type ticketSummaryJSON struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Status   string   `json:"status"`
-	Type     string   `json:"type"`
-	Priority int      `json:"priority"`
-	Parent   string   `json:"parent,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
-	Deps    []string          `json:"deps"`
-	Links   []string          `json:"links"`
-	Created string            `json:"created"`
-	Extra   map[string]string `json:"-"`
+	ID       string            `json:"id"`
+	Title    string            `json:"title"`
+	Status   string            `json:"status"`
+	Type     string            `json:"type"`
+	Priority int               `json:"priority"`
+	Parent   string            `json:"parent,omitempty"`
+	Tags     []string          `json:"tags,omitempty"`
+	Deps     []string          `json:"deps"`
+	Links    []string          `json:"links"`
+	Created  string            `json:"created"`
+	Extra    map[string]string `json:"-"`
 }
 
 func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
@@ -92,24 +92,24 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 
 // Full JSON representation of a ticket for MCP responses.
 type ticketJSON struct {
-	ID            string   `json:"id"`
-	Status        string   `json:"status"`
-	Deps          []string `json:"deps"`
-	Links         []string `json:"links"`
-	Created       string   `json:"created"`
-	Type          string   `json:"type"`
-	Priority      int      `json:"priority"`
-	ExternalRef   string   `json:"external_ref,omitempty"`
-	Branch        string   `json:"branch,omitempty"`
-	Parent        string   `json:"parent,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
-	Title         string   `json:"title"`
-	Description   string   `json:"description,omitempty"`
-	Design        string   `json:"design,omitempty"`
-	Acceptance    string   `json:"acceptance_criteria,omitempty"`
-	TestResults   string   `json:"test_results,omitempty"`
-	Notes []noteJSON        `json:"notes,omitempty"`
-	Extra map[string]string `json:"-"`
+	ID          string            `json:"id"`
+	Status      string            `json:"status"`
+	Deps        []string          `json:"deps"`
+	Links       []string          `json:"links"`
+	Created     string            `json:"created"`
+	Type        string            `json:"type"`
+	Priority    int               `json:"priority"`
+	ExternalRef string            `json:"external_ref,omitempty"`
+	Branch      string            `json:"branch,omitempty"`
+	Parent      string            `json:"parent,omitempty"`
+	Tags        []string          `json:"tags,omitempty"`
+	Title       string            `json:"title"`
+	Description string            `json:"description,omitempty"`
+	Design      string            `json:"design,omitempty"`
+	Acceptance  string            `json:"acceptance_criteria,omitempty"`
+	TestResults string            `json:"test_results,omitempty"`
+	Notes       []noteJSON        `json:"notes,omitempty"`
+	Extra       map[string]string `json:"-"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -139,18 +139,18 @@ type noteJSON struct {
 
 func toJSON(t *ticket.Ticket) ticketJSON {
 	j := ticketJSON{
-		ID:            t.ID,
-		Status:        string(t.Status),
-		Deps:          nonNil(t.Deps),
-		Links:         nonNil(t.Links),
-		Created:       t.Created.UTC().Format("2006-01-02T15:04:05Z"),
-		Type:          string(t.Type),
-		Priority:      t.Priority,
-		ExternalRef:   t.ExternalRef,
-		Branch:        t.Branch,
-		Parent:        t.Parent,
-		Tags:          t.Tags,
-		Title:         t.Title,
+		ID:          t.ID,
+		Status:      string(t.Status),
+		Deps:        nonNil(t.Deps),
+		Links:       nonNil(t.Links),
+		Created:     t.Created.UTC().Format("2006-01-02T15:04:05Z"),
+		Type:        string(t.Type),
+		Priority:    t.Priority,
+		ExternalRef: t.ExternalRef,
+		Branch:      t.Branch,
+		Parent:      t.Parent,
+		Tags:        t.Tags,
+		Title:       t.Title,
 	}
 
 	j.Extra = t.Extra
@@ -253,14 +253,14 @@ func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 // --- Tool registrations ---
 
 type listArgs struct {
-	Status   string    `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
-	Type     string    `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
-	Priority *FlexInt  `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
-	Tag      string    `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Parent   string    `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
-	Project  string    `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
-	Offset   *FlexInt  `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
-	Limit    *FlexInt  `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
+	Status   string   `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
+	Type     string   `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
+	Priority *FlexInt `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
+	Tag      string   `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Parent   string   `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
+	Project  string   `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+	Offset   *FlexInt `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
+	Limit    *FlexInt `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
 }
 
 const defaultListLimit = 50
@@ -467,16 +467,16 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 }
 
 type createArgs struct {
-	Title       string `json:"title" jsonschema:"ticket title"`
-	Description string `json:"description,omitempty" jsonschema:"description text"`
-	Design      string `json:"design,omitempty" jsonschema:"design notes"`
-	Acceptance  string `json:"acceptance,omitempty" jsonschema:"acceptance criteria"`
-	Type        string   `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
-	Priority    *FlexInt `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
-	Parent      string `json:"parent,omitempty" jsonschema:"parent ticket ID"`
-	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags"`
-	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
-	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
+	Title       string            `json:"title" jsonschema:"ticket title"`
+	Description string            `json:"description,omitempty" jsonschema:"description text"`
+	Design      string            `json:"design,omitempty" jsonschema:"design notes"`
+	Acceptance  string            `json:"acceptance,omitempty" jsonschema:"acceptance criteria"`
+	Type        string            `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
+	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
+	Parent      string            `json:"parent,omitempty" jsonschema:"parent ticket ID"`
+	Tags        string            `json:"tags,omitempty" jsonschema:"comma-separated tags"`
+	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
+	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
 	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
 	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; resolves ticket store via .tickets/ directory or central store config"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
@@ -588,18 +588,18 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 }
 
 type editArgs struct {
-	ID          string `json:"id" jsonschema:"ticket ID"`
-	Title       string `json:"title,omitempty" jsonschema:"new title"`
-	Status      string `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed"`
-	Type        string `json:"type,omitempty" jsonschema:"new type"`
-	Priority    *FlexInt `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
-	Parent      string `json:"parent,omitempty" jsonschema:"new parent ticket ID"`
-	Tags        string `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
-	ExternalRef string `json:"external_ref,omitempty" jsonschema:"external reference"`
-	Branch      string `json:"branch,omitempty" jsonschema:"git branch name"`
-	Description string `json:"description,omitempty" jsonschema:"new description text"`
-	Design      string `json:"design,omitempty" jsonschema:"new design text"`
-	Acceptance  string `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
+	ID          string            `json:"id" jsonschema:"ticket ID"`
+	Title       string            `json:"title,omitempty" jsonschema:"new title"`
+	Status      string            `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed"`
+	Type        string            `json:"type,omitempty" jsonschema:"new type"`
+	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
+	Parent      string            `json:"parent,omitempty" jsonschema:"new parent ticket ID"`
+	Tags        string            `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
+	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
+	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
+	Description string            `json:"description,omitempty" jsonschema:"new description text"`
+	Design      string            `json:"design,omitempty" jsonschema:"new design text"`
+	Acceptance  string            `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
 	TestResults string            `json:"test_results,omitempty" jsonschema:"test results to record"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
 }
@@ -729,8 +729,8 @@ func registerAddNote(server *mcp.Server, store ticket.Store) {
 }
 
 type depArgs struct {
-	ID    string `json:"id" jsonschema:"ticket ID"`
-	DepID string `json:"dep_id" jsonschema:"dependency ticket ID"`
+	ID     string `json:"id" jsonschema:"ticket ID"`
+	DepID  string `json:"dep_id" jsonschema:"dependency ticket ID"`
 	Action string `json:"action" jsonschema:"add or remove"`
 }
 

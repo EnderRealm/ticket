@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/EnderRealm/ticket/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
-	"github.com/EnderRealm/ticket/pkg/ticket"
 )
 
 func TestWrapText(t *testing.T) {

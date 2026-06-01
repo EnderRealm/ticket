@@ -12,14 +12,14 @@ import (
 // All colors match the TUI (internal/tui/pipeline.go).
 const (
 	ansiBold     = "\033[1m"
-	ansiRed      = "\033[31m"  // TUI color "1"
-	ansiGreen    = "\033[32m"  // TUI color "2"
-	ansiYellow   = "\033[33m"  // TUI color "3"
-	ansiBlue     = "\033[34m"  // TUI color "4"
-	ansiMagenta  = "\033[35m"  // TUI color "5"
-	ansiCyan     = "\033[36m"  // TUI color "6"
-	ansiWhite    = "\033[37m"  // TUI color "7"
-	ansiGray     = "\033[90m"  // TUI color "8"
+	ansiRed      = "\033[31m" // TUI color "1"
+	ansiGreen    = "\033[32m" // TUI color "2"
+	ansiYellow   = "\033[33m" // TUI color "3"
+	ansiBlue     = "\033[34m" // TUI color "4"
+	ansiMagenta  = "\033[35m" // TUI color "5"
+	ansiCyan     = "\033[36m" // TUI color "6"
+	ansiWhite    = "\033[37m" // TUI color "7"
+	ansiGray     = "\033[90m" // TUI color "8"
 	ansiBoldCyan = "\033[1;36m"
 	ansiReset    = "\033[0m"
 )

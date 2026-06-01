@@ -23,18 +23,18 @@ func init() {
 
 // ticketJSON mirrors the bash query output format.
 type ticketJSON struct {
-	ID          string   `json:"id"`
-	Status      string   `json:"status"`
-	Deps        []string `json:"deps"`
-	Links       []string `json:"links"`
-	Created     string   `json:"created"`
-	Type        string   `json:"type"`
-	Priority    int      `json:"priority"`
-	ExternalRef string   `json:"external-ref,omitempty"`
-	Parent      string   `json:"parent,omitempty"`
-	Tags  []string          `json:"tags,omitempty"`
-	Title string            `json:"title"`
-	Extra map[string]string `json:"-"`
+	ID          string            `json:"id"`
+	Status      string            `json:"status"`
+	Deps        []string          `json:"deps"`
+	Links       []string          `json:"links"`
+	Created     string            `json:"created"`
+	Type        string            `json:"type"`
+	Priority    int               `json:"priority"`
+	ExternalRef string            `json:"external-ref,omitempty"`
+	Parent      string            `json:"parent,omitempty"`
+	Tags        []string          `json:"tags,omitempty"`
+	Title       string            `json:"title"`
+	Extra       map[string]string `json:"-"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {

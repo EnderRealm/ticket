@@ -4,8 +4,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/EnderRealm/ticket/pkg/ticket"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Aliases to centralized styles (styles.go)

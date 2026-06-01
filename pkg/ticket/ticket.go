@@ -92,10 +92,10 @@ type Note struct {
 // YAML frontmatter fields are mapped via yaml tags. Title and body
 // content are parsed from the markdown outside the frontmatter.
 type Ticket struct {
-	ID            string     `yaml:"id"`
-	Status        Status     `yaml:"status"`
-	Type          TicketType `yaml:"type"`
-	Priority      int        `yaml:"priority"`
+	ID          string     `yaml:"id"`
+	Status      Status     `yaml:"status"`
+	Type        TicketType `yaml:"type"`
+	Priority    int        `yaml:"priority"`
 	Parent      string     `yaml:"parent,omitempty"`
 	Deps        []string   `yaml:"deps,flow"`
 	Links       []string   `yaml:"links,flow"`
