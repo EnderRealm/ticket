@@ -684,7 +684,13 @@ func (a App) renderHelp() string {
 		if a.dashboard.confirmDelete {
 			return ""
 		}
-		help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+		// While searching, most shortcuts type into the filter; show only the
+		// keys that actually work in search mode.
+		if a.dashboard.filterActive {
+			help = "↑↓ select  enter open  esc clear"
+		} else {
+			help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+		}
 	}
 	return StyleHelp.Render(help)
 }

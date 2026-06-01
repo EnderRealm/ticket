@@ -13,6 +13,7 @@
 ### Fixed
 - TUI: search mode is now navigable. While the filter box is active, arrow keys and the mouse wheel move the selection through the filtered results, and `enter` opens the highlighted ticket (or jumps to the focused epic for backlog rollups) instead of just dismissing the box. Typing still refines the filter, backspace edits, and esc clears.
 - TUI: clearing the search with esc now keeps the cursor on the selected row instead of resetting to the top of the list.
+- TUI: while the search box is active, the footer help shows only the keys that work in search mode (navigate, open, clear) instead of the full command list.
 - TUI: sorting by the TITLE column sorted by priority instead of title. The column had no comparator, so it fell through to the priority fallback; it now sorts alphabetically (case-insensitive).
 - TUI: the active sort arrow on the MODIFIED and DURATION headers touched the next column; both widened so the arrow always has a gap.
 

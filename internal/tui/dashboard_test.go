@@ -201,6 +201,31 @@ func TestDashboardFilterWheelMovesCursor(t *testing.T) {
 	}
 }
 
+func TestRenderHelpHidesInertKeysInSearch(t *testing.T) {
+	a := App{activeTab: tabInbox}
+	a.dashboard.activeTab = tabInbox
+
+	full := a.renderHelp()
+	for _, k := range []string{"(c)reate", "(e)dit", "(d)elete", "(s)ort"} {
+		if !strings.Contains(full, k) {
+			t.Errorf("normal help should advertise %q, got:\n%s", k, full)
+		}
+	}
+
+	a.dashboard.filterActive = true
+	search := a.renderHelp()
+	for _, k := range []string{"(c)reate", "(e)dit", "(d)elete", "(p)riority", "(m)ove", "(y)ank", "(s)ort"} {
+		if strings.Contains(search, k) {
+			t.Errorf("search-mode help should not advertise inert key %q, got:\n%s", k, search)
+		}
+	}
+	for _, k := range []string{"select", "open", "clear"} {
+		if !strings.Contains(search, k) {
+			t.Errorf("search-mode help should mention %q, got:\n%s", k, search)
+		}
+	}
+}
+
 func TestDashboardFilterEscPreservesSelection(t *testing.T) {
 	now := time.Now()
 	// Non-matching tickets sort ahead of the matches by ID, so clearing the
