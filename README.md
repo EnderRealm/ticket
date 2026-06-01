@@ -92,6 +92,27 @@ Shared project registry (store type, auto_link, etc.) is stored in `<central_roo
 
 `--repo` flag overrides project resolution for a single command.
 
+### `spawn_command`
+
+The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the local `spawn_command` template, executed with `sh -c`. Two placeholders are substituted:
+
+- `{dir}` — the ticket's project working directory (absolute path)
+- `{id}` — the namespaced ticket ID (e.g. `myproject/tk-...`)
+
+When unset, the default opens a new iTerm window (macOS), cds to the project, and starts Claude Code on the ticket:
+
+```yaml
+spawn_command: 'osascript -e ''tell application "iTerm" to create window with default profile command "cd '\''{dir}'\'' && claude \"/work {id}\""'''
+```
+
+The default single-quotes `{dir}` so paths with spaces work. A project path containing a literal single quote can't be escaped inside the `osascript -e` wrapper — set a custom `spawn_command` for such paths.
+
+Override to use a different terminal, e.g. tmux:
+
+```yaml
+spawn_command: 'tmux new-window -c {dir} "claude \"/work {id}\""'
+```
+
 ## Agent Setup
 
 Add this line to your `CLAUDE.md` or `AGENTS.md`:
@@ -144,6 +165,15 @@ Journal:
   watch logs [-n 50]           Show watcher log output
   recompute [--project=NAME]   Rebuild commit journal from git history
 ```
+
+### TUI Keybindings
+
+The `tk ui` browser supports the usual navigation keys plus, in both the list and detail views:
+
+| Key | Action |
+|-----|--------|
+| `y` | Yank (copy) the ticket ID to the clipboard |
+| `w` | Spawn a `/work <id>` session in a new terminal (see `spawn_command`) |
 
 ### Statuses
 

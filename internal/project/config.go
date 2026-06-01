@@ -20,6 +20,7 @@ type Config struct {
 	GitName      string                   `yaml:"git_name,omitempty" json:"git_name,omitempty"`
 	DefaultStore string                   `yaml:"default_store,omitempty" json:"default_store,omitempty"`
 	SyncInterval string                   `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
+	SpawnCommand string                   `yaml:"spawn_command,omitempty" json:"spawn_command,omitempty"`
 	Projects     map[string]ProjectConfig `yaml:"projects"`
 }
 
@@ -34,7 +35,7 @@ type ProjectConfig struct {
 
 // Load reads both local (~/.ticket/config.yaml) and shared (<central_root>/config.yaml)
 // configs, merging them into a single Config. Local fields (central_root, git_email,
-// git_name, default_store, sync_interval, per-project path) come from local config.
+// git_name, default_store, sync_interval, spawn_command, per-project path) come from local config.
 // Shared fields (per-project store, auto_link, auto_close, registered_at) come from
 // shared config. Missing files are not errors — returns what's available.
 func Load() (Config, error) {
@@ -196,6 +197,7 @@ func mergeConfigs(local, shared Config) Config {
 		GitName:      local.GitName,
 		DefaultStore: local.DefaultStore,
 		SyncInterval: local.SyncInterval,
+		SpawnCommand: local.SpawnCommand,
 		Projects:     map[string]ProjectConfig{},
 	}
 
@@ -236,6 +238,7 @@ func saveLocal(cfg Config) error {
 		GitName:      cfg.GitName,
 		DefaultStore: cfg.DefaultStore,
 		SyncInterval: cfg.SyncInterval,
+		SpawnCommand: cfg.SpawnCommand,
 		Projects:     map[string]ProjectConfig{},
 	}
 

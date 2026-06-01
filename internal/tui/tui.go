@@ -42,12 +42,14 @@ const (
 
 // App is the top-level bubbletea model.
 type App struct {
-	store       *ticket.FileStore
-	ticketsDir  string
-	projectName string
-	version     string
-	cwd         string
-	tickets     []*ticket.Ticket
+	store        *ticket.FileStore
+	ticketsDir   string
+	projectName  string
+	version      string
+	cwd          string
+	workDir      string
+	spawnCommand string
+	tickets      []*ticket.Ticket
 
 	// Views
 	activeTab tabID
@@ -69,7 +71,7 @@ type App struct {
 }
 
 // New creates a new App rooted at the given ticket directory.
-func New(ticketsDir, version string) App {
+func New(ticketsDir, version, spawnCommand string) App {
 	store := ticket.NewFileStore(ticketsDir)
 
 	// Derive project name from tickets directory path.
@@ -97,13 +99,15 @@ func New(ticketsDir, version string) App {
 	ti.CharLimit = 256
 
 	a := App{
-		store:       store,
-		ticketsDir:  ticketsDir,
-		projectName: projectName,
-		version:     version,
-		cwd:         cwd,
-		activeTab:   tabInbox,
-		cmdBar:      ti,
+		store:        store,
+		ticketsDir:   ticketsDir,
+		projectName:  projectName,
+		version:      version,
+		cwd:          cwd,
+		workDir:      filepath.Dir(absDir),
+		spawnCommand: spawnCommand,
+		activeTab:    tabInbox,
+		cmdBar:       ti,
 	}
 	a.dashboard.activeTab = tabInbox
 	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(tabInbox)
@@ -332,6 +336,8 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case "y":
 			return a, yankID(a.detail.ticket.ID)
+		case "w":
+			return a, a.spawnWork(a.detail.ticket.ID)
 		}
 
 	case overlayForm:
@@ -435,6 +441,10 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			if t := a.dashboard.selected(); t != nil {
 				return a, yankID(t.ID)
+			}
+		case "w":
+			if t := a.dashboard.selected(); t != nil {
+				return a, a.spawnWork(t.ID)
 			}
 		}
 	}
@@ -676,7 +686,7 @@ func (a App) renderHelp() string {
 		if a.dashboard.filterActive {
 			help = "↑↓ select  enter apply  esc clear"
 		} else {
-			help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+			help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 		}
 	}
 	return StyleHelp.Render(help)
