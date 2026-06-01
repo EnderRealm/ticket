@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/EnderRealm/ticket/pkg/ticket"
 	"github.com/spf13/cobra"
@@ -66,8 +67,10 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		return err
 	}
 
+	// Render timestamps in local wall-clock time for human-facing output.
+	output := localizeTimestamps(string(data), t)
+
 	// Annotate parent line with title.
-	output := string(data)
 	if t.Parent != "" {
 		if parent, ok := byID[t.Parent]; ok {
 			output = strings.Replace(output,
@@ -149,4 +152,30 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	}
 
 	return nil
+}
+
+// localizeTimestamps rewrites the created/updated/completed frontmatter values
+// in serialized ticket output from UTC (as written by Serialize) to local
+// wall-clock time with no zone offset, for human-facing CLI display. The
+// on-disk file is unaffected.
+func localizeTimestamps(serialized string, t *ticket.Ticket) string {
+	const localLayout = "2006-01-02T15:04:05"
+	fields := []struct {
+		key string
+		ts  time.Time
+	}{
+		{"created", t.Created},
+		{"updated", t.Updated},
+		{"completed", t.Completed},
+	}
+	for _, f := range fields {
+		if f.ts.IsZero() {
+			continue
+		}
+		serialized = strings.Replace(serialized,
+			f.key+": "+f.ts.UTC().Format(time.RFC3339),
+			f.key+": "+f.ts.Local().Format(localLayout),
+			1)
+	}
+	return serialized
 }
