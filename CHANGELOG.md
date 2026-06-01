@@ -12,6 +12,7 @@
 
 ### Fixed
 - TUI: sorting by the TITLE column sorted by priority instead of title. The column had no comparator, so it fell through to the priority fallback; it now sorts alphabetically (case-insensitive).
+- TUI: the active sort arrow on the MODIFIED and DURATION headers touched the next column; both widened so the arrow always has a gap.
 
 ## [7.3.0] - 2026-05-30
 

@@ -85,6 +85,29 @@ func TestDashboardSortByColumn(t *testing.T) {
 	}
 }
 
+func TestColumnWidthsFitSortArrow(t *testing.T) {
+	// When a column is the active sort, its header renders as name+arrow (one
+	// extra cell). Fixed-width columns must reserve at least one space after
+	// that so adjacent columns don't collide. Flexible columns (width 0, TITLE)
+	// are exempt.
+	seen := map[string]bool{}
+	check := func(cols []column) {
+		for _, c := range cols {
+			if c.width == 0 || seen[c.name] {
+				continue
+			}
+			seen[c.name] = true
+			if min := len(c.name) + 2; c.width < min {
+				t.Errorf("column %q width %d too narrow for header+arrow+gap (need >= %d)", c.name, c.width, min)
+			}
+		}
+	}
+	for _, tab := range []tabID{tabInbox, tabBacklog, tabDone, tabAll} {
+		check(columnsFor(tab))
+	}
+	check(epicColumns)
+}
+
 func TestDashboardSortByTitle(t *testing.T) {
 	// Titles whose alphabetical order differs from priority order, so a
 	// regression to the old "TITLE falls back to PRI" bug would be caught.

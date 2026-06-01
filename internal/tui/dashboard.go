@@ -74,7 +74,8 @@ var (
 		less:   func(a, b *ticket.Ticket) bool { return a.Created.Before(b.Created) },
 	}
 	colModified = column{
-		name: "MODIFIED", width: 9,
+		// width 10 leaves a gap after the 8-char header even with the sort arrow.
+		name: "MODIFIED", width: 10,
 		render: func(t *ticket.Ticket, now time.Time) string { return relDuration(now.Sub(modifiedTime(t))) },
 		less:   func(a, b *ticket.Ticket) bool { return modifiedTime(a).Before(modifiedTime(b)) },
 	}
@@ -89,7 +90,8 @@ var (
 		less:   func(a, b *ticket.Ticket) bool { return a.Completed.Before(b.Completed) },
 	}
 	colDuration = column{
-		name: "DURATION", width: 9,
+		// width 10 leaves a gap after the 8-char header even with the sort arrow.
+		name: "DURATION", width: 10,
 		render: func(t *ticket.Ticket, _ time.Time) string {
 			if t.Completed.IsZero() {
 				return emDash
