@@ -277,6 +277,75 @@ func TestSerialize_StatusFields(t *testing.T) {
 	}
 }
 
+func TestSerialize_ZeroUpdatedOmitted(t *testing.T) {
+	// Legacy/unstamped tickets have a zero Updated; it must not serialize as
+	// "updated: 0001-01-01...". (completed is already conditional.)
+	tk := &Ticket{
+		ID:       "t-zero",
+		Status:   StatusBacklog,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
+		Title:    "Zero updated",
+		Body:     "\nDescription.\n",
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "updated:") {
+		t.Errorf("zero Updated should be omitted, got:\n%s", s)
+	}
+	if strings.Contains(s, "0001-01-01") {
+		t.Errorf("output should not contain a zero-time timestamp, got:\n%s", s)
+	}
+
+	// A zero Updated must round-trip back to zero, not a parsed 0001 time.
+	parsed, err := Parse(strings.NewReader(s))
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if !parsed.Updated.IsZero() {
+		t.Errorf("round-tripped Updated = %v, want zero", parsed.Updated)
+	}
+}
+
+func TestSerialize_NonZeroUpdatedPreserved(t *testing.T) {
+	updated := time.Date(2026, 3, 1, 12, 30, 0, 0, time.UTC)
+	tk := &Ticket{
+		ID:       "t-upd",
+		Status:   StatusOpen,
+		Type:     TypeFeature,
+		Priority: 1,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 2, 25, 10, 0, 0, 0, time.UTC),
+		Updated:  updated,
+		Title:    "Has updated",
+		Body:     "\nDescription.\n",
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if !strings.Contains(string(data), "updated: 2026-03-01T12:30:00Z") {
+		t.Errorf("non-zero Updated should serialize in UTC RFC3339, got:\n%s", string(data))
+	}
+
+	parsed, err := Parse(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if !parsed.Updated.Equal(updated) {
+		t.Errorf("round-tripped Updated = %v, want %v", parsed.Updated, updated)
+	}
+}
+
 func TestSerialize_StatusRoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-rt",
