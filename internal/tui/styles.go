@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/EnderRealm/ticket/pkg/ticket"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // emDash is the placeholder rendered when a time value is absent.
@@ -87,9 +87,9 @@ var (
 	colorBlack   = lipgloss.Color("#303030") // near-black
 
 	// Surfaces
-	colorSurface  = lipgloss.Color("#4a4a4a") // selection background — visible against dark terminals
-	colorSubtle   = lipgloss.Color("#4e4e4e") // subtle borders/separators
-	colorBadgeBg  = lipgloss.Color("#444444") // badge background
+	colorSurface = lipgloss.Color("#4a4a4a") // selection background — visible against dark terminals
+	colorSubtle  = lipgloss.Color("#4e4e4e") // subtle borders/separators
+	colorBadgeBg = lipgloss.Color("#444444") // badge background
 
 	// Semantic aliases
 	colorDanger  = colorRed
@@ -283,49 +283,6 @@ func IDSuffix(id string) string {
 	return id
 }
 
-// ─── Colorize Helpers ───────────────────────────────────────────────────────
-//
-// Apply domain-appropriate color to arbitrary text.
-
-// ColorPriority renders text in the priority's color.
-func ColorPriority(p int, text string) string {
-	c, ok := PriorityColors[p]
-	if !ok {
-		c = colorWhite
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(text)
-}
-
-// ColorType renders text in the ticket type's color.
-func ColorType(t ticket.TicketType, text string) string {
-	c, ok := TypeColors[t]
-	if !ok {
-		c = colorWhite
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(text)
-}
-
-// ColorStatus renders text in the status's color.
-func ColorStatus(s ticket.Status, text string) string {
-	c, ok := StatusColors[s]
-	if !ok {
-		c = colorWhite
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(text)
-}
-
-// SelectedChip renders a selector chip (type/priority/status) as the highlighted
-// choice: bold black text on the chip's own domain color. High contrast and
-// preserves identity without nesting ANSI fg codes.
-func SelectedChip(bg lipgloss.Color, label string) string {
-	return lipgloss.NewStyle().
-		Foreground(colorBlack).
-		Background(bg).
-		Bold(true).
-		Padding(0, 1).
-		Render(label)
-}
-
 // ─── Layout Utilities ───────────────────────────────────────────────────────
 
 // padRight pads a rendered string to a target visual width.
@@ -359,30 +316,6 @@ func shortType(t ticket.TicketType) string {
 		return "epic"
 	default:
 		return string(t)
-	}
-}
-
-// formatAge renders a compact ticket age for a narrow table column (no "ago"
-// suffix). Distinct from detail.go's formatRelative, which widens to a full date
-// past 30 days.
-func formatAge(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dd", int(d.Hours())/24)
-	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%dw", int(d.Hours())/24/7)
-	default:
-		return fmt.Sprintf("%dy", int(d.Hours())/24/365)
 	}
 }
 
