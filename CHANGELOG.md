@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.4.0] - 2026-05-31
 
 ### Added
 - Persisted `updated` and `completed` timestamps on tickets, stamped on every create and update at the store's single write choke point (CLI, MCP, TUI).
