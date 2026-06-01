@@ -85,6 +85,30 @@ func TestDashboardSortByColumn(t *testing.T) {
 	}
 }
 
+func TestDashboardSortByTitle(t *testing.T) {
+	// Titles whose alphabetical order differs from priority order, so a
+	// regression to the old "TITLE falls back to PRI" bug would be caught.
+	now := time.Now()
+	tickets := []*ticket.Ticket{
+		{ID: "z-0001", Title: "zebra", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Priority: 0, Created: now},
+		{ID: "a-0002", Title: "apple", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Priority: 1, Created: now},
+		{ID: "m-0003", Title: "mango", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Priority: 2, Created: now},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabInbox
+
+	m.sortIdx = colIndex(tabInbox, "TITLE")
+	m.sortDir = asc
+	m.buildItems()
+
+	want := []string{"apple", "mango", "zebra"}
+	for i, w := range want {
+		if m.items[i].Ticket.Title != w {
+			t.Errorf("title asc position %d: got %s, want %s", i, m.items[i].Ticket.Title, w)
+		}
+	}
+}
+
 func TestDashboardDefaultSortPerTab(t *testing.T) {
 	idx, dir := defaultSort(tabInbox)
 	if columnsFor(tabInbox)[idx].name != "PRI" || dir != asc {

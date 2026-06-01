@@ -113,6 +113,7 @@ var (
 	colTitle = column{
 		name: "TITLE", width: 0,
 		render: func(t *ticket.Ticket, _ time.Time) string { return t.Title },
+		less:   func(a, b *ticket.Ticket) bool { return strings.ToLower(a.Title) < strings.ToLower(b.Title) },
 	}
 )
 
