@@ -17,10 +17,17 @@ func TestBuildSpawnCommandSubstitutes(t *testing.T) {
 
 func TestBuildSpawnCommandDefault(t *testing.T) {
 	got := buildSpawnCommand("", "/some/dir", "project/tk-x")
-	for _, want := range []string{"/some/dir", "project/tk-x", "iTerm", "claude"} {
+	// "create window"/"write text" guard against the regression where the
+	// iTerm `command "..."` form exec'd the string without a shell, so the
+	// && pipeline never ran and the window closed instantly. write text runs
+	// the command in the window's live interactive shell.
+	for _, want := range []string{"/some/dir", "project/tk-x", "iTerm", "claude", "create window", "write text"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("default spawn command %q missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "profile command") {
+		t.Errorf("default must not use the inline `command` form (closes the window); got: %s", got)
 	}
 }
 

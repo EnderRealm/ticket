@@ -10,18 +10,25 @@ import (
 // defaultSpawnTemplate opens a new iTerm window, cds to {dir}, and runs the
 // work session. macOS/iTerm-specific.
 //
-// The whole string is executed via `sh -c`, so it contains three nested
-// quoting layers: the outer single quotes belong to `osascript -e`, the
-// AppleScript `command` argument is a double-quoted string, and the
-// `claude "/work {id}"` invocation has its double quotes escaped (\") for that
-// AppleScript string. {dir} is wrapped in single quotes so the shell iTerm
-// spawns to run the command handles paths containing spaces.
+// It creates the window with the default profile (which starts a normal
+// interactive shell) and then `write text`s the command into that live
+// session — rather than iTerm's `... command "..."` form, which exec's the
+// string as a single process WITHOUT a shell, so a `&&` pipeline never runs
+// and the window closes immediately. `write text` runs the full pipeline in
+// the window's interactive shell, so `claude` resolves on PATH and the window
+// stays open. Passed as a multi-statement `osascript -e ... -e ...` script.
+//
+// Quoting: the whole string runs via `sh -c`; each AppleScript statement is in
+// its own `-e '...'` single-quoted arg; the `write text` argument is a
+// double-quoted AppleScript string with the inner `claude "/work {id}"` quotes
+// escaped (\"); and {dir} is wrapped in shell single quotes (via the '"'"'
+// idiom) so the interactive shell handles paths containing spaces.
 //
 // Limitation: a project path containing a literal single quote can't be
 // escaped inside the `osascript -e '...'` wrapper (that layer is itself
 // single-quoted), so such paths need a custom spawn_command. Spaces — the
 // common case on macOS — work.
-const defaultSpawnTemplate = `osascript -e 'tell application "iTerm" to create window with default profile command "cd '"'"'{dir}'"'"' && claude \"/work {id}\""'`
+const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w to (create window with default profile)' -e 'tell current session of w to write text "cd '"'"'{dir}'"'"' && claude \"/work {id}\""' -e 'end tell'`
 
 // buildSpawnCommand substitutes {dir} and {id} into the template (or the
 // default when template is empty) and returns the shell command to run.

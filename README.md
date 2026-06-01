@@ -102,10 +102,10 @@ The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell co
 When unset, the default opens a new iTerm window (macOS), cds to the project, and starts Claude Code on the ticket:
 
 ```yaml
-spawn_command: 'osascript -e ''tell application "iTerm" to create window with default profile command "cd '\''{dir}'\'' && claude \"/work {id}\""'''
+spawn_command: 'osascript -e ''tell application "iTerm"'' -e ''set w to (create window with default profile)'' -e ''tell current session of w to write text "cd '\''{dir}'\'' && claude \"/work {id}\""'' -e ''end tell'''
 ```
 
-The default single-quotes `{dir}` so paths with spaces work. A project path containing a literal single quote can't be escaped inside the `osascript -e` wrapper — set a custom `spawn_command` for such paths.
+The default creates the window with a normal interactive shell and then types the command into it (via `write text`), so the window stays open and `claude` resolves on your `PATH`. It single-quotes `{dir}` so paths with spaces work; a project path containing a literal single quote can't be escaped inside the `osascript -e` wrapper — set a custom `spawn_command` for such paths.
 
 Override to use a different terminal, e.g. tmux:
 
