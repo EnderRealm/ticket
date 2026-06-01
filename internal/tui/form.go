@@ -141,6 +141,15 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Bracketed paste arrives as a single KeyMsg with all runes; String()
+		// wraps them in [...] so it never matches a named key or the len==1
+		// insert path. Handle it before the switch.
+		if msg.Paste {
+			if m.isTextField(m.focus) {
+				m.insertText(string(msg.Runes))
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc":
 			return m, func() tea.Msg { return formCancelMsg{} }
@@ -246,6 +255,24 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// insertText inserts s at the cursor of the focused text field, sanitizing by
+// field kind. Multiline fields keep \n but drop \r; the single-line Title
+// collapses any \r\n / \r / \n into a single space so a paste never produces a
+// literal newline or triggers submit. Cursor positions are byte offsets.
+func (m *formModel) insertText(s string) {
+	if m.isMultilineField(m.focus) {
+		s = strings.ReplaceAll(s, "\r", "")
+	} else {
+		s = strings.ReplaceAll(s, "\r\n", " ")
+		s = strings.ReplaceAll(s, "\r", " ")
+		s = strings.ReplaceAll(s, "\n", " ")
+	}
+	pos := m.cursors[m.focus]
+	text := m.fields[m.focus]
+	m.fields[m.focus] = text[:pos] + s + text[pos:]
+	m.cursors[m.focus] = pos + len(s)
 }
 
 func (m formModel) submit() tea.Msg {

@@ -136,6 +136,42 @@ func TestFormEnterOnMultilineInsertsNewline(t *testing.T) {
 	}
 }
 
+func TestFormPasteIntoTextFields(t *testing.T) {
+	// Multiline Note field: newline preserved, cursor at byte end.
+	m := formModel{
+		editID:    "test-123",
+		typeIdx:   0,
+		priority:  2,
+		width:     80,
+		height:    40,
+		statusIdx: 0,
+	}
+	m.focus = fieldNote
+
+	pasted := "line1\nline2"
+	var cmd tea.Cmd
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyRunes, Paste: true, Runes: []rune(pasted)})
+	if cmd != nil {
+		t.Fatalf("expected nil command on paste, got %v", cmd)
+	}
+	if m.fields[fieldNote] != pasted {
+		t.Errorf("note after paste: got %q, want %q", m.fields[fieldNote], pasted)
+	}
+	if m.cursors[fieldNote] != len(pasted) {
+		t.Errorf("cursor after paste: got %d, want %d", m.cursors[fieldNote], len(pasted))
+	}
+
+	// Single-line Title field: newline becomes a space, no submit.
+	m.focus = fieldTitle
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyRunes, Paste: true, Runes: []rune("line1\nline2")})
+	if cmd != nil {
+		t.Fatalf("expected nil command on title paste, got %v", cmd)
+	}
+	if m.fields[fieldTitle] != "line1 line2" {
+		t.Errorf("title after paste: got %q, want %q", m.fields[fieldTitle], "line1 line2")
+	}
+}
+
 func TestFormCtrlSSubmitsFromChoiceField(t *testing.T) {
 	m := formModel{
 		editID:    "test-456",
