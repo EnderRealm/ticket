@@ -408,7 +408,24 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				m.filterActive = false
 				m.filterText = ""
 				m.buildItems()
+			case "up":
+				if m.cursor > 0 {
+					m.cursor--
+					m.clampOffset()
+				}
+			case "down":
+				if m.cursor < len(m.items)-1 {
+					m.cursor++
+					m.clampOffset()
+				}
 			case "enter":
+				// Open the highlighted result, keeping the filtered view behind
+				// the overlay. With no results, just dismiss the search box.
+				if t := m.selected(); t != nil {
+					id := t.ID
+					m.filterActive = false
+					return m, func() tea.Msg { return openTicketMsg{id: id} }
+				}
 				m.filterActive = false
 			case "backspace":
 				if len(m.filterText) > 0 {

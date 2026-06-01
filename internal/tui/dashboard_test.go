@@ -147,6 +147,98 @@ func TestDashboardDefaultSortPerTab(t *testing.T) {
 	}
 }
 
+func filterTestModel() dashboardModel {
+	now := time.Now()
+	tickets := []*ticket.Ticket{
+		{ID: "a-0001", Title: "alpha", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+		{ID: "b-0002", Title: "alphabet", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+		{ID: "c-0003", Title: "alphanumeric", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabInbox
+	m.sortIdx = colIndex(tabInbox, "ID")
+	m.sortDir = asc
+	m.filterActive = true
+	m.filterText = "alpha"
+	m.buildItems()
+	return m
+}
+
+func TestDashboardFilterArrowsMoveCursor(t *testing.T) {
+	m := filterTestModel()
+	if len(m.items) != 3 {
+		t.Fatalf("expected 3 filtered items, got %d", len(m.items))
+	}
+
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.cursor != 1 {
+		t.Errorf("after down: cursor = %d, want 1", m.cursor)
+	}
+	if !m.filterActive {
+		t.Error("after down: filter should stay active")
+	}
+
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.cursor != 0 {
+		t.Errorf("after up: cursor = %d, want 0", m.cursor)
+	}
+	if !m.filterActive {
+		t.Error("after up: filter should stay active")
+	}
+}
+
+func TestDashboardFilterWheelMovesCursor(t *testing.T) {
+	m := filterTestModel()
+
+	m, _ = m.update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if m.cursor == 0 {
+		t.Errorf("after wheel down: cursor = %d, want > 0", m.cursor)
+	}
+
+	m, _ = m.update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if m.cursor != 0 {
+		t.Errorf("after wheel up: cursor = %d, want 0", m.cursor)
+	}
+}
+
+func TestDashboardFilterEnterOpensSelection(t *testing.T) {
+	m := filterTestModel()
+	m.cursor = 1
+
+	m, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.filterActive {
+		t.Error("after enter: filter should be inactive")
+	}
+	if cmd == nil {
+		t.Fatal("after enter: expected a command")
+	}
+	msg := cmd()
+	open, ok := msg.(openTicketMsg)
+	if !ok {
+		t.Fatalf("after enter: expected openTicketMsg, got %T", msg)
+	}
+	if open.id != "b-0002" {
+		t.Errorf("after enter: open id = %q, want b-0002", open.id)
+	}
+}
+
+func TestDashboardFilterEnterNoResultsNoMessage(t *testing.T) {
+	m := filterTestModel()
+	m.filterText = "zzz-no-match"
+	m.buildItems()
+	if len(m.items) != 0 {
+		t.Fatalf("expected 0 filtered items, got %d", len(m.items))
+	}
+
+	m, cmd := m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Error("after enter with no results: expected nil command")
+	}
+	if m.filterActive {
+		t.Error("after enter with no results: filter should be inactive")
+	}
+}
+
 func TestDashboardSortKeys(t *testing.T) {
 	tickets := []*ticket.Ticket{
 		{ID: "a-0001", Title: "One", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: time.Now()},

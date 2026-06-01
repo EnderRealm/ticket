@@ -130,6 +130,10 @@ type deleteTicketMsg struct {
 	id string
 }
 
+type openTicketMsg struct {
+	id string
+}
+
 type moveTicketMsg struct {
 	id         string
 	targetRepo string
@@ -234,6 +238,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleCreateTicket(msg)
 	case deleteTicketMsg:
 		return a, a.handleDelete(msg.id)
+	case openTicketMsg:
+		for _, t := range a.tickets {
+			if t.ID == msg.id {
+				a.openDashboardTicket(t)
+				break
+			}
+		}
+		return a, nil
 	case moveTicketMsg:
 		return a, a.handleMove(msg.id, msg.targetRepo)
 	case formCancelMsg:
@@ -406,18 +418,7 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "enter", "o":
 			if t := a.dashboard.selected(); t != nil {
-				// Epics on the backlog tab are rollups; clicking one jumps
-				// to the epics tab focused on that epic rather than opening
-				// a detail overlay here.
-				if a.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
-					epicID := t.ID
-					a.activeTab = tabEpics
-					a.syncDashboardTab()
-					a.epics.focusEpic(epicID)
-					return a, nil
-				}
-				a.detail = newDetailModel(t, a.width, a.height)
-				a.overlay = overlayDetail
+				a.openDashboardTicket(t)
 				return a, nil
 			}
 		case "e":
@@ -691,6 +692,21 @@ func (a App) renderHelp() string {
 // isTicketTab returns true if the active tab shows ticket list (not epics).
 func (a App) isTicketTab() bool {
 	return a.activeTab != tabEpics
+}
+
+// openDashboardTicket opens a ticket selected from a ticket tab. Epics on the
+// backlog tab are rollups: opening one jumps to the epics tab focused on that
+// epic rather than showing a detail overlay.
+func (a *App) openDashboardTicket(t *ticket.Ticket) {
+	if a.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
+		epicID := t.ID
+		a.activeTab = tabEpics
+		a.syncDashboardTab()
+		a.epics.focusEpic(epicID)
+		return
+	}
+	a.detail = newDetailModel(t, a.width, a.height)
+	a.overlay = overlayDetail
 }
 
 // syncDashboardTab updates the dashboard's activeTab to match the app tab.
