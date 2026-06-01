@@ -193,6 +193,27 @@ func (m *dashboardModel) setSize(w, h int) {
 	m.height = h
 }
 
+// buildItemsPreservingCursor rebuilds the visible list but keeps the cursor on
+// the currently selected ticket when it survives the rebuild (e.g. clearing a
+// filter shouldn't reset the selection to the top of the list).
+func (m *dashboardModel) buildItemsPreservingCursor() {
+	var selectedID string
+	if t := m.selected(); t != nil {
+		selectedID = t.ID
+	}
+	m.buildItems()
+	if selectedID == "" {
+		return
+	}
+	for i, item := range m.items {
+		if item.Ticket.ID == selectedID {
+			m.cursor = i
+			m.clampOffset()
+			return
+		}
+	}
+}
+
 // refreshTickets updates the ticket data while preserving cursor position.
 func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 	var selectedID string
@@ -405,9 +426,11 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		if m.filterActive {
 			switch msg.String() {
 			case "esc":
+				// Clear the filter but keep the cursor on the row the user
+				// arrowed to, rather than resetting to the top of the rebuilt list.
 				m.filterActive = false
 				m.filterText = ""
-				m.buildItems()
+				m.buildItemsPreservingCursor()
 			case "up":
 				if m.cursor > 0 {
 					m.cursor--

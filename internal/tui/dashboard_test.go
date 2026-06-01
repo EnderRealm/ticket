@@ -201,6 +201,50 @@ func TestDashboardFilterWheelMovesCursor(t *testing.T) {
 	}
 }
 
+func TestDashboardFilterEscPreservesSelection(t *testing.T) {
+	now := time.Now()
+	// Non-matching tickets sort ahead of the matches by ID, so clearing the
+	// filter shifts the matched rows to a different index — a cursor kept as a
+	// bare index would land on the wrong ticket.
+	tickets := []*ticket.Ticket{
+		{ID: "a-0001", Title: "zzz one", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+		{ID: "b-0002", Title: "zzz two", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+		{ID: "c-0003", Title: "match alpha", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+		{ID: "d-0004", Title: "match beta", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabInbox
+	m.sortIdx = colIndex(tabInbox, "ID")
+	m.sortDir = asc
+	m.filterActive = true
+	m.filterText = "match"
+	m.buildItems()
+	if len(m.items) != 2 {
+		t.Fatalf("expected 2 filtered items, got %d", len(m.items))
+	}
+
+	// Arrow down to the second match (d-0004), then clear the filter with esc.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyDown})
+	wantID := m.items[m.cursor].Ticket.ID
+	if wantID != "d-0004" {
+		t.Fatalf("setup: arrowed to %q, want d-0004", wantID)
+	}
+
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.filterActive {
+		t.Error("after esc: filter should be inactive")
+	}
+	if m.filterText != "" {
+		t.Errorf("after esc: filterText = %q, want empty", m.filterText)
+	}
+	if len(m.items) != 4 {
+		t.Fatalf("after esc: expected full list of 4, got %d", len(m.items))
+	}
+	if got := m.items[m.cursor].Ticket.ID; got != wantID {
+		t.Errorf("after esc: selected %q, want %q (cursor should stay on the arrowed row)", got, wantID)
+	}
+}
+
 func TestDashboardFilterEnterOpensSelection(t *testing.T) {
 	m := filterTestModel()
 	m.cursor = 1
