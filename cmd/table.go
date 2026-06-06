@@ -43,6 +43,57 @@ func colorize(s, code string) string {
 	return code + s + ansiReset
 }
 
+// highlightTerms bolds case-insensitive occurrences of terms in s. It marks
+// matched byte ranges in a mask first so overlapping matches collapse into a
+// single bold run. Terms are ASCII, so masked ranges align to rune boundaries.
+func highlightTerms(s string, terms []string) string {
+	if !colorEnabled || len(terms) == 0 || s == "" {
+		return s
+	}
+
+	mask := make([]bool, len(s))
+	lower := ticket.ToLowerASCII(s)
+	matched := false
+	for _, term := range terms {
+		if term == "" {
+			continue
+		}
+		from := 0
+		for {
+			i := strings.Index(lower[from:], term)
+			if i < 0 {
+				break
+			}
+			start := from + i
+			for j := start; j < start+len(term); j++ {
+				mask[j] = true
+			}
+			matched = true
+			from = start + len(term)
+		}
+	}
+	if !matched {
+		return s
+	}
+
+	var b strings.Builder
+	inBold := false
+	for i := 0; i < len(s); i++ {
+		if mask[i] && !inBold {
+			b.WriteString(ansiBold)
+			inBold = true
+		} else if !mask[i] && inBold {
+			b.WriteString(ansiReset)
+			inBold = false
+		}
+		b.WriteByte(s[i])
+	}
+	if inBold {
+		b.WriteString(ansiReset)
+	}
+	return b.String()
+}
+
 // colorGroupHeader returns a bold cyan group header string.
 func colorGroupHeader(s string) string {
 	return colorize(s, ansiBoldCyan)

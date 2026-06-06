@@ -38,6 +38,17 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ranked[i] = r.Ticket
 	}
 
-	newTableWriter().Print(ranked)
+	// Render rows manually so a context snippet can be interleaved under each.
+	terms := ticket.Tokenize(strings.Join(args, " "))
+	tw := newTableWriter()
+	tw.computeWidths(ranked)
+	tw.printHeader()
+	for _, r := range results {
+		tw.printRow(r.Ticket)
+		if r.Snippet != "" {
+			label := colorize(r.Field+":", ansiGray)
+			fmt.Printf("    %s %s\n", label, highlightTerms(r.Snippet, terms))
+		}
+	}
 	return nil
 }

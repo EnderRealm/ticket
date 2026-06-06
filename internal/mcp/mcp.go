@@ -931,15 +931,43 @@ type searchArgs struct {
 	Limit   *FlexInt `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
 }
 
+// searchMatchJSON wraps a ticket summary with the field the query matched and a
+// one-line context snippet around the earliest matched term.
+type searchMatchJSON struct {
+	ticketSummaryJSON
+	MatchField string `json:"match_field,omitempty"`
+	Snippet    string `json:"snippet,omitempty"`
+}
+
+func (s searchMatchJSON) MarshalJSON() ([]byte, error) {
+	inner, err := json.Marshal(s.ticketSummaryJSON)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(inner, &m); err != nil {
+		return nil, err
+	}
+	if s.MatchField != "" {
+		field, _ := json.Marshal(s.MatchField)
+		m["match_field"] = field
+	}
+	if s.Snippet != "" {
+		snippet, _ := json.Marshal(s.Snippet)
+		m["snippet"] = snippet
+	}
+	return json.Marshal(m)
+}
+
 type searchResultJSON struct {
-	Matches []ticketSummaryJSON `json:"matches"`
-	Total   int                 `json:"total"`
+	Matches []searchMatchJSON `json:"matches"`
+	Total   int               `json:"total"`
 }
 
 func registerSearch(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_search",
-		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first.",
+		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first, each with the match_field and a context snippet around the matched term.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args searchArgs) (*mcp.CallToolResult, any, error) {
 		tickets, err := store.List()
 		if err != nil {
@@ -966,9 +994,13 @@ func registerSearch(server *mcp.Server, store ticket.Store, defaultProject strin
 			results = results[:limit]
 		}
 
-		items := []ticketSummaryJSON{}
+		items := []searchMatchJSON{}
 		for _, res := range results {
-			items = append(items, toSummaryJSON(res.Ticket))
+			items = append(items, searchMatchJSON{
+				ticketSummaryJSON: toSummaryJSON(res.Ticket),
+				MatchField:        res.Field,
+				Snippet:           res.Snippet,
+			})
 		}
 
 		r, err := jsonResult(searchResultJSON{

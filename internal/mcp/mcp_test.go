@@ -120,6 +120,12 @@ func TestSearchRanksByRelevance(t *testing.T) {
 	if resp.Matches[0]["title"] != "Login crash on submit" {
 		t.Errorf("first match = %q, want %q", resp.Matches[0]["title"], "Login crash on submit")
 	}
+	if field, _ := resp.Matches[0]["match_field"].(string); field == "" {
+		t.Errorf("match_field = %q, want non-empty", resp.Matches[0]["match_field"])
+	}
+	if snippet, _ := resp.Matches[0]["snippet"].(string); snippet == "" {
+		t.Errorf("snippet = %q, want non-empty", resp.Matches[0]["snippet"])
+	}
 }
 
 func TestSearchNoMatch(t *testing.T) {
