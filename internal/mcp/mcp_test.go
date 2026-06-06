@@ -74,6 +74,90 @@ func TestCreateTicket(t *testing.T) {
 	}
 }
 
+func TestSearchRanksByRelevance(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":       "Login crash on submit",
+			"type":        "bug",
+			"description": "users report a crash",
+		},
+	})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":       "Unrelated dashboard work",
+			"type":        "feature",
+			"description": "the login screen is mentioned in passing",
+		},
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_search",
+		Arguments: map[string]any{"query": "login crash"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("tool returned error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp struct {
+		Matches []map[string]any `json:"matches"`
+		Total   int              `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(text), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if resp.Total != 2 {
+		t.Fatalf("total = %d, want 2", resp.Total)
+	}
+	if resp.Matches[0]["title"] != "Login crash on submit" {
+		t.Errorf("first match = %q, want %q", resp.Matches[0]["title"], "Login crash on submit")
+	}
+}
+
+func TestSearchNoMatch(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Some ticket", "type": "feature"},
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_search",
+		Arguments: map[string]any{"query": "nonexistentterm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("tool returned error: %v", result.Content)
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var resp struct {
+		Matches []map[string]any `json:"matches"`
+		Total   int              `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(text), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if resp.Total != 0 {
+		t.Errorf("total = %d, want 0", resp.Total)
+	}
+	if len(resp.Matches) != 0 {
+		t.Errorf("matches = %d, want 0", len(resp.Matches))
+	}
+}
+
 func TestReadyExcludesBacklog(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

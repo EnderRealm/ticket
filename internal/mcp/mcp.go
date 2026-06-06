@@ -34,6 +34,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerReady(server, store, defaultProject)
 	registerBlocked(server, store)
 	registerInbox(server, store, defaultProject)
+	registerSearch(server, store, defaultProject)
 	registerStoreInfo(server, centralRoot)
 
 	return server
@@ -921,6 +922,60 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 
 		r, jsonErr := jsonResult(result)
 		return r, nil, jsonErr
+	})
+}
+
+type searchArgs struct {
+	Query   string   `json:"query" jsonschema:"search query; ranked by relevance across title, body, and notes"`
+	Project string   `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+	Limit   *FlexInt `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
+}
+
+type searchResultJSON struct {
+	Matches []ticketSummaryJSON `json:"matches"`
+	Total   int                 `json:"total"`
+}
+
+func registerSearch(server *mcp.Server, store ticket.Store, defaultProject string) {
+	addFlexTool(server, &mcp.Tool{
+		Name:        "ticket_search",
+		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args searchArgs) (*mcp.CallToolResult, any, error) {
+		tickets, err := store.List()
+		if err != nil {
+			r, _ := errResult("failed to list tickets: %v", err)
+			return r, nil, nil
+		}
+
+		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			tickets = filterByProject(tickets, proj)
+		}
+
+		results := ticket.Search(tickets, args.Query)
+		total := len(results)
+
+		limit := defaultListLimit
+		if args.Limit != nil {
+			if int(*args.Limit) == 0 {
+				limit = total // 0 = unlimited
+			} else if int(*args.Limit) > 0 {
+				limit = int(*args.Limit)
+			}
+		}
+		if limit < total {
+			results = results[:limit]
+		}
+
+		items := []ticketSummaryJSON{}
+		for _, res := range results {
+			items = append(items, toSummaryJSON(res.Ticket))
+		}
+
+		r, err := jsonResult(searchResultJSON{
+			Matches: items,
+			Total:   total,
+		})
+		return r, nil, err
 	})
 }
 

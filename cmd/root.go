@@ -23,6 +23,7 @@ Usage: tk <command> [args]
 Viewing:
   show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
+  search <query>             Search tickets by relevance (best matches first)
 
 Creating & Editing:
   create [title] [options]   Create ticket
