@@ -171,20 +171,13 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 			}
 
 		case "enter":
-			if m.focus == fieldType {
-				m.typeIdx = (m.typeIdx + 1) % len(ticketTypes)
-			} else if m.focus == fieldPriority {
-				m.priority = (m.priority + 1) % 5
-			} else if m.focus == fieldStatus {
-				m.statusIdx = (m.statusIdx + 1) % len(allStatuses)
-			} else if m.isMultilineField(m.focus) {
-				pos := m.cursors[m.focus]
-				text := m.fields[m.focus]
-				m.fields[m.focus] = text[:pos] + "\n" + text[pos:]
-				m.cursors[m.focus] = pos + 1
-			} else {
+			// Enter advances through the form; on the last field it saves.
+			// Newlines in multiline fields are entered via ctrl+j; selectors
+			// cycle via ←→.
+			if m.focus == m.lastField() {
 				return m, m.submit
 			}
+			m.focus = formField((int(m.focus) + 1) % numFields)
 
 		case "left":
 			if m.isTextField(m.focus) {
@@ -452,8 +445,16 @@ func (m formModel) view() string {
 		b.WriteString("\n")
 	}
 
-	help := "tab/↑↓ fields  ←→ move/cycle  enter newline (multiline)  ctrl+s save  esc cancel"
-	b.WriteString(formHelpStyle.Render(help))
+	enterHint := "enter next"
+	if m.focus == m.lastField() {
+		enterHint = "enter save"
+	}
+	helpParts := []string{"tab/↑↓ fields", "←→ move/cycle", enterHint}
+	if m.isMultilineField(m.focus) {
+		helpParts = append(helpParts, "ctrl+j newline")
+	}
+	helpParts = append(helpParts, "ctrl+s save", "esc cancel")
+	b.WriteString(formHelpStyle.Render(strings.Join(helpParts, "  ")))
 
 	return b.String()
 }

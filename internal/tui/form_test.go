@@ -84,55 +84,168 @@ func TestWrapTextNewlineOffsets(t *testing.T) {
 	}
 }
 
-func TestFormEnterOnMultilineInsertsNewline(t *testing.T) {
-	m := formModel{
-		editID:    "test-123",
-		typeIdx:   0,
-		priority:  2,
-		width:     80,
-		height:    40,
-		statusIdx: 0,
-	}
+func TestFormEnterAdvancesField(t *testing.T) {
+	m := newFormModel(80, 40)
 	m.fields[fieldTitle] = "Test ticket"
-	m.fields[fieldDescription] = "description"
+	m.focus = fieldTitle
 
-	// Focus the multiline note field.
-	m.focus = fieldNote
-
-	// Type "hello" into the note field.
-	for _, ch := range "hello" {
-		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
-	}
-	if m.fields[fieldNote] != "hello" {
-		t.Fatalf("note field: got %q, want %q", m.fields[fieldNote], "hello")
-	}
-
-	// Enter on a multiline field should insert a newline, not submit.
+	// Enter on a non-last field advances focus instead of submitting.
 	var cmd tea.Cmd
 	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
-		t.Fatalf("expected nil command (no submit), got %v", cmd)
+		t.Fatalf("expected nil command (no submit) on enter from title, got %v", cmd)
 	}
-	if m.fields[fieldNote] != "hello\n" {
-		t.Errorf("note after enter: got %q, want %q", m.fields[fieldNote], "hello\n")
+	if m.focus != fieldDescription {
+		t.Errorf("focus after enter: got %v, want %v", m.focus, fieldDescription)
 	}
-	if m.cursors[fieldNote] != len("hello\n") {
-		t.Errorf("cursor after enter: got %d, want %d", m.cursors[fieldNote], len("hello\n"))
+	// Title text is untouched.
+	if m.fields[fieldTitle] != "Test ticket" {
+		t.Errorf("title after enter: got %q, want %q", m.fields[fieldTitle], "Test ticket")
 	}
 
-	// ctrl+s submits.
+	// Enter from a selector also just advances (no cycling).
+	m.focus = fieldType
+	typeBefore := m.typeIdx
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("expected nil command on enter from type, got %v", cmd)
+	}
+	if m.focus != fieldPriority {
+		t.Errorf("focus after enter from type: got %v, want %v", m.focus, fieldPriority)
+	}
+	if m.typeIdx != typeBefore {
+		t.Errorf("enter should not cycle type: got %d, want %d", m.typeIdx, typeBefore)
+	}
+}
+
+func TestFormEnterOnLastFieldSaves(t *testing.T) {
+	// Create mode: last field is Priority.
+	m := newFormModel(80, 40)
+	m.fields[fieldTitle] = "Test ticket"
+	m.focus = m.lastField()
+	if m.focus != fieldPriority {
+		t.Fatalf("create lastField: got %v, want %v", m.focus, fieldPriority)
+	}
+	var cmd tea.Cmd
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submit command from enter on last field, got nil")
+	}
+	if _, ok := cmd().(formSubmitMsg); !ok {
+		t.Fatalf("expected formSubmitMsg from enter on last field")
+	}
+
+	// Edit mode: last field is the multiline Note. Enter there saves (not newline).
+	em := newEditFormModel(&ticket.Ticket{
+		ID:       "test-123",
+		Title:    "Test ticket",
+		Type:     ticket.TypeBug,
+		Priority: 2,
+		Status:   ticket.StatusOpen,
+	}, 80, 40)
+	em.focus = em.lastField()
+	if em.focus != fieldNote {
+		t.Fatalf("edit lastField: got %v, want %v", em.focus, fieldNote)
+	}
+	em, cmd = em.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submit command from enter on note (last field in edit), got nil")
+	}
+	if em.fields[fieldNote] != "" {
+		t.Errorf("enter on last field should not insert a newline, got %q", em.fields[fieldNote])
+	}
+	if _, ok := cmd().(formSubmitMsg); !ok {
+		t.Fatalf("expected formSubmitMsg from enter on note")
+	}
+}
+
+func TestFormCtrlJInsertsNewlineMultiline(t *testing.T) {
+	m := newEditFormModel(&ticket.Ticket{
+		ID:       "test-123",
+		Title:    "Test ticket",
+		Type:     ticket.TypeBug,
+		Priority: 2,
+		Status:   ticket.StatusOpen,
+	}, 80, 40)
+	m.focus = fieldNote
+
+	for _, ch := range "hello" {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+	}
+
+	// ctrl+j inserts a newline without submitting.
+	var cmd tea.Cmd
+	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if cmd != nil {
+		t.Fatalf("expected nil command from ctrl+j, got %v", cmd)
+	}
+	if m.fields[fieldNote] != "hello\n" {
+		t.Errorf("note after ctrl+j: got %q, want %q", m.fields[fieldNote], "hello\n")
+	}
+	if m.cursors[fieldNote] != len("hello\n") {
+		t.Errorf("cursor after ctrl+j: got %d, want %d", m.cursors[fieldNote], len("hello\n"))
+	}
+
+	// ctrl+s submits, trailing newline trimmed.
 	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd == nil {
 		t.Fatal("expected submit command from ctrl+s, got nil")
 	}
-	msg := cmd()
-	submit, ok := msg.(formSubmitMsg)
+	submit, ok := cmd().(formSubmitMsg)
 	if !ok {
-		t.Fatalf("expected formSubmitMsg, got %T", msg)
+		t.Fatalf("expected formSubmitMsg, got %T", cmd())
 	}
 	if submit.note != "hello" {
-		// trailing newline is trimmed by submit().
 		t.Errorf("submitted note: got %q, want %q", submit.note, "hello")
+	}
+}
+
+func TestFormFooterHints(t *testing.T) {
+	m := newFormModel(120, 40)
+
+	// Non-last, single-line field: "enter next", no newline hint.
+	m.focus = fieldTitle
+	out := m.view()
+	if !strings.Contains(out, "enter next") {
+		t.Error("footer on title should show 'enter next'")
+	}
+	if strings.Contains(out, "ctrl+j newline") {
+		t.Error("footer on single-line field should not show 'ctrl+j newline'")
+	}
+
+	// Multiline field: newline hint present.
+	m.focus = fieldDescription
+	out = m.view()
+	if !strings.Contains(out, "ctrl+j newline") {
+		t.Error("footer on multiline field should show 'ctrl+j newline'")
+	}
+
+	// Last field: "enter save" alongside ctrl+s.
+	m.focus = m.lastField()
+	out = m.view()
+	if !strings.Contains(out, "enter save") {
+		t.Error("footer on last field should show 'enter save'")
+	}
+	if !strings.Contains(out, "ctrl+s save") {
+		t.Error("footer should always show 'ctrl+s save'")
+	}
+
+	// Edit mode: last field (Note) is both multiline and last, so the footer
+	// shows both 'enter save' and 'ctrl+j newline'.
+	em := newEditFormModel(&ticket.Ticket{
+		ID:       "test-123",
+		Title:    "Test",
+		Type:     ticket.TypeBug,
+		Priority: 2,
+		Status:   ticket.StatusOpen,
+	}, 120, 40)
+	em.focus = em.lastField()
+	out = em.view()
+	if !strings.Contains(out, "enter save") {
+		t.Error("footer on edit last field should show 'enter save'")
+	}
+	if !strings.Contains(out, "ctrl+j newline") {
+		t.Error("footer on edit last field (multiline note) should show 'ctrl+j newline'")
 	}
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- TUI create/edit form: Enter now advances through fields and saves on the last field, instead of submitting from the Title field. Newlines in multiline fields are entered via ctrl+j; ctrl+s still saves. The footer surfaces these hints contextually (`ctrl+j newline` on multiline fields, `enter save` on the last field).
+
 ## [7.5.1] - 2026-06-07
 
 ### Fixed
