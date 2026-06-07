@@ -63,10 +63,6 @@ func (m formModel) lastField() formField {
 	return fieldPriority
 }
 
-func (m formModel) isEditOnlyField(f formField) bool {
-	return f == fieldStatus || f == fieldNote
-}
-
 func (m formModel) isTextField(f formField) bool {
 	return f == fieldTitle || f == fieldDescription || f == fieldNote
 }
