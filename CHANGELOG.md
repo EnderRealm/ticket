@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.5.1] - 2026-06-07
 
 ### Fixed
 - `ticket_blocked` MCP tool now scopes results to the default or explicit `project` in multi-project mode, matching `ticket_ready`/`ticket_list`/`ticket_search`. It previously ignored the `project` argument and returned blocked tickets across all projects.
