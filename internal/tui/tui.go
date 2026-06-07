@@ -714,8 +714,13 @@ func (a App) footerView() (string, int) {
 		return pad.Render(StyleWarning.Render(a.status)), 1
 	}
 
-	// Usable footer width inside the 1-col horizontal padding.
+	// Usable footer width inside the 1-col horizontal padding. Clamp to >=1 so
+	// the wrapText call below never gets a negative width (a.width is 0 before
+	// the first WindowSizeMsg).
 	width := a.width - 2
+	if width < 1 {
+		width = 1
+	}
 
 	filter := a.filterInfoText()
 	help := a.helpText()

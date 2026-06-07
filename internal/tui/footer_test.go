@@ -164,6 +164,16 @@ func TestOverlaySuppressesDashboardFooter(t *testing.T) {
 	}
 }
 
+// footerView wraps via wrapText, which panics on a negative width. a.width is 0
+// before the first WindowSizeMsg, so the usable width (a.width-2) goes negative;
+// guard against that regression.
+func TestFooterViewZeroWidthNoPanic(t *testing.T) {
+	a := App{activeTab: tabInbox, width: 0, height: 0}
+	a.dashboard.activeTab = tabInbox
+	a.footerView() // must not panic
+	a.View()       // full render at zero size must not panic
+}
+
 // The filter segment is highlighted (StyleFilter) while the rest of the footer
 // is muted (StyleHelp). That highlight must survive when the footer wraps.
 func TestFooterHighlightSurvivesWrap(t *testing.T) {
