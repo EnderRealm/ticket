@@ -43,6 +43,13 @@ var allStatuses = []ticket.Status{
 	ticket.StatusClosed,
 }
 
+// createStatuses is the limited status set offered in the create form: a new
+// ticket is only ever filed as backlog (default) or, to skip grooming, ready.
+var createStatuses = []ticket.Status{
+	ticket.StatusBacklog,
+	ticket.StatusReady,
+}
+
 type formModel struct {
 	editID    string // non-empty = edit mode
 	fields    [fieldCount]string
@@ -60,7 +67,16 @@ func (m formModel) lastField() formField {
 	if m.editID != "" {
 		return fieldNote
 	}
-	return fieldPriority
+	return fieldStatus
+}
+
+// statusOptions returns the status choices for the current mode: the full set
+// when editing, the backlog/ready pair when creating.
+func (m formModel) statusOptions() []ticket.Status {
+	if m.editID != "" {
+		return allStatuses
+	}
+	return createStatuses
 }
 
 func (m formModel) isTextField(f formField) bool {
@@ -187,7 +203,8 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 					m.priority--
 				}
 			} else if m.focus == fieldStatus {
-				m.statusIdx = (m.statusIdx - 1 + len(allStatuses)) % len(allStatuses)
+				n := len(m.statusOptions())
+				m.statusIdx = (m.statusIdx - 1 + n) % n
 			}
 		case "right":
 			if m.isTextField(m.focus) {
@@ -201,7 +218,7 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 					m.priority++
 				}
 			} else if m.focus == fieldStatus {
-				m.statusIdx = (m.statusIdx + 1) % len(allStatuses)
+				m.statusIdx = (m.statusIdx + 1) % len(m.statusOptions())
 			}
 		case "home", "ctrl+a":
 			if m.isTextField(m.focus) {
@@ -276,9 +293,7 @@ func (m formModel) submit() tea.Msg {
 		ticketType:  ticketTypes[m.typeIdx],
 		priority:    m.priority,
 		note:        strings.TrimSpace(m.fields[fieldNote]),
-	}
-	if m.editID != "" {
-		msg.status = allStatuses[m.statusIdx]
+		status:      m.statusOptions()[m.statusIdx],
 	}
 	return msg
 }
@@ -332,7 +347,7 @@ func (m formModel) view() string {
 			lines = append(lines, cursor+label+" "+renderChips(opts, m.priority, i == m.focus))
 		case fieldStatus:
 			var opts []string
-			for _, s := range allStatuses {
+			for _, s := range m.statusOptions() {
 				opts = append(opts, string(s))
 			}
 			lines = append(lines, cursor+label+" "+renderChips(opts, m.statusIdx, i == m.focus))

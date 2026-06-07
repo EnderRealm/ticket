@@ -794,12 +794,16 @@ func (a *App) handleAddNote(id, text string) tea.Cmd {
 }
 
 func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
+	newStatus := msg.status
+	if newStatus == "" {
+		newStatus = ticket.StatusBacklog
+	}
 	t := &ticket.Ticket{
 		ID:       ticket.GenerateID(msg.title),
 		Title:    msg.title,
 		Type:     msg.ticketType,
 		Priority: msg.priority,
-		Status:   ticket.StatusBacklog,
+		Status:   newStatus,
 		Created:  time.Now().UTC(),
 	}
 

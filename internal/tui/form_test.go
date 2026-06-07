@@ -119,12 +119,12 @@ func TestFormEnterAdvancesField(t *testing.T) {
 }
 
 func TestFormEnterOnLastFieldSaves(t *testing.T) {
-	// Create mode: last field is Priority.
+	// Create mode: last field is Status.
 	m := newFormModel(80, 40)
 	m.fields[fieldTitle] = "Test ticket"
 	m.focus = m.lastField()
-	if m.focus != fieldPriority {
-		t.Fatalf("create lastField: got %v, want %v", m.focus, fieldPriority)
+	if m.focus != fieldStatus {
+		t.Fatalf("create lastField: got %v, want %v", m.focus, fieldStatus)
 	}
 	var cmd tea.Cmd
 	m, cmd = m.update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -156,6 +156,50 @@ func TestFormEnterOnLastFieldSaves(t *testing.T) {
 	}
 	if _, ok := cmd().(formSubmitMsg); !ok {
 		t.Fatalf("expected formSubmitMsg from enter on note")
+	}
+}
+
+func TestCreateFormStatusBacklogReadyOnly(t *testing.T) {
+	// Create mode offers only backlog/ready, defaulting to backlog.
+	m := newFormModel(80, 40)
+	if got := m.statusOptions(); len(got) != 2 || got[0] != ticket.StatusBacklog || got[1] != ticket.StatusReady {
+		t.Fatalf("create statusOptions: got %v, want [backlog ready]", got)
+	}
+
+	// Default submit carries backlog.
+	m.fields[fieldTitle] = "Test ticket"
+	if msg := m.submit().(formSubmitMsg); msg.status != ticket.StatusBacklog {
+		t.Errorf("default create status: got %q, want %q", msg.status, ticket.StatusBacklog)
+	}
+
+	// Cycling the Status field to ready submits ready.
+	m.focus = fieldStatus
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.statusIdx != 1 {
+		t.Fatalf("statusIdx after right: got %d, want 1", m.statusIdx)
+	}
+	if msg := m.submit().(formSubmitMsg); msg.status != ticket.StatusReady {
+		t.Errorf("create status after selecting ready: got %q, want %q", msg.status, ticket.StatusReady)
+	}
+
+	// Cycling stays within the two options (wraps, never reaches open).
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.statusIdx != 0 {
+		t.Errorf("statusIdx should wrap to 0 after ready, got %d", m.statusIdx)
+	}
+}
+
+func TestEditFormStatusUnchanged(t *testing.T) {
+	// Edit mode still offers all five statuses.
+	m := newEditFormModel(&ticket.Ticket{
+		ID:       "test-123",
+		Title:    "Test",
+		Type:     ticket.TypeBug,
+		Priority: 2,
+		Status:   ticket.StatusOpen,
+	}, 80, 40)
+	if got := m.statusOptions(); len(got) != len(allStatuses) {
+		t.Fatalf("edit statusOptions: got %d options, want %d", len(got), len(allStatuses))
 	}
 }
 
