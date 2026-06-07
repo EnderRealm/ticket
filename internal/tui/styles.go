@@ -285,6 +285,22 @@ func IDSuffix(id string) string {
 
 // ─── Layout Utilities ───────────────────────────────────────────────────────
 
+// wrapHelp word-wraps a footer/help string to at most `width` columns, breaking
+// on spaces so command tokens stay intact. Returns one line when it already
+// fits, more when the window is too narrow. Used by every command-bar footer so
+// a narrow terminal shows all commands instead of clipping them.
+func wrapHelp(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	wrapped := wrapText(s, width)
+	lines := make([]string, len(wrapped))
+	for i, wl := range wrapped {
+		lines[i] = wl.text
+	}
+	return lines
+}
+
 // padRight pads a rendered string to a target visual width.
 func padRight(s string, width int) string {
 	return padRightBg(s, width, nil)

@@ -474,10 +474,21 @@ func (a App) View() string {
 		return fmt.Sprintf("Error: %v\n", a.err)
 	}
 
-	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
-
 	var b strings.Builder
 	sepStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+
+	// Build the footer first so content can reserve exactly the rows it needs.
+	// View has a value receiver, so re-applying content sizing here keeps the
+	// frame == a.height regardless of transient state. This View-time sizing is
+	// authoritative for layout; the Update-time contentHeight() only feeds the
+	// scroll math, which a stale-by-one footer state can never push to overflow.
+	footer, footerLines := a.footerView()
+	contentH := a.height - 3 - footerLines // header(1) + topsep(1) + botsep(1) + footer
+	if contentH < 1 {
+		contentH = 1
+	}
+	a.dashboard.setSize(a.width, contentH)
+	a.epics.setSize(a.width, contentH)
 
 	// Project name + tab bar on same line, with an info segment flush right.
 	name := lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(a.projectName)
@@ -514,20 +525,7 @@ func (a App) View() string {
 	// Bottom separator and status/help bar.
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSubtle).Render(strings.Repeat("─", a.width)))
 	b.WriteString("\n")
-	if a.cmdActive {
-		b.WriteString(pad.Render(a.renderCommandBar()))
-	} else if a.status != "" {
-		b.WriteString(pad.Render(StyleWarning.Render(a.status)))
-	} else {
-		// Filter info + help on the same line.
-		filter := a.renderFilterInfo()
-		help := a.renderHelp()
-		if filter != "" {
-			b.WriteString(pad.Render(filter + "  │  " + help))
-		} else {
-			b.WriteString(pad.Render(help))
-		}
-	}
+	b.WriteString(footer)
 
 	return b.String()
 }
@@ -655,15 +653,17 @@ func (a App) renderCommandBar() string {
 	return prompt + a.cmdBar.View()
 }
 
-func (a App) renderFilterInfo() string {
+// filterInfoText returns the unstyled filter segment for the current state, so
+// footerView can combine it with the help text for wrapping.
+func (a App) filterInfoText() string {
 	if !a.isTicketTab() {
 		return ""
 	}
 	if a.dashboard.filterActive {
-		return StyleFilter.Render("/ " + a.dashboard.filterText + "█")
+		return "/ " + a.dashboard.filterText + "█"
 	}
 	if a.dashboard.filterText != "" {
-		return StyleFilter.Render("filter: " + a.dashboard.filterText + "  (/ edit, esc clear)")
+		return "filter: " + a.dashboard.filterText + "  (/ edit, esc clear)"
 	}
 	var parts []string
 	if a.dashboard.typeFilter != "" {
@@ -672,26 +672,78 @@ func (a App) renderFilterInfo() string {
 		parts = append(parts, "all types")
 	}
 	parts = append(parts, "(t) type  (/) search")
-	return StyleFilter.Render(strings.Join(parts, "  "))
+	return strings.Join(parts, "  ")
+}
+
+// helpText returns the unstyled help string for the current state, used by
+// footerView so it can wrap the plain text and style each wrapped line.
+func (a App) helpText() string {
+	if a.activeTab == tabEpics {
+		return "↑↓ select  enter expand  (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
+	}
+	if a.dashboard.confirmDelete {
+		return ""
+	}
+	// While searching, most shortcuts type into the filter; show only the
+	// keys that actually work in search mode.
+	if a.dashboard.filterActive {
+		return "↑↓ select  enter apply  esc clear"
+	}
+	return "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 }
 
 func (a App) renderHelp() string {
-	var help string
-	if a.activeTab == tabEpics {
-		help = "↑↓ select  enter expand  (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
-	} else {
-		if a.dashboard.confirmDelete {
-			return ""
-		}
-		// While searching, most shortcuts type into the filter; show only the
-		// keys that actually work in search mode.
-		if a.dashboard.filterActive {
-			help = "↑↓ select  enter apply  esc clear"
-		} else {
-			help = "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
-		}
+	return StyleHelp.Render(a.helpText())
+}
+
+// footerView builds the bottom command/help bar for the current state, wrapped
+// to the window width. Returns the rendered block (styled, newline-joined) and
+// its line count so the content area can reserve the right number of rows. The
+// command bar and status are always single line; the filter+help bar wraps when
+// it overflows the terminal width.
+func (a App) footerView() (string, int) {
+	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
+
+	if a.cmdActive {
+		return pad.Render(a.renderCommandBar()), 1
 	}
-	return StyleHelp.Render(help)
+	if a.status != "" {
+		return pad.Render(StyleWarning.Render(a.status)), 1
+	}
+
+	// Usable footer width inside the 1-col horizontal padding.
+	width := a.width - 2
+
+	filter := a.filterInfoText()
+	help := a.helpText()
+
+	// Common wide case: keep the existing styled "filter │ help" form when it
+	// fits on one line, preserving the StyleFilter coloring on the filter
+	// segment. Drop the separator when help is empty (e.g. confirmDelete) so the
+	// footer doesn't trail a dangling "│".
+	if filter != "" {
+		sep := "  │  "
+		if help == "" {
+			sep = ""
+		}
+		combined := filter + sep + help
+		if lipgloss.Width(combined) <= width {
+			return pad.Render(StyleFilter.Render(filter) + sep + StyleHelp.Render(help)), 1
+		}
+		// Too narrow: wrap the combined plain text and apply the muted help
+		// style to every line so all commands stay visible.
+		lines := wrapHelp(combined, width)
+		for i, l := range lines {
+			lines[i] = pad.Render(StyleHelp.Render(l))
+		}
+		return strings.Join(lines, "\n"), len(lines)
+	}
+
+	lines := wrapHelp(help, width)
+	for i, l := range lines {
+		lines[i] = pad.Render(StyleHelp.Render(l))
+	}
+	return strings.Join(lines, "\n"), len(lines)
 }
 
 // isTicketTab returns true if the active tab shows ticket list (not epics).
@@ -725,9 +777,11 @@ func (a *App) syncDashboardTab() {
 }
 
 // contentHeight returns the available height for tab/overlay content,
-// excluding header+tabs (1), separator (1), bottom separator (1), and help bar (1).
+// excluding header+tabs (1), separator (1), bottom separator (1), and the help
+// bar — which may wrap to multiple lines on a narrow terminal.
 func (a App) contentHeight() int {
-	h := a.height - 4
+	_, footerLines := a.footerView()
+	h := a.height - 3 - footerLines
 	if h < 1 {
 		h = 1
 	}

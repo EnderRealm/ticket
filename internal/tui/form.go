@@ -140,8 +140,23 @@ func (m *formModel) setSize(w, h int) {
 	m.height = h
 }
 
+// helpLines returns the footer help wrapped to the form width so a narrow
+// terminal shows every hint instead of clipping the trailing ones.
+func (m formModel) helpLines() []string {
+	enterHint := "enter next"
+	if m.focus == m.lastField() {
+		enterHint = "enter save"
+	}
+	helpParts := []string{"tab/↑↓ fields", "←→ move/cycle", enterHint}
+	if m.isMultilineField(m.focus) {
+		helpParts = append(helpParts, "ctrl+j newline")
+	}
+	helpParts = append(helpParts, "ctrl+s save", "esc cancel")
+	return wrapHelp(strings.Join(helpParts, "  "), m.width)
+}
+
 func (m formModel) visibleRows() int {
-	rows := m.height - 2 // help bar + blank line before it
+	rows := m.height - (len(m.helpLines()) + 1) // help lines + blank line before them
 	if rows < 1 {
 		rows = 1
 	}
@@ -456,16 +471,13 @@ func (m formModel) view() string {
 		b.WriteString("\n")
 	}
 
-	enterHint := "enter next"
-	if m.focus == m.lastField() {
-		enterHint = "enter save"
+	help := m.helpLines()
+	for i, l := range help {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(formHelpStyle.Render(l))
 	}
-	helpParts := []string{"tab/↑↓ fields", "←→ move/cycle", enterHint}
-	if m.isMultilineField(m.focus) {
-		helpParts = append(helpParts, "ctrl+j newline")
-	}
-	helpParts = append(helpParts, "ctrl+s save", "esc cancel")
-	b.WriteString(formHelpStyle.Render(strings.Join(helpParts, "  ")))
 
 	return b.String()
 }

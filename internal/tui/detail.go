@@ -100,8 +100,22 @@ func discoverSiblingRepos(ticketsDir string) []string {
 	return repos
 }
 
+// helpLines returns the footer help wrapped to the view width so a narrow
+// terminal shows every shortcut instead of clipping the trailing ones.
+func (m detailModel) helpLines() []string {
+	var help string
+	if m.input == inputMovePicker {
+		help = "↑↓ select  enter confirm  esc cancel"
+	} else if m.input != inputNone {
+		help = "enter confirm  esc cancel"
+	} else {
+		help = "↑↓/jk scroll  │  (e)dit (p)riority (n)ote (m)ove (y)ank (w)ork  │  esc back  (q)uit"
+	}
+	return wrapHelp(help, m.width)
+}
+
 func (m detailModel) visibleRows() int {
-	rows := m.height - 1 // help bar
+	rows := m.height - len(m.helpLines())
 	if m.input == inputMovePicker {
 		rows -= len(m.pickerItems) + 1 // label + items
 	} else if m.input != inputNone {
@@ -285,15 +299,12 @@ func (m detailModel) view() string {
 	}
 
 	// Help bar.
-	var help string
-	if m.input == inputMovePicker {
-		help = "↑↓ select  enter confirm  esc cancel"
-	} else if m.input != inputNone {
-		help = "enter confirm  esc cancel"
-	} else {
-		help = "↑↓/jk scroll  │  (e)dit (p)riority (n)ote (m)ove (y)ank (w)ork  │  esc back  (q)uit"
+	for i, l := range m.helpLines() {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(detailHelpStyle.Render(l))
 	}
-	b.WriteString(detailHelpStyle.Render(help))
 
 	return b.String()
 }
