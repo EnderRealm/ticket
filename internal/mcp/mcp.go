@@ -32,7 +32,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerDep(server, store)
 	registerLink(server, store)
 	registerReady(server, store, defaultProject)
-	registerBlocked(server, store)
+	registerBlocked(server, store, defaultProject)
 	registerInbox(server, store, defaultProject)
 	registerSearch(server, store, defaultProject)
 	registerStoreInfo(server, centralRoot)
@@ -853,7 +853,7 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 	})
 }
 
-func registerBlocked(server *mcp.Server, store ticket.Store) {
+func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_blocked",
 		Description: "List tickets that are blocked by unresolved dependencies.",
@@ -869,6 +869,9 @@ func registerBlocked(server *mcp.Server, store ticket.Store) {
 			opts.Tag = args.Tag
 		}
 		blocked = ticket.Filter(blocked, opts)
+		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			blocked = filterByProject(blocked, proj)
+		}
 		ticket.SortByPriorityID(blocked)
 
 		result := []ticketJSON{}

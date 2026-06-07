@@ -1287,6 +1287,130 @@ func testCentralServer(t *testing.T, projects ...string) (*mcp.ClientSession, st
 	return session, root
 }
 
+func testCentralServerWithDefault(t *testing.T, defaultProject string, projects ...string) *mcp.ClientSession {
+	t.Helper()
+	root := t.TempDir()
+	ticketsDir := filepath.Join(root, "tickets")
+	if err := os.MkdirAll(ticketsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range projects {
+		if err := os.MkdirAll(filepath.Join(ticketsDir, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := ticket.NewMultiStore(ticketsDir)
+	server := ticketmcp.NewServer(store, defaultProject, root)
+
+	st, ct := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	go server.Run(ctx, st)
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
+	session, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	return session
+}
+
+// createTicketID calls ticket_create and returns the new ticket's ID.
+func createTicketID(t *testing.T, session *mcp.ClientSession, args map[string]any) string {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: args,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_create error: %v", result.Content)
+	}
+	var tk map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tk)
+	id, _ := tk["id"].(string)
+	if id == "" {
+		t.Fatal("ticket_create returned empty id")
+	}
+	return id
+}
+
+// makeBlocked creates a blocker and a dependent open ticket in the given project,
+// returning the dependent ticket's ID (which is blocked by the unresolved blocker).
+func makeBlocked(t *testing.T, session *mcp.ClientSession, project string) string {
+	t.Helper()
+	ctx := context.Background()
+	blocker := createTicketID(t, session, map[string]any{"title": "blocker", "type": "feature", "project": project})
+	dependent := createTicketID(t, session, map[string]any{"title": "dependent", "type": "feature", "project": project})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_dep",
+		Arguments: map[string]any{"id": dependent, "dep_id": blocker, "action": "add"},
+	})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": dependent, "status": "open"},
+	})
+	return dependent
+}
+
+func TestBlockedScopedToDefaultProject(t *testing.T) {
+	session := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	ctx := context.Background()
+
+	alphaBlocked := makeBlocked(t, session, "alpha")
+	makeBlocked(t, session, "beta")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_blocked",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_blocked error: %v", result.Content)
+	}
+
+	var tickets []map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 blocked ticket scoped to default project, got %d", len(tickets))
+	}
+	if tickets[0]["id"] != alphaBlocked {
+		t.Errorf("blocked id = %q, want %q", tickets[0]["id"], alphaBlocked)
+	}
+}
+
+func TestBlockedScopedToExplicitProject(t *testing.T) {
+	session := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	ctx := context.Background()
+
+	makeBlocked(t, session, "alpha")
+	betaBlocked := makeBlocked(t, session, "beta")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_blocked",
+		Arguments: map[string]any{"project": "beta"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_blocked error: %v", result.Content)
+	}
+
+	var tickets []map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 blocked ticket for explicit project, got %d", len(tickets))
+	}
+	if tickets[0]["id"] != betaBlocked {
+		t.Errorf("blocked id = %q, want %q", tickets[0]["id"], betaBlocked)
+	}
+}
+
 func TestStoreInfo(t *testing.T) {
 	session, root := testCentralServer(t, "alpha", "beta")
 	ctx := context.Background()
