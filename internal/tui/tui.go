@@ -522,10 +522,13 @@ func (a App) View() string {
 
 	b.WriteString(content)
 
-	// Bottom separator and status/help bar.
-	b.WriteString(lipgloss.NewStyle().Foreground(colorSubtle).Render(strings.Repeat("─", a.width)))
-	b.WriteString("\n")
-	b.WriteString(footer)
+	// Overlays (detail/form) render their own footer; the list-view separator
+	// and command/help bar only belong to the dashboard and epics tabs.
+	if a.overlay == overlayNone {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSubtle).Render(strings.Repeat("─", a.width)))
+		b.WriteString("\n")
+		b.WriteString(footer)
+	}
 
 	return b.String()
 }

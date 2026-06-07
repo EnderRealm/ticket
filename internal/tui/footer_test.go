@@ -141,6 +141,27 @@ func TestDetailFooterSingleLineWhenWide(t *testing.T) {
 	}
 }
 
+// When an overlay (detail/form) is active it renders its own footer, so the
+// App must not also append the dashboard command/help bar underneath it.
+func TestOverlaySuppressesDashboardFooter(t *testing.T) {
+	const w, h = 60, 24 // narrow enough that the dashboard footer would wrap
+	tk := &ticket.Ticket{ID: "x", Title: "T", Status: ticket.StatusOpen, Type: ticket.TypeFeature}
+
+	form := newTestApp(w, h)
+	form.form = newEditFormModel(tk, w, h)
+	form.overlay = overlayForm
+	if out := form.View(); strings.Contains(out, "(/) search") {
+		t.Errorf("form overlay leaked the dashboard footer:\n%s", out)
+	}
+
+	detail := newTestApp(w, h)
+	detail.detail = newDetailModel(tk, w, h)
+	detail.overlay = overlayDetail
+	if out := detail.View(); strings.Contains(out, "(/) search") {
+		t.Errorf("detail overlay leaked the dashboard footer:\n%s", out)
+	}
+}
+
 func TestEpicsFooterWrapsWhenNarrow(t *testing.T) {
 	const w, h = 40, 30
 	a := newTestApp(w, h)
