@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.5.0] - 2026-06-07
 
 ### Added
 - `tk search <query>` CLI command and `ticket_search` MCP tool: rank a project's tickets by token-based relevance across title, body, and notes (best matches first) to find similar or duplicate tickets before creating new ones. Each result shows a context snippet of where the query matched — the CLI prints a dimmed excerpt with matched terms bolded; the MCP tool returns `match_field` and `snippet` per match.
