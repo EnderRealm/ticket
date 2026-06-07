@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/EnderRealm/ticket/pkg/ticket"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // frameHeight counts the rendered lines of a view, treating it as a terminal
@@ -159,6 +161,26 @@ func TestOverlaySuppressesDashboardFooter(t *testing.T) {
 	detail.overlay = overlayDetail
 	if out := detail.View(); strings.Contains(out, "(/) search") {
 		t.Errorf("detail overlay leaked the dashboard footer:\n%s", out)
+	}
+}
+
+// The filter segment is highlighted (StyleFilter) while the rest of the footer
+// is muted (StyleHelp). That highlight must survive when the footer wraps.
+func TestFooterHighlightSurvivesWrap(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	const w, h = 55, 24 // filter fits line 1, but the whole footer wraps
+	a := newTestApp(w, h)
+
+	footer, lines := a.footerView()
+	if lines < 2 {
+		t.Fatalf("expected a wrapped footer (>=2 lines), got %d:\n%s", lines, footer)
+	}
+	seg := StyleFilter.Render("all types  (t) type  (/) search")
+	if !strings.Contains(footer, seg) {
+		t.Errorf("wrapped footer lost the StyleFilter highlight on the filter segment:\n%s", footer)
 	}
 }
 

@@ -733,11 +733,14 @@ func (a App) footerView() (string, int) {
 		if lipgloss.Width(combined) <= width {
 			return pad.Render(StyleFilter.Render(filter) + sep + StyleHelp.Render(help)), 1
 		}
-		// Too narrow: wrap the combined plain text and apply the muted help
-		// style to every line so all commands stay visible.
-		lines := wrapHelp(combined, width)
-		for i, l := range lines {
-			lines[i] = pad.Render(StyleHelp.Render(l))
+		// Too narrow: wrap the combined plain text, but keep the filter segment
+		// highlighted (StyleFilter) and the rest muted (StyleHelp) even when the
+		// boundary falls mid-line, so the highlight survives wrapping.
+		filterEnd := len([]rune(filter))
+		wrapped := wrapText(combined, width)
+		lines := make([]string, len(wrapped))
+		for i, wl := range wrapped {
+			lines[i] = pad.Render(styleFooterLine(wl, filterEnd))
 		}
 		return strings.Join(lines, "\n"), len(lines)
 	}
@@ -747,6 +750,29 @@ func (a App) footerView() (string, int) {
 		lines[i] = pad.Render(StyleHelp.Render(l))
 	}
 	return strings.Join(lines, "\n"), len(lines)
+}
+
+// styleFooterLine colors a wrapped footer line: original runes [0,filterEnd)
+// belong to the filter segment (StyleFilter), the rest is muted help text
+// (StyleHelp). wrapText guarantees each line's text maps contiguously from its
+// start offset, so the boundary is just filterEnd-start within the line.
+func styleFooterLine(wl wrappedLine, filterEnd int) string {
+	runes := []rune(wl.text)
+	cut := filterEnd - wl.start
+	if cut < 0 {
+		cut = 0
+	}
+	if cut > len(runes) {
+		cut = len(runes)
+	}
+	switch {
+	case cut == 0:
+		return StyleHelp.Render(string(runes))
+	case cut == len(runes):
+		return StyleFilter.Render(string(runes))
+	default:
+		return StyleFilter.Render(string(runes[:cut])) + StyleHelp.Render(string(runes[cut:]))
+	}
 }
 
 // isTicketTab returns true if the active tab shows ticket list (not epics).
