@@ -591,8 +591,13 @@ func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style,
 	case "TITLE":
 		return selBg.Foreground(colorWhite).Render(c.render(t, now))
 	default:
-		// Time columns: subtle gray text.
-		return padRightBg(selBg.Foreground(colorSubtle).Render(c.render(t, now)), c.width, bg)
+		// Time columns: subtle gray text, brightened when selected so it stays
+		// legible against the selection background (colorSubtle ≈ colorSurface).
+		fg := colorSubtle
+		if selected {
+			fg = colorGray
+		}
+		return padRightBg(selBg.Foreground(fg).Render(c.render(t, now)), c.width, bg)
 	}
 }
 

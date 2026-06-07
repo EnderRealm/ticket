@@ -8,6 +8,9 @@
 ### Changed
 - TUI create/edit form: Enter now advances through fields and saves on the last field, instead of submitting from the Title field. Newlines in multiline fields are entered via ctrl+j; ctrl+s still saves. The footer surfaces these hints contextually (`ctrl+j newline` on multiline fields, `enter save` on the last field).
 
+### Fixed
+- TUI dashboard: the CREATED/MODIFIED/AGE time-column text is now legible on the selected row. It was rendered in `colorSubtle` (`#4e4e4e`), nearly identical to the selection background `colorSurface` (`#4a4a4a`), making it invisible under the selection bar; it now brightens to `colorGray` when selected.
+
 ## [7.5.1] - 2026-06-07
 
 ### Fixed
