@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.0] - 2026-06-08
 
 ### Added
 - TUI create form: a Status field limited to `backlog` (default) and `ready`, so a new ticket can be filed straight to `ready` and skip the backlog grooming round-trip. Edit mode's full five-status selector is unchanged.
