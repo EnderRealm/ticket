@@ -69,15 +69,40 @@ When committing notable changes (new commands, flags, bug fixes, behavior change
 
 ## Releases & Packaging
 
-Before tagging a release:
-1. Ensure CHANGELOG.md has a section for the new version with release date
-2. Update "Unreleased" to the version number and today's date
-3. Commit the changelog update as part of the release
+### How the version is determined
 
-```bash
-git commit -am "release: v2.2.0"
-git tag v2.2.0
-git push && git push origin v2.2.0
+There is no version constant to bump in source. `cmd/root.go` declares `var Version = "dev"`, and the real value is injected at build time via ldflags from the git tag:
+
+```
+-X github.com/EnderRealm/ticket/cmd.Version={{.Version}}
 ```
 
-GitHub Actions automatically builds binaries via GoReleaser and updates the Homebrew formula in `EnderRealm/homebrew-tools`.
+GoReleaser sets `{{.Version}}` from the tag being built (`v7.6.0` → `7.6.0`). So **the git tag is the single source of truth for the version** — tagging is what releases. A plain `go build` with no tag reports `dev (<short-sha>[, dirty])` via `debug.ReadBuildInfo`.
+
+### Choosing the version (semver)
+
+Look at the `[Unreleased]` section of CHANGELOG.md against the latest tag:
+- New `Added`/`Changed` entries → minor bump (e.g. 7.5.1 → 7.6.0).
+- Only `Fixed` → patch bump (e.g. 7.5.0 → 7.5.1).
+
+### Cutting a release
+
+1. Run `go test ./...` — must be green.
+2. Rename the `[Unreleased]` heading in CHANGELOG.md to `[X.Y.Z] - YYYY-MM-DD` (today's date). Leave the bullets as-is.
+3. Commit: `git commit -am "release: vX.Y.Z"`.
+4. Tag and push (commit and tag are pushed separately):
+
+```bash
+git tag vX.Y.Z
+git push
+git push origin vX.Y.Z
+```
+
+### What the tag push triggers
+
+The `v*` tag push fires `.github/workflows/` → GoReleaser (`release --clean`), which:
+- builds `tk` for darwin/linux × amd64/arm64,
+- publishes a GitHub release with archives + checksums (release notes use GitHub-native changelog),
+- updates the Homebrew formula `ticket` in the `EnderRealm/homebrew-tools` tap.
+
+Pushes to `master` without a tag run CI only — no release.
