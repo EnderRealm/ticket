@@ -40,7 +40,7 @@ go build -o tk .
 Release builds inject the version via ldflags:
 
 ```bash
-go build -ldflags "-X github.com/EnderRealm/ticket/cmd.Version=2.1.0" -o tk .
+go build -ldflags "-X github.com/EnderRealm/ticket/cmd.Version=7.6.0" -o tk .
 ```
 
 Dev builds (`go build` with no ldflags) automatically show the git commit and dirty state via `runtime/debug.ReadBuildInfo`:
@@ -274,22 +274,33 @@ To test MCP changes:
 
 ## Releasing
 
-1. Update `CHANGELOG.md` — move `[Unreleased]` items under a versioned heading with today's date:
+The git tag is the single source of truth for the version. There is no version constant in source: `cmd/root.go` declares `Version = "dev"`, and GoReleaser injects the tag's value via ldflags at build time. **Tagging is what releases** — pushing a `v*` tag triggers the build.
 
-   ```markdown
-   ## [2.1.0] - 2026-02-26
-   ```
+Pick the new version from the `[Unreleased]` changelog entries against the latest tag: new `Added`/`Changed` items → minor bump (`7.5.1` → `7.6.0`); `Fixed`-only → patch bump (`7.5.0` → `7.5.1`).
 
-2. Commit and tag:
+1. Run the tests — must be green:
 
    ```bash
-   git commit -am "release: v2.1.0"
-   git tag v2.1.0
-   git push && git push origin v2.1.0
+   go test ./...
    ```
 
-3. GitHub Actions handles the rest:
-   - **GoReleaser** builds darwin/linux binaries (amd64 + arm64)
+2. Update `CHANGELOG.md` — rename the `[Unreleased]` heading to a versioned heading with today's date:
+
+   ```markdown
+   ## [7.6.0] - 2026-06-08
+   ```
+
+3. Commit, then tag and push (commit and tag are pushed separately):
+
+   ```bash
+   git commit -am "release: v7.6.0"
+   git tag v7.6.0
+   git push
+   git push origin v7.6.0
+   ```
+
+4. The `v*` tag push triggers GitHub Actions (`release --clean`); plain `master` pushes run CI only:
+   - **GoReleaser** builds darwin/linux binaries (amd64 + arm64) and publishes a GitHub release with archives + checksums
    - **Homebrew** tap updated in `EnderRealm/homebrew-tools`
 
 Required repository secrets: `GITHUB_TOKEN`, `TAP_GITHUB_TOKEN`.
