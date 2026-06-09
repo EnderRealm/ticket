@@ -9,6 +9,7 @@
 - TUI create/edit form: Enter now advances through fields and saves on the last field, instead of submitting from the Title field. Newlines in multiline fields are entered via ctrl+j; ctrl+s still saves. The footer surfaces these hints contextually (`ctrl+j newline` on multiline fields, `enter save` on the last field).
 
 ### Fixed
+- `ticket_ready`, `ticket_blocked`, and `ticket_inbox` MCP tools now return slim summary-shaped tickets (matching `ticket_list`) instead of full bodies with unbounded note histories. They previously emitted `description`/`design`/`acceptance_criteria`/`test_results` and every note untrimmed, wasting tokens on board-survey calls that only consume summary fields. `ticket_inbox` keeps its `action`/`detail` wrapper.
 - TUI: command-bar footers (dashboard, epics, create/edit form, detail view) now wrap across two or more lines when the terminal is too narrow to fit them on one line, instead of clipping trailing commands like `(q)uit`. The extra footer rows are reserved in each view's height math so content is never pushed off-screen.
 - TUI dashboard: the CREATED/MODIFIED/AGE time-column text is now legible on the selected row. It was rendered in `colorSubtle` (`#4e4e4e`), nearly identical to the selection background `colorSurface` (`#4a4a4a`), making it invisible under the selection bar; it now brightens to `colorGray` when selected.
 

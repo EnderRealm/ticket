@@ -843,9 +843,9 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 		}
 		ticket.SortByPriorityID(ready)
 
-		result := []ticketJSON{}
+		result := []ticketSummaryJSON{}
 		for _, t := range ready {
-			result = append(result, toJSON(t))
+			result = append(result, toSummaryJSON(t))
 		}
 
 		r, err := jsonResult(result)
@@ -874,9 +874,9 @@ func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject stri
 		}
 		ticket.SortByPriorityID(blocked)
 
-		result := []ticketJSON{}
+		result := []ticketSummaryJSON{}
 		for _, t := range blocked {
-			result = append(result, toJSON(t))
+			result = append(result, toSummaryJSON(t))
 		}
 
 		r, err := jsonResult(result)
@@ -902,9 +902,9 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 		}
 
 		type inboxItemJSON struct {
-			Ticket ticketJSON `json:"ticket"`
-			Action string     `json:"action"`
-			Detail string     `json:"detail"`
+			Ticket ticketSummaryJSON `json:"ticket"`
+			Action string            `json:"action"`
+			Detail string            `json:"detail"`
 		}
 
 		var result []inboxItemJSON
@@ -917,7 +917,7 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 				}
 			}
 			result = append(result, inboxItemJSON{
-				Ticket: toJSON(item.Ticket),
+				Ticket: toSummaryJSON(item.Ticket),
 				Action: string(item.Action),
 				Detail: item.Detail,
 			})

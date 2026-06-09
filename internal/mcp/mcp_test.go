@@ -192,6 +192,58 @@ func TestReadyExcludesBacklog(t *testing.T) {
 	}
 }
 
+func TestReadyReturnsSummaryShape(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	create, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":       "Ready with body",
+			"type":        "feature",
+			"description": "a lengthy description that should not appear",
+			"acceptance":  "criteria that should not appear",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created map[string]any
+	json.Unmarshal([]byte(create.Content[0].(*mcp.TextContent).Text), &created)
+	id, _ := created["id"].(string)
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "status": "ready"},
+	})
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_add_note",
+		Arguments: map[string]any{"id": id, "text": "a note that should not appear"},
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_ready",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tickets []map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	if len(tickets) != 1 {
+		t.Fatalf("expected 1 ready ticket, got %d", len(tickets))
+	}
+	for _, field := range []string{"description", "acceptance_criteria", "design", "test_results", "notes"} {
+		if _, ok := tickets[0][field]; ok {
+			t.Errorf("ready ticket should omit %q, got %v", field, tickets[0][field])
+		}
+	}
+	if tickets[0]["title"] != "Ready with body" {
+		t.Errorf("title = %q, want summary fields present", tickets[0]["title"])
+	}
+}
+
 func TestListExcludesBacklog(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
