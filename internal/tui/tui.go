@@ -674,7 +674,7 @@ func (a App) filterInfoText() string {
 	} else {
 		parts = append(parts, "all types")
 	}
-	parts = append(parts, "(t) type  (/) search")
+	parts = append(parts, "(t)ype  (/) search")
 	return strings.Join(parts, "  ")
 }
 

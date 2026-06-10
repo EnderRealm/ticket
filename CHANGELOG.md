@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- TUI footer: the type-filter hint now renders as `(t)ype`, embedding the key letter into the word to match the convention used by every other hint (`(s)ort`, `(c)reate`, `(q)uit`), instead of the inconsistent `(t) type`.
+
 ## [7.6.0] - 2026-06-08
 
 ### Added
