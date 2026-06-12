@@ -668,14 +668,11 @@ func (a App) filterInfoText() string {
 	if a.dashboard.filterText != "" {
 		return "filter: " + a.dashboard.filterText + "  (/ edit, esc clear)"
 	}
-	var parts []string
-	if a.dashboard.typeFilter != "" {
-		parts = append(parts, fmt.Sprintf("type: %s", a.dashboard.typeFilter))
-	} else {
-		parts = append(parts, "type: all")
+	typeFilter := a.dashboard.typeFilter
+	if typeFilter == "" {
+		typeFilter = "all"
 	}
-	parts = append(parts, "(t)ype  (/) search")
-	return strings.Join(parts, "  ")
+	return fmt.Sprintf("(t)ype: %s  (/) search", typeFilter)
 }
 
 // helpText returns the unstyled help string for the current state, used by

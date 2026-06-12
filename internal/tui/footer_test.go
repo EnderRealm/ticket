@@ -188,7 +188,7 @@ func TestFooterHighlightSurvivesWrap(t *testing.T) {
 	if lines < 2 {
 		t.Fatalf("expected a wrapped footer (>=2 lines), got %d:\n%s", lines, footer)
 	}
-	seg := StyleFilter.Render("type: all  (t)ype  (/) search")
+	seg := StyleFilter.Render("(t)ype: all  (/) search")
 	if !strings.Contains(footer, seg) {
 		t.Errorf("wrapped footer lost the StyleFilter highlight on the filter segment:\n%s", footer)
 	}
