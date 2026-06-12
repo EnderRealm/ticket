@@ -672,7 +672,7 @@ func (a App) filterInfoText() string {
 	if a.dashboard.typeFilter != "" {
 		parts = append(parts, fmt.Sprintf("type: %s", a.dashboard.typeFilter))
 	} else {
-		parts = append(parts, "all types")
+		parts = append(parts, "type: all")
 	}
 	parts = append(parts, "(t)ype  (/) search")
 	return strings.Join(parts, "  ")
