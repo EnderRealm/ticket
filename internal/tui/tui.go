@@ -127,6 +127,11 @@ type clearStatusMsg struct{}
 
 type cyclePriorityMsg struct{ id string }
 
+type setStatusMsg struct {
+	id     string
+	status ticket.Status
+}
+
 type addNoteMsg struct {
 	id   string
 	text string
@@ -231,6 +236,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Mutation messages
 	case cyclePriorityMsg:
 		return a, a.handleCyclePriority(msg.id)
+	case setStatusMsg:
+		return a, a.handleSetStatus(msg.id, msg.status)
 	case addNoteMsg:
 		return a, a.handleAddNote(msg.id, msg.text)
 	case formSubmitMsg:
@@ -439,6 +446,24 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "p":
 			if t := a.dashboard.selected(); t != nil {
 				return a, func() tea.Msg { return cyclePriorityMsg{id: t.ID} }
+			}
+		case "r":
+			if a.activeTab == tabBacklog {
+				if t := a.dashboard.selected(); t != nil {
+					return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusReady} }
+				}
+			}
+		case "b":
+			if a.activeTab == tabInbox {
+				if t := a.dashboard.selected(); t != nil {
+					return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusBacklog} }
+				}
+			}
+		case "x":
+			if a.activeTab == tabInbox {
+				if t := a.dashboard.selected(); t != nil {
+					return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusDone} }
+				}
 			}
 		case "y":
 			if t := a.dashboard.selected(); t != nil {
@@ -689,7 +714,14 @@ func (a App) helpText() string {
 	if a.dashboard.filterActive {
 		return "↑↓ select  enter apply  esc clear"
 	}
-	return "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  (p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+	status := ""
+	switch a.activeTab {
+	case tabBacklog:
+		status = "(r)eady "
+	case tabInbox:
+		status = "(b)acklog (x)done "
+	}
+	return "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 }
 
 func (a App) renderHelp() string {
@@ -844,6 +876,24 @@ func (a *App) handleCyclePriority(id string) tea.Cmd {
 	}
 
 	msg := fmt.Sprintf("%s -> P%d", id, t.Priority)
+	return tea.Batch(
+		loadTickets(a.store),
+		func() tea.Msg { return statusMsg(msg) },
+	)
+}
+
+func (a *App) handleSetStatus(id string, status ticket.Status) tea.Cmd {
+	t, err := a.store.Get(id)
+	if err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
+
+	t.Status = status
+	if err := a.store.Update(t); err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
+
+	msg := fmt.Sprintf("%s -> %s", id, status)
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(msg) },

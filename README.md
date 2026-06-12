@@ -176,6 +176,14 @@ The `tk ui` browser supports the usual navigation keys plus, in both the list an
 | `y` | Yank (copy) the ticket ID to the clipboard |
 | `w` | Spawn a `/work <id>` session in a new terminal (see `spawn_command`) |
 
+In the list view, tab-specific status keys:
+
+| Key | Action |
+|-----|--------|
+| `r` | Backlog tab: move ticket to ready |
+| `b` | Inbox tab: move ticket to backlog |
+| `x` | Inbox tab: mark ticket done |
+
 ### Statuses
 
 Tickets use a simple status model:

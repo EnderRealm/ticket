@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- TUI list view: single-key status changes for grooming. On the backlog tab `r` moves the selected ticket to `ready`; on the inbox tab `b` moves it to `backlog` and `x` marks it `done`. The footer advertises each key only on the tab where it applies.
+
 ### Fixed
 - TUI footer: the type-filter hint now renders as `(t)ype`, embedding the key letter into the word to match the convention used by every other hint (`(s)ort`, `(c)reate`, `(q)uit`), instead of the inconsistent `(t) type`.
 - TUI footer: with no type filter active, the segment now reads `type: all` instead of `all types`, matching the `type: <value>` format shown when a filter is set.
