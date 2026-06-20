@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- TUI `w` spawn: the new iTerm window is now named `PROJECT -- ID -- TITLE` (bare ticket ID, title truncated to 20 characters) so each worker is identifiable. New `spawn_command` placeholders `{project}`, `{title}`, and the pre-sanitized window-name token `{wtitle}` support custom templates.
+- TUI `w` spawn: the new iTerm window is now named `PROJECT -- ID4 -- TITLE` (uppercased project, the ticket's 4-char id suffix, title truncated to 20 characters) so each worker is identifiable. The default template reasserts the title via a `printf` OSC escape after the shell's prompt hook and `export`s `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (exported, not prefixed inline, so it survives a `claude` shell alias), so the name persists instead of being overwritten by the shell or by Claude Code. New `spawn_command` placeholders `{project}`, `{title}`, and the pre-sanitized window-name token `{wtitle}` support custom templates.
 - Filter tickets by a custom extra field with substring matching: `tk ls --field env=prod` (matches `env=production`) and the `ticket_list` MCP tool's `field` parameter. A ticket matches only when the key exists in its extra fields and the stored value contains the filter value.
 - TUI list view: single-key status changes for grooming. On the backlog tab `r` moves the selected ticket to `ready`; on the inbox tab `b` moves it to `backlog` and `x` marks it `done`. The footer advertises each key only on the tab where it applies.
 

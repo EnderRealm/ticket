@@ -39,6 +39,21 @@ func TestBuildSpawnCommandDefault(t *testing.T) {
 	}
 }
 
+func TestBuildSpawnCommandDefaultMakesTitleStick(t *testing.T) {
+	// The AppleScript `set name` is clobbered by the shell's preexec hook and by
+	// claude's own title updates. The default must reassert the title from inside
+	// the shell (printf OSC-0, after preexec) and disable claude's title updater.
+	// The disable var must be `export`ed, not prefixed inline: `claude` is often
+	// an alias (e.g. `tabset ...; command claude`), and an inline `VAR=1 claude`
+	// prefix would bind to the alias's first command instead of claude.
+	got := buildSpawnCommand("", "/some/dir", "project/tk-x", "project", "Title")
+	for _, want := range []string{`printf`, `]0;`, `%s`, "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default spawn command must make the title stick, missing %q; got: %s", want, got)
+		}
+	}
+}
+
 func TestBuildSpawnCommandDefaultWhenWhitespace(t *testing.T) {
 	got := buildSpawnCommand("   ", "/some/dir", "project/tk-x", "project", "Title")
 	if !strings.Contains(got, "iTerm") {
@@ -47,16 +62,18 @@ func TestBuildSpawnCommandDefaultWhenWhitespace(t *testing.T) {
 }
 
 func TestSpawnWindowTitle(t *testing.T) {
+	// PROJECT is uppercased; the id contributes only its 4-char suffix (the full
+	// slug duplicates the title text).
 	got := spawnWindowTitle("ticket", "ticket/tk-ui-set-a6d2", "Some title here")
-	want := "ticket -- tk-ui-set-a6d2 -- Some title here"
+	want := "TICKET -- a6d2 -- Some title here"
 	if got != want {
 		t.Errorf("spawnWindowTitle = %q, want %q", got, want)
 	}
 }
 
 func TestSpawnWindowTitleTruncatesTo20Runes(t *testing.T) {
-	got := spawnWindowTitle("ticket", "ticket/tk-x", "0123456789abcdefghijKLMNOP")
-	want := "ticket -- tk-x -- 0123456789abcdefghij"
+	got := spawnWindowTitle("proj", "proj/tk-abcd", "0123456789abcdefghijKLMNOP")
+	want := "PROJ -- abcd -- 0123456789abcdefghij"
 	if got != want {
 		t.Errorf("spawnWindowTitle = %q, want %q", got, want)
 	}
