@@ -415,6 +415,12 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case " ":
 			a.epics.toggleExpand()
 			return a, nil
+		case "e":
+			if t := a.epics.selectedTicket(); t != nil {
+				a.form = newEditFormModel(t, a.width, a.height)
+				a.overlay = overlayForm
+				return a, nil
+			}
 		}
 	} else {
 		// Ticket tabs (backlog, triage, inbox, done, all).
@@ -704,7 +710,7 @@ func (a App) filterInfoText() string {
 // footerView so it can wrap the plain text and style each wrapped line.
 func (a App) helpText() string {
 	if a.activeTab == tabEpics {
-		return "↑↓ select  enter expand  (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
+		return "↑↓ select  enter expand  (e)dit  (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
 	}
 	if a.dashboard.confirmDelete {
 		return ""
