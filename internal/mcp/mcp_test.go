@@ -1283,6 +1283,68 @@ func TestListExtraFields(t *testing.T) {
 	}
 }
 
+func TestListFieldFilter(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Prod deploy",
+			"type":  "feature",
+			"set":   map[string]any{"env": "production"},
+		},
+	})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Staging deploy",
+			"type":  "feature",
+			"set":   map[string]any{"env": "staging"},
+		},
+	})
+
+	// Substring match: env=prod matches the production ticket only.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"status": "backlog", "field": "env=prod"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_list error: %v", result.Content)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	tickets := resp["tickets"].([]any)
+	if len(tickets) != 1 {
+		t.Fatalf("field=env=prod should return 1, got %d", len(tickets))
+	}
+	if tickets[0].(map[string]any)["title"] != "Prod deploy" {
+		t.Errorf("matched ticket = %q, want %q", tickets[0].(map[string]any)["title"], "Prod deploy")
+	}
+
+	// No substring match → empty result.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"status": "backlog", "field": "env=nope"},
+	})
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	if len(resp["tickets"].([]any)) != 0 {
+		t.Errorf("field=env=nope should return 0, got %d", len(resp["tickets"].([]any)))
+	}
+
+	// Malformed filter → error result.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"field": "bogusformat"},
+	})
+	if !result.IsError {
+		t.Error("malformed field filter should return error")
+	}
+}
+
 func TestEditExtraReservedKey(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

@@ -20,6 +20,7 @@ func init() {
 	addFilterFlags(lsCmd)
 	lsCmd.Flags().String("status", "", "filter by status")
 	lsCmd.Flags().String("parent", "", "filter by parent ticket ID")
+	lsCmd.Flags().String("field", "", "filter by extra field (key=value, substring match)")
 	lsCmd.Flags().String("group-by", "", "group by: workflow | type | priority")
 	lsCmd.Flags().Bool("group", false, "shorthand for --group-by=workflow")
 	lsCmd.Flags().Bool("flat", false, "flat list (no grouping)")
@@ -34,7 +35,10 @@ func runLs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	opts := parseFilterFlags(cmd)
+	opts, err := parseFilterFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	flat, _ := cmd.Flags().GetBool("flat")
 	groupBy, _ := cmd.Flags().GetString("group-by")
@@ -189,7 +193,7 @@ func addFilterFlags(cmd *cobra.Command) {
 }
 
 // parseFilterFlags reads shared filter flags into ListOptions.
-func parseFilterFlags(cmd *cobra.Command) ticket.ListOptions {
+func parseFilterFlags(cmd *cobra.Command) (ticket.ListOptions, error) {
 	opts := ticket.DefaultListOptions()
 
 	if v, _ := cmd.Flags().GetString("tag"); v != "" {
@@ -206,5 +210,13 @@ func parseFilterFlags(cmd *cobra.Command) ticket.ListOptions {
 	if v, _ := cmd.Flags().GetString("type"); v != "" {
 		opts.Type = ticket.TicketType(v)
 	}
-	return opts
+	if v, _ := cmd.Flags().GetString("field"); v != "" {
+		key, value, err := ticket.ParseFieldFilter(v)
+		if err != nil {
+			return opts, fmt.Errorf("invalid --field: %w", err)
+		}
+		opts.FieldKey = key
+		opts.FieldValue = value
+	}
+	return opts, nil
 }

@@ -1,17 +1,20 @@
 package ticket
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
 
 // ListOptions carries filter parameters for listing tickets.
 type ListOptions struct {
-	Status   Status
-	Type     TicketType
-	Priority int // -1 means no filter
-	Tag      string
-	Parent   string
+	Status     Status
+	Type       TicketType
+	Priority   int // -1 means no filter
+	Tag        string
+	Parent     string
+	FieldKey   string // extra-field filter key; "" means no filter
+	FieldValue string // substring to match against Extra[FieldKey]
 }
 
 // DefaultListOptions returns options with no filters applied.
@@ -37,6 +40,12 @@ func Filter(tickets []*Ticket, opts ListOptions) []*Ticket {
 		}
 		if opts.Parent != "" && t.Parent != opts.Parent {
 			continue
+		}
+		if opts.FieldKey != "" {
+			v, ok := t.Extra[opts.FieldKey]
+			if !ok || !strings.Contains(v, opts.FieldValue) {
+				continue
+			}
 		}
 		result = append(result, t)
 	}
@@ -81,6 +90,21 @@ func TypeOrder(t TicketType) int {
 	default:
 		return 4
 	}
+}
+
+// ParseFieldFilter splits a "key=value" field filter, validating the key.
+// The value is a substring search term and is left unrestricted.
+func ParseFieldFilter(s string) (key, value string, err error) {
+	idx := strings.Index(s, "=")
+	if idx < 0 {
+		return "", "", fmt.Errorf("field filter requires key=value format: %q", s)
+	}
+	key = s[:idx]
+	value = s[idx+1:]
+	if err := ValidateExtraKey(key); err != nil {
+		return "", "", err
+	}
+	return key, value, nil
 }
 
 func hasTag(tags []string, tag string) bool {

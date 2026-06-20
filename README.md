@@ -211,6 +211,7 @@ Tickets use a simple status model:
 -t, --type X      bug | feature | epic
 -P, --priority X  0 (critical) through 4 (backlog)
 -T, --tag X       Filter by tag
+--field key=val   Filter by extra field (substring match)
 --parent X        Children of ticket X
 --group-by X      Group by: workflow | type | priority
 --flat            Flat list (no grouping)
@@ -227,6 +228,12 @@ tk edit <id> --set env=               # remove
 ```
 
 Extra fields appear in `tk show` output, `tk query` JSONL (under `extra`), and MCP responses.
+
+Filter the list by an extra field with substring matching:
+
+```bash
+tk ls --field env=prod        # matches env=production
+```
 
 ### Bulk Operations
 

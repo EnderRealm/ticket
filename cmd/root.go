@@ -78,6 +78,7 @@ Filter flags for ls:
   -t, --type=X       bug | feature | epic
   -P, --priority=X   0 (critical) through 4 (backlog)
   -T, --tag=X        Filter by tag
+  --field=key=value  Filter by extra field (substring match)
   --parent=X         Children of ticket X
   --group-by=X       Group by: workflow | type | priority
   --flat             Flat list (no grouping)

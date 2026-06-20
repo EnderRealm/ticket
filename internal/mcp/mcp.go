@@ -258,6 +258,7 @@ type listArgs struct {
 	Type     string   `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
 	Priority *FlexInt `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
 	Tag      string   `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Field    string   `json:"field,omitempty" jsonschema:"filter by extra field (key=value, substring match)"`
 	Parent   string   `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
 	Project  string   `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
 	Offset   *FlexInt `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
@@ -338,6 +339,15 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		}
 		if args.Parent != "" {
 			opts.Parent = args.Parent
+		}
+		if args.Field != "" {
+			key, value, err := ticket.ParseFieldFilter(args.Field)
+			if err != nil {
+				r, _ := errResult("invalid field filter: %v", err)
+				return r, nil, nil
+			}
+			opts.FieldKey = key
+			opts.FieldValue = value
 		}
 
 		tickets = ticket.Filter(tickets, opts)

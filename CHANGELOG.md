@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Filter tickets by a custom extra field with substring matching: `tk ls --field env=prod` (matches `env=production`) and the `ticket_list` MCP tool's `field` parameter. A ticket matches only when the key exists in its extra fields and the stored value contains the filter value.
 - TUI list view: single-key status changes for grooming. On the backlog tab `r` moves the selected ticket to `ready`; on the inbox tab `b` moves it to `backlog` and `x` marks it `done`. The footer advertises each key only on the tab where it applies.
 
 ### Fixed

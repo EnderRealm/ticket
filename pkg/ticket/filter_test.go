@@ -70,6 +70,56 @@ func TestFilter_NoMatch(t *testing.T) {
 	}
 }
 
+func TestFilter_ExtraField(t *testing.T) {
+	tickets := []*Ticket{
+		{ID: "t-001", Status: StatusOpen, Type: TypeFeature, Extra: map[string]string{"env": "production"}},
+		{ID: "t-002", Status: StatusOpen, Type: TypeFeature, Extra: map[string]string{"env": "staging"}},
+		{ID: "t-003", Status: StatusOpen, Type: TypeFeature},
+	}
+
+	// Substring match: "prod" matches "production".
+	result := Filter(tickets, ListOptions{Priority: -1, FieldKey: "env", FieldValue: "prod"})
+	if len(result) != 1 || result[0].ID != "t-001" {
+		t.Errorf("substring match got %v, want [t-001]", ids(result))
+	}
+
+	// Key present but value not a substring → no match.
+	result = Filter(tickets, ListOptions{Priority: -1, FieldKey: "env", FieldValue: "nope"})
+	if len(result) != 0 {
+		t.Errorf("non-matching value got %v, want []", ids(result))
+	}
+
+	// Empty value → presence check: matches keys that exist, excludes t-003 (no env key).
+	result = Filter(tickets, ListOptions{Priority: -1, FieldKey: "env", FieldValue: ""})
+	if len(result) != 2 {
+		t.Errorf("empty value matches present keys, got %v, want [t-001 t-002]", ids(result))
+	}
+
+	// Empty FieldKey → no field filtering.
+	result = Filter(tickets, ListOptions{Priority: -1})
+	if len(result) != 3 {
+		t.Errorf("no field filter got %v, want all 3", ids(result))
+	}
+}
+
+func TestParseFieldFilter(t *testing.T) {
+	key, value, err := ParseFieldFilter("env=production")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "env" || value != "production" {
+		t.Errorf("got key=%q value=%q, want env/production", key, value)
+	}
+
+	if _, _, err := ParseFieldFilter("envprod"); err == nil {
+		t.Error("expected error for missing '='")
+	}
+
+	if _, _, err := ParseFieldFilter("status=x"); err == nil {
+		t.Error("expected error for reserved key 'status'")
+	}
+}
+
 func TestFilter_NoFilters(t *testing.T) {
 	all := makeTickets()
 	result := Filter(all, DefaultListOptions())
