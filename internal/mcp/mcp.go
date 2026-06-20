@@ -322,7 +322,7 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		} else {
 			var filtered []*ticket.Ticket
 			for _, t := range tickets {
-				if t.Status != ticket.StatusDone && t.Status != ticket.StatusBacklog {
+				if t.Status != ticket.StatusClosed {
 					filtered = append(filtered, t)
 				}
 			}

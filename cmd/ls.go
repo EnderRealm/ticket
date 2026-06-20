@@ -50,10 +50,10 @@ func runLs(cmd *cobra.Command, args []string) error {
 	if statusFilter != "" {
 		opts.Status = ticket.Status(statusFilter)
 	} else {
-		// No explicit status: exclude done and backlog.
+		// No explicit status: exclude closed (non-closed default).
 		var filtered []*ticket.Ticket
 		for _, t := range tickets {
-			if t.Status != ticket.StatusDone && t.Status != ticket.StatusBacklog {
+			if t.Status != ticket.StatusClosed {
 				filtered = append(filtered, t)
 			}
 		}

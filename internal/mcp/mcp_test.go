@@ -244,20 +244,24 @@ func TestReadyReturnsSummaryShape(t *testing.T) {
 	}
 }
 
-func TestListExcludesBacklog(t *testing.T) {
+func TestListExcludesClosed(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
 
-	// Create a backlog ticket.
-	session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_create",
-		Arguments: map[string]any{
-			"title": "Backlog item",
-			"type":  "feature",
-		},
+	// Create a backlog ticket (ticket_create always starts in backlog).
+	backlogID := createTicketID(t, session, map[string]any{
+		"title": "Backlog item",
+		"type":  "feature",
 	})
 
-	// Default list should exclude backlog.
+	// Create a ticket and move it to closed.
+	closedID := createTicketID(t, session, map[string]any{
+		"title": "Closed item",
+		"type":  "feature",
+	})
+	editStatus(t, session, closedID, "closed")
+
+	// Default list should include backlog and exclude closed.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
 		Arguments: map[string]any{},
@@ -268,10 +272,106 @@ func TestListExcludesBacklog(t *testing.T) {
 	text := result.Content[0].(*mcp.TextContent).Text
 	var resp map[string]any
 	json.Unmarshal([]byte(text), &resp)
-	tickets := resp["tickets"].([]any)
-	if len(tickets) != 0 {
-		t.Errorf("default ticket_list should exclude backlog, got %d", len(tickets))
+	ids := listIDs(resp)
+	if !ids[backlogID] {
+		t.Errorf("default ticket_list should include backlog ticket %q, got %v", backlogID, ids)
 	}
+	if ids[closedID] {
+		t.Errorf("default ticket_list should exclude closed ticket %q, got %v", closedID, ids)
+	}
+}
+
+func TestListParentExcludesClosedByDefault(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	parentID := createTicketID(t, session, map[string]any{
+		"title": "Parent epic",
+		"type":  "epic",
+	})
+
+	// Create one child per status spanning the full set.
+	statuses := []string{"closed", "done", "backlog", "ready", "open"}
+	childByStatus := map[string]string{}
+	for _, status := range statuses {
+		id := createTicketID(t, session, map[string]any{
+			"title":  "Child " + status,
+			"type":   "feature",
+			"parent": parentID,
+		})
+		editStatus(t, session, id, status)
+		childByStatus[status] = id
+	}
+
+	// Default list by parent should return the 4 non-closed children.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"parent": parentID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	if total, _ := resp["total"].(float64); int(total) != 4 {
+		t.Errorf("total = %v, want 4", resp["total"])
+	}
+	for _, tk := range resp["tickets"].([]any) {
+		if tk.(map[string]any)["status"] == "closed" {
+			t.Errorf("default parent list should not include closed children, got %v", tk)
+		}
+	}
+	ids := listIDs(resp)
+	for _, status := range []string{"done", "backlog", "ready", "open"} {
+		if !ids[childByStatus[status]] {
+			t.Errorf("default parent list should include %s child %q, got %v", status, childByStatus[status], ids)
+		}
+	}
+	if ids[childByStatus["closed"]] {
+		t.Errorf("default parent list should exclude closed child %q, got %v", childByStatus["closed"], ids)
+	}
+
+	// Sanity: explicit status=closed still returns exactly the closed child.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"parent": parentID, "status": "closed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closedResp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &closedResp)
+	closedTickets := closedResp["tickets"].([]any)
+	if len(closedTickets) != 1 {
+		t.Fatalf("status=closed should return 1 child, got %d", len(closedTickets))
+	}
+	if closedTickets[0].(map[string]any)["id"] != childByStatus["closed"] {
+		t.Errorf("status=closed returned %v, want %q", closedTickets[0], childByStatus["closed"])
+	}
+}
+
+// editStatus sets a ticket's status via ticket_edit.
+func editStatus(t *testing.T, session *mcp.ClientSession, id, status string) {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "status": status},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit to status %q error: %v", status, result.Content)
+	}
+}
+
+// listIDs collects the ids of tickets in a ticket_list response.
+func listIDs(resp map[string]any) map[string]bool {
+	ids := map[string]bool{}
+	for _, tk := range resp["tickets"].([]any) {
+		ids[tk.(map[string]any)["id"].(string)] = true
+	}
+	return ids
 }
 
 func TestListFilterByStatus(t *testing.T) {
