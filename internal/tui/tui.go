@@ -346,7 +346,7 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			return a, yankID(a.detail.ticket.ID)
 		case "w":
-			return a, a.spawnWork(a.detail.ticket.ID)
+			return a, a.spawnWork(a.detail.ticket)
 		}
 
 	case overlayForm:
@@ -471,7 +471,7 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "w":
 			if t := a.dashboard.selected(); t != nil {
-				return a, a.spawnWork(t.ID)
+				return a, a.spawnWork(t)
 			}
 		}
 	}

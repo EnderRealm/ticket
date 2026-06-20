@@ -94,18 +94,21 @@ Shared project registry (store type, auto_link, etc.) is stored in `<central_roo
 
 ### `spawn_command`
 
-The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the local `spawn_command` template, executed with `sh -c`. Two placeholders are substituted:
+The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the local `spawn_command` template, executed with `sh -c`. These placeholders are substituted:
 
 - `{dir}` — the ticket's project working directory (absolute path)
 - `{id}` — the namespaced ticket ID (e.g. `myproject/tk-...`)
+- `{project}` — the project name
+- `{title}` — the raw ticket title (caller-quoted, like `{dir}`)
+- `{wtitle}` — the computed window name `PROJECT -- ID -- TITLE` (bare ID, title truncated to 20 characters and sanitized of quotes/backslashes so it embeds without escaping)
 
-When unset, the default opens a new iTerm window (macOS), cds to the project, and starts Claude Code on the ticket:
+When unset, the default opens a new iTerm window (macOS), names it `{wtitle}`, cds to the project, and starts Claude Code on the ticket:
 
 ```yaml
-spawn_command: 'osascript -e ''tell application "iTerm"'' -e ''set w to (create window with default profile)'' -e ''tell current session of w to write text "cd '\''{dir}'\'' && claude \"/work {id}\""'' -e ''end tell'''
+spawn_command: 'osascript -e ''tell application "iTerm"'' -e ''set w to (create window with default profile)'' -e ''tell current session of w to set name to "{wtitle}"'' -e ''tell current session of w to write text "cd '\''{dir}'\'' && claude \"/work {id}\""'' -e ''end tell'''
 ```
 
-The default creates the window with a normal interactive shell and then types the command into it (via `write text`), so the window stays open and `claude` resolves on your `PATH`. It single-quotes `{dir}` so paths with spaces work; a project path containing a literal single quote can't be escaped inside the `osascript -e` wrapper — set a custom `spawn_command` for such paths.
+The default creates the window with a normal interactive shell, sets its name so each worker is identifiable, and then types the command into it (via `write text`), so the window stays open and `claude` resolves on your `PATH`. It single-quotes `{dir}` so paths with spaces work; a project path containing a literal single quote can't be escaped inside the `osascript -e` wrapper — set a custom `spawn_command` for such paths.
 
 Override to use a different terminal, e.g. tmux:
 

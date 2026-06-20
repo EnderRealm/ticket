@@ -8,20 +8,28 @@ import (
 )
 
 func TestBuildSpawnCommandSubstitutes(t *testing.T) {
-	got := buildSpawnCommand("foo {id} {dir}", "/some/dir", "project/tk-x")
+	got := buildSpawnCommand("foo {id} {dir}", "/some/dir", "project/tk-x", "project", "Title")
 	want := "foo project/tk-x /some/dir"
 	if got != want {
 		t.Errorf("buildSpawnCommand = %q, want %q", got, want)
 	}
 }
 
+func TestBuildSpawnCommandSubstitutesProjectAndTitle(t *testing.T) {
+	got := buildSpawnCommand("{project}: {title}", "/some/dir", "project/tk-x", "myproj", "My Title")
+	want := "myproj: My Title"
+	if got != want {
+		t.Errorf("buildSpawnCommand = %q, want %q", got, want)
+	}
+}
+
 func TestBuildSpawnCommandDefault(t *testing.T) {
-	got := buildSpawnCommand("", "/some/dir", "project/tk-x")
+	got := buildSpawnCommand("", "/some/dir", "project/tk-x", "project", "Title")
 	// "create window"/"write text" guard against the regression where the
 	// iTerm `command "..."` form exec'd the string without a shell, so the
 	// && pipeline never ran and the window closed instantly. write text runs
 	// the command in the window's live interactive shell.
-	for _, want := range []string{"/some/dir", "project/tk-x", "iTerm", "claude", "create window", "write text"} {
+	for _, want := range []string{"/some/dir", "project/tk-x", "iTerm", "claude", "create window", "write text", "set name"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("default spawn command %q missing %q", got, want)
 		}
@@ -32,9 +40,46 @@ func TestBuildSpawnCommandDefault(t *testing.T) {
 }
 
 func TestBuildSpawnCommandDefaultWhenWhitespace(t *testing.T) {
-	got := buildSpawnCommand("   ", "/some/dir", "project/tk-x")
+	got := buildSpawnCommand("   ", "/some/dir", "project/tk-x", "project", "Title")
 	if !strings.Contains(got, "iTerm") {
 		t.Errorf("whitespace template should fall back to default, got %q", got)
+	}
+}
+
+func TestSpawnWindowTitle(t *testing.T) {
+	got := spawnWindowTitle("ticket", "ticket/tk-ui-set-a6d2", "Some title here")
+	want := "ticket -- tk-ui-set-a6d2 -- Some title here"
+	if got != want {
+		t.Errorf("spawnWindowTitle = %q, want %q", got, want)
+	}
+}
+
+func TestSpawnWindowTitleTruncatesTo20Runes(t *testing.T) {
+	got := spawnWindowTitle("ticket", "ticket/tk-x", "0123456789abcdefghijKLMNOP")
+	want := "ticket -- tk-x -- 0123456789abcdefghij"
+	if got != want {
+		t.Errorf("spawnWindowTitle = %q, want %q", got, want)
+	}
+}
+
+func TestSpawnWindowTitleSanitizesQuotes(t *testing.T) {
+	got := spawnWindowTitle("proj", "proj/tk-x", `a'b"c\d`)
+	if strings.ContainsAny(got, "'\"\\") {
+		t.Errorf("spawnWindowTitle %q must not contain ' \" or \\", got)
+	}
+}
+
+func TestBuildSpawnCommandDefaultQuotesTitleWithSingleQuote(t *testing.T) {
+	// Regression: a ticket title that starts with a single quote must not
+	// break the osascript/AppleScript quoting layers in the default template.
+	cmd := buildSpawnCommand("", "/some/dir", "ticket/tk-ui-set-a6d2", "ticket", "'tk ui' set title of iterm window")
+	check := exec.Command("sh", "-n")
+	check.Stdin = strings.NewReader(cmd)
+	if out, err := check.CombinedOutput(); err != nil {
+		t.Errorf("default spawn command is not valid shell syntax: %v\n%s\ncmd: %s", err, out, cmd)
+	}
+	if !strings.Contains(cmd, "set name") {
+		t.Errorf("default spawn command should set the window name, got: %s", cmd)
 	}
 }
 
@@ -43,7 +88,7 @@ func TestBuildSpawnCommandDefaultWhenWhitespace(t *testing.T) {
 // even when the project path contains spaces (common on macOS). `sh -n` parses
 // without executing.
 func TestBuildSpawnCommandDefaultQuotesPathWithSpaces(t *testing.T) {
-	cmd := buildSpawnCommand("", "/Users/me/My Project", "project/tk-x")
+	cmd := buildSpawnCommand("", "/Users/me/My Project", "project/tk-x", "project", "Title")
 	check := exec.Command("sh", "-n")
 	check.Stdin = strings.NewReader(cmd)
 	if out, err := check.CombinedOutput(); err != nil {
