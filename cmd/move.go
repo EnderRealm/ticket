@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/EnderRealm/ticket/pkg/ticket"
+	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 	"github.com/spf13/cobra"
 )
 

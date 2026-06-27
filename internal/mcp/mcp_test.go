@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	ticketmcp "github.com/EnderRealm/ticket/internal/mcp"
-	"github.com/EnderRealm/ticket/pkg/ticket"
+	ticketmcp "github.com/EnderRealm/ticket/v7/internal/mcp"
+	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

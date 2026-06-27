@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/EnderRealm/ticket/internal/project"
-	"github.com/EnderRealm/ticket/pkg/ticket"
+	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
 // WatchCycleResult holds the outcome of a single watch cycle for a project.

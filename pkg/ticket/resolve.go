@@ -3,7 +3,7 @@ package ticket
 import (
 	"fmt"
 
-	"github.com/EnderRealm/ticket/internal/project"
+	"github.com/EnderRealm/ticket/v7/internal/project"
 )
 
 // ResolveStoreForRepo opens the ticket Store configured for the given repo

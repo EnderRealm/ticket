@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/EnderRealm/ticket/internal/project"
+	"github.com/EnderRealm/ticket/v7/internal/project"
 	"github.com/spf13/cobra"
 )
 

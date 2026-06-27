@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/EnderRealm/ticket/pkg/ticket"
+	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
