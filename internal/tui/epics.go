@@ -157,21 +157,6 @@ func (m *epicsModel) clampOffset() {
 	}
 }
 
-// selectedEpic returns the epic at the cursor, or nil if cursor is on a child.
-func (m epicsModel) selectedEpic() *ticket.Ticket {
-	line := 0
-	for _, r := range m.rows {
-		if line == m.cursor {
-			return r.epic
-		}
-		line++
-		if r.expanded {
-			line += len(r.children)
-		}
-	}
-	return nil
-}
-
 // selectedTicket returns whatever ticket is at the cursor (epic or child).
 func (m epicsModel) selectedTicket() *ticket.Ticket {
 	line := 0
