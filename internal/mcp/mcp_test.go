@@ -458,6 +458,66 @@ func TestEditStatus(t *testing.T) {
 	}
 }
 
+func TestDeleteTicket(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	// Create a ticket to delete.
+	id := createTicketID(t, session, map[string]any{
+		"title": "Delete me",
+		"type":  "feature",
+	})
+
+	// Delete it and verify the response confirms the resolved ID.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_delete",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_delete error: %v", result.Content)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	if resp["deleted"] != id {
+		t.Errorf("deleted = %q, want %q", resp["deleted"], id)
+	}
+
+	// Showing the deleted ticket should now return an error result.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("ticket_show on deleted ticket should return an error")
+	}
+}
+
+func TestDeleteNonexistent(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_delete",
+		Arguments: map[string]any{"id": "does-not-exist-0000"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("ticket_delete on nonexistent ID should return an error")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "ticket not found") {
+		t.Errorf("error message = %q, want substring %q", text, "ticket not found")
+	}
+}
+
 func TestAddNotePreservesNewlines(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

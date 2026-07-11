@@ -28,6 +28,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerShow(server, store)
 	registerCreate(server, store, defaultProject)
 	registerEdit(server, store)
+	registerDelete(server, store)
 	registerAddNote(server, store)
 	registerDep(server, store)
 	registerLink(server, store)
@@ -704,6 +705,31 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 			return r, nil, nil
 		}
 		r, err := jsonResult(toJSON(t))
+		return r, nil, err
+	})
+}
+
+type deleteArgs struct {
+	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+}
+
+func registerDelete(server *mcp.Server, store ticket.Store) {
+	addFlexTool(server, &mcp.Tool{
+		Name:        "ticket_delete",
+		Description: "Delete a ticket permanently by ID. This is a hard delete that removes the ticket file; it is distinct from setting status to closed.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args deleteArgs) (*mcp.CallToolResult, any, error) {
+		t, err := store.Get(args.ID)
+		if err != nil {
+			r, _ := errResult("ticket not found: %v", err)
+			return r, nil, nil
+		}
+
+		if err := store.Delete(t.ID); err != nil {
+			r, _ := errResult("failed to delete ticket: %v", err)
+			return r, nil, nil
+		}
+
+		r, err := jsonResult(map[string]string{"deleted": t.ID})
 		return r, nil, err
 	})
 }
