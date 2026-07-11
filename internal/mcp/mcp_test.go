@@ -244,24 +244,25 @@ func TestReadyReturnsSummaryShape(t *testing.T) {
 	}
 }
 
-func TestListExcludesClosed(t *testing.T) {
+func TestListDefaultStatusSet(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
 
-	// Create a backlog ticket (ticket_create always starts in backlog).
-	backlogID := createTicketID(t, session, map[string]any{
-		"title": "Backlog item",
-		"type":  "feature",
-	})
+	// Create one ticket per status (ticket_create always starts in backlog).
+	statuses := []string{"backlog", "ready", "open", "done", "closed"}
+	idByStatus := map[string]string{}
+	for _, status := range statuses {
+		id := createTicketID(t, session, map[string]any{
+			"title": "Item " + status,
+			"type":  "feature",
+		})
+		if status != "backlog" {
+			editStatus(t, session, id, status)
+		}
+		idByStatus[status] = id
+	}
 
-	// Create a ticket and move it to closed.
-	closedID := createTicketID(t, session, map[string]any{
-		"title": "Closed item",
-		"type":  "feature",
-	})
-	editStatus(t, session, closedID, "closed")
-
-	// Default list should include backlog and exclude closed.
+	// Default list should include the four non-closed statuses and exclude closed.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
 		Arguments: map[string]any{},
@@ -273,11 +274,16 @@ func TestListExcludesClosed(t *testing.T) {
 	var resp map[string]any
 	json.Unmarshal([]byte(text), &resp)
 	ids := listIDs(resp)
-	if !ids[backlogID] {
-		t.Errorf("default ticket_list should include backlog ticket %q, got %v", backlogID, ids)
+	for _, status := range []string{"backlog", "ready", "open", "done"} {
+		if !ids[idByStatus[status]] {
+			t.Errorf("default ticket_list should include %s ticket %q, got %v", status, idByStatus[status], ids)
+		}
 	}
-	if ids[closedID] {
-		t.Errorf("default ticket_list should exclude closed ticket %q, got %v", closedID, ids)
+	if ids[idByStatus["closed"]] {
+		t.Errorf("default ticket_list should exclude closed ticket %q, got %v", idByStatus["closed"], ids)
+	}
+	if total, _ := resp["total"].(float64); int(total) != 4 {
+		t.Errorf("total = %v, want 4", resp["total"])
 	}
 }
 
