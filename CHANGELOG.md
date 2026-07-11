@@ -9,6 +9,7 @@
 - TUI list view: single-key status changes for grooming. On the backlog tab `r` moves the selected ticket to `ready`; on the inbox tab `b` moves it to `backlog` and `x` marks it `done`. The footer advertises each key only on the tab where it applies.
 
 ### Fixed
+- Empty or whitespace-only ticket ID now returns an "id is required" error instead of partial-matching every ticket (in a single-ticket store it silently resolved to the lone ticket — dangerous for `tk delete` and MCP ticket_delete).
 - ticket_list / tk ls: default (no status filter) now returns all non-closed tickets instead of keeping closed and dropping done+backlog; epics browsed by parent no longer hide their non-closed children.
 - TUI epics tab: `e` now opens the edit form for the selected row — an epic, or an expanded child ticket — so epics are editable from the TUI. Previously the epics tab had no edit key (only the dashboard tabs did), leaving no way to edit an epic. The footer now advertises `(e)dit`. Backlog-tab epic rollups were already editable via the shared dashboard `e` handler.
 - TUI footer: the type-filter hint now renders as `(t)ype`, embedding the key letter into the word to match the convention used by every other hint (`(s)ort`, `(c)reate`, `(q)uit`), instead of the inconsistent `(t) type`.

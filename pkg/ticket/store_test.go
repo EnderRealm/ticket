@@ -3,6 +3,7 @@ package ticket
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -222,6 +223,45 @@ func TestFileStore_Resolve_NotFound(t *testing.T) {
 	_, err := store.Resolve("nonexistent")
 	if err == nil {
 		t.Error("Resolve nonexistent should fail")
+	}
+}
+
+func TestFileStore_Get_EmptyID(t *testing.T) {
+	store, _ := testStore(t)
+	// Single-ticket store is the regression scenario: partial matching would
+	// resolve an empty ID to the lone ticket.
+	if err := store.Create(sampleTicket("t-lone1")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for _, id := range []string{"", "   "} {
+		got, err := store.Get(id)
+		if err == nil {
+			t.Errorf("Get(%q) should fail, got ticket %v", id, got)
+		} else if !strings.Contains(err.Error(), "id is required") {
+			t.Errorf("Get(%q) error = %q, want to contain %q", id, err.Error(), "id is required")
+		}
+		if got != nil {
+			t.Errorf("Get(%q) ticket = %v, want nil (must not resolve to lone ticket)", id, got)
+		}
+	}
+}
+
+func TestFileStore_Delete_EmptyID(t *testing.T) {
+	store, _ := testStore(t)
+	if err := store.Create(sampleTicket("t-lone2")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := store.Delete("")
+	if err == nil {
+		t.Fatal("Delete(\"\") should fail")
+	}
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("Delete(\"\") error = %q, want to contain %q", err.Error(), "id is required")
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, "t-lone2.md")); err != nil {
+		t.Errorf("lone ticket file should still exist after Delete(\"\"): %v", err)
 	}
 }
 

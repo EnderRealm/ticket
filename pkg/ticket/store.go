@@ -145,6 +145,12 @@ func (s *FileStore) List() ([]*Ticket, error) {
 // Resolve finds the full file path for an exact or partial ticket ID.
 // Returns an error if the ID is ambiguous (multiple matches) or not found.
 func (s *FileStore) Resolve(id string) (string, error) {
+	// Reject empty/whitespace IDs so partial matching does not silently match
+	// every ticket (in a single-ticket store this resolves to the lone ticket).
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("id is required")
+	}
+
 	// Try exact match first.
 	exact := s.ticketFile(id)
 	if _, err := os.Stat(exact); err == nil {

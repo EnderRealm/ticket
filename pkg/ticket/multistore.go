@@ -148,6 +148,12 @@ func (m *MultiStore) storeFor(project string) *FileStore {
 // Returns the matched ticket with a namespaced ID if exactly one match is found.
 // Returns an error if no matches or multiple matches (ambiguous).
 func (m *MultiStore) resolveAcrossProjects(bareID string, getter func(*FileStore, string) (*Ticket, error)) (*Ticket, error) {
+	// Reject empty/whitespace IDs before the per-project loop, where each Get
+	// would fail and be swallowed by the continue, yielding a misleading error.
+	if strings.TrimSpace(bareID) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+
 	projects, err := m.projects()
 	if err != nil {
 		return nil, err

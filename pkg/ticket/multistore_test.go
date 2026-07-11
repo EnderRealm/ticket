@@ -202,6 +202,21 @@ func TestMultiStoreCreateRequiresProject(t *testing.T) {
 	}
 }
 
+func TestMultiStoreGetEmptyID(t *testing.T) {
+	ms, _ := testMultiStore(t, "proj")
+	if err := ms.Create(sampleTicket("proj/lone-abcd")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ms.Get("")
+	if err == nil {
+		t.Fatalf("Get(\"\") should fail, got ticket %v", got)
+	}
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("Get(\"\") error = %q, want to contain %q", err.Error(), "id is required")
+	}
+}
+
 func TestMultiStoreEmptyRoot(t *testing.T) {
 	ms, _ := testMultiStore(t)
 	tickets, err := ms.List()
