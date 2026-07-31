@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- `tk frontier` and the `ticket_frontier` MCP tool: list the schedulable set — tickets with status `ready` whose dependencies are all done or closed. A ready ticket with an unresolved (or missing) dep is excluded. `tk frontier` spans the central store and takes `--project` to scope to one project; `ticket_frontier` takes `project` and `tag`.
 - `ticket_delete` MCP tool: permanently delete a ticket by ID (supports partial matching), mirroring `tk delete <id>`. It resolves the ID, hard-deletes the ticket file, and returns the resolved ID that was deleted. This is distinct from setting a ticket's status to closed.
 - TUI `w` spawn: the new iTerm window is now named `PROJECT -- ID4 -- TITLE` (uppercased project, the ticket's 4-char id suffix, title truncated to 20 characters) so each worker is identifiable. The default template reasserts the title via a `printf` OSC escape after the shell's prompt hook and `export`s `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (exported, not prefixed inline, so it survives a `claude` shell alias), so the name persists instead of being overwritten by the shell or by Claude Code. New `spawn_command` placeholders `{project}`, `{title}`, and the pre-sanitized window-name token `{wtitle}` support custom templates.
 - Filter tickets by a custom extra field with substring matching: `tk ls --field env=prod` (matches `env=production`) and the `ticket_list` MCP tool's `field` parameter. A ticket matches only when the key exists in its extra fields and the stored value contains the filter value.

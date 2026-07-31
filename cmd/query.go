@@ -57,6 +57,23 @@ func (j ticketJSON) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
+func toTicketJSON(t *ticket.Ticket) ticketJSON {
+	return ticketJSON{
+		ID:          t.ID,
+		Status:      string(t.Status),
+		Deps:        t.Deps,
+		Links:       t.Links,
+		Created:     t.Created.UTC().Format("2006-01-02T15:04:05Z"),
+		Type:        string(t.Type),
+		Priority:    t.Priority,
+		ExternalRef: t.ExternalRef,
+		Parent:      t.Parent,
+		Tags:        t.Tags,
+		Title:       t.Title,
+		Extra:       t.Extra,
+	}
+}
+
 func runQuery(cmd *cobra.Command, args []string) error {
 	store := ticket.NewFileStore(TicketsDir())
 	tickets, err := store.List()
@@ -66,21 +83,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 	var lines []string
 	for _, t := range tickets {
-		j := ticketJSON{
-			ID:          t.ID,
-			Status:      string(t.Status),
-			Deps:        t.Deps,
-			Links:       t.Links,
-			Created:     t.Created.UTC().Format("2006-01-02T15:04:05Z"),
-			Type:        string(t.Type),
-			Priority:    t.Priority,
-			ExternalRef: t.ExternalRef,
-			Parent:      t.Parent,
-			Tags:        t.Tags,
-			Title:       t.Title,
-			Extra:       t.Extra,
-		}
-		data, err := json.Marshal(j)
+		data, err := json.Marshal(toTicketJSON(t))
 		if err != nil {
 			continue
 		}

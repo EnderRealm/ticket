@@ -176,6 +176,70 @@ func TestReadyTickets(t *testing.T) {
 	}
 }
 
+func TestFrontierTickets(t *testing.T) {
+	closed := mk("t-closed", StatusClosed)
+	s := depStore(t,
+		mk("t-nodeps", StatusReady),
+		mk("t-donedep", StatusReady, "t-done"),
+		mk("t-closeddep", StatusReady, "t-closed"),
+		mk("t-opendep", StatusReady, "t-open"),
+		mk("t-readydep", StatusReady, "t-nodeps"),
+		mk("t-missingdep", StatusReady, "t-gone"),
+		mk("t-open", StatusOpen),
+		mk("t-backlog", StatusBacklog),
+		mk("t-done", StatusDone),
+		closed,
+	)
+
+	frontier, err := FrontierTickets(s)
+	if err != nil {
+		t.Fatalf("FrontierTickets: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, tk := range frontier {
+		got[tk.ID] = true
+	}
+	want := []string{"t-nodeps", "t-donedep", "t-closeddep"}
+	for _, id := range want {
+		if !got[id] {
+			t.Errorf("frontier missing %s: %v", id, ids2(frontier))
+		}
+	}
+	if len(frontier) != len(want) {
+		t.Errorf("frontier = %v, want exactly %v", ids2(frontier), want)
+	}
+}
+
+func TestFrontierTickets_DepFlipsToDone(t *testing.T) {
+	s := depStore(t,
+		mk("t-a", StatusReady, "t-b"),
+		mk("t-b", StatusOpen),
+	)
+
+	frontier, err := FrontierTickets(s)
+	if err != nil {
+		t.Fatalf("FrontierTickets: %v", err)
+	}
+	if len(frontier) != 0 {
+		t.Fatalf("frontier = %v, want empty while t-b is open", ids2(frontier))
+	}
+
+	b, _ := s.Get("t-b")
+	b.Status = StatusDone
+	if err := s.Update(b); err != nil {
+		t.Fatalf("Update t-b: %v", err)
+	}
+
+	frontier, err = FrontierTickets(s)
+	if err != nil {
+		t.Fatalf("FrontierTickets: %v", err)
+	}
+	if len(frontier) != 1 || frontier[0].ID != "t-a" {
+		t.Errorf("frontier = %v, want [t-a] after dep flipped to done", ids2(frontier))
+	}
+}
+
 func TestBlockedTickets(t *testing.T) {
 	s := depStore(t,
 		mk("t-1", StatusReady),

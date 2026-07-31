@@ -244,6 +244,121 @@ func TestReadyReturnsSummaryShape(t *testing.T) {
 	}
 }
 
+// frontierIDs calls ticket_frontier and returns the IDs it reports.
+func frontierIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) []string {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_frontier",
+		Arguments: args,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_frontier error: %v", result.Content)
+	}
+	var tickets []map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	ids := make([]string, len(tickets))
+	for i, tk := range tickets {
+		ids[i], _ = tk["id"].(string)
+	}
+	return ids
+}
+
+func TestFrontierExcludesBlockedAndNonReady(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	unblocked := createTicketID(t, session, map[string]any{"title": "Unblocked", "type": "feature"})
+	blocker := createTicketID(t, session, map[string]any{"title": "Blocker", "type": "feature"})
+	blocked := createTicketID(t, session, map[string]any{"title": "Blocked", "type": "feature"})
+	inProgress := createTicketID(t, session, map[string]any{"title": "In progress", "type": "feature"})
+	// A backlog ticket is left as created — it must not reach the frontier.
+	createTicketID(t, session, map[string]any{"title": "Backlog", "type": "feature"})
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_dep",
+		Arguments: map[string]any{"id": blocked, "dep_id": blocker, "action": "add"},
+	})
+	for _, id := range []string{unblocked, blocker, blocked} {
+		session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "ticket_edit",
+			Arguments: map[string]any{"id": id, "status": "ready"},
+		})
+	}
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": inProgress, "status": "open"},
+	})
+
+	ids := frontierIDs(t, session, map[string]any{})
+	want := map[string]bool{unblocked: true, blocker: true}
+	if len(ids) != len(want) {
+		t.Fatalf("frontier = %v, want %v", ids, want)
+	}
+	for _, id := range ids {
+		if !want[id] {
+			t.Errorf("frontier contains unexpected ticket %s: %v", id, ids)
+		}
+	}
+}
+
+func TestFrontierPicksUpFlippedDep(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	blocker := createTicketID(t, session, map[string]any{"title": "Blocker", "type": "feature"})
+	blocked := createTicketID(t, session, map[string]any{"title": "Blocked", "type": "feature"})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_dep",
+		Arguments: map[string]any{"id": blocked, "dep_id": blocker, "action": "add"},
+	})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": blocked, "status": "ready"},
+	})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": blocker, "status": "open"},
+	})
+
+	if ids := frontierIDs(t, session, map[string]any{}); len(ids) != 0 {
+		t.Fatalf("frontier = %v, want empty while the dep is open", ids)
+	}
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": blocker, "status": "done"},
+	})
+
+	ids := frontierIDs(t, session, map[string]any{})
+	if len(ids) != 1 || ids[0] != blocked {
+		t.Errorf("frontier = %v, want [%s] after the dep flipped to done", ids, blocked)
+	}
+}
+
+func TestFrontierScopedToExplicitProject(t *testing.T) {
+	session := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	ctx := context.Background()
+
+	for _, proj := range []string{"alpha", "beta"} {
+		id := createTicketID(t, session, map[string]any{"title": "Ready " + proj, "type": "feature", "project": proj})
+		session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "ticket_edit",
+			Arguments: map[string]any{"id": id, "status": "ready"},
+		})
+	}
+
+	ids := frontierIDs(t, session, map[string]any{"project": "beta"})
+	if len(ids) != 1 {
+		t.Fatalf("frontier = %v, want 1 ticket for project beta", ids)
+	}
+	if !strings.HasPrefix(ids[0], "beta/") {
+		t.Errorf("frontier id = %q, want a beta/ ticket", ids[0])
+	}
+}
+
 func TestListDefaultStatusSet(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

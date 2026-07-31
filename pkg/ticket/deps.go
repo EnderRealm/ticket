@@ -273,6 +273,23 @@ func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 	return ready, nil
 }
 
+// FrontierTickets returns the schedulable set: tickets with status ready
+// whose dependencies are all terminal (done/closed).
+func FrontierTickets(store Store) ([]*Ticket, error) {
+	tickets, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+
+	var frontier []*Ticket
+	for _, t := range tickets {
+		if t.Status == StatusReady && !IsBlocked(store, t) {
+			frontier = append(frontier, t)
+		}
+	}
+	return frontier, nil
+}
+
 // BlockedTickets returns all non-terminal, non-backlog tickets with unresolved deps.
 func BlockedTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()

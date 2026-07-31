@@ -33,6 +33,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerDep(server, store)
 	registerLink(server, store)
 	registerReady(server, store, defaultProject)
+	registerFrontier(server, store, defaultProject)
 	registerBlocked(server, store, defaultProject)
 	registerInbox(server, store, defaultProject)
 	registerSearch(server, store, defaultProject)
@@ -881,6 +882,37 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 
 		result := []ticketSummaryJSON{}
 		for _, t := range ready {
+			result = append(result, toSummaryJSON(t))
+		}
+
+		r, err := jsonResult(result)
+		return r, nil, err
+	})
+}
+
+func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject string) {
+	addFlexTool(server, &mcp.Tool{
+		Name:        "ticket_frontier",
+		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed. The parallel-safe set to start next.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
+		frontier, err := ticket.FrontierTickets(store)
+		if err != nil {
+			r, _ := errResult("failed to get frontier tickets: %v", err)
+			return r, nil, nil
+		}
+
+		opts := ticket.DefaultListOptions()
+		if args.Tag != "" {
+			opts.Tag = args.Tag
+		}
+		frontier = ticket.Filter(frontier, opts)
+		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			frontier = filterByProject(frontier, proj)
+		}
+		ticket.SortByPriorityID(frontier)
+
+		result := []ticketSummaryJSON{}
+		for _, t := range frontier {
 			result = append(result, toSummaryJSON(t))
 		}
 

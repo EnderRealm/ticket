@@ -23,6 +23,7 @@ Usage: tk <command> [args]
 Viewing:
   show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
+  frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
 
 Creating & Editing:
