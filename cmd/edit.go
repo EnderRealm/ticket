@@ -17,7 +17,14 @@ var editCmd = &cobra.Command{
 }
 
 func init() {
-	f := editCmd.Flags()
+	registerEditFlags(editCmd)
+	rootCmd.AddCommand(editCmd)
+}
+
+// registerEditFlags declares the flags runEdit reads. Shared with tests so a
+// test flag set can't drift from the real command.
+func registerEditFlags(cmd *cobra.Command) {
+	f := cmd.Flags()
 	f.String("title", "", "new title")
 	f.StringP("description", "d", "", "description text")
 	f.String("status", "", "ticket status (backlog, ready, open, done, closed)")
@@ -29,8 +36,7 @@ func init() {
 	f.String("tags", "", "comma-separated tags")
 	f.String("note", "", "append a timestamped note")
 	f.StringArray("set", nil, "set extra field (key=value, blank value removes)")
-
-	rootCmd.AddCommand(editCmd)
+	f.StringArray("output", nil, "set output value (key=value, blank value removes)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -127,6 +133,24 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		changed = true
 	}
 
+	if outputs, _ := cmd.Flags().GetStringArray("output"); cmd.Flags().Changed("output") {
+		if t.Outputs == nil {
+			t.Outputs = map[string]string{}
+		}
+		for _, o := range outputs {
+			key, value, err := parseOutputFlag(o)
+			if err != nil {
+				return err
+			}
+			if value == "" {
+				delete(t.Outputs, key)
+			} else {
+				t.Outputs[key] = value
+			}
+		}
+		changed = true
+	}
+
 	if !changed {
 		return fmt.Errorf("no options provided")
 	}
@@ -151,6 +175,24 @@ func parseSetFlag(s string) (key, value string, err error) {
 	}
 	if value != "" {
 		if err := ticket.ValidateExtraValue(value); err != nil {
+			return "", "", err
+		}
+	}
+	return key, value, nil
+}
+
+func parseOutputFlag(s string) (key, value string, err error) {
+	idx := strings.Index(s, "=")
+	if idx < 0 {
+		return "", "", fmt.Errorf("--output requires key=value format: %q", s)
+	}
+	key = s[:idx]
+	value = s[idx+1:]
+	if err := ticket.ValidateOutputKey(key); err != nil {
+		return "", "", err
+	}
+	if value != "" {
+		if err := ticket.ValidateOutputValue(value); err != nil {
 			return "", "", err
 		}
 	}

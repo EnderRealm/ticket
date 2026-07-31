@@ -381,6 +381,50 @@ func TestStampCompletedClearedWhenReopened(t *testing.T) {
 	}
 }
 
+// Populating outputs on the done transition lives at the store write choke
+// point, so every caller gets it — including the TUI, which mutates a ticket
+// and calls store.Update directly.
+func TestUpdateToDonePopulatesBranchOutput(t *testing.T) {
+	store, _ := testStore(t)
+	tk := &Ticket{ID: "land-0001", Title: "Land", Status: StatusOpen, Type: TypeFeature, Branch: "feature-x"}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	open, _ := store.Get("land-0001")
+	if len(open.Outputs) != 0 {
+		t.Fatalf("Outputs = %v, want empty while open", open.Outputs)
+	}
+
+	open.Status = StatusDone
+	if err := store.Update(open); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	done, _ := store.Get("land-0001")
+	if done.Outputs[OutputKeyBranch] != "feature-x" {
+		t.Errorf("Outputs[branch] = %q, want feature-x", done.Outputs[OutputKeyBranch])
+	}
+}
+
+func TestUpdateToDoneKeepsCallerBranchOutput(t *testing.T) {
+	store, _ := testStore(t)
+	tk := &Ticket{ID: "land-0002", Title: "Land", Status: StatusOpen, Type: TypeFeature, Branch: "feature-x"}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	open, _ := store.Get("land-0002")
+
+	// A value the caller set explicitly wins over the derived one.
+	open.Status = StatusDone
+	open.Outputs = map[string]string{OutputKeyBranch: "manual-branch"}
+	if err := store.Update(open); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	done, _ := store.Get("land-0002")
+	if done.Outputs[OutputKeyBranch] != "manual-branch" {
+		t.Errorf("Outputs[branch] = %q, want manual-branch", done.Outputs[OutputKeyBranch])
+	}
+}
+
 func TestStampCreatedPreservedAcrossUpdate(t *testing.T) {
 	store, _ := testStore(t)
 	tk := &Ticket{ID: "create-0001", Title: "Create", Status: StatusBacklog, Type: TypeFeature}

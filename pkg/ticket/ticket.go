@@ -3,6 +3,7 @@ package ticket
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -106,6 +107,10 @@ type Ticket struct {
 	Updated     time.Time  `yaml:"-"`
 	Completed   time.Time  `yaml:"-"`
 
+	// Results the ticket produced (branch, commit, artifacts), serialized as a
+	// nested block in format.go.
+	Outputs map[string]string `yaml:"outputs,omitempty"`
+
 	// Custom key/value pairs, handled manually in format.go.
 	Extra map[string]string `yaml:"-"`
 
@@ -141,7 +146,7 @@ var reservedKeys = map[string]bool{
 	// YAML frontmatter fields.
 	"id": true, "status": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
-	"external-ref": true, "branch": true, "parent": true, "tags": true,
+	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
 	// JSON output fields derived from body sections and markdown heading.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,
@@ -161,12 +166,7 @@ func ValidateExtraKey(key string) error {
 	if reservedKeys[key] {
 		return fmt.Errorf("extra field key %q is reserved", key)
 	}
-	for _, c := range key {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-			return fmt.Errorf("extra field key %q contains invalid character %q (allowed: letters, digits, hyphens, underscores)", key, string(c))
-		}
-	}
-	return nil
+	return validateKeyChars("extra field key", key)
 }
 
 // ValidateExtraValue checks that value is safe for unquoted YAML serialization.
@@ -174,14 +174,80 @@ func ValidateExtraKey(key string) error {
 // YAML indicator characters (% ! & * @ ` : # [ ] { } | > ' ") and control
 // characters are rejected to prevent parse failures in writeField output.
 func ValidateExtraValue(value string) error {
-	for _, c := range value {
-		if c < ' ' || c > '~' {
-			return fmt.Errorf("extra field value contains non-printable character %q", string(c))
-		}
-		switch c {
-		case ':', '#', '[', ']', '{', '}', '%', '!', '&', '*', '@', '`', '|', '>', '\'', '"':
-			return fmt.Errorf("extra field value contains invalid character %q", string(c))
+	return validateValueChars("extra field value", value)
+}
+
+// ValidateOutputKey checks that key is a valid outputs block key. Character
+// rules match extra field keys, but reserved frontmatter names are allowed:
+// outputs keys are namespaced by the block, so `branch` and `commit` are valid.
+func ValidateOutputKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("output key must not be empty")
+	}
+	return validateKeyChars("output key", key)
+}
+
+// ValidateOutputValue checks that an outputs value is safe for unquoted YAML
+// serialization, using the same rules as extra field values. Leading and
+// trailing whitespace is rejected as well: the serializer writes values
+// unquoted, so " x " would not round-trip.
+func ValidateOutputValue(value string) error {
+	if err := validateValueChars("output value", value); err != nil {
+		return err
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("output value %q has leading or trailing whitespace", value)
+	}
+	return nil
+}
+
+func validateKeyChars(kind, key string) error {
+	for _, c := range key {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return fmt.Errorf("%s %q contains invalid character %q (allowed: letters, digits, hyphens, underscores)", kind, key, string(c))
 		}
 	}
 	return nil
+}
+
+func validateValueChars(kind, value string) error {
+	for _, c := range value {
+		if c < ' ' || c > '~' {
+			return fmt.Errorf("%s contains non-printable character %q", kind, string(c))
+		}
+		switch c {
+		case ':', '#', '[', ']', '{', '}', '%', '!', '&', '*', '@', '`', '|', '>', '\'', '"':
+			return fmt.Errorf("%s contains invalid character %q", kind, string(c))
+		}
+	}
+	return nil
+}
+
+// Well-known outputs keys populated when a ticket lands.
+const (
+	OutputKeyBranch = "branch"
+	OutputKeyCommit = "commit"
+)
+
+// PopulateDoneOutputs records the branch and commit a ticket landed on in its
+// outputs block. Fill-if-absent: values already recorded (by hand or by an
+// earlier commit) are never overwritten, and empty values are skipped. Values
+// that would not survive serialization are dropped — this is best-effort
+// metadata derived from git, and a branch name like `%wip` must never corrupt
+// the ticket file.
+func PopulateDoneOutputs(t *Ticket, commit, branch string) {
+	set := func(key, value string) {
+		if value == "" || t.Outputs[key] != "" {
+			return
+		}
+		if ValidateOutputValue(value) != nil {
+			return
+		}
+		if t.Outputs == nil {
+			t.Outputs = map[string]string{}
+		}
+		t.Outputs[key] = value
+	}
+	set(OutputKeyCommit, commit)
+	set(OutputKeyBranch, branch)
 }

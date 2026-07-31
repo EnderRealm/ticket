@@ -274,6 +274,28 @@ Filter the list by an extra field with substring matching:
 tk ls --field env=prod        # matches env=production
 ```
 
+### Outputs
+
+A ticket records what it produced in an `outputs` frontmatter block — the handoff for downstream tickets:
+
+```yaml
+outputs:
+  branch: add-outputs-1234
+  commit: 31fc605
+  artifact: dist/tk
+```
+
+Keys are freeform (letters, digits, hyphens, underscores); `branch` and `commit` are the well-known ones. Values are written as plain unquoted YAML scalars, so YAML indicator characters and surrounding whitespace are rejected. Set them with `--output` on `tk edit`, or the `outputs` argument on the `ticket_edit` MCP tool:
+
+```bash
+tk edit <id> --output artifact=dist/tk --output commit=31fc605
+tk edit <id> --output artifact=            # remove
+```
+
+Outputs are populated automatically when a ticket lands: the commit watcher records the closing commit's SHA and branch on auto-close, and marking a ticket `done` from anywhere (CLI, MCP, or TUI) copies its `branch` field. Existing values are never overwritten, so anything set by hand wins; a derived value that would not serialize cleanly is dropped rather than written.
+
+`tk show` renders them as an `## Outputs` section, and they appear under `outputs` in `tk query` JSONL and MCP responses.
+
 ### Bulk Operations
 
 Move all ready tickets to backlog:

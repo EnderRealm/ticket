@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +82,19 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	}
 
 	fmt.Print(output)
+
+	// Outputs: what the ticket produced, for downstream handoff.
+	if len(t.Outputs) > 0 {
+		keys := make([]string, 0, len(t.Outputs))
+		for k := range t.Outputs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Print("\n## Outputs\n\n")
+		for _, k := range keys {
+			fmt.Printf("- %s: %s\n", k, t.Outputs[k])
+		}
+	}
 
 	// Blockers: deps not at done status.
 	var blockers []string

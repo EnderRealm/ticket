@@ -111,6 +111,11 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 						Timestamp: time.Now().UTC(),
 						Text:      "auto-closed by commit",
 					})
+					branch := dr.branch
+					if branch == "" {
+						branch = t.Branch
+					}
+					ticket.PopulateDoneOutputs(t, commit.SHA, branch)
 					if err := store.Update(t); err != nil {
 						result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
 					} else {

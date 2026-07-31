@@ -153,6 +153,17 @@ func Serialize(t *Ticket) ([]byte, error) {
 			writeField(&buf, k, t.Extra[k])
 		}
 	}
+	if len(t.Outputs) > 0 {
+		keys := make([]string, 0, len(t.Outputs))
+		for k := range t.Outputs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		buf.WriteString("outputs:\n")
+		for _, k := range keys {
+			buf.WriteString("  " + k + ": " + t.Outputs[k] + "\n")
+		}
+	}
 	buf.WriteString("---\n")
 
 	buf.WriteString("# " + t.Title + "\n")

@@ -113,6 +113,7 @@ type ticketJSON struct {
 	Acceptance  string            `json:"acceptance_criteria,omitempty"`
 	TestResults string            `json:"test_results,omitempty"`
 	Notes       []noteJSON        `json:"notes,omitempty"`
+	Outputs     map[string]string `json:"outputs,omitempty"`
 	Extra       map[string]string `json:"-"`
 }
 
@@ -155,6 +156,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		Parent:      t.Parent,
 		Tags:        t.Tags,
 		Title:       t.Title,
+		Outputs:     t.Outputs,
 	}
 
 	j.Extra = t.Extra
@@ -616,6 +618,7 @@ type editArgs struct {
 	Acceptance  string            `json:"acceptance,omitempty" jsonschema:"new acceptance criteria"`
 	TestResults string            `json:"test_results,omitempty" jsonschema:"test results to record"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
+	Outputs     map[string]string `json:"outputs,omitempty" jsonschema:"set outputs the ticket produced, e.g. branch/commit/artifacts (key: value to set, key: empty string to remove)"`
 }
 
 func registerEdit(server *mcp.Server, store ticket.Store) {
@@ -691,6 +694,27 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 						return r, nil, nil
 					}
 					t.Extra[k] = v
+				}
+			}
+		}
+
+		if len(args.Outputs) > 0 {
+			if t.Outputs == nil {
+				t.Outputs = map[string]string{}
+			}
+			for k, v := range args.Outputs {
+				if err := ticket.ValidateOutputKey(k); err != nil {
+					r, _ := errResult("invalid output key: %v", err)
+					return r, nil, nil
+				}
+				if v == "" {
+					delete(t.Outputs, k)
+				} else {
+					if err := ticket.ValidateOutputValue(v); err != nil {
+						r, _ := errResult("invalid output value for %q: %v", k, err)
+						return r, nil, nil
+					}
+					t.Outputs[k] = v
 				}
 			}
 		}

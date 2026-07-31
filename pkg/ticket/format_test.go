@@ -638,6 +638,190 @@ func TestSerialize_NoExtraFieldsUnchanged(t *testing.T) {
 	}
 }
 
+func TestOutputs_RoundTrip(t *testing.T) {
+	tk := &Ticket{
+		ID:       "t-out1",
+		Status:   StatusDone,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Outputs round trip",
+		Body:     "\nDescription.\n",
+		Outputs: map[string]string{
+			"zebra":         "last",
+			OutputKeyBranch: "feature-x",
+			// All digits: the hand-rolled serializer writes it unquoted, so it
+			// comes back as a YAML int unless the field decodes as a string.
+			OutputKeyCommit: "1234567",
+		},
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s := string(data)
+
+	// Nested block with two-space indent, keys sorted alphabetically.
+	if !strings.Contains(s, "outputs:\n  branch: feature-x\n  commit: 1234567\n  zebra: last\n") {
+		t.Errorf("unexpected outputs block:\n%s", s)
+	}
+
+	parsed, err := parseBytes(data)
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if len(parsed.Outputs) != len(tk.Outputs) {
+		t.Fatalf("Outputs = %v, want %v", parsed.Outputs, tk.Outputs)
+	}
+	for k, v := range tk.Outputs {
+		if parsed.Outputs[k] != v {
+			t.Errorf("Outputs[%q] = %q, want %q", k, parsed.Outputs[k], v)
+		}
+	}
+	// The outputs block must not leak into extra fields.
+	if len(parsed.Extra) != 0 {
+		t.Errorf("Extra = %v, want empty", parsed.Extra)
+	}
+}
+
+func TestParse_OutputsBlock(t *testing.T) {
+	input := `---
+id: t-out2
+status: done
+deps: []
+links: []
+created: 2026-01-01T00:00:00Z
+type: feature
+priority: 2
+outputs:
+  branch: add-outputs-1234
+  commit: 0f08abc
+  artifact: dist/tk
+---
+# Landed ticket
+
+Description.
+`
+	tk, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := map[string]string{"branch": "add-outputs-1234", "commit": "0f08abc", "artifact": "dist/tk"}
+	if len(tk.Outputs) != len(want) {
+		t.Fatalf("Outputs = %v, want %v", tk.Outputs, want)
+	}
+	for k, v := range want {
+		if tk.Outputs[k] != v {
+			t.Errorf("Outputs[%q] = %q, want %q", k, tk.Outputs[k], v)
+		}
+	}
+}
+
+func TestSerialize_NoOutputsUnchanged(t *testing.T) {
+	// A ticket predating outputs must serialize exactly as before.
+	tk := &Ticket{
+		ID:       "t-nooutputs",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "No outputs",
+		Body:     "\nDescription.\n",
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	want := "---\nid: t-nooutputs\nstatus: ready\ndeps: []\nlinks: []\n" +
+		"created: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\n---\n" +
+		"# No outputs\n\n\nDescription.\n"
+	if string(data) != want {
+		t.Errorf("Serialize =\n%q\nwant\n%q", string(data), want)
+	}
+
+	parsed, err := parseBytes(data)
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if len(parsed.Outputs) != 0 {
+		t.Errorf("Outputs = %v, want empty", parsed.Outputs)
+	}
+}
+
+func TestPopulateDoneOutputs(t *testing.T) {
+	// Nil map is allocated on demand; empty values are skipped.
+	tk := &Ticket{}
+	PopulateDoneOutputs(tk, "abc1234", "")
+	if tk.Outputs[OutputKeyCommit] != "abc1234" {
+		t.Errorf("Outputs[commit] = %q, want abc1234", tk.Outputs[OutputKeyCommit])
+	}
+	if _, ok := tk.Outputs[OutputKeyBranch]; ok {
+		t.Errorf("Outputs[branch] set from empty value: %v", tk.Outputs)
+	}
+
+	// Existing values win; absent ones get filled.
+	PopulateDoneOutputs(tk, "def5678", "feature-x")
+	if tk.Outputs[OutputKeyCommit] != "abc1234" {
+		t.Errorf("Outputs[commit] = %q, want abc1234 (must not overwrite)", tk.Outputs[OutputKeyCommit])
+	}
+	if tk.Outputs[OutputKeyBranch] != "feature-x" {
+		t.Errorf("Outputs[branch] = %q, want feature-x", tk.Outputs[OutputKeyBranch])
+	}
+
+	// No values, no map.
+	empty := &Ticket{}
+	PopulateDoneOutputs(empty, "", "")
+	if empty.Outputs != nil {
+		t.Errorf("Outputs = %v, want nil", empty.Outputs)
+	}
+}
+
+func TestOutputs_KeyAndValueValidation(t *testing.T) {
+	// Reserved frontmatter names are valid outputs keys.
+	for _, key := range []string{"branch", "commit", "status", "artifact_2"} {
+		if err := ValidateOutputKey(key); err != nil {
+			t.Errorf("ValidateOutputKey(%q) = %v", key, err)
+		}
+	}
+	for _, key := range []string{"", "has space", "has:colon", "has.dot"} {
+		if err := ValidateOutputKey(key); err == nil {
+			t.Errorf("ValidateOutputKey(%q) should return error", key)
+		}
+	}
+	for _, val := range []string{"feature-x", "abc1234", "dist/tk"} {
+		if err := ValidateOutputValue(val); err != nil {
+			t.Errorf("ValidateOutputValue(%q) = %v", val, err)
+		}
+	}
+	// Unquoted values must round-trip exactly, so surrounding whitespace and
+	// characters that break the scalar are rejected.
+	for _, val := range []string{"has:colon", "has\nnewline", "has#hash", "%wip", " padded", "padded "} {
+		if err := ValidateOutputValue(val); err == nil {
+			t.Errorf("ValidateOutputValue(%q) should return error", val)
+		}
+	}
+}
+
+func TestPopulateDoneOutputs_DropsUnserializableValues(t *testing.T) {
+	// A legal git branch name that would break the unquoted YAML scalar is
+	// dropped rather than written — best-effort metadata must not corrupt the
+	// ticket file.
+	tk := &Ticket{}
+	PopulateDoneOutputs(tk, "abc1234", "%wip")
+	if _, ok := tk.Outputs[OutputKeyBranch]; ok {
+		t.Errorf("Outputs[branch] = %q, want absent", tk.Outputs[OutputKeyBranch])
+	}
+	if tk.Outputs[OutputKeyCommit] != "abc1234" {
+		t.Errorf("Outputs[commit] = %q, want abc1234", tk.Outputs[OutputKeyCommit])
+	}
+}
+
 func TestExtra_ReservedKeyRejected(t *testing.T) {
 	reserved := []string{"id", "status", "type", "priority", "deps", "created", "external-ref"}
 	for _, key := range reserved {

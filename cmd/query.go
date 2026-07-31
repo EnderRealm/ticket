@@ -34,6 +34,7 @@ type ticketJSON struct {
 	Parent      string            `json:"parent,omitempty"`
 	Tags        []string          `json:"tags,omitempty"`
 	Title       string            `json:"title"`
+	Outputs     map[string]string `json:"outputs,omitempty"`
 	Extra       map[string]string `json:"-"`
 }
 
@@ -70,6 +71,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 		Parent:      t.Parent,
 		Tags:        t.Tags,
 		Title:       t.Title,
+		Outputs:     t.Outputs,
 		Extra:       t.Extra,
 	}
 }

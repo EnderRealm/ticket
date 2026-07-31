@@ -1530,6 +1530,113 @@ func TestShowExtraFields(t *testing.T) {
 	}
 }
 
+func TestEditOutputs(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Outputs edit test", "type": "feature"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":      id,
+			"outputs": map[string]any{"branch": "feature-x", "commit": "abc1234"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	// ticket_show returns outputs as a nested object, not flattened like extras.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+
+	outputs, ok := shown["outputs"].(map[string]any)
+	if !ok {
+		t.Fatalf("outputs missing from show response: %s", text)
+	}
+	if outputs["branch"] != "feature-x" || outputs["commit"] != "abc1234" {
+		t.Errorf("outputs = %v, want branch=feature-x commit=abc1234", outputs)
+	}
+
+	// Empty value removes the key.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":      id,
+			"outputs": map[string]any{"commit": ""},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var edited map[string]any
+	json.Unmarshal([]byte(text), &edited)
+
+	outputs = edited["outputs"].(map[string]any)
+	if _, exists := outputs["commit"]; exists {
+		t.Errorf("commit should be removed, got %v", outputs)
+	}
+	if outputs["branch"] != "feature-x" {
+		t.Errorf("branch = %v, want feature-x", outputs["branch"])
+	}
+}
+
+func TestEditToDonePopulatesBranchOutput(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Done outputs test", "type": "feature", "branch": "feature-x"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "status": "done"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var edited map[string]any
+	json.Unmarshal([]byte(text), &edited)
+
+	outputs, ok := edited["outputs"].(map[string]any)
+	if !ok {
+		t.Fatalf("outputs missing after done transition: %s", text)
+	}
+	if outputs["branch"] != "feature-x" {
+		t.Errorf("outputs[branch] = %v, want feature-x", outputs["branch"])
+	}
+}
+
 func TestListExtraFields(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

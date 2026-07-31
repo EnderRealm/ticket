@@ -106,6 +106,8 @@ Create & edit options:
   --external-ref       External reference (e.g., gh-123)
   --branch             Git branch name (edit only)
   --set key=value      Set extra field (repeatable, blank value removes)
+  --output key=value   Set output value, e.g. branch/commit/artifact
+                       (edit only, repeatable, blank value removes)
 
 Statuses: backlog, ready, open, done, closed
 

@@ -226,6 +226,12 @@ func stampTimestamps(t *Ticket) {
 
 func (s *FileStore) writeTicket(t *Ticket) error {
 	stampTimestamps(t)
+	// A landed ticket records the branch it landed on. Done at the same write
+	// choke point as the timestamps so CLI, MCP, and TUI callers all get it;
+	// fill-if-absent leaves any value the caller set explicitly.
+	if t.Status == StatusDone {
+		PopulateDoneOutputs(t, "", t.Branch)
+	}
 	data, err := Serialize(t)
 	if err != nil {
 		return err

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -115,6 +116,142 @@ func TestWatchCycle_AutoClose(t *testing.T) {
 	}
 	if updated.Status != ticket.StatusDone {
 		t.Errorf("ticket status = %q, want done", updated.Status)
+	}
+}
+
+func TestWatchCycle_AutoCloseOutputs(t *testing.T) {
+	// RunWatchCycle resolves the journal path under $HOME.
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	ticketDir := t.TempDir()
+	store := ticket.NewFileStore(ticketDir)
+
+	landed := &ticket.Ticket{
+		ID:       ticket.GenerateID("Landed ticket"),
+		Title:    "Landed ticket",
+		Type:     "feature",
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(landed); err != nil {
+		t.Fatal(err)
+	}
+	preset := &ticket.Ticket{
+		ID:       ticket.GenerateID("Preset ticket"),
+		Title:    "Preset ticket",
+		Type:     "feature",
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+		Outputs:  map[string]string{ticket.OutputKeyCommit: "handwritten"},
+	}
+	if err := store.Create(preset); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "fix.go", "package fix\n",
+		"Closes: ["+landed.ID+"] ["+preset.ID+"] Landed both")
+
+	cfg := project.ProjectConfig{
+		Path:      repoDir,
+		AutoLink:  true,
+		AutoClose: true,
+	}
+	result, err := RunWatchCycle("outputs-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range result.Warnings {
+		t.Logf("warning: %s", w)
+	}
+	if result.Closed != 2 {
+		t.Fatalf("Closed = %d, want 2", result.Closed)
+	}
+
+	commits, err := CollectCommits(repoDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("got %d commits, want 1", len(commits))
+	}
+	sha := commits[0].SHA
+	branch := ResolveStableBranchName(repoDir, sha)
+	if branch == "" {
+		t.Fatal("test repo has no stable branch name")
+	}
+
+	updated, err := store.Get(landed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Outputs[ticket.OutputKeyCommit] != sha {
+		t.Errorf("Outputs[commit] = %q, want %q", updated.Outputs[ticket.OutputKeyCommit], sha)
+	}
+	if updated.Outputs[ticket.OutputKeyBranch] != branch {
+		t.Errorf("Outputs[branch] = %q, want %q", updated.Outputs[ticket.OutputKeyBranch], branch)
+	}
+
+	// A commit value recorded by hand is never overwritten.
+	kept, err := store.Get(preset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Outputs[ticket.OutputKeyCommit] != "handwritten" {
+		t.Errorf("Outputs[commit] = %q, want handwritten", kept.Outputs[ticket.OutputKeyCommit])
+	}
+	if kept.Outputs[ticket.OutputKeyBranch] != branch {
+		t.Errorf("Outputs[branch] = %q, want %q", kept.Outputs[ticket.OutputKeyBranch], branch)
+	}
+}
+
+func TestWatchCycle_AutoCloseSkipsUnserializableBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	// `%wip` is a legal git ref but not a safe unquoted YAML scalar.
+	checkout := exec.Command("git", "-C", repoDir, "checkout", "-b", "%wip")
+	if out, err := checkout.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout: %v\n%s", err, out)
+	}
+
+	ticketDir := t.TempDir()
+	store := ticket.NewFileStore(ticketDir)
+	tk := &ticket.Ticket{
+		ID:       ticket.GenerateID("Odd branch ticket"),
+		Title:    "Odd branch ticket",
+		Type:     "feature",
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "fix.go", "package fix\n", "Closes: ["+tk.ID+"] Landed on an odd branch")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	if _, err := RunWatchCycle("odd-branch-test", cfg, store); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ticket must still parse — a dropped output beats a corrupt file.
+	all, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("List returned %d tickets, want 1 (ticket file no longer parses)", len(all))
+	}
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := updated.Outputs[ticket.OutputKeyBranch]; ok {
+		t.Errorf("Outputs[branch] = %q, want absent", updated.Outputs[ticket.OutputKeyBranch])
+	}
+	if updated.Outputs[ticket.OutputKeyCommit] == "" {
+		t.Errorf("Outputs[commit] not set: %v", updated.Outputs)
 	}
 }
 
