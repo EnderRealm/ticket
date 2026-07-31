@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	ticketmcp "github.com/EnderRealm/ticket/v7/internal/mcp"
+	"github.com/EnderRealm/ticket/v7/internal/project"
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -1900,5 +1901,170 @@ func TestStoreInfoEmpty(t *testing.T) {
 	}
 	if len(projects) != 0 {
 		t.Errorf("expected 0 projects, got %d", len(projects))
+	}
+}
+
+// verifyServer starts a central-store server with project "alpha" registered to
+// a temp repo directory, so ticket_verify can resolve an execution directory.
+// Returns the session and that repo directory.
+func verifyServer(t *testing.T) (*mcp.ClientSession, string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+
+	root := t.TempDir()
+	repoDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "tickets", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"alpha": {Path: repoDir, Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	store := ticket.NewMultiStore(filepath.Join(root, "tickets"))
+	server := ticketmcp.NewServer(store, "alpha", root)
+
+	st, ct := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	go server.Run(ctx, st)
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
+	session, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	return session, repoDir
+}
+
+func TestVerifyRunsCriterionCommands(t *testing.T) {
+	session, repoDir := verifyServer(t)
+	ctx := context.Background()
+
+	if err := os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := createTicketID(t, session, map[string]any{
+		"title": "Verifiable ticket",
+		"type":  "feature",
+		"acceptance": "- Passing check.\n  verify: cat marker.txt\n" +
+			"- Failing check.\n  verify: echo boom; exit 3\n" +
+			"- Docs updated.\n",
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if report.ID != id {
+		t.Errorf("id = %q, want %q", report.ID, id)
+	}
+	if report.Dir != repoDir {
+		t.Errorf("dir = %q, want %q", report.Dir, repoDir)
+	}
+	if report.OK {
+		t.Error("ok = true, want false with a failing criterion")
+	}
+	if report.Summary.Pass != 1 || report.Summary.Fail != 1 || report.Summary.Unverified != 1 {
+		t.Errorf("summary = %+v, want 1 pass, 1 fail, 1 unverified", report.Summary)
+	}
+	if len(report.Results) != 3 {
+		t.Fatalf("got %d results, want 3", len(report.Results))
+	}
+	if report.Results[0].Status != string(ticket.VerifyPass) || report.Results[0].Output != "here" {
+		t.Errorf("first result = %+v, want a pass reading marker.txt in the repo dir", report.Results[0])
+	}
+	if report.Results[1].Status != string(ticket.VerifyFail) || report.Results[1].ExitCode != 3 {
+		t.Errorf("second result = %+v, want fail with exit 3", report.Results[1])
+	}
+	if report.Results[2].Status != string(ticket.VerifyUnverified) || report.Results[2].Command != "" {
+		t.Errorf("third result = %+v, want unverified with no command", report.Results[2])
+	}
+
+	// Results are recorded on the ticket.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown)
+	testResults, _ := shown["test_results"].(string)
+	for _, want := range []string{
+		"1 pass, 1 fail, 1 unverified",
+		"- PASS (exit 0): Passing check.",
+		"- FAIL (exit 3): Failing check.",
+		"- UNVERIFIED: Docs updated.",
+	} {
+		if !strings.Contains(testResults, want) {
+			t.Errorf("test_results missing %q:\n%s", want, testResults)
+		}
+	}
+	if !strings.HasPrefix(testResults, "verify 20") {
+		t.Errorf("test_results should start with a timestamped verify header, got:\n%s", testResults)
+	}
+}
+
+func TestVerifyUnresolvableProject(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Unregistered project",
+		"type":       "feature",
+		"acceptance": "- Passing check.\n  verify: true\n",
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_verify should error when no project directory resolves: %v", result.Content)
+	}
+}
+
+func TestVerifyNoAcceptanceCriteria(t *testing.T) {
+	session, _ := verifyServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{
+		"title":       "No criteria",
+		"type":        "feature",
+		"description": "Description only.",
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_verify should error on a ticket with no acceptance criteria: %v", result.Content)
 	}
 }

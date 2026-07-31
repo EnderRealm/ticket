@@ -37,6 +37,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerBlocked(server, store, defaultProject)
 	registerInbox(server, store, defaultProject)
 	registerSearch(server, store, defaultProject)
+	registerVerify(server, store, defaultProject)
 	registerStoreInfo(server, centralRoot)
 
 	return server
@@ -1080,6 +1081,74 @@ func registerSearch(server *mcp.Server, store ticket.Store, defaultProject strin
 		})
 		return r, nil, err
 	})
+}
+
+type verifyArgs struct {
+	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+}
+
+func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) {
+	addFlexTool(server, &mcp.Tool{
+		Name:        "ticket_verify",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute with sh -c on the server host, in the ticket's project repo directory. Criteria with no command are reported as unverified.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
+		t, err := store.Get(args.ID)
+		if err != nil {
+			r, _ := errResult("ticket not found: %v", err)
+			return r, nil, nil
+		}
+
+		criteria := ticket.ParseCriteria(ticket.AcceptanceCriteria(t.Body))
+		if len(criteria) == 0 {
+			r, _ := errResult("%s has no acceptance criteria", t.ID)
+			return r, nil, nil
+		}
+
+		dir, err := verifyWorkDir(t.ID, defaultProject)
+		if err != nil {
+			r, _ := errResult("cannot resolve project directory: %v", err)
+			return r, nil, nil
+		}
+
+		results, err := ticket.RunVerify(ctx, criteria, dir)
+		if err != nil {
+			r, _ := errResult("cannot run verify commands: %v", err)
+			return r, nil, nil
+		}
+		report := ticket.NewVerifyReport(t.ID, dir, results)
+
+		// Record after the run so a store failure degrades to a reported
+		// warning instead of discarding the results.
+		t.Body = ticket.UpdateSection(t.Body, "Test Results", ticket.FormatVerifyRecord(results, time.Now().UTC()))
+		if err := store.Update(t); err != nil {
+			report.RecordError = fmt.Sprintf("failed to record verify results: %v", err)
+		}
+
+		r, err := jsonResult(report)
+		return r, nil, err
+	})
+}
+
+// verifyWorkDir resolves the repo directory a ticket's verify commands run in
+// from the project config. Verify must never run in an arbitrary directory, so
+// an unresolvable project path is an error.
+func verifyWorkDir(id, defaultProject string) (string, error) {
+	proj, _ := ticket.ParseNamespacedID(id)
+	if proj == "" {
+		proj = defaultProject
+	}
+	if proj == "" {
+		return "", fmt.Errorf("ticket ID %q has no project namespace", id)
+	}
+	cfg, err := project.Load()
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+	p, ok := cfg.Projects[proj]
+	if !ok || p.Path == "" {
+		return "", fmt.Errorf("project %q has no configured path", proj)
+	}
+	return p.Path, nil
 }
 
 func registerStoreInfo(server *mcp.Server, centralRoot string) {

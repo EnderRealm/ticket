@@ -138,6 +138,7 @@ Viewing:
   ls|list [filters]          List tickets (default: workflow grouped)
   frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
+  verify <id>                Run the ticket's acceptance-criteria verify commands
 
 Creating & Editing:
   create [title] [options]   Create ticket
@@ -209,6 +210,38 @@ Tickets use a simple status model:
 | epic | Container for related features |
 | feature | New functionality |
 | bug | Defect fix |
+
+### Verifiable Acceptance Criteria
+
+Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bullets. A criterion can declare the shell command that checks it on a following line indented by at least two spaces:
+
+```markdown
+## Acceptance Criteria
+
+- Frontier excludes blocked tickets.
+  verify: go test ./pkg/ticket -run TestFrontier
+- Docs updated.
+```
+
+`tk verify <id>` runs each declared command with `sh -c` in the ticket's project directory (from the project's configured `path`, falling back to the working directory), sequentially, with a 120s timeout per command — a command that overruns is a failure. Criteria with no `verify:` line are reported as `unverified`, not failed.
+
+```bash
+tk verify 5c4
+# verifying nw-5c46 in /Users/you/code/myproject
+# PASS (exit 0) Frontier excludes blocked tickets.
+# UNVERIFIED Docs updated.
+# 1 pass, 0 fail, 1 unverified
+```
+
+The command exits non-zero if any criterion failed, and records the run in the ticket's `## Test Results` section (replacing the previous record):
+
+```
+verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 1 unverified
+- PASS (exit 0): Frontier excludes blocked tickets.
+- UNVERIFIED: Docs updated.
+```
+
+`tk verify --json` and the `ticket_verify` MCP tool return the same results structured, including each command's exit code and captured output (capped at 4KB per criterion). The MCP tool executes the commands on the server host and requires the ticket's project to have a configured path.
 
 ### Filter Flags
 

@@ -25,6 +25,17 @@ Viewing:
   ls|list [filters]          List tickets (default: workflow grouped)
   frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
+  verify <id>                Run the ticket's acceptance-criteria verify commands
+
+  A criterion declares its check on an indented continuation line:
+
+    - Frontier excludes blocked tickets.
+      verify: go test ./pkg/ticket -run TestFrontier
+    - Docs updated.
+
+  Each command runs with sh -c in the project directory (120s timeout).
+  Criteria with no command are reported unverified. Results are recorded
+  in the ticket's Test Results section; exit is non-zero on any failure.
 
 Creating & Editing:
   create [title] [options]   Create ticket
