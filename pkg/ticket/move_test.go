@@ -1,7 +1,9 @@
 package ticket
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,13 +83,13 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 		t.Error("missing provenance note on moved ticket")
 	}
 
-	// Original should be done.
+	// Original should be closed — it left, it did not complete here.
 	orig, err := src.Get(original.ID)
 	if err != nil {
 		t.Fatalf("get original: %v", err)
 	}
-	if orig.Status != StatusDone {
-		t.Errorf("original status: got %q, want %q", orig.Status, StatusDone)
+	if orig.Status != StatusClosed {
+		t.Errorf("original status: got %q, want %q", orig.Status, StatusClosed)
 	}
 }
 
@@ -378,6 +380,154 @@ func TestCollectDescendantsTerminatesOnParentCycle(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("collectDescendants did not terminate on a parent cycle")
+	}
+}
+
+func TestMoveRecursiveEpicWithNonTerminalChildren(t *testing.T) {
+	// An epic worth moving to another repo is one that still has open work in
+	// it. The whole tree must land, not trip the epic-done guard on the root.
+	src := &FileStore{Dir: t.TempDir()}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "live-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "live-open-0002", TypeFeature, StatusOpen, "live-epic-0001")
+	mkMovable(t, src, "live-ready-0003", TypeFeature, StatusReady, "live-epic-0001")
+	mkMovable(t, src, "live-backlog-0004", TypeFeature, StatusBacklog, "live-epic-0001")
+
+	results, err := MoveTicket(src, dst, "live-epic-0001", true)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("moved %d tickets, want 4", len(results))
+	}
+
+	dstTickets, err := dst.List()
+	if err != nil {
+		t.Fatalf("List target: %v", err)
+	}
+	if len(dstTickets) != 4 {
+		t.Errorf("target holds %d tickets, want 4: %v", len(dstTickets), ids(dstTickets))
+	}
+	for _, r := range results {
+		orig, err := src.Get(r.OldID)
+		if err != nil {
+			t.Fatalf("Get source %s: %v", r.OldID, err)
+		}
+		if orig.Status != StatusClosed {
+			t.Errorf("source %s = %q, want %q — it left, it did not complete", r.OldID, orig.Status, StatusClosed)
+		}
+	}
+}
+
+func TestMoveRecursiveFullyClosedEpic(t *testing.T) {
+	// The case that already worked keeps working, modulo the marker status.
+	src := &FileStore{Dir: t.TempDir()}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "shut-epic-0001", TypeEpic, StatusClosed, "")
+	mkMovable(t, src, "shut-child-0002", TypeFeature, StatusClosed, "shut-epic-0001")
+
+	results, err := MoveTicket(src, dst, "shut-epic-0001", true)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("moved %d tickets, want 2", len(results))
+	}
+	for _, r := range results {
+		moved, err := dst.Get(r.NewID)
+		if err != nil {
+			t.Fatalf("Get moved %s: %v", r.NewID, err)
+		}
+		if moved.Status != StatusBacklog {
+			t.Errorf("target %s = %q, want %q", r.NewID, moved.Status, StatusBacklog)
+		}
+		orig, err := src.Get(r.OldID)
+		if err != nil {
+			t.Fatalf("Get source %s: %v", r.OldID, err)
+		}
+		if orig.Status != StatusClosed {
+			t.Errorf("source %s = %q, want %q", r.OldID, orig.Status, StatusClosed)
+		}
+	}
+}
+
+func TestMoveDoesNotCompleteParentStayingBehind(t *testing.T) {
+	// A ticket that moves away has not completed, so an epic left behind must
+	// not roll up to done when its last non-terminal child leaves the repo.
+	src := &FileStore{Dir: t.TempDir()}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "stay-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "stay-child-0002", TypeFeature, StatusOpen, "stay-epic-0001")
+
+	if _, err := MoveTicket(src, dst, "stay-child-0002", false); err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+
+	epic, err := src.Get("stay-epic-0001")
+	if err != nil {
+		t.Fatalf("Get epic: %v", err)
+	}
+	if epic.Status != StatusOpen {
+		t.Errorf("epic left behind = %q, want %q — its child moved away, it did not finish", epic.Status, StatusOpen)
+	}
+}
+
+func TestMovePartialFailureReportsWhatLanded(t *testing.T) {
+	// The move is not atomic. When the source write fails after the target
+	// write, the caller needs the completed moves and the name of the target
+	// copy whose source is still open — that pair is what reconciling needs.
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only file mode this test relies on")
+	}
+	src := &FileStore{Dir: t.TempDir()}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "part-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "part-child-0002", TypeFeature, StatusOpen, "part-epic-0001")
+
+	childFile := filepath.Join(src.Dir, "part-child-0002.md")
+	if err := os.Chmod(childFile, 0o444); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(childFile, 0o644) })
+
+	results, moveErr := MoveTicket(src, dst, "part-epic-0001", true)
+	if moveErr == nil {
+		t.Fatal("MoveTicket succeeded, want a failure closing the read-only child")
+	}
+	if len(results) != 1 || results[0].OldID != "part-epic-0001" {
+		t.Fatalf("completed = %v, want only the epic — the child never closed", results)
+	}
+
+	child, err := src.Get("part-child-0002")
+	if err != nil {
+		t.Fatalf("Get source child: %v", err)
+	}
+	if child.Status != StatusOpen {
+		t.Fatalf("source child = %q, want %q — the write was supposed to fail", child.Status, StatusOpen)
+	}
+
+	dstTickets, err := dst.List()
+	if err != nil {
+		t.Fatalf("List target: %v", err)
+	}
+	if len(dstTickets) != 2 {
+		t.Fatalf("target holds %d tickets, want 2: %v", len(dstTickets), ids(dstTickets))
+	}
+	var orphan string
+	for _, dt := range dstTickets {
+		if dt.ID != results[0].NewID {
+			orphan = dt.ID
+		}
+	}
+	if !strings.Contains(moveErr.Error(), orphan) {
+		t.Errorf("error %q does not name %s, the target copy left behind", moveErr, orphan)
+	}
+	if !strings.Contains(moveErr.Error(), "part-child-0002") {
+		t.Errorf("error %q does not name the source ticket left open", moveErr)
 	}
 }
 

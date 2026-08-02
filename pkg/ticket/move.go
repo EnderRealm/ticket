@@ -17,6 +17,11 @@ type MoveResult struct {
 
 // MoveTicket moves a single ticket from src store to dst store.
 // The ticket is closed in src with a note, and created in dst with a new ID.
+//
+// The move is not atomic and nothing is rolled back on failure: the results
+// for the tickets that completed (created in dst and closed in src) are
+// returned alongside the error, and the error names any ticket already
+// written to dst whose source copy is still open, so it can be reconciled.
 func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, error) {
 	srcDir, err := filepath.Abs(src.Dir)
 	if err != nil {
@@ -141,7 +146,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 
 		// Create in target.
 		if err := dst.Create(newTicket); err != nil {
-			return nil, fmt.Errorf("creating %s in target: %w", newID, err)
+			return results, fmt.Errorf("creating %s in target: %w", newID, err)
 		}
 
 		// Close original with note.
@@ -156,9 +161,15 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			Timestamp: now,
 			Text:      closeNote,
 		})
-		t.Status = StatusDone
+		// Closed, not done: the ticket did not complete here, it left. Done
+		// would also assert an epic finished with its children still open,
+		// which the state guard rejects, and would roll a parent epic staying
+		// behind up to done when its last non-terminal child moves away.
+		t.Status = StatusClosed
 		if err := src.Update(t); err != nil {
-			return nil, fmt.Errorf("closing %s in source: %w", t.ID, err)
+			return results, fmt.Errorf("closing %s in source: %w. %s was written to %s but %s is still "+
+				"open here — delete the target copy or close it by hand",
+				t.ID, err, newID, dstRepo, t.ID)
 		}
 
 		results = append(results, result)
