@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -316,6 +317,102 @@ func TestFileStore_Resolve_ProjectPrefixOnlyID(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.Dir, "t-lone3.md")); err != nil {
 		t.Errorf("ticket file should still exist after Delete(\"proj/\"): %v", err)
+	}
+}
+
+// nestedStore returns a store two directories deep inside an outer temp dir, so
+// a traversal ID that escapes the store still lands somewhere the test owns.
+func nestedStore(t *testing.T, project string) (outer string, store *FileStore) {
+	t.Helper()
+	outer = t.TempDir()
+	store = NewProjectFileStore(filepath.Join(outer, "repo", ".tickets"), project)
+	if err := store.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	return outer, store
+}
+
+// assertInvalidError checks that err rejects wantValue by name under wantPrefix
+// ("invalid ticket ID" or "invalid project"), so a fix that errors for an
+// unrelated reason (e.g. "not found") does not pass.
+func assertInvalidError(t *testing.T, what, wantPrefix, wantValue string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s should fail", what)
+		return
+	}
+	if !strings.Contains(err.Error(), wantPrefix) || !strings.Contains(err.Error(), fmt.Sprintf("%q", wantValue)) {
+		t.Errorf("%s error = %q, want it to report %s %q", what, err, wantPrefix, wantValue)
+	}
+}
+
+func TestFileStore_Create_TraversalID(t *testing.T) {
+	outer, store := nestedStore(t, "")
+
+	// filepath.Join cleans traversal segments rather than failing, so an ID
+	// read from a hand-edited or synced ticket file resolves outside the store.
+	for _, id := range []string{"../../evil", "/etc/passwd", "a/b", "foo/"} {
+		assertInvalidError(t, fmt.Sprintf("Create(%q)", id), "invalid ticket ID", id, store.Create(sampleTicket(id)))
+	}
+
+	err := filepath.Walk(outer, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && !strings.HasPrefix(path, store.Dir+string(filepath.Separator)) {
+			t.Errorf("file written outside store: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", outer, err)
+	}
+}
+
+func TestFileStore_Update_TraversalID(t *testing.T) {
+	outer, store := nestedStore(t, "")
+
+	// Update writes only over an existing file, so the escape target has to
+	// exist for the traversal to be observable.
+	victim := filepath.Join(outer, "evil.md")
+	const sentinel = "untouched\n"
+	if err := os.WriteFile(victim, []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	assertInvalidError(t, `Update("../../evil")`, "invalid ticket ID", "../../evil", store.Update(sampleTicket("../../evil")))
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Errorf("file outside store was overwritten: %q", string(got))
+	}
+}
+
+func TestFileStore_Resolve_TraversalID(t *testing.T) {
+	// Get and Delete reach the filesystem through Resolve, whose exact-match
+	// branch builds the same path. A project store is the exposed one: it
+	// strips its own prefix, so "proj/../../evil" reaches the join, while a
+	// bare store rejects any ID with a slash as another project's.
+	outer, store := nestedStore(t, "proj")
+
+	victim := filepath.Join(outer, "evil.md")
+	raw := "---\nid: evil\nstatus: ready\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\n---\n# Secret\n\nBody.\n"
+	if err := os.WriteFile(victim, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	assertInvalidError(t, `Delete("proj/../../evil")`, "invalid ticket ID", "../../evil", store.Delete("proj/../../evil"))
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("file outside store was deleted: %v", err)
+	}
+
+	got, err := store.Get("proj/../../evil")
+	assertInvalidError(t, `Get("proj/../../evil")`, "invalid ticket ID", "../../evil", err)
+	if got != nil {
+		t.Errorf("Get read a ticket outside the store: %v", got)
 	}
 }
 

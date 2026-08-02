@@ -58,7 +58,10 @@ func (s *FileStore) Create(t *Ticket) error {
 	}
 
 	// Check for existing ticket with the same ID.
-	path := s.ticketFile(t.ID)
+	path, err := s.ticketFile(t.ID)
+	if err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("ticket %s already exists", t.ID)
 	}
@@ -69,7 +72,10 @@ func (s *FileStore) Create(t *Ticket) error {
 	// parent state explicitly. Propagation fires on Update.
 	const maxRetries = 5
 	for i := 0; i < maxRetries; i++ {
-		path = s.ticketFile(t.ID)
+		path, err = s.ticketFile(t.ID)
+		if err != nil {
+			return fmt.Errorf("create: %w", err)
+		}
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return s.writeTicket(t)
 		}
@@ -96,7 +102,10 @@ func (s *FileStore) Update(t *Ticket) error {
 		return fmt.Errorf("update: %w", err)
 	}
 	// Verify the file exists and read the previous status.
-	path := s.ticketFile(t.ID)
+	path, err := s.ticketFile(t.ID)
+	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("ticket %s not found", t.ID)
 	}
@@ -175,7 +184,10 @@ func (s *FileStore) Resolve(id string) (string, error) {
 	}
 
 	// Try exact match first.
-	exact := s.ticketFile(id)
+	exact, err := s.ticketFile(id)
+	if err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(exact); err == nil {
 		return exact, nil
 	}
@@ -212,8 +224,27 @@ func (s *FileStore) Resolve(id string) (string, error) {
 	}
 }
 
-func (s *FileStore) ticketFile(id string) string {
-	return filepath.Join(s.Dir, id+".md")
+// bareNameHint is the shared tail of the ID and project path guards. The
+// rejected value can come from a ticket file's id field or straight off the
+// command line, so it states the constraint without asserting a provenance.
+const bareNameHint = "must be a bare name with no path separators — check the id you passed or the id field in the ticket file it came from"
+
+// ticketFile maps a ticket ID to its file path. IDs reach it from ticket files
+// that tk did not necessarily write (hand-edited, synced, produced by another
+// tool), and filepath.Join cleans traversal segments instead of failing — so an
+// ID like "../../evil" would resolve outside s.Dir. Requiring the ID to equal
+// its own filepath.Base keeps it a single path element, and ".md" is appended
+// before the join so that element can never be "." or ".." either. Every path a
+// FileStore builds from a ticket ID goes through here, which bounds the filename
+// half; on a MultiStore the directory half comes from an ID's project prefix and
+// is bounded in storeFor. The bound is lexical — it constrains the path string,
+// not the inode it resolves to, so a symlinked ticket file inside the store
+// still redirects the write.
+func (s *FileStore) ticketFile(id string) (string, error) {
+	if id != filepath.Base(id) {
+		return "", fmt.Errorf("invalid ticket ID %q in %s: %s", id, s.Dir, bareNameHint)
+	}
+	return filepath.Join(s.Dir, id+".md"), nil
 }
 
 func (s *FileStore) readFile(path string) (*Ticket, error) {
@@ -248,6 +279,12 @@ func stampTimestamps(t *Ticket) {
 }
 
 func (s *FileStore) writeTicket(t *Ticket) error {
+	// Resolve the path before the stamping below, which mutates the caller's
+	// ticket: a rejected ID must not leave it looking as if it were persisted.
+	path, err := s.ticketFile(t.ID)
+	if err != nil {
+		return err
+	}
 	stampTimestamps(t)
 	// A landed ticket records the branch it landed on. Done at the same write
 	// choke point as the timestamps so CLI, MCP, and TUI callers all get it;
@@ -259,7 +296,7 @@ func (s *FileStore) writeTicket(t *Ticket) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.ticketFile(t.ID), data, 0o644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 // FindTicketsDir walks up from startDir looking for a .tickets/ subdirectory.

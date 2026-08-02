@@ -134,6 +134,24 @@ func TestResolveNameRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestValidName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"ticket", true},
+		{".", false},
+		{"..", false},
+		{"", false},
+		{"foo/bar", false},
+	}
+	for _, tc := range cases {
+		if got := ValidName(tc.name); got != tc.want {
+			t.Errorf("ValidName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestProjectFromDir(t *testing.T) {
 	dir := t.TempDir()
 	name, ok := projectFromDir(dir)

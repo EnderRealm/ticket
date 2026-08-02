@@ -134,13 +134,24 @@ func gitRoot(cwd string) (string, bool) {
 	return filepath.Clean(abs), true
 }
 
-// sanitizeProjectName rejects names containing path separators or ".." to
-// prevent path traversal when used in filepath.Join(centralRoot, name).
-func sanitizeProjectName(name string) string {
+// ValidName reports whether a project name is safe to join into a filesystem
+// path. Names containing path separators or ".." traverse out of the root they
+// are joined into, and filepath.Join cleans those segments instead of failing;
+// "" and "." collapse onto the root itself, rooting a project store at a
+// directory no project owns. Names reach here from config, git remotes, and
+// directory basenames as well as from the project half of a namespaced ticket
+// ID.
+func ValidName(name string) bool {
 	if strings.Contains(name, "/") || strings.Contains(name, string(os.PathSeparator)) {
-		return ""
+		return false
 	}
-	if name == ".." || strings.HasPrefix(name, "../") || strings.HasSuffix(name, "/..") {
+	return name != "" && name != "." && name != ".."
+}
+
+// sanitizeProjectName returns the name if it is safe to join into a path,
+// otherwise the empty string.
+func sanitizeProjectName(name string) string {
+	if !ValidName(name) {
 		return ""
 	}
 	return name

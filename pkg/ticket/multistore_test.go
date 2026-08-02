@@ -217,6 +217,46 @@ func TestMultiStoreGetEmptyID(t *testing.T) {
 	}
 }
 
+func TestMultiStore_TraversalProject(t *testing.T) {
+	// The project half of a namespaced ID is joined into the store root, so
+	// "../evil" roots the per-project store one level above it and the bare
+	// remainder "evil" then passes the FileStore's own ID check. Nest the root
+	// inside an outer temp dir so the escape lands somewhere the test owns.
+	outer := t.TempDir()
+	root := filepath.Join(outer, "tickets")
+	if err := os.MkdirAll(filepath.Join(root, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ms := NewMultiStore(root)
+
+	victim := filepath.Join(outer, "evil.md")
+	const sentinel = "---\nid: evil\nstatus: ready\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\n---\n# Secret\n\nBody.\n"
+	if err := os.WriteFile(victim, []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	got, err := ms.Get("../evil")
+	assertInvalidError(t, `Get("../evil")`, "invalid project", "..", err)
+	if got != nil {
+		t.Errorf("Get read a ticket outside the store: %v", got)
+	}
+
+	assertInvalidError(t, `Update("../evil")`, "invalid project", "..", ms.Update(sampleTicket("../evil")))
+	assertInvalidError(t, `Delete("../evil")`, "invalid project", "..", ms.Delete("../evil"))
+	assertInvalidError(t, `Create("../planted")`, "invalid project", "..", ms.Create(sampleTicket("../planted")))
+
+	if _, err := os.Stat(filepath.Join(outer, "planted.md")); !os.IsNotExist(err) {
+		t.Errorf("file created outside store: %v", err)
+	}
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(data) != sentinel {
+		t.Errorf("file outside store was overwritten: %q", string(data))
+	}
+}
+
 func TestMultiStoreEmptyRoot(t *testing.T) {
 	ms, _ := testMultiStore(t)
 	tickets, err := ms.List()

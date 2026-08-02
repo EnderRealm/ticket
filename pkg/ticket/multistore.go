@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/EnderRealm/ticket/v7/internal/project"
 )
 
 var _ Store = (*MultiStore)(nil)
@@ -25,13 +27,17 @@ func NewMultiStore(rootDir string) *MultiStore {
 // Get retrieves a ticket by namespaced ("project/id") or bare ID.
 // Bare IDs are resolved across all projects; ambiguous matches return an error.
 func (m *MultiStore) Get(id string) (*Ticket, error) {
-	project, ticketID := ParseNamespacedID(id)
-	if project != "" {
-		t, err := m.storeFor(project).Get(ticketID)
+	proj, ticketID := ParseNamespacedID(id)
+	if proj != "" {
+		store, err := m.storeFor(proj)
 		if err != nil {
-			return nil, fmt.Errorf("project %s: %w", project, err)
+			return nil, err
 		}
-		t.ID = FormatNamespacedID(project, t.ID)
+		t, err := store.Get(ticketID)
+		if err != nil {
+			return nil, fmt.Errorf("project %s: %w", proj, err)
+		}
+		t.ID = FormatNamespacedID(proj, t.ID)
 		return t, nil
 	}
 
@@ -49,7 +55,11 @@ func (m *MultiStore) List() ([]*Ticket, error) {
 
 	var all []*Ticket
 	for _, proj := range projects {
-		tickets, err := m.storeFor(proj).List()
+		store, err := m.storeFor(proj)
+		if err != nil {
+			continue
+		}
+		tickets, err := store.List()
 		if err != nil {
 			continue
 		}
@@ -63,27 +73,35 @@ func (m *MultiStore) List() ([]*Ticket, error) {
 
 // Create writes a new ticket. The ticket ID must be namespaced ("project/id").
 func (m *MultiStore) Create(t *Ticket) error {
-	project, ticketID := ParseNamespacedID(t.ID)
-	if project == "" {
+	proj, ticketID := ParseNamespacedID(t.ID)
+	if proj == "" {
 		return fmt.Errorf("project is required for MultiStore.Create — use project/ticket-id format")
 	}
-	t.ID = ticketID
-	if err := m.storeFor(project).Create(t); err != nil {
-		t.ID = FormatNamespacedID(project, t.ID)
-		return fmt.Errorf("project %s: %w", project, err)
+	store, err := m.storeFor(proj)
+	if err != nil {
+		return err
 	}
-	t.ID = FormatNamespacedID(project, t.ID)
+	t.ID = ticketID
+	if err := store.Create(t); err != nil {
+		t.ID = FormatNamespacedID(proj, t.ID)
+		return fmt.Errorf("project %s: %w", proj, err)
+	}
+	t.ID = FormatNamespacedID(proj, t.ID)
 	return nil
 }
 
 // Update writes a ticket back to disk. Accepts namespaced or bare IDs.
 // Bare IDs are resolved across all projects.
 func (m *MultiStore) Update(t *Ticket) error {
-	project, ticketID := ParseNamespacedID(t.ID)
-	if project != "" {
+	proj, ticketID := ParseNamespacedID(t.ID)
+	if proj != "" {
+		store, err := m.storeFor(proj)
+		if err != nil {
+			return err
+		}
 		t.ID = ticketID
-		err := m.storeFor(project).Update(t)
-		t.ID = FormatNamespacedID(project, t.ID)
+		err = store.Update(t)
+		t.ID = FormatNamespacedID(proj, t.ID)
 		return err
 	}
 
@@ -95,8 +113,12 @@ func (m *MultiStore) Update(t *Ticket) error {
 		return err
 	}
 	ownerProject, _ := ParseNamespacedID(matched.ID)
+	store, err := m.storeFor(ownerProject)
+	if err != nil {
+		return err
+	}
 	t.ID = ticketID
-	err = m.storeFor(ownerProject).Update(t)
+	err = store.Update(t)
 	t.ID = FormatNamespacedID(ownerProject, t.ID)
 	return err
 }
@@ -104,9 +126,13 @@ func (m *MultiStore) Update(t *Ticket) error {
 // Delete removes a ticket by namespaced or bare ID.
 // Bare IDs are resolved across all projects.
 func (m *MultiStore) Delete(id string) error {
-	project, ticketID := ParseNamespacedID(id)
-	if project != "" {
-		return m.storeFor(project).Delete(ticketID)
+	proj, ticketID := ParseNamespacedID(id)
+	if proj != "" {
+		store, err := m.storeFor(proj)
+		if err != nil {
+			return err
+		}
+		return store.Delete(ticketID)
 	}
 
 	// Bare ID — find which project owns it.
@@ -117,7 +143,11 @@ func (m *MultiStore) Delete(id string) error {
 		return err
 	}
 	ownerProject, bareID := ParseNamespacedID(matched.ID)
-	return m.storeFor(ownerProject).Delete(bareID)
+	store, err := m.storeFor(ownerProject)
+	if err != nil {
+		return err
+	}
+	return store.Delete(bareID)
 }
 
 // projects returns the list of project names (subdirectory names under rootDir).
@@ -139,9 +169,16 @@ func (m *MultiStore) projects() ([]string, error) {
 	return projects, nil
 }
 
-// storeFor returns a FileStore for the given project.
-func (m *MultiStore) storeFor(project string) *FileStore {
-	return NewProjectFileStore(filepath.Join(m.rootDir, project), project)
+// storeFor returns a FileStore for the given project. The project is the
+// directory half of every path this store reaches, and it arrives from the
+// prefix of a ticket ID that tk did not necessarily write — so a name that
+// traverses out of rootDir is rejected here, the same way ticketFile rejects a
+// traversing ID for the filename half.
+func (m *MultiStore) storeFor(proj string) (*FileStore, error) {
+	if !project.ValidName(proj) {
+		return nil, fmt.Errorf("invalid project %q in %s: %s", proj, m.rootDir, bareNameHint)
+	}
+	return NewProjectFileStore(filepath.Join(m.rootDir, proj), proj), nil
 }
 
 // resolveAcrossProjects searches all project stores for a bare ticket ID.
@@ -166,7 +203,11 @@ func (m *MultiStore) resolveAcrossProjects(bareID string, getter func(*FileStore
 	var matches []match
 
 	for _, proj := range projects {
-		t, err := getter(m.storeFor(proj), bareID)
+		store, err := m.storeFor(proj)
+		if err != nil {
+			continue
+		}
+		t, err := getter(store, bareID)
 		if err != nil {
 			continue
 		}
