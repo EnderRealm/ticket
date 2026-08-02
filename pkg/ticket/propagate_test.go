@@ -12,6 +12,30 @@ func mkEpic(id string, status Status, parent string) *Ticket {
 	return t
 }
 
+// multiDepStore is depStore's MultiStore twin: it creates the given tickets
+// (namespaced IDs) across the named projects.
+func multiDepStore(t *testing.T, projects []string, tickets ...*Ticket) *MultiStore {
+	t.Helper()
+	ms, _ := testMultiStore(t, projects...)
+	for _, tk := range tickets {
+		if err := ms.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", tk.ID, err)
+		}
+	}
+	return ms
+}
+
+// setStatus reads a ticket, moves it to status, and writes it back.
+func setStatus(t *testing.T, s Store, id string, status Status) error {
+	t.Helper()
+	tk, err := s.Get(id)
+	if err != nil {
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	tk.Status = status
+	return s.Update(tk)
+}
+
 // ─── ValidateStateTransition ────────────────────────────────────────────────
 
 func TestValidate_EpicDoneWithOpenChildBlocked(t *testing.T) {
@@ -234,5 +258,156 @@ func TestPropagate_NonEpicParentIgnored(t *testing.T) {
 	parent, _ := s.Get("feat")
 	if parent.Status != StatusBacklog {
 		t.Errorf("feature parent status = %q, want %q (no propagation to non-epic)", parent.Status, StatusBacklog)
+	}
+}
+
+// ─── MultiStore (namespaced parents) ───────────────────────────────────────
+
+func TestPropagationThroughMultiStore(t *testing.T) {
+	s := multiDepStore(t, []string{"proj"},
+		mkEpic("proj/epic-1111", StatusBacklog, ""),
+		mkWithParent("proj/child-2222", StatusOpen, "proj/epic-1111"),
+	)
+	if err := setStatus(t, s, "proj/child-2222", StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	epic, err := s.Get("proj/epic-1111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != StatusDone {
+		t.Errorf("epic status = %q, want %q", epic.Status, StatusDone)
+	}
+}
+
+func TestPropagate_ChildAdvancesEpicThroughMultiStore(t *testing.T) {
+	s := multiDepStore(t, []string{"proj"},
+		mkEpic("proj/epic-9999", StatusBacklog, ""),
+		mkWithParent("proj/child-aaaa", StatusBacklog, "proj/epic-9999"),
+	)
+	if err := setStatus(t, s, "proj/child-aaaa", StatusReady); err != nil {
+		t.Fatal(err)
+	}
+	epic, err := s.Get("proj/epic-9999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != StatusReady {
+		t.Errorf("epic status = %q, want %q", epic.Status, StatusReady)
+	}
+
+	if err := setStatus(t, s, "proj/child-aaaa", StatusOpen); err != nil {
+		t.Fatal(err)
+	}
+	epic, err = s.Get("proj/epic-9999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != StatusOpen {
+		t.Errorf("epic status = %q, want %q", epic.Status, StatusOpen)
+	}
+}
+
+func TestPropagate_ChildDoneWithOpenSiblingThroughMultiStore(t *testing.T) {
+	// Two namespaced children, one still open. If allChildrenTerminal misses
+	// the namespace it sees no children at all, calls the epic done, and the
+	// epic guard then rejects that write — surfacing as a confusing error out
+	// of the child's own Update.
+	s := multiDepStore(t, []string{"proj"},
+		mkEpic("proj/epic-bbbb", StatusOpen, ""),
+		mkWithParent("proj/child-cccc", StatusOpen, "proj/epic-bbbb"),
+		mkWithParent("proj/child-dddd", StatusOpen, "proj/epic-bbbb"),
+	)
+	if err := setStatus(t, s, "proj/child-cccc", StatusDone); err != nil {
+		t.Fatalf("marking one of two children done should succeed: %v", err)
+	}
+	epic, err := s.Get("proj/epic-bbbb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != StatusOpen {
+		t.Errorf("epic status = %q, want %q (open sibling remains)", epic.Status, StatusOpen)
+	}
+}
+
+func TestEpicGuardThroughMultiStore(t *testing.T) {
+	s := multiDepStore(t, []string{"proj"},
+		mkEpic("proj/epic-3333", StatusBacklog, ""),
+		mkWithParent("proj/child-4444", StatusOpen, "proj/epic-3333"),
+	)
+	err := setStatus(t, s, "proj/epic-3333", StatusDone)
+	if err == nil {
+		t.Fatal("expected error marking epic done with open child, got nil")
+	}
+	if !strings.Contains(err.Error(), "child-4444") {
+		t.Errorf("error should name child child-4444, got: %v", err)
+	}
+}
+
+func TestPropagate_CascadesUpNestedEpicsThroughMultiStore(t *testing.T) {
+	// Each level's parent is read fresh from disk still namespaced, so this
+	// only passes if the store tolerates the prefix at every recursion level.
+	s := multiDepStore(t, []string{"proj"},
+		mkEpic("proj/e-top-1111", StatusBacklog, ""),
+		mkEpic("proj/e-mid-2222", StatusBacklog, "proj/e-top-1111"),
+		mkWithParent("proj/c-3333", StatusOpen, "proj/e-mid-2222"),
+	)
+	if err := setStatus(t, s, "proj/c-3333", StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	mid, err := s.Get("proj/e-mid-2222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid.Status != StatusDone {
+		t.Errorf("e-mid status = %q, want %q", mid.Status, StatusDone)
+	}
+	top, err := s.Get("proj/e-top-1111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if top.Status != StatusDone {
+		t.Errorf("e-top status = %q, want %q", top.Status, StatusDone)
+	}
+}
+
+func TestPropagate_BareStoredParentThroughMultiStore(t *testing.T) {
+	// Tickets written before the namespacing rollout record a bare parent.
+	s := multiDepStore(t, []string{"proj"},
+		mkEpic("proj/epic-5555", StatusBacklog, ""),
+		mkWithParent("proj/child-6666", StatusOpen, "epic-5555"),
+	)
+	if err := setStatus(t, s, "proj/child-6666", StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	epic, err := s.Get("proj/epic-5555")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != StatusDone {
+		t.Errorf("epic status = %q, want %q", epic.Status, StatusDone)
+	}
+}
+
+func TestPropagate_CrossProjectParentDoesNotResolve(t *testing.T) {
+	// Both projects hold an epic-7777; the child in alpha points at beta's.
+	// Neither may move: alpha's store must not mis-resolve the beta prefix.
+	s := multiDepStore(t, []string{"alpha", "beta"},
+		mkEpic("alpha/epic-7777", StatusBacklog, ""),
+		mkEpic("beta/epic-7777", StatusBacklog, ""),
+		mkWithParent("alpha/child-8888", StatusOpen, "beta/epic-7777"),
+	)
+	if err := setStatus(t, s, "alpha/child-8888", StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"alpha/epic-7777", "beta/epic-7777"} {
+		epic, err := s.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if epic.Status != StatusBacklog {
+			t.Errorf("%s status = %q, want %q (cross-project parent must not propagate)", id, epic.Status, StatusBacklog)
+		}
 	}
 }

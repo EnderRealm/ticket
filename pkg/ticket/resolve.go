@@ -28,5 +28,5 @@ func ResolveStoreForRepo(repoDir string) (Store, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return NewFileStore(dir), name, nil
+	return NewProjectFileStore(dir, name), name, nil
 }

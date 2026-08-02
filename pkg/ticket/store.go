@@ -20,13 +20,22 @@ type Store interface {
 var _ Store = (*FileStore)(nil)
 
 // FileStore provides filesystem-backed CRUD operations for tickets.
+// Project is the namespace this store's tickets live under; it is empty for
+// single-project stores that never see namespaced IDs.
 type FileStore struct {
-	Dir string
+	Dir     string
+	Project string
 }
 
 // NewFileStore creates a FileStore rooted at the given directory.
 func NewFileStore(dir string) *FileStore {
 	return &FileStore{Dir: dir}
+}
+
+// NewProjectFileStore creates a FileStore rooted at the given directory that
+// also answers to IDs namespaced under project.
+func NewProjectFileStore(dir, project string) *FileStore {
+	return &FileStore{Dir: dir, Project: project}
 }
 
 // EnsureDir creates the tickets directory if it doesn't exist.
@@ -143,10 +152,24 @@ func (s *FileStore) List() ([]*Ticket, error) {
 }
 
 // Resolve finds the full file path for an exact or partial ticket ID.
+// An ID namespaced under this store's own project resolves against its bare
+// remainder — parent, dep, and link fields written through MultiStore carry
+// the prefix, and propagation reads them back at every level of the chain.
 // Returns an error if the ID is ambiguous (multiple matches) or not found.
 func (s *FileStore) Resolve(id string) (string, error) {
+	// A prefix naming a different project is rejected, not stripped: stripping
+	// it would resolve against a same-suffix ticket in this project and mutate
+	// the wrong one. Cross-project references simply do not resolve here.
+	if project, bare := ParseNamespacedID(id); project != "" {
+		if project != s.Project {
+			return "", fmt.Errorf("ticket %s not found", id)
+		}
+		id = bare
+	}
+
 	// Reject empty/whitespace IDs so partial matching does not silently match
 	// every ticket (in a single-ticket store this resolves to the lone ticket).
+	// Checked after the strip so a prefix-only "project/" is rejected too.
 	if strings.TrimSpace(id) == "" {
 		return "", fmt.Errorf("id is required")
 	}

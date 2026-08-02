@@ -205,6 +205,61 @@ func TestWatchCycle_AutoCloseOutputs(t *testing.T) {
 	}
 }
 
+func TestWatchCycle_AutoClosePropagatesToNamespacedParent(t *testing.T) {
+	// The watcher builds a project-scoped store for central-store projects, so
+	// an auto-close must roll its parent epic up even though the central store
+	// records the parent namespaced.
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	ticketDir := t.TempDir()
+	store := ticket.NewProjectFileStore(ticketDir, "propagate-test")
+
+	epic := &ticket.Ticket{
+		ID:       ticket.GenerateID("Parent epic"),
+		Title:    "Parent epic",
+		Type:     ticket.TypeEpic,
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(epic); err != nil {
+		t.Fatal(err)
+	}
+	child := &ticket.Ticket{
+		ID:       ticket.GenerateID("Child ticket"),
+		Title:    "Child ticket",
+		Type:     ticket.TypeFeature,
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+		Parent:   "propagate-test/" + epic.ID,
+	}
+	if err := store.Create(child); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "fix.go", "package fix\n", "Closes: ["+child.ID+"] Landed the last child")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("propagate-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range result.Warnings {
+		t.Logf("warning: %s", w)
+	}
+	if result.Closed != 1 {
+		t.Fatalf("Closed = %d, want 1", result.Closed)
+	}
+
+	updated, err := store.Get(epic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("epic status = %q, want done (auto-close must propagate to a namespaced parent)", updated.Status)
+	}
+}
+
 func TestWatchCycle_AutoCloseSkipsUnserializableBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

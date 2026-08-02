@@ -333,7 +333,7 @@ func ValidateStateTransition(store Store, t *Ticket) error {
 		if child.ID == t.ID {
 			continue
 		}
-		if child.Parent != t.ID {
+		if !sameTicketID(child.Parent, t.ID) {
 			continue
 		}
 		if !isTerminal(child) {
@@ -413,7 +413,7 @@ func allChildrenTerminal(store Store, parentID string) bool {
 	}
 	hadChild := false
 	for _, t := range tickets {
-		if t.Parent != parentID {
+		if !sameTicketID(t.Parent, parentID) {
 			continue
 		}
 		hadChild = true

@@ -226,6 +226,33 @@ func TestFileStore_Resolve_NotFound(t *testing.T) {
 	}
 }
 
+func TestFileStore_Resolve_NamespacedID(t *testing.T) {
+	proj := NewProjectFileStore(t.TempDir(), "alpha")
+	if err := proj.Create(sampleTicket("t-ns01")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	path, err := proj.Resolve("alpha/t-ns01")
+	if err != nil {
+		t.Fatalf("Resolve own-project prefix: %v", err)
+	}
+	if filepath.Base(path) != "t-ns01.md" {
+		t.Errorf("path = %q, want t-ns01.md", filepath.Base(path))
+	}
+
+	if _, err := proj.Resolve("beta/t-ns01"); err == nil {
+		t.Error("Resolve of another project's prefix should fail")
+	}
+
+	bare, _ := testStore(t)
+	if err := bare.Create(sampleTicket("t-ns01")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := bare.Resolve("alpha/t-ns01"); err == nil {
+		t.Error("Resolve of a namespaced ID with no store project should fail")
+	}
+}
+
 func TestFileStore_Get_EmptyID(t *testing.T) {
 	store, _ := testStore(t)
 	// Single-ticket store is the regression scenario: partial matching would
@@ -262,6 +289,33 @@ func TestFileStore_Delete_EmptyID(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.Dir, "t-lone2.md")); err != nil {
 		t.Errorf("lone ticket file should still exist after Delete(\"\"): %v", err)
+	}
+}
+
+func TestFileStore_Resolve_ProjectPrefixOnlyID(t *testing.T) {
+	// "proj/" strips to an empty bare ID, so the empty-ID guard has to run
+	// after the strip: with one ticket it would otherwise resolve to the lone
+	// ticket, with several it would report a bogus ambiguous match.
+	store := NewProjectFileStore(t.TempDir(), "proj")
+	for i, id := range []string{"t-lone3", "t-lone4"} {
+		if err := store.Create(sampleTicket(id)); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err := store.Resolve("proj/")
+		if err == nil {
+			t.Fatalf("Resolve(\"proj/\") with %d ticket(s) should fail", i+1)
+		}
+		if !strings.Contains(err.Error(), "id is required") {
+			t.Errorf("Resolve(\"proj/\") error = %q, want to contain %q", err.Error(), "id is required")
+		}
+	}
+
+	// Delete resolves through the same guard.
+	if err := store.Delete("proj/"); err == nil {
+		t.Error("Delete(\"proj/\") should fail")
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, "t-lone3.md")); err != nil {
+		t.Errorf("ticket file should still exist after Delete(\"proj/\"): %v", err)
 	}
 }
 

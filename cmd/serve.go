@@ -93,7 +93,10 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 						log.Printf("watch: %s: resolve store: %v", name, err)
 						continue
 					}
-					store = ticket.NewFileStore(dir)
+					// Project-scoped: auto-close writes go through the same
+					// propagation hooks as MCP writes and must resolve the
+					// namespaced parent/dep IDs the central store records.
+					store = ticket.NewProjectFileStore(dir, name)
 				} else if entry.Path != "" {
 					store = ticket.NewFileStore(filepath.Join(entry.Path, ".tickets"))
 				}

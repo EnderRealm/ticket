@@ -141,7 +141,7 @@ func (m *MultiStore) projects() ([]string, error) {
 
 // storeFor returns a FileStore for the given project.
 func (m *MultiStore) storeFor(project string) *FileStore {
-	return NewFileStore(filepath.Join(m.rootDir, project))
+	return NewProjectFileStore(filepath.Join(m.rootDir, project), project)
 }
 
 // resolveAcrossProjects searches all project stores for a bare ticket ID.
