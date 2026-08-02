@@ -75,6 +75,38 @@ func TestCreateTicket(t *testing.T) {
 	}
 }
 
+func TestCreateWithRepoResolvesCentralProject(t *testing.T) {
+	// A repo with no .tickets/ of its own resolves through the central store
+	// config, so the ticket lands in that project's central directory.
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	repoDir := t.TempDir()
+	projectDir := filepath.Join(root, "tickets", "beta")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta": {Path: repoDir, Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testServer(t)
+	id := createTicketID(t, session, map[string]any{
+		"title": "Central repo override",
+		"type":  "feature",
+		"repo":  repoDir,
+	})
+
+	if _, err := os.Stat(filepath.Join(projectDir, id+".md")); err != nil {
+		t.Errorf("ticket %s did not land in the central project dir %s: %v", id, projectDir, err)
+	}
+}
+
 func TestSearchRanksByRelevance(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

@@ -233,11 +233,26 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 	}
 }
 
+// indexByBareID indexes tickets by their namespace-stripped ID, the key form
+// nearestEpicAncestor requires. A map key can't tolerate the namespace mismatch
+// the way SameTicketID does, and the central store records children with a
+// namespaced parent while tickets written before the namespacing rollout record
+// it bare.
+func indexByBareID(tickets []*ticket.Ticket) map[string]*ticket.Ticket {
+	byID := make(map[string]*ticket.Ticket, len(tickets))
+	for _, t := range tickets {
+		_, bareID := ticket.ParseNamespacedID(t.ID)
+		byID[bareID] = t
+	}
+	return byID
+}
+
 // nearestEpicAncestor walks t's parent chain and returns the ID of the closest
 // epic ancestor, or "" if none. Handles missing parents and cycles defensively.
+// byID must come from indexByBareID.
 func nearestEpicAncestor(t *ticket.Ticket, byID map[string]*ticket.Ticket) string {
 	seen := make(map[string]bool)
-	cur := t.Parent
+	_, cur := ticket.ParseNamespacedID(t.Parent)
 	for cur != "" {
 		if seen[cur] {
 			return ""
@@ -250,7 +265,7 @@ func nearestEpicAncestor(t *ticket.Ticket, byID map[string]*ticket.Ticket) strin
 		if p.Type == ticket.TypeEpic {
 			return p.ID
 		}
-		cur = p.Parent
+		_, cur = ticket.ParseNamespacedID(p.Parent)
 	}
 	return ""
 }
@@ -264,10 +279,9 @@ func (m *dashboardModel) buildItems() {
 	//  - backlog hides any ticket with an epic anywhere up the chain,
 	//  - backlog shows epics as rollups with a descendant count,
 	//  - inbox/all hide epics themselves.
-	byID := make(map[string]*ticket.Ticket, len(m.all))
-	for _, t := range m.all {
-		byID[t.ID] = t
-	}
+	byID := indexByBareID(m.all)
+	// childCounts is keyed on the epic's stored ID, matching the lookup in
+	// renderRow — both read it off the same ticket.
 	childCounts := make(map[string]int)
 	for _, t := range m.all {
 		if t.Type == ticket.TypeEpic {

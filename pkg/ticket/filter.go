@@ -38,7 +38,7 @@ func Filter(tickets []*Ticket, opts ListOptions) []*Ticket {
 		if opts.Tag != "" && !hasTag(t.Tags, opts.Tag) {
 			continue
 		}
-		if opts.Parent != "" && t.Parent != opts.Parent {
+		if opts.Parent != "" && !SameTicketID(t.Parent, opts.Parent) {
 			continue
 		}
 		if opts.FieldKey != "" {

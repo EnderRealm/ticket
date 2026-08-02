@@ -281,27 +281,27 @@ type listResultJSON struct {
 	Limit   int                 `json:"limit"`
 }
 
-// resolveTicketsDirFromConfig resolves the tickets directory for a repo path
-// using the central store config. Returns ("", false) if the path doesn't match
-// a known central-mode project.
-func resolveTicketsDirFromConfig(repoPath string) (string, bool) {
+// resolveTicketsDirFromConfig resolves the tickets directory and project name
+// for a repo path using the central store config. Returns ("", "", false) if
+// the path doesn't match a known central-mode project.
+func resolveTicketsDirFromConfig(repoPath string) (string, string, bool) {
 	cfg, err := project.Load()
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	name, _ := project.ResolveName(cfg, repoPath, "")
 	if name == "" {
-		return "", false
+		return "", "", false
 	}
 	p, ok := cfg.Projects[name]
 	if !ok || p.Store != "central" {
-		return "", false
+		return "", "", false
 	}
 	dir, err := project.CentralProjectDir(name)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
-	return dir, true
+	return dir, name, true
 }
 
 // resolveProject returns the effective project: explicit arg > default > empty.
@@ -517,16 +517,19 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 				r, _ := errResult("invalid repo path: %v", err)
 				return r, nil, nil
 			}
+			// A local .tickets/ store never sees namespaced IDs; only a central
+			// project dir carries a project namespace.
+			name := ""
 			dir, ok := ticket.FindTicketsDir(abs)
 			if !ok {
 				// No .tickets/ dir — try central store config for this repo path.
-				dir, ok = resolveTicketsDirFromConfig(abs)
+				dir, name, ok = resolveTicketsDirFromConfig(abs)
 			}
 			if !ok {
 				r, _ := errResult("no ticket store found for %s", abs)
 				return r, nil, nil
 			}
-			targetStore = ticket.NewFileStore(dir)
+			targetStore = ticket.NewProjectFileStore(dir, name)
 		}
 
 		t := &ticket.Ticket{

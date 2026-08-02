@@ -25,7 +25,7 @@ func init() {
 
 func runShow(cmd *cobra.Command, args []string) error {
 	metadataOnly, _ := cmd.Flags().GetBool("metadata")
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	for i, id := range args {
 		if i > 0 {
 			fmt.Println()
@@ -71,13 +71,17 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	// Render timestamps in local wall-clock time for human-facing output.
 	output := localizeTimestamps(string(data), t)
 
-	// Annotate parent line with title.
+	// Annotate parent line with title. The stored parent may be namespaced
+	// while the parent's own ID is bare, so match it the way Children does.
 	if t.Parent != "" {
-		if parent, ok := byID[t.Parent]; ok {
-			output = strings.Replace(output,
-				"parent: "+t.Parent,
-				"parent: "+t.Parent+"  # "+parent.Title,
-				1)
+		for _, tk := range allTickets {
+			if ticket.SameTicketID(tk.ID, t.Parent) {
+				output = strings.Replace(output,
+					"parent: "+t.Parent,
+					"parent: "+t.Parent+"  # "+tk.Title,
+					1)
+				break
+			}
 		}
 	}
 
@@ -153,7 +157,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	// Children: tickets with this as parent.
 	var children []string
 	for _, tk := range allTickets {
-		if tk.Parent == t.ID {
+		if ticket.SameTicketID(tk.Parent, t.ID) {
 			children = append(children, tk.ID)
 		}
 	}

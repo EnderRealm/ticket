@@ -119,8 +119,17 @@ func TestBuildSpawnCommandDefaultQuotesPathWithSpaces(t *testing.T) {
 
 func TestNewStoresWorkDir(t *testing.T) {
 	// New stores the workDir resolved by the caller; spawn uses it verbatim.
-	a := New(filepath.Join(t.TempDir(), ".tickets"), "v0", "", "/repo/root")
+	a := New(filepath.Join(t.TempDir(), ".tickets"), "", "v0", "", "/repo/root")
 	if a.workDir != "/repo/root" {
 		t.Errorf("workDir = %q, want /repo/root", a.workDir)
+	}
+}
+
+func TestNewScopesStoreToProject(t *testing.T) {
+	// The project the caller resolved must reach the store, or TUI writes stop
+	// resolving namespaced parent/dep/link IDs from a central-store project.
+	a := New(t.TempDir(), "proj", "v0", "", "/repo/root")
+	if a.store.Project != "proj" {
+		t.Errorf("store.Project = %q, want %q", a.store.Project, "proj")
 	}
 }

@@ -40,7 +40,7 @@ func registerEditFlags(cmd *cobra.Command) {
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	id := args[0]
 
 	t, err := store.Get(id)

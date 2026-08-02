@@ -27,7 +27,7 @@ func init() {
 }
 
 func runLink(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 
 	// Resolve all tickets first.
 	var tickets []*ticket.Ticket
@@ -58,7 +58,7 @@ func runLink(cmd *cobra.Command, args []string) error {
 }
 
 func runUnlink(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 
 	a, err := store.Get(args[0])
 	if err != nil {

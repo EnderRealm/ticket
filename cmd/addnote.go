@@ -24,7 +24,7 @@ func init() {
 }
 
 func runAddNote(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	id := args[0]
 
 	t, err := store.Get(id)

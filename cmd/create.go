@@ -30,7 +30,7 @@ func init() {
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 
 	var title string
 	if len(args) > 0 {

@@ -29,7 +29,7 @@ func runMove(cmd *cobra.Command, args []string) error {
 	// Resolve target tickets directory.
 	targetDir := filepath.Join(targetRepo, ".tickets")
 
-	src := ticket.NewFileStore(TicketsDir())
+	src := TicketStore()
 	dst := ticket.NewFileStore(targetDir)
 
 	results, err := ticket.MoveTicket(src, dst, id, recursive)

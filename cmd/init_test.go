@@ -122,7 +122,7 @@ func TestTicketsDirCentral(t *testing.T) {
 	os.Chdir(projDir)
 	defer os.Chdir(oldDir)
 
-	dir, ok := ticketsDirFromConfig()
+	dir, _, ok := ticketsDirFromConfig()
 	if !ok {
 		t.Fatal("ticketsDirFromConfig should return true for central store project")
 	}
@@ -166,7 +166,7 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	runGit(t, projDir2, "config", "user.name", "t")
 	os.Chdir(projDir2)
 
-	dir, ok := ticketsDirFromConfig()
+	dir, _, ok := ticketsDirFromConfig()
 	if !ok {
 		t.Fatal("ticketsDirFromConfig should resolve via shared config + dirname")
 	}

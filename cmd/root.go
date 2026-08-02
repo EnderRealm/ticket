@@ -193,8 +193,24 @@ func Execute() {
 }
 
 // TicketsDir returns the directory where tickets are stored.
-// Priority: --repo flag → TICKETS_DIR env → config lookup → walk up from CWD → fallback .tickets
 func TicketsDir() string {
+	dir, _ := TicketsDirAndProject()
+	return dir
+}
+
+// TicketStore returns a store over the resolved tickets directory, scoped to
+// the project it serves so parent/dep/link IDs namespaced by the central store
+// resolve (see FileStore.Resolve).
+func TicketStore() *ticket.FileStore {
+	dir, name := TicketsDirAndProject()
+	return ticket.NewProjectFileStore(dir, name)
+}
+
+// TicketsDirAndProject resolves the tickets directory and the project it holds.
+// Priority: --repo flag → TICKETS_DIR env → config lookup → walk up from CWD → fallback .tickets
+// The project name is non-empty only for a central-store project dir; a local
+// .tickets/ store never sees namespaced IDs and must not accept them.
+func TicketsDirAndProject() (string, string) {
 	if repoFlag != "" {
 		abs, err := filepath.Abs(repoFlag)
 		if err != nil {
@@ -202,49 +218,49 @@ func TicketsDir() string {
 			os.Exit(1)
 		}
 		if dir, ok := ticket.FindTicketsDir(abs); ok {
-			return dir
+			return dir, ""
 		}
 		// No .tickets/ dir — try central store config for this repo path.
-		if dir, ok := ticketsDirFromConfigFor(abs); ok {
-			return dir
+		if dir, name, ok := ticketsDirFromConfigFor(abs); ok {
+			return dir, name
 		}
 		fmt.Fprintf(os.Stderr, "Error: no ticket store found for %s\n", abs)
 		os.Exit(1)
 	}
 	if dir := os.Getenv("TICKETS_DIR"); dir != "" {
-		return dir
+		return dir, ""
 	}
-	if dir, ok := ticketsDirFromConfig(); ok {
-		return dir
+	if dir, name, ok := ticketsDirFromConfig(); ok {
+		return dir, name
 	}
 	if dir, ok := ticket.FindTicketsDir(mustGetwd()); ok {
-		return dir
+		return dir, ""
 	}
-	return ".tickets"
+	return ".tickets", ""
 }
 
-func ticketsDirFromConfig() (string, bool) {
+func ticketsDirFromConfig() (string, string, bool) {
 	return ticketsDirFromConfigFor(mustGetwd())
 }
 
-func ticketsDirFromConfigFor(dir string) (string, bool) {
+func ticketsDirFromConfigFor(dir string) (string, string, bool) {
 	cfg, err := project.Load()
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	name, _ := project.ResolveName(cfg, dir, "")
 	if name == "" {
-		return "", false
+		return "", "", false
 	}
 	p, ok := cfg.Projects[name]
 	if !ok || p.Store != "central" {
-		return "", false
+		return "", "", false
 	}
 	ticketsDir, err := project.CentralProjectDir(name)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
-	return ticketsDir, true
+	return ticketsDir, name, true
 }
 
 func mustGetwd() string {

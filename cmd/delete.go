@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +18,7 @@ func init() {
 }
 
 func runDelete(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	for _, id := range args {
 		// Resolve to get the actual ID for display.
 		t, err := store.Get(id)

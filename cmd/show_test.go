@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,69 @@ func TestLocalizeTimestampsZeroCompleted(t *testing.T) {
 	out := localizeTimestamps(string(serialized), tk)
 	if contains(out, "completed:") {
 		t.Errorf("unexpected completed field:\n%s", out)
+	}
+}
+
+func TestShowListsBareAndNamespacedChildren(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewFileStore(dir)
+
+	parents := map[string]string{
+		"sh-child-bare": "sh-epic-0001",
+		"sh-child-ns":   "proj/sh-epic-0001",
+	}
+	for _, id := range []string{"sh-epic-0001", "sh-child-bare", "sh-child-ns"} {
+		tk := &ticket.Ticket{
+			ID:      id,
+			Status:  ticket.StatusOpen,
+			Type:    ticket.TypeFeature,
+			Parent:  parents[id],
+			Created: time.Now(),
+			Title:   "Item " + id,
+			Body:    "\n",
+		}
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	out := captureShow(t, store, "sh-epic-0001", false)
+	idx := strings.Index(out, "## Children")
+	if idx < 0 {
+		t.Fatalf("show output missing Children section:\n%s", out)
+	}
+	children := out[idx:]
+	for _, id := range []string{"sh-child-bare", "sh-child-ns"} {
+		if !contains(children, id) {
+			t.Errorf("Children section missing %s:\n%s", id, children)
+		}
+	}
+}
+
+func TestShowAnnotatesNamespacedParent(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewFileStore(dir)
+
+	for _, id := range []string{"sp-epic-0001", "sp-child-0002"} {
+		tk := &ticket.Ticket{
+			ID:      id,
+			Status:  ticket.StatusOpen,
+			Type:    ticket.TypeFeature,
+			Created: time.Now(),
+			Title:   "Item " + id,
+			Body:    "\n",
+		}
+		if id == "sp-child-0002" {
+			tk.Parent = "proj/sp-epic-0001"
+		}
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	out := captureShow(t, store, "sp-child-0002", false)
+	if !contains(out, "parent: proj/sp-epic-0001  # Item sp-epic-0001") {
+		t.Errorf("parent line missing its title annotation:\n%s", out)
 	}
 }
 

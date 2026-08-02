@@ -62,11 +62,15 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 		}
 	}
 
-	// Find epics and their children.
+	// Find epics and their children. A map key can't tolerate the namespace
+	// mismatch the way SameTicketID does, so both sides are keyed on the bare
+	// ID: the central store records children with a namespaced parent, while
+	// tickets written before the namespacing rollout record it bare.
 	childMap := make(map[string][]*ticket.Ticket)
 	for _, t := range tickets {
 		if t.Parent != "" {
-			childMap[t.Parent] = append(childMap[t.Parent], t)
+			_, parent := ticket.ParseNamespacedID(t.Parent)
+			childMap[parent] = append(childMap[parent], t)
 		}
 	}
 
@@ -80,9 +84,10 @@ func (m *epicsModel) refreshTickets(tickets []*ticket.Ticket) {
 
 	m.rows = nil
 	for _, t := range epics {
+		_, bareID := ticket.ParseNamespacedID(t.ID)
 		m.rows = append(m.rows, epicRow{
 			epic:     t,
-			children: childMap[t.ID],
+			children: childMap[bareID],
 			expanded: expanded[t.ID],
 		})
 	}

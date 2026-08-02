@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Parent-epic propagation now fires for every write against a central-store project, not just those made through `tk serve`. Direct CLI writes (`tk edit`, `tk create`, `tk dep`, `tk link`, `tk move`, ...) and TUI writes from `tk ui` built their store over the central project directory without naming the project, so a namespaced `parent` (`project/epic-abcd`) never resolved and the epic silently never advanced or rolled up — the 7.7.0 entry below called these out as not yet covered. MCP `ticket_create` with a `repo` override now scopes its store the same way, keeping the override in step with the default path (creating a ticket does not itself propagate). The "epic can't be done with open children" guard was unaffected on these paths: it finds children by scanning the store with a bare-vs-namespaced tolerant compare, so it already tripped on a direct CLI or TUI write; it now also runs on the parent writes propagation performs. A store built over a local `.tickets/` directory still carries no project namespace and continues to reject namespaced IDs.
+- `tk ls --parent <id>`, the parent and `## Children` lines of `tk show`, the TUI epics tree, and the TUI backlog tab's epic rollup now recognize children whose stored `parent` is namespaced. All compared `parent` byte-for-byte, so a child recording `project/epic-abcd` was invisible under the epic's bare ID while its bare-parent siblings showed — on the backlog tab it also escaped the rollup, listing as a loose row and missing from the epic's child count. Both ID forms now match.
+
 ## [7.7.0] - 2026-08-02
 
 ### Added

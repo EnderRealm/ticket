@@ -313,6 +313,27 @@ func TestDashboardFilterEnterNoResultsCommits(t *testing.T) {
 	}
 }
 
+func TestBacklogRollsUpBareAndNamespacedChildren(t *testing.T) {
+	// The central store records a child's parent namespaced; tickets written
+	// before the namespacing rollout record it bare. Both roll up under the
+	// epic instead of showing as loose backlog rows.
+	tickets := []*ticket.Ticket{
+		{ID: "ep-0001", Title: "Epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
+		{ID: "ch-bare", Title: "Bare child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-0001", Created: time.Now()},
+		{ID: "ch-ns", Title: "Namespaced child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "proj/ep-0001", Created: time.Now()},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabBacklog
+	m.buildItems()
+
+	if got := itemIDs(m.items); len(got) != 1 || got[0] != "ep-0001" {
+		t.Errorf("backlog rows = %v, want only the epic ep-0001", got)
+	}
+	if n := m.childCounts["ep-0001"]; n != 2 {
+		t.Errorf("epic child count = %d, want 2", n)
+	}
+}
+
 func TestDashboardSortKeys(t *testing.T) {
 	tickets := []*ticket.Ticket{
 		{ID: "a-0001", Title: "One", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: time.Now()},

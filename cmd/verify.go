@@ -31,7 +31,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	t, err := store.Get(args[0])
 	if err != nil {
 		return err

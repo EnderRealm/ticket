@@ -72,6 +72,47 @@ func TestLsBacklogOnlyNotEmpty(t *testing.T) {
 	}
 }
 
+func TestLsParentMatchesBareAndNamespacedParent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TICKETS_DIR", dir)
+	store := ticket.NewFileStore(dir)
+
+	// The central store records a child's parent namespaced; tickets written
+	// before the namespacing rollout record it bare. Both are children.
+	parents := map[string]string{
+		"ls-child-bare": "ls-epic-0001",
+		"ls-child-ns":   "proj/ls-epic-0001",
+	}
+	for _, id := range []string{"ls-epic-0001", "ls-child-bare", "ls-child-ns"} {
+		tk := &ticket.Ticket{
+			ID:      id,
+			Status:  ticket.StatusOpen,
+			Type:    ticket.TypeFeature,
+			Parent:  parents[id],
+			Created: time.Now(),
+			Title:   "Item " + id,
+			Body:    "\n",
+		}
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	f := lsCmd.Flags()
+	if err := f.Set("parent", "ls-epic-0001"); err != nil {
+		t.Fatalf("set parent: %v", err)
+	}
+	defer func() { _ = f.Set("parent", "") }()
+
+	out := captureLs(t)
+
+	for _, id := range []string{"ls-child-bare", "ls-child-ns"} {
+		if !contains(out, id) {
+			t.Errorf("--parent output missing %s:\n%s", id, out)
+		}
+	}
+}
+
 func captureLs(t *testing.T) string {
 	t.Helper()
 	oldStdout := os.Stdout

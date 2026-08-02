@@ -70,13 +70,15 @@ type App struct {
 	err    error
 }
 
-// New creates a new App rooted at the given ticket directory. workDir is the
-// project's real repo directory (resolved by the caller from config), used to
-// spawn `/work` sessions in the right place.
-func New(ticketsDir, version, spawnCommand, workDir string) App {
-	store := ticket.NewFileStore(ticketsDir)
+// New creates a new App rooted at the given ticket directory. project is the
+// namespace the store answers to, resolved by the caller: non-empty only for a
+// central-store project, whose parent/dep/link fields carry the prefix. workDir
+// is the project's real repo directory (also resolved by the caller from
+// config), used to spawn `/work` sessions in the right place.
+func New(ticketsDir, project, version, spawnCommand, workDir string) App {
+	store := ticket.NewProjectFileStore(ticketsDir, project)
 
-	// Derive project name from tickets directory path.
+	// Derive the displayed project name from the tickets directory path.
 	absDir, _ := filepath.Abs(ticketsDir)
 	baseName := filepath.Base(absDir)
 	projectName := baseName
@@ -578,10 +580,7 @@ func (a App) tabCounts() map[tabID]int {
 	counts := make(map[tabID]int)
 
 	// Mirror dashboard.buildItems filtering so counts match what each tab shows.
-	byID := make(map[string]*ticket.Ticket, len(a.tickets))
-	for _, t := range a.tickets {
-		byID[t.ID] = t
-	}
+	byID := indexByBareID(a.tickets)
 
 	for _, t := range a.tickets {
 		isEpic := t.Type == ticket.TypeEpic

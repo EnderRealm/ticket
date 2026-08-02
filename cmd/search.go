@@ -20,7 +20,7 @@ func init() {
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	tickets, err := store.List()
 	if err != nil {
 		return err

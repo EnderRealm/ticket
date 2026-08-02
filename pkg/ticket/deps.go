@@ -333,7 +333,7 @@ func ValidateStateTransition(store Store, t *Ticket) error {
 		if child.ID == t.ID {
 			continue
 		}
-		if !sameTicketID(child.Parent, t.ID) {
+		if !SameTicketID(child.Parent, t.ID) {
 			continue
 		}
 		if !isTerminal(child) {
@@ -413,7 +413,7 @@ func allChildrenTerminal(store Store, parentID string) bool {
 	}
 	hadChild := false
 	for _, t := range tickets {
-		if !sameTicketID(t.Parent, parentID) {
+		if !SameTicketID(t.Parent, parentID) {
 			continue
 		}
 		hadChild = true
@@ -425,12 +425,12 @@ func allChildrenTerminal(store Store, parentID string) bool {
 	return true
 }
 
-// sameTicketID returns true if two ticket IDs refer to the same ticket,
+// SameTicketID returns true if two ticket IDs refer to the same ticket,
 // tolerating namespace-prefix mismatches ("project/foo-abcd" matches
 // "foo-abcd"). This matters because deps and links may have been stored
 // in bare form before the namespacing rollout while Get()-resolved IDs
 // come back namespaced; exact-string compare would miss those.
-func sameTicketID(a, b string) bool {
+func SameTicketID(a, b string) bool {
 	if a == b {
 		return true
 	}
@@ -442,11 +442,11 @@ func sameTicketID(a, b string) bool {
 // AddDep adds depID to the ticket's deps list. Returns error if it would
 // create a self-dependency.
 func AddDep(t *Ticket, depID string) error {
-	if sameTicketID(t.ID, depID) {
+	if SameTicketID(t.ID, depID) {
 		return fmt.Errorf("cannot depend on self")
 	}
 	for _, d := range t.Deps {
-		if sameTicketID(d, depID) {
+		if SameTicketID(d, depID) {
 			return nil // already present (maybe in the other ID form)
 		}
 	}
@@ -464,7 +464,7 @@ func SetDepCargo(t *Ticket, depID, cargo string) error {
 	}
 	key := depID
 	for k := range t.DepCargo {
-		if sameTicketID(k, depID) {
+		if SameTicketID(k, depID) {
 			key = k
 			break
 		}
@@ -488,7 +488,7 @@ func SetDepCargo(t *Ticket, depID, cargo string) error {
 // edge carries no annotation.
 func CargoFor(t *Ticket, depID string) string {
 	for k, v := range t.DepCargo {
-		if sameTicketID(k, depID) {
+		if SameTicketID(k, depID) {
 			return v
 		}
 	}
@@ -501,13 +501,13 @@ func CargoFor(t *Ticket, depID string) string {
 func RemoveDep(t *Ticket, depID string) {
 	filtered := t.Deps[:0]
 	for _, d := range t.Deps {
-		if !sameTicketID(d, depID) {
+		if !SameTicketID(d, depID) {
 			filtered = append(filtered, d)
 		}
 	}
 	t.Deps = filtered
 	for k := range t.DepCargo {
-		if sameTicketID(k, depID) {
+		if SameTicketID(k, depID) {
 			delete(t.DepCargo, k)
 		}
 	}
@@ -532,7 +532,7 @@ func RemoveLink(a, b *Ticket) {
 
 func containsID(ss []string, s string) bool {
 	for _, v := range ss {
-		if sameTicketID(v, s) {
+		if SameTicketID(v, s) {
 			return true
 		}
 	}
@@ -542,7 +542,7 @@ func containsID(ss []string, s string) bool {
 func removeID(ss []string, s string) []string {
 	filtered := ss[:0]
 	for _, v := range ss {
-		if !sameTicketID(v, s) {
+		if !SameTicketID(v, s) {
 			filtered = append(filtered, v)
 		}
 	}

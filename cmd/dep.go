@@ -45,7 +45,7 @@ func runDep(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("usage: tk dep <id> <dep-id>")
 	}
 
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	id, depID := args[0], args[1]
 
 	t, err := store.Get(id)
@@ -92,7 +92,7 @@ func runDep(cmd *cobra.Command, args []string) error {
 }
 
 func runDepTree(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	full, _ := cmd.Flags().GetBool("full")
 
 	nodes, err := ticket.DepTree(store, args[0], full)
@@ -122,7 +122,7 @@ func runDepTree(cmd *cobra.Command, args []string) error {
 }
 
 func runUndep(cmd *cobra.Command, args []string) error {
-	store := ticket.NewFileStore(TicketsDir())
+	store := TicketStore()
 	id, depID := args[0], args[1]
 
 	t, err := store.Get(id)
