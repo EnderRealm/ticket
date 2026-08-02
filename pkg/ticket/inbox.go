@@ -89,27 +89,27 @@ func Projects(store Store) ([]ProjectSummary, error) {
 		return nil, err
 	}
 
-	// Find epics.
-	epics := make(map[string]*Ticket)
-	for _, t := range tickets {
-		if t.Type == TypeEpic && t.Status != StatusDone && t.Status != StatusClosed {
-			epics[t.ID] = t
-		}
-	}
-
-	// Group children by parent.
+	// Group children by bare parent ID. A map key can't tolerate the namespace
+	// mismatch the way SameTicketID does, and the central store records
+	// children with a namespaced parent while tickets written before the
+	// namespacing rollout record it bare.
 	children := make(map[string][]*Ticket)
 	for _, t := range tickets {
 		if t.Parent != "" {
-			if _, ok := epics[t.Parent]; ok {
-				children[t.Parent] = append(children[t.Parent], t)
-			}
+			_, parent := ParseNamespacedID(t.Parent)
+			children[parent] = append(children[parent], t)
 		}
 	}
 
+	// One summary per active epic, keyed off the epic's full ID — MultiStore
+	// namespaces IDs, and two projects can hold the same bare ID.
 	var summaries []ProjectSummary
-	for id, epic := range epics {
-		kids := children[id]
+	for _, epic := range tickets {
+		if epic.Type != TypeEpic || epic.Status == StatusDone || epic.Status == StatusClosed {
+			continue
+		}
+		_, bareID := ParseNamespacedID(epic.ID)
+		kids := children[bareID]
 		summary := ProjectSummary{
 			Epic:            epic,
 			Total:           len(kids),

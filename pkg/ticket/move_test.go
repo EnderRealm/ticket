@@ -202,6 +202,197 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 	}
 }
 
+func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
+	// The central store records a child's parent namespaced; tickets written
+	// before the namespacing rollout record it bare. A recursive move must
+	// carry both forms, and the levels below them.
+	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "mv-bare-0002", TypeFeature, StatusClosed, "mv-epic-0001")
+	mkMovable(t, src, "mv-ns-0003", TypeFeature, StatusClosed, "proj/mv-epic-0001")
+	mkMovable(t, src, "mv-grand-0004", TypeFeature, StatusClosed, "proj/mv-ns-0003")
+
+	results, err := MoveTicket(src, dst, "mv-epic-0001", true)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+
+	moved := map[string]string{}
+	for _, r := range results {
+		moved[r.OldID] = r.NewID
+	}
+	for _, id := range []string{"mv-epic-0001", "mv-bare-0002", "mv-ns-0003", "mv-grand-0004"} {
+		if moved[id] == "" {
+			t.Fatalf("%s was left behind, moved set = %v", id, moved)
+		}
+	}
+
+	// Carrying the tickets is only half the move — a namespaced parent must
+	// remap to the moving parent's new ID, not be dropped as if it stayed.
+	wantParent := map[string]string{
+		"mv-epic-0001":  "",
+		"mv-bare-0002":  moved["mv-epic-0001"],
+		"mv-ns-0003":    moved["mv-epic-0001"],
+		"mv-grand-0004": moved["mv-ns-0003"],
+	}
+	for oldID, want := range wantParent {
+		got, err := dst.Get(moved[oldID])
+		if err != nil {
+			t.Fatalf("Get moved %s: %v", oldID, err)
+		}
+		if got.Parent != want {
+			t.Errorf("%s moved with parent %q, want %q", oldID, got.Parent, want)
+		}
+	}
+
+	dstTickets, err := dst.List()
+	if err != nil {
+		t.Fatalf("List target: %v", err)
+	}
+	if len(dstTickets) != 4 {
+		t.Errorf("target holds %d tickets, want 4", len(dstTickets))
+	}
+}
+
+func TestMoveRecursiveSkipsForeignProjectChild(t *testing.T) {
+	// A child whose parent names a different project is not this store's child,
+	// even when the bare IDs match. Sweeping it into the move would set the
+	// wrong ticket done and copy it into the target repo — the mis-resolution
+	// FileStore.Resolve rejects for the same reason.
+	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "mv-own-0002", TypeFeature, StatusClosed, "proj/mv-epic-0001")
+	mkMovable(t, src, "mv-foreign-0003", TypeFeature, StatusClosed, "otherproj/mv-epic-0001")
+
+	results, err := MoveTicket(src, dst, "mv-epic-0001", true)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+
+	var movedIDs []string
+	for _, r := range results {
+		movedIDs = append(movedIDs, r.OldID)
+	}
+	if len(movedIDs) != 2 || movedIDs[0] != "mv-epic-0001" || movedIDs[1] != "mv-own-0002" {
+		t.Fatalf("moved %v, want [mv-epic-0001 mv-own-0002] — the foreign child is not this epic's", movedIDs)
+	}
+
+	// The foreign child must be untouched: the move would flip it to done.
+	foreign, err := src.Get("mv-foreign-0003")
+	if err != nil {
+		t.Fatalf("Get foreign child: %v", err)
+	}
+	if foreign.Status != StatusClosed {
+		t.Errorf("foreign child status = %q, want %q — it was swept into the move", foreign.Status, StatusClosed)
+	}
+
+	dstTickets, err := dst.List()
+	if err != nil {
+		t.Fatalf("List target: %v", err)
+	}
+	if len(dstTickets) != 2 {
+		t.Errorf("target holds %d tickets, want 2: %v", len(dstTickets), ids(dstTickets))
+	}
+}
+
+func TestMoveRemapsNamespacedDepsAndLinks(t *testing.T) {
+	// A dep or link on a ticket that is also moving must be remapped, not
+	// reported as stripped, when it is recorded namespaced.
+	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	parent := &Ticket{
+		ID: "nsdep-parent-0001", Status: StatusReady, Type: TypeFeature, Priority: 2,
+		Title: "Namespaced dep parent", Deps: []string{}, Links: []string{},
+	}
+	child := &Ticket{
+		ID: "nsdep-child-0002", Status: StatusReady, Type: TypeFeature, Priority: 2,
+		Parent: "proj/nsdep-parent-0001", Title: "Namespaced dep child",
+		Deps:     []string{"proj/nsdep-parent-0001"},
+		Links:    []string{"proj/nsdep-parent-0001"},
+		DepCargo: map[string]string{"proj/nsdep-parent-0001": "event schema"},
+	}
+	if err := src.Create(parent); err != nil {
+		t.Fatalf("Create parent: %v", err)
+	}
+	if err := src.Create(child); err != nil {
+		t.Fatalf("Create child: %v", err)
+	}
+
+	results, err := MoveTicket(src, dst, parent.ID, true)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	newParent, childResult := results[0].NewID, results[1]
+
+	if len(childResult.StrippedDeps) > 0 || len(childResult.StrippedLinks) > 0 {
+		t.Errorf("stripped deps %v links %v, want none — both name a moving ticket",
+			childResult.StrippedDeps, childResult.StrippedLinks)
+	}
+
+	movedChild, err := dst.Get(childResult.NewID)
+	if err != nil {
+		t.Fatalf("Get moved child: %v", err)
+	}
+	if len(movedChild.Deps) != 1 || movedChild.Deps[0] != newParent {
+		t.Errorf("Deps = %v, want [%s]", movedChild.Deps, newParent)
+	}
+	if len(movedChild.Links) != 1 || movedChild.Links[0] != newParent {
+		t.Errorf("Links = %v, want [%s]", movedChild.Links, newParent)
+	}
+	if movedChild.DepCargo[newParent] != "event schema" {
+		t.Errorf("DepCargo[%s] = %q, want event schema", newParent, movedChild.DepCargo[newParent])
+	}
+}
+
+func TestCollectDescendantsTerminatesOnParentCycle(t *testing.T) {
+	// Two tickets naming each other as parent must not spin the BFS forever.
+	src := &FileStore{Dir: t.TempDir()}
+	mkMovable(t, src, "cyc-a-0001", TypeFeature, StatusOpen, "cyc-b-0002")
+	mkMovable(t, src, "cyc-b-0002", TypeFeature, StatusOpen, "cyc-a-0001")
+
+	type walk struct {
+		descendants []*Ticket
+		err         error
+	}
+	done := make(chan walk, 1)
+	go func() {
+		got, err := collectDescendants(src, "cyc-a-0001")
+		done <- walk{descendants: got, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("collectDescendants: %v", res.err)
+		}
+		if len(res.descendants) != 1 || res.descendants[0].ID != "cyc-b-0002" {
+			t.Errorf("descendants = %v, want just cyc-b-0002", ids(res.descendants))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("collectDescendants did not terminate on a parent cycle")
+	}
+}
+
+func mkMovable(t *testing.T, store *FileStore, id string, typ TicketType, status Status, parent string) {
+	t.Helper()
+	tk := &Ticket{
+		ID: id, Status: status, Type: typ, Priority: 2, Parent: parent,
+		Created: time.Now(), Title: "Item " + id, Body: "\n",
+		Deps: []string{}, Links: []string{},
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create %s: %v", id, err)
+	}
+}
+
 func TestMovePreservesCreated(t *testing.T) {
 	src := &FileStore{Dir: t.TempDir()}
 	dst := &FileStore{Dir: t.TempDir()}

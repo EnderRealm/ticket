@@ -163,3 +163,111 @@ func TestProjects(t *testing.T) {
 		t.Errorf("StatusBreakdown[done] = %d, want 1", p.StatusBreakdown[StatusDone])
 	}
 }
+
+func TestProjects_CountsBareAndNamespacedChildren(t *testing.T) {
+	// The central store records a child's parent namespaced; tickets written
+	// before the namespacing rollout record it bare. Both roll up to the epic.
+	store := NewFileStore(t.TempDir())
+
+	epic := &Ticket{
+		ID: "ns-epic-0001", Status: StatusOpen, Type: TypeEpic, Priority: 0,
+		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Epic", Body: "\n",
+	}
+	bare := &Ticket{
+		ID: "ns-bare-0002", Status: StatusDone, Type: TypeFeature, Priority: 1,
+		Parent: "ns-epic-0001", Deps: []string{}, Links: []string{}, Created: time.Now(),
+		Title: "Bare child", Body: "\n",
+	}
+	namespaced := &Ticket{
+		ID: "ns-child-0003", Status: StatusOpen, Type: TypeFeature, Priority: 1,
+		Parent: "proj/ns-epic-0001", Deps: []string{}, Links: []string{}, Created: time.Now(),
+		Title: "Namespaced child", Body: "\n",
+	}
+
+	for _, tk := range []*Ticket{epic, bare, namespaced} {
+		if err := store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projects, err := Projects(store)
+	if err != nil {
+		t.Fatalf("Projects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("Projects returned %d, want 1", len(projects))
+	}
+
+	p := projects[0]
+	if p.Total != 2 {
+		t.Errorf("Total = %d, want 2", p.Total)
+	}
+	if p.StatusBreakdown[StatusDone] != 1 {
+		t.Errorf("StatusBreakdown[done] = %d, want 1", p.StatusBreakdown[StatusDone])
+	}
+	if p.StatusBreakdown[StatusOpen] != 1 {
+		t.Errorf("StatusBreakdown[open] = %d, want 1", p.StatusBreakdown[StatusOpen])
+	}
+}
+
+func TestProjects_SplitsSameBareIDEpicsButPoolsTheirChildren(t *testing.T) {
+	// MultiStore namespaces IDs, so two projects can hold the same bare epic
+	// ID. Each keeps its own summary rather than collapsing into one, but the
+	// child index is bare-keyed, so both epics pick up both children.
+	ms, _ := testMultiStore(t, "alpha", "beta")
+
+	epicA := sampleTicket("alpha/dup-epic-0001")
+	epicA.Type = TypeEpic
+	kidA := sampleTicket("alpha/kid-0002")
+	kidA.Parent = "alpha/dup-epic-0001"
+	epicB := sampleTicket("beta/dup-epic-0001")
+	epicB.Type = TypeEpic
+	kidB := sampleTicket("beta/kid-0003")
+	kidB.Parent = "beta/dup-epic-0001"
+
+	for _, tk := range []*Ticket{epicA, kidA, epicB, kidB} {
+		if err := ms.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projects, err := Projects(ms)
+	if err != nil {
+		t.Fatalf("Projects: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("Projects returned %d, want 2 — one summary per epic", len(projects))
+	}
+
+	byID := make(map[string]ProjectSummary)
+	for _, p := range projects {
+		byID[p.Epic.ID] = p
+	}
+
+	// Each epic carries its own child. The child index is bare-keyed, so a
+	// same-bare-ID sibling's child rolls up here too — namespace-blind, like
+	// SameTicketID everywhere else. Total pins that tradeoff: scoping the index
+	// by project would drop these back to one child apiece.
+	for epicID, kidID := range map[string]string{
+		"alpha/dup-epic-0001": "alpha/kid-0002",
+		"beta/dup-epic-0001":  "beta/kid-0003",
+	} {
+		p, ok := byID[epicID]
+		if !ok {
+			t.Errorf("epic %s missing from summaries", epicID)
+			continue
+		}
+		found := false
+		for _, action := range p.NextActions {
+			if action.Ticket.ID == kidID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("epic %s: child %s missing from next actions", epicID, kidID)
+		}
+		if p.Total != 2 {
+			t.Errorf("epic %s: Total = %d, want 2 — both same-bare-ID epics pool both children", epicID, p.Total)
+		}
+	}
+}

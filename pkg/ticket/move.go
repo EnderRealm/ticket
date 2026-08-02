@@ -51,12 +51,12 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		toMove = append(toMove, children...)
 	}
 
-	// Build old ID → new ID mapping.
+	// Build old ID → new ID mapping. Keyed on the bare ID, and every lookup
+	// below normalizes the same way: a map key can't tolerate the namespace
+	// mismatch the way SameTicketID does, and a moving ticket can name a
+	// moving parent, dep, or link namespaced. Bare IDs are unique within one
+	// store directory, so the bare form is an unambiguous key.
 	idMap := map[string]string{}
-	movingSet := map[string]bool{}
-	for _, t := range toMove {
-		movingSet[t.ID] = true
-	}
 	for _, t := range toMove {
 		newID := GenerateIDFrom(t.Title, time.Now())
 		// Ensure no collision in target.
@@ -67,14 +67,16 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			}
 			newID = GenerateIDFrom(t.Title, time.Now())
 		}
-		idMap[t.ID] = newID
+		_, bare := ParseNamespacedID(t.ID)
+		idMap[bare] = newID
 	}
 
 	now := time.Now().UTC()
 	var results []MoveResult
 
 	for _, t := range toMove {
-		newID := idMap[t.ID]
+		_, bare := ParseNamespacedID(t.ID)
+		newID := idMap[bare]
 		result := MoveResult{OldID: t.ID, NewID: newID}
 
 		// Shallow copy all fields, then override what needs to change.
@@ -91,7 +93,8 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 
 		// Remap or strip parent.
 		if t.Parent != "" {
-			if newParent, ok := idMap[t.Parent]; ok {
+			_, bareParent := ParseNamespacedID(t.Parent)
+			if newParent, ok := idMap[bareParent]; ok {
 				newTicket.Parent = newParent
 			}
 			// If parent isn't moving, drop it — ticket is moving to new repo.
@@ -100,7 +103,8 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		// Remap or strip deps. Cargo follows its dep under the new ID; a
 		// stripped dep takes its cargo with it.
 		for _, d := range t.Deps {
-			if newDep, ok := idMap[d]; ok {
+			_, bareDep := ParseNamespacedID(d)
+			if newDep, ok := idMap[bareDep]; ok {
 				newTicket.Deps = append(newTicket.Deps, newDep)
 				if cargo := CargoFor(t, d); cargo != "" {
 					if newTicket.DepCargo == nil {
@@ -118,7 +122,8 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 
 		// Remap or strip links.
 		for _, l := range t.Links {
-			if newLink, ok := idMap[l]; ok {
+			_, bareLink := ParseNamespacedID(l)
+			if newLink, ok := idMap[bareLink]; ok {
 				newTicket.Links = append(newTicket.Links, newLink)
 			} else {
 				result.StrippedLinks = append(result.StrippedLinks, l)
@@ -170,23 +175,46 @@ func collectDescendants(store *FileStore, parentID string) ([]*Ticket, error) {
 		return nil, err
 	}
 
-	// Build parent → children index.
+	// Build parent → children index. A map key can't tolerate the namespace
+	// mismatch the way SameTicketID does, so every ID entering the walk — the
+	// keys, the seed, and the queue — is normalized to its bare form: the
+	// central store records children with a namespaced parent, while tickets
+	// written before the namespacing rollout record it bare. A parent naming a
+	// different project is skipped, not stripped, on the same grounds as
+	// FileStore.Resolve: stripping it would index the child under a same-suffix
+	// ticket in this project and move the wrong one. A local .tickets/ store
+	// carries no project, so every namespaced parent is foreign to it.
 	childMap := map[string][]*Ticket{}
 	for _, t := range all {
-		if t.Parent != "" {
-			childMap[t.Parent] = append(childMap[t.Parent], t)
+		if t.Parent == "" {
+			continue
 		}
+		project, parent := ParseNamespacedID(t.Parent)
+		if project != "" && project != store.Project {
+			continue
+		}
+		childMap[parent] = append(childMap[parent], t)
 	}
 
-	// BFS from parentID.
+	// BFS from parentID. The seed needs no project check — it is the root
+	// ticket's own ID, read from this store's files after Resolve rejected any
+	// foreign prefix. seen bounds the walk: a parent cycle would otherwise
+	// never terminate, and a ticket reachable by two paths would move twice.
+	_, seed := ParseNamespacedID(parentID)
 	var result []*Ticket
-	queue := []string{parentID}
+	queue := []string{seed}
+	seen := map[string]bool{seed: true}
 	for len(queue) > 0 {
 		pid := queue[0]
 		queue = queue[1:]
 		for _, child := range childMap[pid] {
+			_, childID := ParseNamespacedID(child.ID)
+			if seen[childID] {
+				continue
+			}
+			seen[childID] = true
 			result = append(result, child)
-			queue = append(queue, child.ID)
+			queue = append(queue, childID)
 		}
 	}
 
