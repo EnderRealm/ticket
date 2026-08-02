@@ -96,6 +96,19 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		}
 	}
 
+	// Dep cargo: what flows across each annotated dependency edge.
+	if len(t.DepCargo) > 0 {
+		keys := make([]string, 0, len(t.DepCargo))
+		for k := range t.DepCargo {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Print("\n## Dep Cargo\n\n")
+		for _, k := range keys {
+			fmt.Printf("- %s: %s\n", k, t.DepCargo[k])
+		}
+	}
+
 	// Blockers: deps not at done status.
 	var blockers []string
 	for _, depID := range t.Deps {

@@ -822,6 +822,121 @@ func TestPopulateDoneOutputs_DropsUnserializableValues(t *testing.T) {
 	}
 }
 
+func TestDepCargo_RoundTrip(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("the ingest event schema plus the fixtures it needs ", 5))
+	tk := &Ticket{
+		ID:       "t-cargo1",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{"zeta-0001", "alpha-0002"},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Cargo round trip",
+		// Already in canonical body form, so serialize→parse→serialize compares
+		// the frontmatter rather than body normalization.
+		Body: "Description.\n",
+		DepCargo: map[string]string{
+			// Prose the unquoted writeField path could not serialize.
+			"zeta-0001":  "event schema: the ingest table's #1 contract",
+			"alpha-0002": long,
+		},
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "dep-cargo:\n  alpha-0002: ") {
+		t.Errorf("unexpected dep-cargo block (keys should be sorted):\n%s", s)
+	}
+
+	parsed, err := parseBytes(data)
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if len(parsed.DepCargo) != len(tk.DepCargo) {
+		t.Fatalf("DepCargo = %v, want %v", parsed.DepCargo, tk.DepCargo)
+	}
+	for k, v := range tk.DepCargo {
+		if parsed.DepCargo[k] != v {
+			t.Errorf("DepCargo[%q] = %q, want %q", k, parsed.DepCargo[k], v)
+		}
+	}
+	// The block must not leak into extra fields.
+	if len(parsed.Extra) != 0 {
+		t.Errorf("Extra = %v, want empty", parsed.Extra)
+	}
+
+	again, err := Serialize(parsed)
+	if err != nil {
+		t.Fatalf("Serialize after Parse: %v", err)
+	}
+	if string(again) != s {
+		t.Errorf("serialize is not stable:\n%q\nwant\n%q", string(again), s)
+	}
+}
+
+func TestDepCargo_BareDepsUnchanged(t *testing.T) {
+	// A ticket predating dep cargo must parse and serialize without the block.
+	input := `---
+id: t-cargo2
+status: ready
+deps: [a-0001, b-0002]
+links: []
+created: 2026-01-01T00:00:00Z
+type: feature
+priority: 2
+---
+# Bare deps
+
+Description.
+`
+	tk, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(tk.DepCargo) != 0 {
+		t.Errorf("DepCargo = %v, want empty", tk.DepCargo)
+	}
+	if CargoFor(tk, "a-0001") != "" {
+		t.Errorf("CargoFor = %q, want empty", CargoFor(tk, "a-0001"))
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if strings.Contains(string(data), "dep-cargo") {
+		t.Errorf("empty DepCargo emitted a block:\n%s", string(data))
+	}
+}
+
+func TestCargo_KeyAndValueValidation(t *testing.T) {
+	for _, key := range []string{"foo-abcd", "project/foo-abcd"} {
+		if err := ValidateCargoKey(key); err != nil {
+			t.Errorf("ValidateCargoKey(%q) = %v", key, err)
+		}
+	}
+	for _, key := range []string{"", "has space", "has\nnewline", "has\ttab"} {
+		if err := ValidateCargoKey(key); err == nil {
+			t.Errorf("ValidateCargoKey(%q) should return error", key)
+		}
+	}
+	// Cargo is prose: punctuation the extra/outputs rules reject is fine here.
+	for _, val := range []string{"event schema: the ingest table", "branch #1", "don't break it", "café menü"} {
+		if err := ValidateCargoValue(val); err != nil {
+			t.Errorf("ValidateCargoValue(%q) = %v", val, err)
+		}
+	}
+	for _, val := range []string{"", "   ", "two\nlines", "carriage\rreturn", "bell\x07", " padded", "padded "} {
+		if err := ValidateCargoValue(val); err == nil {
+			t.Errorf("ValidateCargoValue(%q) should return error", val)
+		}
+	}
+}
+
 func TestExtra_ReservedKeyRejected(t *testing.T) {
 	reserved := []string{"id", "status", "type", "priority", "deps", "created", "external-ref"}
 	for _, key := range reserved {

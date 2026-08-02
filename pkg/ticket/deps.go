@@ -11,6 +11,9 @@ type DepNode struct {
 	Title  string
 	Status Status
 	Depth  int
+	// Cargo is what flows across the edge from the parent node to this one.
+	// Empty for the root (no incoming edge) and for unannotated edges.
+	Cargo string
 }
 
 // DepTree walks the dependency graph for the given ticket ID.
@@ -24,13 +27,14 @@ func DepTree(store Store, id string, full bool) ([]DepNode, error) {
 
 	var nodes []DepNode
 	seen := map[string]bool{}
-	var walk func(t *Ticket, depth int)
-	walk = func(t *Ticket, depth int) {
+	var walk func(t *Ticket, depth int, cargo string)
+	walk = func(t *Ticket, depth int, cargo string) {
 		nodes = append(nodes, DepNode{
 			ID:     t.ID,
 			Title:  t.Title,
 			Status: t.Status,
 			Depth:  depth,
+			Cargo:  cargo,
 		})
 		for _, depID := range t.Deps {
 			if !full && seen[depID] {
@@ -44,13 +48,14 @@ func DepTree(store Store, id string, full bool) ([]DepNode, error) {
 					ID:    depID,
 					Title: "(not found)",
 					Depth: depth + 1,
+					Cargo: CargoFor(t, depID),
 				})
 				continue
 			}
-			walk(dep, depth+1)
+			walk(dep, depth+1, CargoFor(t, depID))
 		}
 	}
-	walk(root, 0)
+	walk(root, 0, "")
 	return nodes, nil
 }
 
@@ -449,9 +454,50 @@ func AddDep(t *Ticket, depID string) error {
 	return nil
 }
 
-// RemoveDep removes depID from the ticket's deps list. Matching is
-// tolerant of namespace-prefix mismatches between the stored dep ID and
-// the caller's argument.
+// SetDepCargo records what concretely flows across the edge from t to depID.
+// An empty cargo removes the annotation. Matching tolerates namespace-prefix
+// mismatches, so annotating an already-stored dep overwrites its entry instead
+// of adding a second one under the other ID form.
+func SetDepCargo(t *Ticket, depID, cargo string) error {
+	if err := ValidateCargoKey(depID); err != nil {
+		return err
+	}
+	key := depID
+	for k := range t.DepCargo {
+		if sameTicketID(k, depID) {
+			key = k
+			break
+		}
+	}
+	cargo = strings.TrimSpace(cargo)
+	if cargo == "" {
+		delete(t.DepCargo, key)
+		return nil
+	}
+	if err := ValidateCargoValue(cargo); err != nil {
+		return err
+	}
+	if t.DepCargo == nil {
+		t.DepCargo = map[string]string{}
+	}
+	t.DepCargo[key] = cargo
+	return nil
+}
+
+// CargoFor returns what flows across the edge from t to depID, or "" if the
+// edge carries no annotation.
+func CargoFor(t *Ticket, depID string) string {
+	for k, v := range t.DepCargo {
+		if sameTicketID(k, depID) {
+			return v
+		}
+	}
+	return ""
+}
+
+// RemoveDep removes depID from the ticket's deps list, along with any cargo
+// recorded for that edge. Matching is tolerant of namespace-prefix mismatches
+// between the stored dep ID and the caller's argument.
 func RemoveDep(t *Ticket, depID string) {
 	filtered := t.Deps[:0]
 	for _, d := range t.Deps {
@@ -460,6 +506,11 @@ func RemoveDep(t *Ticket, depID string) {
 		}
 	}
 	t.Deps = filtered
+	for k := range t.DepCargo {
+		if sameTicketID(k, depID) {
+			delete(t.DepCargo, k)
+		}
+	}
 }
 
 // AddLink adds a symmetric link between two tickets.

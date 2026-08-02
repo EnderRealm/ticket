@@ -31,6 +31,7 @@ var undepCmd = &cobra.Command{
 }
 
 func init() {
+	depCmd.Flags().String("cargo", "", `what concretely flows across the edge (branch, schema, doc); "" clears`)
 	depTreeCmd.Flags().Bool("full", false, "show full tree without dedup")
 	depCmd.AddCommand(depTreeCmd)
 
@@ -62,10 +63,30 @@ func runDep(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// AddDep is a no-op when the dep is already present, so --cargo also
+	// annotates an existing edge. Keyed on Changed, not emptiness: --cargo ""
+	// clears the annotation, matching the `edit --set key=` convention.
+	cargoFlag, _ := cmd.Flags().GetString("cargo")
+	cargo := strings.TrimSpace(cargoFlag)
+	cargoSet := cmd.Flags().Changed("cargo")
+	if cargoSet {
+		if err := ticket.SetDepCargo(t, dep.ID, cargo); err != nil {
+			return err
+		}
+	}
+
 	if err := store.Update(t); err != nil {
 		return err
 	}
 
+	if cargoSet && cargo == "" {
+		fmt.Printf("Added dependency: %s -> %s (cargo cleared)\n", t.ID, dep.ID)
+		return nil
+	}
+	if cargo != "" {
+		fmt.Printf("Added dependency: %s -> %s (carries: %s)\n", t.ID, dep.ID, cargo)
+		return nil
+	}
 	fmt.Printf("Added dependency: %s -> %s\n", t.ID, dep.ID)
 	return nil
 }
@@ -85,7 +106,17 @@ func runDepTree(cmd *cobra.Command, args []string) error {
 		if status == "" {
 			status = "?"
 		}
-		fmt.Printf("%s%s [%s] %s\n", indent, n.ID, status, n.Title)
+		line := fmt.Sprintf("%s%s [%s] %s", indent, n.ID, status, n.Title)
+		// The root has no incoming edge; every other node has one, and an
+		// unannotated edge is called out as a grooming candidate.
+		if n.Depth > 0 {
+			if n.Cargo != "" {
+				line += "  ← carries: " + n.Cargo
+			} else {
+				line += "  ← no cargo"
+			}
+		}
+		fmt.Println(line)
 	}
 	return nil
 }

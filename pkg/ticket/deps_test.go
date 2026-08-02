@@ -391,6 +391,90 @@ func TestAddDep_SelfAcrossNamespace(t *testing.T) {
 	}
 }
 
+func TestSetDepCargo(t *testing.T) {
+	tk := mk("t-1", StatusReady, "t-2")
+	if err := SetDepCargo(tk, "t-2", "  event schema for the ingest table  "); err != nil {
+		t.Fatalf("SetDepCargo: %v", err)
+	}
+	if got := CargoFor(tk, "t-2"); got != "event schema for the ingest table" {
+		t.Errorf("CargoFor = %q, want trimmed cargo", got)
+	}
+	// Empty cargo deletes rather than storing "".
+	if err := SetDepCargo(tk, "t-2", "  "); err != nil {
+		t.Fatalf("SetDepCargo empty: %v", err)
+	}
+	if _, ok := tk.DepCargo["t-2"]; ok {
+		t.Errorf("DepCargo = %v, want entry deleted", tk.DepCargo)
+	}
+}
+
+func TestSetDepCargo_RejectsInvalid(t *testing.T) {
+	tk := mk("t-1", StatusReady, "t-2")
+	if err := SetDepCargo(tk, "t-2", "two\nlines"); err == nil {
+		t.Error("newline in cargo should fail")
+	}
+	if err := SetDepCargo(tk, "has space", "schema"); err == nil {
+		t.Error("whitespace in dep ID should fail")
+	}
+}
+
+func TestDepCargo_AcrossNamespace(t *testing.T) {
+	tk := mk("t-1", StatusReady, "ticket/foo-abcd")
+	if err := SetDepCargo(tk, "ticket/foo-abcd", "event schema"); err != nil {
+		t.Fatalf("SetDepCargo: %v", err)
+	}
+	if got := CargoFor(tk, "foo-abcd"); got != "event schema" {
+		t.Errorf("CargoFor(bare) = %q, want event schema", got)
+	}
+	// Setting via the other ID form overwrites instead of duplicating.
+	if err := SetDepCargo(tk, "foo-abcd", "migration doc"); err != nil {
+		t.Fatalf("SetDepCargo bare: %v", err)
+	}
+	if len(tk.DepCargo) != 1 {
+		t.Fatalf("DepCargo = %v, want a single entry", tk.DepCargo)
+	}
+	if got := CargoFor(tk, "ticket/foo-abcd"); got != "migration doc" {
+		t.Errorf("CargoFor(namespaced) = %q, want migration doc", got)
+	}
+}
+
+func TestRemoveDep_ClearsCargo(t *testing.T) {
+	tk := mk("t-1", StatusReady, "ticket/foo-abcd", "t-3")
+	if err := SetDepCargo(tk, "ticket/foo-abcd", "event schema"); err != nil {
+		t.Fatalf("SetDepCargo: %v", err)
+	}
+	if err := SetDepCargo(tk, "t-3", "migration doc"); err != nil {
+		t.Fatalf("SetDepCargo: %v", err)
+	}
+	RemoveDep(tk, "foo-abcd")
+	if got := CargoFor(tk, "foo-abcd"); got != "" {
+		t.Errorf("CargoFor after RemoveDep = %q, want empty", got)
+	}
+	if got := CargoFor(tk, "t-3"); got != "migration doc" {
+		t.Errorf("CargoFor(t-3) = %q, want migration doc", got)
+	}
+}
+
+func TestDepTreeCargo(t *testing.T) {
+	root := mk("t-1", StatusReady, "t-2", "t-3")
+	root.DepCargo = map[string]string{"t-2": "event schema"}
+	s := depStore(t, root, mk("t-2", StatusReady), mk("t-3", StatusReady))
+
+	nodes, err := DepTree(s, "t-1", false)
+	if err != nil {
+		t.Fatalf("DepTree: %v", err)
+	}
+	want := map[string]string{"t-1": "", "t-2": "event schema", "t-3": ""}
+	if len(nodes) != len(want) {
+		t.Fatalf("nodes = %v, want %d", depNodeIDs(nodes), len(want))
+	}
+	for _, n := range nodes {
+		if n.Cargo != want[n.ID] {
+			t.Errorf("%s cargo = %q, want %q", n.ID, n.Cargo, want[n.ID])
+		}
+	}
+}
+
 func TestRemoveLink_AcrossNamespace(t *testing.T) {
 	a := mk("t-1", StatusReady)
 	b := mk("t-2", StatusReady)

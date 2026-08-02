@@ -164,6 +164,11 @@ func Serialize(t *Ticket) ([]byte, error) {
 			buf.WriteString("  " + k + ": " + t.Outputs[k] + "\n")
 		}
 	}
+	if len(t.DepCargo) > 0 {
+		if err := writeMapBlock(&buf, "dep-cargo", t.DepCargo); err != nil {
+			return nil, err
+		}
+	}
 	buf.WriteString("---\n")
 
 	buf.WriteString("# " + t.Title + "\n")
@@ -393,6 +398,27 @@ func parseTimeValue(v interface{}) time.Time {
 
 func writeField(buf *bytes.Buffer, key, value string) {
 	buf.WriteString(key + ": " + value + "\n")
+}
+
+// writeMapBlock emits a nested map under key, encoding it through yaml.v3 so
+// values are quoted when they need it. Unlike writeField, this is safe for
+// free-form prose containing colons, hashes or quotes. yaml.v3 sorts map keys,
+// so the output is deterministic.
+func writeMapBlock(buf *bytes.Buffer, key string, m map[string]string) error {
+	var block bytes.Buffer
+	enc := yaml.NewEncoder(&block)
+	enc.SetIndent(2)
+	if err := enc.Encode(m); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	buf.WriteString(key + ":\n")
+	for _, line := range strings.Split(strings.TrimRight(block.String(), "\n"), "\n") {
+		buf.WriteString("  " + line + "\n")
+	}
+	return nil
 }
 
 func writeFlowArray(buf *bytes.Buffer, key string, items []string) {

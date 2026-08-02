@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Status represents the lifecycle state of a ticket.
@@ -111,6 +112,11 @@ type Ticket struct {
 	// nested block in format.go.
 	Outputs map[string]string `yaml:"outputs,omitempty"`
 
+	// What concretely flows across each dependency edge, keyed by dep ID.
+	// A dep with no entry carries nothing — a candidate for deletion during
+	// grooming. Serialized as a nested block in format.go.
+	DepCargo map[string]string `yaml:"dep-cargo,omitempty"`
+
 	// Custom key/value pairs, handled manually in format.go.
 	Extra map[string]string `yaml:"-"`
 
@@ -147,9 +153,11 @@ var reservedKeys = map[string]bool{
 	"id": true, "status": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
+	"dep-cargo": true,
 	// JSON output fields derived from body sections and markdown heading.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,
+	"dep_cargo": true,
 }
 
 // IsReservedKey reports whether key is a known frontmatter field name.
@@ -197,6 +205,41 @@ func ValidateOutputValue(value string) error {
 	}
 	if value != strings.TrimSpace(value) {
 		return fmt.Errorf("output value %q has leading or trailing whitespace", value)
+	}
+	return nil
+}
+
+// ValidateCargoKey checks that key is usable as a dep-cargo key. Keys are dep
+// IDs, which may be namespaced ("project/foo-abcd"), so only empty keys and
+// whitespace or control characters are rejected.
+func ValidateCargoKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("cargo dep ID must not be empty")
+	}
+	for _, c := range key {
+		if unicode.IsSpace(c) || !unicode.IsPrint(c) {
+			return fmt.Errorf("cargo dep ID %q contains invalid character %q", key, string(c))
+		}
+	}
+	return nil
+}
+
+// ValidateCargoValue checks that a cargo annotation is storable. Cargo is human
+// prose naming what flows across a dep edge, so punctuation the extra/outputs
+// rules reject is allowed here — format.go serializes the block through yaml.v3,
+// which quotes as needed. Only empty values, non-printable characters (newlines
+// included) and surrounding whitespace are rejected.
+func ValidateCargoValue(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("cargo must not be empty")
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("cargo %q has leading or trailing whitespace", value)
+	}
+	for _, c := range value {
+		if !unicode.IsPrint(c) {
+			return fmt.Errorf("cargo contains non-printable character %q", string(c))
+		}
 	}
 	return nil
 }

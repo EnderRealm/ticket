@@ -45,8 +45,9 @@ Creating & Editing:
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency (id depends on dep-id)
+    --cargo "<what flows>"   Name what concretely flows across the edge ("" clears)
   undep <id> <dep-id>        Remove dependency
-  dep tree [--full] <id>     Show dependency tree
+  dep tree [--full] <id>     Show dependency tree (marks edges with no cargo)
   link <id> <id> [id...]     Link tickets (symmetric)
   unlink <id> <target-id>    Remove link
 

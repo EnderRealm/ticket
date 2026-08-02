@@ -114,6 +114,7 @@ type ticketJSON struct {
 	TestResults string            `json:"test_results,omitempty"`
 	Notes       []noteJSON        `json:"notes,omitempty"`
 	Outputs     map[string]string `json:"outputs,omitempty"`
+	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
 	Extra       map[string]string `json:"-"`
 }
 
@@ -157,6 +158,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		Tags:        t.Tags,
 		Title:       t.Title,
 		Outputs:     t.Outputs,
+		DepCargo:    t.DepCargo,
 	}
 
 	j.Extra = t.Extra
@@ -795,12 +797,13 @@ type depArgs struct {
 	ID     string `json:"id" jsonschema:"ticket ID"`
 	DepID  string `json:"dep_id" jsonschema:"dependency ticket ID"`
 	Action string `json:"action" jsonschema:"add or remove"`
+	Cargo  string `json:"cargo,omitempty" jsonschema:"optional (add only): the concrete artifact that flows across this edge, e.g. a branch, schema or doc. Edges with no cargo are flagged as unannotated by tk dep tree"`
 }
 
 func registerDep(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_dep",
-		Description: "Add or remove a dependency. The ticket (id) depends on dep_id.",
+		Description: "Add or remove a dependency. The ticket (id) depends on dep_id. On add, cargo optionally names what concretely flows across the edge.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args depArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -816,6 +819,12 @@ func registerDep(server *mcp.Server, store ticket.Store) {
 		switch args.Action {
 		case "add":
 			ticket.AddDep(t, dep.ID)
+			if strings.TrimSpace(args.Cargo) != "" {
+				if err := ticket.SetDepCargo(t, dep.ID, args.Cargo); err != nil {
+					r, _ := errResult("invalid cargo: %v", err)
+					return r, nil, nil
+				}
+			}
 		case "remove":
 			ticket.RemoveDep(t, dep.ID)
 		default:

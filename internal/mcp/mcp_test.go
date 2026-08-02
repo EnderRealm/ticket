@@ -1601,6 +1601,83 @@ func TestEditOutputs(t *testing.T) {
 	}
 }
 
+func TestDepCargo(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{"title": "Cargo dependent", "type": "feature"})
+	depID := createTicketID(t, session, map[string]any{"title": "Cargo blocker", "type": "feature"})
+	bareID := createTicketID(t, session, map[string]any{"title": "Bare blocker", "type": "feature"})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_dep",
+		Arguments: map[string]any{
+			"id": id, "dep_id": depID, "action": "add",
+			"cargo": "event schema: the ingest table",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_dep error: %v", result.Content)
+	}
+	var tk map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tk)
+	cargo, ok := tk["dep_cargo"].(map[string]any)
+	if !ok {
+		t.Fatalf("dep_cargo missing from response: %v", tk)
+	}
+	if cargo[depID] != "event schema: the ingest table" {
+		t.Errorf("dep_cargo[%s] = %v, want the cargo", depID, cargo[depID])
+	}
+
+	// A dep added without cargo leaves the map untouched.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_dep",
+		Arguments: map[string]any{"id": id, "dep_id": bareID, "action": "add"},
+	})
+	var bare map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &bare)
+	cargo, _ = bare["dep_cargo"].(map[string]any)
+	if len(cargo) != 1 || cargo[depID] == nil {
+		t.Errorf("dep_cargo = %v, want only the annotated edge", cargo)
+	}
+
+	// Removing the dep drops its cargo.
+	result, _ = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_dep",
+		Arguments: map[string]any{"id": id, "dep_id": depID, "action": "remove"},
+	})
+	var removed map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &removed)
+	if _, exists := removed["dep_cargo"]; exists {
+		t.Errorf("dep_cargo = %v, want omitted after the dep was removed", removed["dep_cargo"])
+	}
+}
+
+func TestDepCargoRejectsInvalid(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{"title": "Cargo dependent", "type": "feature"})
+	depID := createTicketID(t, session, map[string]any{"title": "Cargo blocker", "type": "feature"})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_dep",
+		Arguments: map[string]any{
+			"id": id, "dep_id": depID, "action": "add",
+			"cargo": "two\nlines",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Errorf("expected an error result for cargo containing a newline: %v", result.Content)
+	}
+}
+
 func TestEditToDonePopulatesBranchOutput(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

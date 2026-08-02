@@ -35,6 +35,7 @@ type ticketJSON struct {
 	Tags        []string          `json:"tags,omitempty"`
 	Title       string            `json:"title"`
 	Outputs     map[string]string `json:"outputs,omitempty"`
+	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
 	Extra       map[string]string `json:"-"`
 }
 
@@ -72,6 +73,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 		Tags:        t.Tags,
 		Title:       t.Title,
 		Outputs:     t.Outputs,
+		DepCargo:    t.DepCargo,
 		Extra:       t.Extra,
 	}
 }

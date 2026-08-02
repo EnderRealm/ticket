@@ -85,6 +85,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		newTicket.Tags = copyStrings(t.Tags)
 		newTicket.Deps = nil
 		newTicket.Links = nil
+		newTicket.DepCargo = nil // the shallow copy aliases the source map
 		newTicket.Notes = copyNotes(t.Notes)
 		newTicket.Parent = ""
 
@@ -96,10 +97,17 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			// If parent isn't moving, drop it — ticket is moving to new repo.
 		}
 
-		// Remap or strip deps.
+		// Remap or strip deps. Cargo follows its dep under the new ID; a
+		// stripped dep takes its cargo with it.
 		for _, d := range t.Deps {
 			if newDep, ok := idMap[d]; ok {
 				newTicket.Deps = append(newTicket.Deps, newDep)
+				if cargo := CargoFor(t, d); cargo != "" {
+					if newTicket.DepCargo == nil {
+						newTicket.DepCargo = map[string]string{}
+					}
+					newTicket.DepCargo[newDep] = cargo
+				}
 			} else {
 				result.StrippedDeps = append(result.StrippedDeps, d)
 			}
