@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.7.0] - 2026-08-02
 
 ### Added
 - Dependency cargo: a dep edge can name what concretely flows across it (a branch, a schema, a doc) via `tk dep <id> <dep-id> --cargo "<what flows>"` or the optional `cargo` argument on `ticket_dep`. Annotations live in a `dep-cargo` frontmatter block keyed by dep ID; existing bare deps are untouched and the annotation is optional everywhere. Passing `--cargo ""` clears an existing annotation. `tk dep tree` renders `← carries: <cargo>` per edge and marks unannotated edges `← no cargo`, so fake dependencies are visible during grooming. `tk show` renders a `## Dep Cargo` section, and `tk query`/MCP responses carry `dep_cargo`. Removing a dep drops its cargo; moving a ticket remaps cargo to the new dep IDs.
