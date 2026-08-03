@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func itemIDs(items []ticket.InboxItem) []string {
 }
 
 func colIndex(tab tabID, name string) int {
-	for i, c := range columnsFor(tab) {
+	for i, c := range columnsFor(tab, nil) {
 		if c.name == name {
 			return i
 		}
@@ -103,7 +104,7 @@ func TestColumnWidthsFitSortArrow(t *testing.T) {
 		}
 	}
 	for _, tab := range []tabID{tabInbox, tabBacklog, tabDone, tabAll} {
-		check(columnsFor(tab))
+		check(columnsFor(tab, nil))
 	}
 	check(epicColumns)
 }
@@ -134,16 +135,16 @@ func TestDashboardSortByTitle(t *testing.T) {
 
 func TestDashboardDefaultSortPerTab(t *testing.T) {
 	idx, dir := defaultSort(tabInbox)
-	if columnsFor(tabInbox)[idx].name != "PRI" || dir != asc {
-		t.Errorf("inbox default: got %s %v, want PRI asc", columnsFor(tabInbox)[idx].name, dir)
+	if columnsFor(tabInbox, nil)[idx].name != "PRI" || dir != asc {
+		t.Errorf("inbox default: got %s %v, want PRI asc", columnsFor(tabInbox, nil)[idx].name, dir)
 	}
 	idx, dir = defaultSort(tabDone)
-	if columnsFor(tabDone)[idx].name != "COMPLETED" || dir != desc {
-		t.Errorf("done default: got %s %v, want COMPLETED desc", columnsFor(tabDone)[idx].name, dir)
+	if columnsFor(tabDone, nil)[idx].name != "COMPLETED" || dir != desc {
+		t.Errorf("done default: got %s %v, want COMPLETED desc", columnsFor(tabDone, nil)[idx].name, dir)
 	}
 	idx, dir = defaultSort(tabAll)
-	if columnsFor(tabAll)[idx].name != "COMPLETED" || dir != desc {
-		t.Errorf("all default: got %s %v, want COMPLETED desc", columnsFor(tabAll)[idx].name, dir)
+	if columnsFor(tabAll, nil)[idx].name != "COMPLETED" || dir != desc {
+		t.Errorf("all default: got %s %v, want COMPLETED desc", columnsFor(tabAll, nil)[idx].name, dir)
 	}
 }
 
@@ -334,6 +335,76 @@ func TestBacklogRollsUpBareAndNamespacedChildren(t *testing.T) {
 	}
 }
 
+func TestEpicAncestorsWalksParentChain(t *testing.T) {
+	// Parent is a free-form ticket ID, so the walk has to cope with chains that
+	// pass through non-epics, dangling parents and cycles.
+	tickets := []*ticket.Ticket{
+		{ID: "ep-0001", Title: "Epic", Status: ticket.StatusOpen, Type: ticket.TypeEpic},
+		{ID: "mid-0002", Title: "Middle", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001"},
+		{ID: "leaf-0003", Title: "Leaf", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "mid-0002"},
+		{ID: "noep-0004", Title: "No epic", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "mid-0002x"},
+		{ID: "mid-0002x", Title: "Epicless middle", Status: ticket.StatusOpen, Type: ticket.TypeFeature},
+		{ID: "gone-0005", Title: "Dangling parent", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "missing-9999"},
+		{ID: "cyc-0006", Title: "Cycle A", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "cyc-0007"},
+		{ID: "cyc-0007", Title: "Cycle B", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "cyc-0006"},
+	}
+	epicOf := epicAncestors(tickets)
+
+	if got := epicOf["leaf-0003"]; got != "ep-0001" {
+		t.Errorf("nested chain: epicOf[leaf-0003] = %q, want ep-0001", got)
+	}
+	for _, id := range []string{"noep-0004", "gone-0005", "cyc-0006", "cyc-0007"} {
+		if got, ok := epicOf[id]; ok {
+			t.Errorf("epicOf[%s] = %q, want no entry", id, got)
+		}
+	}
+}
+
+func epicSortTestModel() dashboardModel {
+	now := time.Now()
+	tickets := []*ticket.Ticket{
+		{ID: "ep-0001", Title: "Epic one", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
+		{ID: "ep-0002", Title: "Epic two", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
+		{ID: "b-000b", Title: "Under epic two", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0002", Created: now},
+		{ID: "a-000a", Title: "Under epic one", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001", Created: now},
+		{ID: "c-000c", Title: "Loose", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabInbox
+	m.sortIdx = colIndex(tabInbox, "EPIC")
+	m.sortDir = asc
+	m.buildItems()
+	return m
+}
+
+func TestDashboardSortByEpicPutsEpiclessLast(t *testing.T) {
+	m := epicSortTestModel()
+
+	if got, want := itemIDs(m.items), []string{"a-000a", "b-000b", "c-000c"}; !slices.Equal(got, want) {
+		t.Errorf("epic asc: got %v, want %v (epic-less last)", got, want)
+	}
+
+	m.sortDir = desc
+	m.sortItems()
+	if got, want := itemIDs(m.items), []string{"c-000c", "b-000b", "a-000a"}; !slices.Equal(got, want) {
+		t.Errorf("epic desc: got %v, want %v (epic-less first)", got, want)
+	}
+}
+
+func TestDashboardEpicColumnRendersShortIDOrEmDash(t *testing.T) {
+	m := epicSortTestModel()
+
+	if !strings.Contains(m.view(), "EPIC") {
+		t.Errorf("inbox header should contain 'EPIC', got:\n%s", m.view())
+	}
+	if row := m.renderRow(m.items[0], false, 0); !strings.Contains(row, "0001") {
+		t.Errorf("row for a-000a should show epic suffix 0001, got:\n%s", row)
+	}
+	if row := m.renderRow(m.items[2], false, 0); !strings.Contains(row, emDash) {
+		t.Errorf("row for epic-less c-000c should show an em-dash, got:\n%s", row)
+	}
+}
+
 func TestDashboardSortKeys(t *testing.T) {
 	tickets := []*ticket.Ticket{
 		{ID: "a-0001", Title: "One", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: time.Now()},
@@ -343,7 +414,7 @@ func TestDashboardSortKeys(t *testing.T) {
 	m.sortIdx = 0
 	m.sortDir = asc
 
-	cols := columnsFor(tabInbox)
+	cols := columnsFor(tabInbox, nil)
 
 	// 's' advances the sort column (wrapping) and resets direction to asc.
 	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})

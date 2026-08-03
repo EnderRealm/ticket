@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- TUI list view: an `EPIC` column between `PRI` and `TYPE` on the inbox, backlog, all, and done tabs, showing the 4-char suffix of the nearest epic up the ticket's `parent` chain (an em-dash when there is none), so a row's epic is visible without opening it. The walk tolerates a `parent` that names a non-epic, a missing ticket, or a cycle. The column sorts like any other via `s`/`S`; tickets with no epic sort last ascending.
+
 ## [7.7.1] - 2026-08-03
 
 ### Fixed

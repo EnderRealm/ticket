@@ -30,8 +30,9 @@ type column struct {
 type dashboardModel struct {
 	all            []*ticket.Ticket
 	items          []ticket.InboxItem
-	childCounts    map[string]int // epic ID -> total child count (shown on backlog tab)
-	activeTab      tabID          // set by app-level tab switching
+	childCounts    map[string]int    // epic ID -> total child count (shown on backlog tab)
+	epicOf         map[string]string // ticket ID -> nearest epic ancestor ID (see epicAncestors)
+	activeTab      tabID             // set by app-level tab switching
 	cursor         int
 	offset         int
 	width          int
@@ -119,6 +120,31 @@ var (
 	}
 )
 
+// epicColumn renders the nearest epic ancestor's short ID, or an em-dash when
+// the ticket has none. It needs per-model state (epicOf, from epicAncestors), so
+// unlike the other columns it is built per call; a nil map renders every row as
+// epic-less, which is what defaultSort's name-only lookup wants.
+func epicColumn(epicOf map[string]string) column {
+	return column{
+		name: "EPIC", width: 6,
+		render: func(t *ticket.Ticket, _ time.Time) string {
+			if epicID := epicOf[t.ID]; epicID != "" {
+				return IDSuffix(epicID)
+			}
+			return emDash
+		},
+		less: func(a, b *ticket.Ticket) bool {
+			ea, eb := epicOf[a.ID], epicOf[b.ID]
+			// Epic-less rows sort last ascending (and first descending, since
+			// sortItems inverts this comparator rather than the ordering).
+			if (ea == "") != (eb == "") {
+				return eb == ""
+			}
+			return IDSuffix(ea) < IDSuffix(eb)
+		},
+	}
+}
+
 // modifiedTime returns Updated, falling back to Created when Updated is zero.
 func modifiedTime(t *ticket.Ticket) time.Time {
 	if t.Updated.IsZero() {
@@ -144,21 +170,23 @@ func adaptiveSpan(t *ticket.Ticket) time.Duration {
 	return time.Since(t.Created)
 }
 
-// columnsFor returns the column set for a tab.
-func columnsFor(tab tabID) []column {
+// columnsFor returns the column set for a tab. epicOf feeds the EPIC column and
+// may be nil when only column names/widths matter.
+func columnsFor(tab tabID, epicOf map[string]string) []column {
+	colEpic := epicColumn(epicOf)
 	switch tab {
 	case tabDone:
-		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colCompleted, colDuration, colTitle}
+		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colCompleted, colDuration, colTitle}
 	case tabAll:
-		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colCompleted, colAgeOrDuration, colTitle}
+		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colCompleted, colAgeOrDuration, colTitle}
 	default: // inbox, backlog
-		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colAge, colTitle}
+		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colAge, colTitle}
 	}
 }
 
 // defaultSort returns the natural sort column index and direction for a tab.
 func defaultSort(tab tabID) (int, sortDir) {
-	cols := columnsFor(tab)
+	cols := columnsFor(tab, nil)
 	switch tab {
 	case tabDone, tabAll:
 		for i, c := range cols {
@@ -270,16 +298,29 @@ func nearestEpicAncestor(t *ticket.Ticket, byID map[string]*ticket.Ticket) strin
 	return ""
 }
 
+// epicAncestors maps each ticket's stored ID to the stored ID of its nearest
+// epic ancestor, omitting tickets whose parent chain holds no epic.
+func epicAncestors(tickets []*ticket.Ticket) map[string]string {
+	byID := indexByBareID(tickets)
+	epicOf := make(map[string]string, len(tickets))
+	for _, t := range tickets {
+		if epicID := nearestEpicAncestor(t, byID); epicID != "" {
+			epicOf[t.ID] = epicID
+		}
+	}
+	return epicOf
+}
+
 func (m *dashboardModel) buildItems() {
 	m.items = nil
 	m.childCounts = nil
 	needle := strings.ToLower(m.filterText)
 
-	// Index tickets so we can walk parent chains to find epic ancestors:
+	// Epic ancestry drives three behaviors:
 	//  - backlog hides any ticket with an epic anywhere up the chain,
 	//  - backlog shows epics as rollups with a descendant count,
-	//  - inbox/all hide epics themselves.
-	byID := indexByBareID(m.all)
+	//  - the EPIC column shows the ancestor on every non-epic tab.
+	m.epicOf = epicAncestors(m.all)
 	// childCounts is keyed on the epic's stored ID, matching the lookup in
 	// renderRow — both read it off the same ticket.
 	childCounts := make(map[string]int)
@@ -287,7 +328,7 @@ func (m *dashboardModel) buildItems() {
 		if t.Type == ticket.TypeEpic {
 			continue
 		}
-		if epicID := nearestEpicAncestor(t, byID); epicID != "" {
+		if epicID := m.epicOf[t.ID]; epicID != "" {
 			childCounts[epicID]++
 		}
 	}
@@ -298,7 +339,7 @@ func (m *dashboardModel) buildItems() {
 		}
 
 		isEpic := t.Type == ticket.TypeEpic
-		hasEpicAncestor := !isEpic && nearestEpicAncestor(t, byID) != ""
+		hasEpicAncestor := !isEpic && m.epicOf[t.ID] != ""
 
 		// Per-tab status filtering.
 		switch m.activeTab {
@@ -362,7 +403,7 @@ func (m *dashboardModel) buildItems() {
 // sortItems stably sorts items by the active column, honoring direction, with
 // priority as a secondary tiebreaker when priority is not the active column.
 func (m *dashboardModel) sortItems() {
-	cols := columnsFor(m.activeTab)
+	cols := columnsFor(m.activeTab, m.epicOf)
 	if m.sortIdx < 0 || m.sortIdx >= len(cols) {
 		m.sortIdx = 0
 	}
@@ -516,7 +557,7 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.filterActive = true
 			m.filterText = ""
 		case "s":
-			cols := columnsFor(m.activeTab)
+			cols := columnsFor(m.activeTab, m.epicOf)
 			m.sortIdx = (m.sortIdx + 1) % len(cols)
 			m.sortDir = asc
 			m.sortItems()
@@ -561,7 +602,7 @@ func (m dashboardModel) view() string {
 
 	var b strings.Builder
 
-	b.WriteString(renderColumnHeader(columnsFor(m.activeTab), m.sortIdx, m.sortDir))
+	b.WriteString(renderColumnHeader(columnsFor(m.activeTab, m.epicOf), m.sortIdx, m.sortDir))
 	b.WriteString("\n")
 
 	// Rows.
@@ -600,7 +641,7 @@ func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style,
 		return padRightBg(typeBadge(t.Type, selected), c.width, bg)
 	case "STATUS":
 		return padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), c.width, bg)
-	case "ID":
+	case "ID", "EPIC":
 		return padRightBg(selBg.Foreground(colorGray).Render(c.render(t, now)), c.width, bg)
 	case "TITLE":
 		return selBg.Foreground(colorWhite).Render(c.render(t, now))
@@ -633,7 +674,7 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		sp = selBg.Render("  ")
 	}
 	line := sp
-	for _, c := range columnsFor(m.activeTab) {
+	for _, c := range columnsFor(m.activeTab, m.epicOf) {
 		line += renderCell(c, t, now, selBg, bg, selected)
 	}
 
