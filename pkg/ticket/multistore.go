@@ -71,7 +71,17 @@ func (m *MultiStore) List() ([]*Ticket, error) {
 	return all, nil
 }
 
-// Create writes a new ticket. The ticket ID must be namespaced ("project/id").
+// Create writes a new ticket. The ticket ID must be namespaced ("project/id")
+// and the project must already exist — as a directory under the root, or as a
+// central-store entry in config. FileStore.Create ensures its own store dir,
+// which under a shared root would otherwise conjure a project from whatever
+// name the ID carries: a mistyped name or a temp directory basename lands in
+// the store and replicates to every other machine.
+//
+// The config half of the check covers a freshly cloned central store. Git
+// tracks no empty directories, so a registered project that has never held a
+// ticket arrives without one, and creating it there is right — `tk init` makes
+// the directory before it registers the project, so the name is already ours.
 func (m *MultiStore) Create(t *Ticket) error {
 	proj, ticketID := ParseNamespacedID(t.ID)
 	if proj == "" {
@@ -80,6 +90,25 @@ func (m *MultiStore) Create(t *Ticket) error {
 	store, err := m.storeFor(proj)
 	if err != nil {
 		return err
+	}
+	// Lstat, not Stat: a symlink here — the central store is a git repo and git
+	// tracks symlinks, so one can arrive from another committer — would put the
+	// write at its target, outside the store, and projects() does not follow it
+	// either, so the tickets would be unlistable.
+	info, err := os.Lstat(store.Dir)
+	switch {
+	case err == nil && !info.IsDir():
+		return fmt.Errorf("project %q in %s is not a directory — refusing to write outside the store", proj, m.rootDir)
+	case err != nil && !os.IsNotExist(err):
+		return fmt.Errorf("project %q in %s: %w", proj, m.rootDir, err)
+	case err != nil:
+		cfg, err := project.Load()
+		if err != nil {
+			return fmt.Errorf("load ticket config: %w", err)
+		}
+		if !project.CentralRegistered(cfg, proj) {
+			return fmt.Errorf("project %q has no ticket directory in %s — run `tk init` in that project's repo to create it", proj, m.rootDir)
+		}
 	}
 	t.ID = ticketID
 	if err := store.Create(t); err != nil {

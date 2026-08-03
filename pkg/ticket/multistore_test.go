@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/EnderRealm/ticket/v7/internal/project"
 )
 
 func testMultiStore(t *testing.T, projects ...string) (*MultiStore, string) {
@@ -199,6 +201,107 @@ func TestMultiStoreCreateRequiresProject(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "project is required") {
 		t.Errorf("expected 'project is required' error, got: %s", got)
+	}
+}
+
+func TestMultiStoreCreateRefusesUnknownProject(t *testing.T) {
+	// Registration is read from config, so point HOME at an empty home to make
+	// "unregistered" a property of the test rather than of the machine.
+	t.Setenv("HOME", t.TempDir())
+	ms, root := testMultiStore(t, "known")
+
+	err := ms.Create(sampleTicket("unknown/stray-8888"))
+	if err == nil {
+		t.Fatal("expected error creating into a project with no directory")
+	}
+	for _, want := range []string{"unknown", "tk init"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want to contain %q", err.Error(), want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "unknown")); !os.IsNotExist(err) {
+		t.Errorf("project directory was created under the store root: %v", err)
+	}
+}
+
+func TestMultiStoreCreateRefusesNonCentralProject(t *testing.T) {
+	// project.Load merges local and shared config, and saveLocal writes only
+	// `path` for a project once a shared config exists — so a project whose
+	// shared entry was lost merges to an entry with no store. A directory under
+	// the central root is only ours to create for a project registered central.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	centralRoot := filepath.Join(home, "central")
+	cfg := project.Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]project.ProjectConfig{
+			"local-only": {Path: filepath.Join(home, "local-only")},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	root := filepath.Join(centralRoot, "tickets")
+	ms := NewMultiStore(root)
+	if err := ms.Create(sampleTicket("local-only/stray-6666")); err == nil {
+		t.Fatal("expected error creating into a project not registered as central")
+	}
+	if _, err := os.Stat(filepath.Join(root, "local-only")); !os.IsNotExist(err) {
+		t.Errorf("project directory was created under the store root: %v", err)
+	}
+}
+
+func TestMultiStoreCreateRefusesSymlinkedProjectDir(t *testing.T) {
+	// The central store is a git repo and git tracks symlinks, so one can arrive
+	// from another committer. Following it would write outside the store, and
+	// projects() does not follow it, so those tickets would never be listed.
+	t.Setenv("HOME", t.TempDir())
+	ms, root := testMultiStore(t)
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(root, "linked")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if err := ms.Create(sampleTicket("linked/stray-7777")); err == nil {
+		t.Fatal("expected error creating into a symlinked project directory")
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("write landed outside the store: %v", entries)
+	}
+}
+
+func TestMultiStoreCreateRegisteredProjectWithoutDir(t *testing.T) {
+	// Git tracks no empty directories, so a registered project that has never
+	// held a ticket has no directory on a freshly cloned central store. Its
+	// registration is the authority the directory only stands in for.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	centralRoot := filepath.Join(home, "central")
+	cfg := project.Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]project.ProjectConfig{
+			"fresh": {Path: filepath.Join(home, "fresh"), Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	root := filepath.Join(centralRoot, "tickets")
+	ms := NewMultiStore(root)
+	if err := ms.Create(sampleTicket("fresh/clone-1234")); err != nil {
+		t.Fatalf("Create into a registered project: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "fresh")); err != nil {
+		t.Errorf("project directory was not created: %v", err)
+	}
+	if _, err := ms.Get("fresh/clone-1234"); err != nil {
+		t.Errorf("Get after create: %v", err)
 	}
 }
 

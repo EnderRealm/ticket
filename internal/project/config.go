@@ -112,6 +112,18 @@ func (cfg *Config) UpsertProject(name string, project ProjectConfig) {
 	cfg.Projects[name] = project
 }
 
+// CentralRegistered reports whether a project is registered with the central
+// store. Presence in the merged config is not enough: `store: central` lives in
+// the shared config alone — saveLocal writes only `path` per project once a
+// central root is set — so a project whose shared config is missing (never
+// cloned, or lost in a sync) merges to an entry with an empty store. Write
+// authorization, read resolution, and the unregistered markers all key on this
+// one predicate so they describe the same set of projects.
+func CentralRegistered(cfg Config, name string) bool {
+	p, ok := cfg.Projects[name]
+	return ok && p.Store == "central"
+}
+
 // IsConfigured returns true if ~/.ticket/config.yaml exists and has central_root set.
 func IsConfigured() bool {
 	local, err := loadLocalOnly()

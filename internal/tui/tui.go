@@ -45,6 +45,7 @@ type App struct {
 	store        *ticket.FileStore
 	ticketsDir   string
 	projectName  string
+	unregistered bool
 	version      string
 	cwd          string
 	workDir      string
@@ -74,8 +75,11 @@ type App struct {
 // namespace the store answers to, resolved by the caller: non-empty only for a
 // central-store project, whose parent/dep/link fields carry the prefix. workDir
 // is the project's real repo directory (also resolved by the caller from
-// config), used to spawn `/work` sessions in the right place.
-func New(ticketsDir, project, version, spawnCommand, workDir string) App {
+// config), used to spawn `/work` sessions in the right place. unregistered
+// marks a central project with no `store: central` entry in config — an entry
+// carrying only a path is not a registration; the header carries it for the
+// whole session, since the alt screen hides a warning printed at startup.
+func New(ticketsDir, project, version, spawnCommand, workDir string, unregistered bool) App {
 	store := ticket.NewProjectFileStore(ticketsDir, project)
 
 	// Derive the displayed project name from the tickets directory path.
@@ -106,6 +110,7 @@ func New(ticketsDir, project, version, spawnCommand, workDir string) App {
 		store:        store,
 		ticketsDir:   ticketsDir,
 		projectName:  projectName,
+		unregistered: unregistered,
 		version:      version,
 		cwd:          cwd,
 		workDir:      workDir,
@@ -526,7 +531,17 @@ func (a App) View() string {
 	// Project name + tab bar on same line, with an info segment flush right.
 	name := lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(a.projectName)
 	tabs := a.renderTabBar()
-	left := " " + name + "  " + StyleDim.Render("—") + "  " + tabs
+	tail := "  " + StyleDim.Render("—") + "  " + tabs
+	left := " " + name + tail
+	if a.unregistered {
+		// Only when it fits: the tab bar alone is ~58 columns, so on an 80-column
+		// terminal the marker can push the row past the width, and a wrapped
+		// header makes the frame taller than a.height and shifts the whole
+		// alt-screen layout — the degraded state the marker exists to announce.
+		if marked := " " + name + " " + StyleWarning.Render("(unregistered)") + tail; lipgloss.Width(marked) <= a.width {
+			left = marked
+		}
+	}
 	right := a.renderHeaderInfo()
 	if right != "" {
 		gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)

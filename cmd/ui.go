@@ -15,9 +15,9 @@ var uiCmd = &cobra.Command{
 	Short: "Interactive ticket browser",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := project.Load()
-		ticketsDir, projectName := TicketsDirAndProject()
+		ticketsDir, projectName, unregistered := resolveTicketsDir()
 		workDir := project.ResolveWorkDir(ticketsDir, cfg)
-		app := tui.New(ticketsDir, projectName, version(), cfg.SpawnCommand, workDir)
+		app := tui.New(ticketsDir, projectName, version(), cfg.SpawnCommand, workDir, unregistered)
 		p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)

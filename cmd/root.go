@@ -211,6 +211,16 @@ func TicketStore() *ticket.FileStore {
 // The project name is non-empty only for a central-store project dir; a local
 // .tickets/ store never sees namespaced IDs and must not accept them.
 func TicketsDirAndProject() (string, string) {
+	dir, name, _ := resolveTicketsDir()
+	return dir, name
+}
+
+// resolveTicketsDir is TicketsDirAndProject plus whether the resolved project is
+// an unregistered central directory. `tk ui` needs it in the frame — the alt
+// screen swallows the warning the CLI commands print on stderr — and takes it
+// from the resolution that decided it rather than re-deriving it from a second
+// config read.
+func resolveTicketsDir() (string, string, bool) {
 	if repoFlag != "" {
 		abs, err := filepath.Abs(repoFlag)
 		if err != nil {
@@ -218,49 +228,79 @@ func TicketsDirAndProject() (string, string) {
 			os.Exit(1)
 		}
 		if dir, ok := ticket.FindTicketsDir(abs); ok {
-			return dir, ""
+			return dir, "", false
 		}
 		// No .tickets/ dir — try central store config for this repo path.
-		if dir, name, ok := ticketsDirFromConfigFor(abs); ok {
-			return dir, name
+		if dir, name, unregistered, ok := ticketsDirFromConfigFor(abs); ok {
+			return dir, name, unregistered
 		}
 		fmt.Fprintf(os.Stderr, "Error: no ticket store found for %s\n", abs)
 		os.Exit(1)
 	}
 	if dir := os.Getenv("TICKETS_DIR"); dir != "" {
-		return dir, ""
+		return dir, "", false
 	}
-	if dir, name, ok := ticketsDirFromConfig(); ok {
-		return dir, name
+	if dir, name, unregistered, ok := ticketsDirFromConfig(); ok {
+		return dir, name, unregistered
 	}
 	if dir, ok := ticket.FindTicketsDir(mustGetwd()); ok {
-		return dir, ""
+		return dir, "", false
 	}
-	return ".tickets", ""
+	return ".tickets", "", false
 }
 
-func ticketsDirFromConfig() (string, string, bool) {
+func ticketsDirFromConfig() (string, string, bool, bool) {
 	return ticketsDirFromConfigFor(mustGetwd())
 }
 
-func ticketsDirFromConfigFor(dir string) (string, string, bool) {
+// ticketsDirFromConfigFor resolves a repo path to its central ticket directory,
+// the project name, whether that project is unregistered, and whether anything
+// was resolved at all.
+func ticketsDirFromConfigFor(dir string) (ticketsDir, name string, unregistered, ok bool) {
 	cfg, err := project.Load()
 	if err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
-	name, _ := project.ResolveName(cfg, dir, "")
-	if name == "" {
-		return "", "", false
+	name, _ = project.ResolveName(cfg, dir, "")
+	// ValidName, not merely non-empty: the config-path source of ResolveName
+	// returns the config map key verbatim, and filepath.Join cleans traversal
+	// segments rather than failing, so a crafted key would resolve a store
+	// outside the central root — and this resolution feeds writes (TicketStore),
+	// not just reads. MultiStore.storeFor guards the identical name-into-path
+	// join.
+	if !project.ValidName(name) {
+		return "", "", false, false
 	}
-	p, ok := cfg.Projects[name]
-	if !ok || p.Store != "central" {
-		return "", "", false
-	}
-	ticketsDir, err := project.CentralProjectDir(name)
+	ticketsDir, err = project.CentralProjectDir(name)
 	if err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
-	return ticketsDir, name, true
+	if project.CentralRegistered(cfg, name) {
+		return ticketsDir, name, false, true
+	}
+	// An unregistered project can still hold tickets centrally — written before
+	// MultiStore.Create started refusing them, or replicated from another
+	// machine. Falling through would resolve to a local store and report an
+	// empty list while the tickets sit on disk. Surfacing them is read-only:
+	// registering the project is `tk init`'s job, so warn rather than write
+	// config.
+	//
+	// Lstat, not Stat: this resolution feeds writes as well as reads
+	// (TicketStore), so following a symlink here would land a `tk create`
+	// outside the store — exactly what MultiStore.Create refuses — and the
+	// listing walk does not follow it either.
+	if info, err := os.Lstat(ticketsDir); err != nil || !info.IsDir() {
+		return "", "", false, false
+	}
+	// The name that got here is a guess — a git remote or a directory basename —
+	// so it can collide with an unrelated project's central dir. A repo holding
+	// its own .tickets/ keeps it, which also leaves a project deliberately
+	// registered with a non-central store on the store it actually has.
+	if _, found := ticket.FindTicketsDir(dir); found {
+		return "", "", false, false
+	}
+	fmt.Fprintf(os.Stderr, "warning: project %q is not registered but has a ticket directory at %s — run `tk init` to register it\n", name, ticketsDir)
+	return ticketsDir, name, true, true
 }
 
 func mustGetwd() string {

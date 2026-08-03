@@ -2024,6 +2024,7 @@ func TestBlockedScopedToExplicitProject(t *testing.T) {
 }
 
 func TestStoreInfo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	session, root := testCentralServer(t, "alpha", "beta")
 	ctx := context.Background()
 
@@ -2070,6 +2071,164 @@ func TestStoreInfo(t *testing.T) {
 	}
 }
 
+// store_info is where an agent looks up what projects exist, so it names the
+// ones no repo is registered to. "nostore" covers the half of that set a
+// presence check misses: `store: central` lives in the shared config alone, so a
+// project whose shared config is missing keeps only its local path entry.
+func TestStoreInfoMarksUnregisteredProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	session, root := testCentralServer(t, "alpha", "nostore", "stray")
+	ctx := context.Background()
+
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"alpha":   {Path: filepath.Join(home, "alpha"), Store: "central"},
+			"nostore": {Path: filepath.Join(home, "nostore")},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_store_info",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	var info map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &info); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	unregistered, ok := info["unregistered"].([]any)
+	if !ok {
+		t.Fatalf("unregistered is not an array: %T", info["unregistered"])
+	}
+	if len(unregistered) != 2 || unregistered[0] != "nostore" || unregistered[1] != "stray" {
+		t.Errorf("unregistered = %v, want [nostore stray]", unregistered)
+	}
+	projects, _ := info["projects"].(map[string]any)
+	if len(projects) != 3 {
+		t.Errorf("expected all projects listed, got %v", projects)
+	}
+}
+
+// An agent reading a project's tickets should learn the project is unregistered
+// from the same response, not by knowing to cross-reference ticket_store_info.
+// Unregistered is a property of a project, not of a ticket, so the field rides
+// on the response rather than repeating on every row.
+func TestListMarksUnregisteredProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	session, root := testCentralServer(t, "alpha", "stray")
+	ctx := context.Background()
+
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"alpha": {Path: filepath.Join(home, "alpha"), Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	createTicketID(t, session, map[string]any{"title": "Registered", "project": "alpha"})
+	createTicketID(t, session, map[string]any{"title": "Stray", "project": "stray"})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	if tickets, _ := resp["tickets"].([]any); len(tickets) != 2 {
+		t.Fatalf("expected both tickets listed, got %v", resp["tickets"])
+	}
+	unregistered, ok := resp["unregistered_projects"].([]any)
+	if !ok {
+		t.Fatalf("unregistered_projects is not an array: %T", resp["unregistered_projects"])
+	}
+	if len(unregistered) != 1 || unregistered[0] != "stray" {
+		t.Errorf("unregistered_projects = %v, want [stray]", unregistered)
+	}
+
+	// Scoped to a registered project, no project in the response is
+	// unregistered, so the field is omitted.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"project": "alpha"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scoped map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &scoped)
+	if _, present := scoped["unregistered_projects"]; present {
+		t.Errorf("unregistered_projects = %v, want omitted", scoped["unregistered_projects"])
+	}
+}
+
+// The field describes the result set, like total, not the page. Derived after
+// pagination, an unregistered project whose tickets sort past the default limit
+// of 50 would go unnamed on a busy store, making the signal depend on which page
+// was asked for.
+func TestListMarksUnregisteredProjectsPastFirstPage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	session, root := testCentralServer(t, "alpha", "stray")
+	ctx := context.Background()
+
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"alpha": {Path: filepath.Join(home, "alpha"), Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	// Priority orders the two tickets, so the stray one lands on page two.
+	createTicketID(t, session, map[string]any{"title": "Registered", "project": "alpha", "priority": 0})
+	createTicketID(t, session, map[string]any{"title": "Stray", "project": "stray", "priority": 4})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"limit": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	tickets, _ := resp["tickets"].([]any)
+	if len(tickets) != 1 {
+		t.Fatalf("expected one ticket on the page, got %v", resp["tickets"])
+	}
+	if id, _ := tickets[0].(map[string]any)["id"].(string); !strings.HasPrefix(id, "alpha/") {
+		t.Fatalf("page should hold the registered project's ticket, got %q", id)
+	}
+	unregistered, ok := resp["unregistered_projects"].([]any)
+	if !ok {
+		t.Fatalf("unregistered_projects is not an array: %T", resp["unregistered_projects"])
+	}
+	if len(unregistered) != 1 || unregistered[0] != "stray" {
+		t.Errorf("unregistered_projects = %v, want [stray]", unregistered)
+	}
+}
+
 func TestStoreInfoNonCentral(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
@@ -2091,6 +2250,7 @@ func TestStoreInfoNonCentral(t *testing.T) {
 }
 
 func TestStoreInfoEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	session, _ := testCentralServer(t)
 	ctx := context.Background()
 

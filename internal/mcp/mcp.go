@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -275,10 +276,43 @@ type listArgs struct {
 const defaultListLimit = 50
 
 type listResultJSON struct {
-	Tickets []ticketSummaryJSON `json:"tickets"`
-	Total   int                 `json:"total"`
-	Offset  int                 `json:"offset"`
-	Limit   int                 `json:"limit"`
+	Tickets              []ticketSummaryJSON `json:"tickets"`
+	Total                int                 `json:"total"`
+	Offset               int                 `json:"offset"`
+	Limit                int                 `json:"limit"`
+	UnregisteredProjects []string            `json:"unregistered_projects,omitempty"`
+}
+
+// unregisteredProjects names the projects among these tickets that are not
+// registered with the central store. Unregistered is a property of a project,
+// not of a ticket, so it rides on the response rather than repeating on every
+// row — but an agent reading a project's tickets should not have to call
+// ticket_store_info to learn the project is unregistered. Bare IDs carry no
+// project (single-project mode), so nothing is reported and no config is read.
+// A config that will not load leaves the answer unknown, which is reported as
+// nothing rather than as "registered".
+func unregisteredProjects(tickets []*ticket.Ticket) []string {
+	names := map[string]bool{}
+	for _, t := range tickets {
+		if proj, _ := ticket.ParseNamespacedID(t.ID); proj != "" {
+			names[proj] = true
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	cfg, err := project.Load()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for name := range names {
+		if !project.CentralRegistered(cfg, name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // resolveTicketsDirFromConfig resolves the tickets directory and project name
@@ -293,8 +327,7 @@ func resolveTicketsDirFromConfig(repoPath string) (string, string, bool) {
 	if name == "" {
 		return "", "", false
 	}
-	p, ok := cfg.Projects[name]
-	if !ok || p.Store != "central" {
+	if !project.CentralRegistered(cfg, name) {
 		return "", "", false
 	}
 	dir, err := project.CentralProjectDir(name)
@@ -315,7 +348,7 @@ func resolveProject(explicit, defaultProject string) string {
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate.",
+		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate. `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
 		tickets, err := store.List()
 		if err != nil {
@@ -364,6 +397,10 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		ticket.SortByStatusPriorityID(tickets)
 
 		total := len(tickets)
+		// Computed over the whole filtered set, like total: derived from the page
+		// instead, an unregistered project whose tickets sort past the first page
+		// would go unnamed, making the signal depend on which page was asked for.
+		unregistered := unregisteredProjects(tickets)
 
 		// Apply pagination.
 		offset := 0
@@ -389,10 +426,11 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		}
 
 		r, err := jsonResult(listResultJSON{
-			Tickets: items,
-			Total:   total,
-			Offset:  offset,
-			Limit:   limit,
+			Tickets:              items,
+			Total:                total,
+			Offset:               offset,
+			Limit:                limit,
+			UnregisteredProjects: unregistered,
 		})
 		return r, nil, err
 	})
@@ -1190,7 +1228,7 @@ func verifyWorkDir(id, defaultProject string) (string, error) {
 func registerStoreInfo(server *mcp.Server, centralRoot string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_store_info",
-		Description: "Return central store root path and per-project ticket directory paths. Only available in central mode.",
+		Description: "Return central store root path, per-project ticket directory paths, and which of those projects are unregistered: a directory in the store with no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it. Only available in central mode.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
 		if centralRoot == "" {
 			r, _ := errResult("ticket_store_info requires central mode (tk serve --central)")
@@ -1203,17 +1241,35 @@ func registerStoreInfo(server *mcp.Server, centralRoot string) {
 			r, _ := errResult("failed to read tickets directory: %v", err)
 			return r, nil, nil
 		}
+		cfg, cfgErr := project.Load()
 
 		projects := map[string]string{}
+		unregistered := []string{}
 		for _, e := range entries {
-			if e.IsDir() {
-				projects[e.Name()] = filepath.Join(ticketsDir, e.Name())
+			if !e.IsDir() {
+				continue
+			}
+			projects[e.Name()] = filepath.Join(ticketsDir, e.Name())
+			if cfgErr == nil && !project.CentralRegistered(cfg, e.Name()) {
+				unregistered = append(unregistered, e.Name())
 			}
 		}
 
 		info := map[string]any{
 			"central_root": centralRoot,
 			"projects":     projects,
+		}
+		if cfgErr != nil {
+			// Config only fails to load when it is corrupt — exactly when the
+			// store paths are what an agent needs to diagnose it. Report them
+			// without the registration answer rather than failing the call. The
+			// underlying error is not echoed: it wraps the yaml error, which
+			// quotes the offending scalar, so a malformed config would leak a
+			// config value (a git email, a project path, a spawn command) into
+			// the response.
+			info["note"] = "registration could not be determined: the ticket config (~/.ticket/config.yaml or <central_root>/config.yaml) could not be read"
+		} else {
+			info["unregistered"] = unregistered
 		}
 
 		r, jsonErr := jsonResult(info)
