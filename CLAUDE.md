@@ -23,6 +23,10 @@ Tickets are markdown files with YAML frontmatter. Core YAML fields: `id`, `statu
 Statuses: `backlog`, `ready`, `open`, `done`, `closed`.
 Types: `epic`, `feature`, `bug`.
 
+The hierarchy is one level deep and enforced on write: `parent`, when set, must resolve to an epic in the same project, and an epic itself has no parent. Enforcement lives in `FileStore.Create`/`Update` (via `ResolveParent` in `pkg/ticket/parent.go`), the choke point `MultiStore` delegates to, so CLI, MCP and TUI writes are all covered — do not add a second check at a call site. `ResolveParent` also canonicalizes: a partial or namespaced parent is rewritten to the resolved epic's stored ID, because every reader matches by exact bare-ID equality.
+
+Stores written before that rule still load and render; only writing one back is refused. `tk audit` reports the violations so a store can be cleaned first.
+
 ## Testing
 
 ```bash
