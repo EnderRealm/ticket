@@ -27,12 +27,12 @@ func TestRenderRowContainsIDSuffixAndTitle(t *testing.T) {
 	}
 	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionWork}
 	m := dashboardModel{width: 80, height: 10}
-	row := m.renderRow(item, false, 0)
-	if !strings.Contains(row, "abcd") {
-		t.Errorf("row should contain ID suffix 'abcd', got:\n%s", row)
+	line := m.renderRow(row{item: item}, false)
+	if !strings.Contains(line, "abcd") {
+		t.Errorf("row should contain ID suffix 'abcd', got:\n%s", line)
 	}
-	if !strings.Contains(row, tk.Title) {
-		t.Errorf("row should contain title %q, got:\n%s", tk.Title, row)
+	if !strings.Contains(line, tk.Title) {
+		t.Errorf("row should contain title %q, got:\n%s", tk.Title, line)
 	}
 }
 
@@ -41,6 +41,9 @@ func TestDashboardEmptyNoPanic(t *testing.T) {
 	output := m.view()
 	if !strings.Contains(output, "PRI") {
 		t.Errorf("empty dashboard header should contain 'PRI', got:\n%s", output)
+	}
+	if !strings.Contains(output, emptyRowsLabel) {
+		t.Errorf("a tab with no rows should draw %q, got:\n%s", emptyRowsLabel, output)
 	}
 }
 
@@ -103,10 +106,9 @@ func TestColumnWidthsFitSortArrow(t *testing.T) {
 			}
 		}
 	}
-	for _, tab := range []tabID{tabInbox, tabBacklog, tabDone, tabAll} {
+	for tab := tabInbox; tab < tabCount; tab++ {
 		check(columnsFor(tab, nil))
 	}
-	check(epicColumns)
 }
 
 func TestDashboardSortByTitle(t *testing.T) {
@@ -330,7 +332,7 @@ func TestBacklogRollsUpBareAndNamespacedChildren(t *testing.T) {
 	if got := itemIDs(m.items); len(got) != 1 || got[0] != "ep-0001" {
 		t.Errorf("backlog rows = %v, want only the epic ep-0001", got)
 	}
-	if n := m.childCounts["ep-0001"]; n != 2 {
+	if n := len(m.children["ep-0001"]); n != 2 {
 		t.Errorf("epic child count = %d, want 2", n)
 	}
 }
@@ -347,17 +349,19 @@ func TestBacklogRollupAndEpicsTabAgreeOnChildren(t *testing.T) {
 	m := newDashboardModel(tickets, 80, 24)
 	m.activeTab = tabBacklog
 	m.buildItems()
+	rolledUp := len(m.epicChildren(tickets[0]))
 
-	var e epicsModel
-	e.refreshTickets(tickets)
-	if len(e.rows) != 1 {
-		t.Fatalf("epics tab rows = %d, want 1", len(e.rows))
+	m.activeTab = tabEpics
+	m.buildItems()
+	if len(m.items) != 1 {
+		t.Fatalf("epics tab groups = %d, want 1", len(m.items))
 	}
-	if got, want := m.childCounts["ep-0001"], len(e.rows[0].children); got != want {
-		t.Errorf("backlog rollup counts %d children, epics tab expands %d", got, want)
+	m.toggleExpand()
+	if got := len(m.rows) - len(m.items); got != rolledUp {
+		t.Errorf("backlog rollup counts %d children, epics tab expands %d", rolledUp, got)
 	}
-	if got := m.childCounts["ep-0001"]; got != 2 {
-		t.Errorf("epic child count = %d, want 2", got)
+	if rolledUp != 2 {
+		t.Errorf("epic child count = %d, want 2", rolledUp)
 	}
 }
 
@@ -375,12 +379,6 @@ func TestBacklogKeepsTicketWhoseEpicIsGone(t *testing.T) {
 
 	if got, want := itemIDs(m.items), []string{"orph-0001", "notep-0002"}; !slices.Equal(got, want) {
 		t.Errorf("backlog rows = %v, want %v (a parent that names no epic must not hide the row)", got, want)
-	}
-	// The EPIC column reads the same way: no known epic, no epic.
-	for i := range m.items {
-		if row := m.renderRow(m.items[i], false, 0); !strings.Contains(row, emDash) {
-			t.Errorf("row for %s should show an em-dash in the EPIC column, got:\n%s", m.items[i].Ticket.ID, row)
-		}
 	}
 
 	// Counts have to agree with the rows they label.
@@ -407,7 +405,7 @@ func TestBacklogKeepsLegacySubEpicRollup(t *testing.T) {
 	if got, want := itemIDs(m.items), []string{"top-0001", "sub-0002"}; !slices.Equal(got, want) {
 		t.Errorf("backlog rows = %v, want %v (a sub-epic keeps its own rollup row)", got, want)
 	}
-	if n := m.childCounts["sub-0002"]; n != 2 {
+	if n := len(m.children["sub-0002"]); n != 2 {
 		t.Errorf("sub-epic child count = %d, want 2", n)
 	}
 
@@ -454,12 +452,93 @@ func TestDashboardEpicColumnRendersShortIDOrEmDash(t *testing.T) {
 	if !strings.Contains(m.view(), "EPIC") {
 		t.Errorf("inbox header should contain 'EPIC', got:\n%s", m.view())
 	}
-	if row := m.renderRow(m.items[0], false, 0); !strings.Contains(row, "0001") {
-		t.Errorf("row for a-000a should show epic suffix 0001, got:\n%s", row)
+	if line := m.renderRow(m.rows[0], false); !strings.Contains(line, "0001") {
+		t.Errorf("row for a-000a should show epic suffix 0001, got:\n%s", line)
 	}
-	if row := m.renderRow(m.items[2], false, 0); !strings.Contains(row, emDash) {
-		t.Errorf("row for epic-less c-000c should show an em-dash, got:\n%s", row)
+	if line := m.renderRow(m.rows[2], false); !strings.Contains(line, emDash) {
+		t.Errorf("row for epic-less c-000c should show an em-dash, got:\n%s", line)
 	}
+}
+
+func TestBacklogAndEpicsOmitEpicColumn(t *testing.T) {
+	// Backlog rows are epics or tickets whose parent names no known epic, and
+	// every epics-tab row is an epic or is drawn under the epic it belongs to,
+	// so an EPIC column there would be an em-dash or a repeat of the row above.
+	for _, tab := range []tabID{tabBacklog, tabEpics} {
+		for _, c := range columnsFor(tab, nil) {
+			if c.name == "EPIC" {
+				t.Errorf("%s tab should not carry an EPIC column", tabNames[tab])
+			}
+		}
+	}
+	for _, tab := range []tabID{tabInbox, tabDone, tabAll} {
+		if colIndex(tab, "EPIC") < 0 {
+			t.Errorf("%s tab should carry an EPIC column", tabNames[tab])
+		}
+	}
+}
+
+// renderedRows counts the ticket rows the dashboard draws: the first line is
+// the column header, an empty tab draws the placeholder, and the table is
+// padded to the window height with blanks.
+func renderedRows(m dashboardModel) int {
+	n := 0
+	for _, line := range strings.Split(m.view(), "\n")[1:] {
+		if strings.TrimSpace(line) == "" || strings.Contains(line, emptyRowsLabel) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func countsTestApp() App {
+	now := time.Now()
+	tickets := []*ticket.Ticket{
+		{ID: "ep-0001", Title: "Epic alpha", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
+		{ID: "ep-0002", Title: "Epic beta", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: now},
+		{ID: "a-000a", Title: "alpha child", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001", Created: now},
+		{ID: "b-000b", Title: "alpha loose", Status: ticket.StatusReady, Type: ticket.TypeBug, Created: now},
+		{ID: "c-000c", Title: "beta child", Status: ticket.StatusBacklog, Type: ticket.TypeBug, Parent: "ep-0002", Created: now},
+		{ID: "d-000d", Title: "beta loose", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Created: now},
+		{ID: "e-000e", Title: "alpha shipped", Status: ticket.StatusDone, Type: ticket.TypeFeature, Created: now, Completed: now},
+		{ID: "f-000f", Title: "dropped epic", Status: ticket.StatusClosed, Type: ticket.TypeEpic, Created: now},
+		{ID: "g-000g", Title: "no status", Type: ticket.TypeFeature, Created: now},
+	}
+	a := App{tickets: tickets}
+	a.dashboard.all = tickets
+	a.dashboard.setSize(140, 30)
+	return a
+}
+
+func TestTabCountsMatchRenderedRows(t *testing.T) {
+	a := countsTestApp()
+
+	check := func(label string) {
+		t.Helper()
+		counts := a.tabCounts()
+		total := 0
+		for tab := tabInbox; tab < tabCount; tab++ {
+			a.activeTab = tab
+			a.syncDashboardTab()
+			if got, want := renderedRows(a.dashboard), counts[tab]; got != want {
+				t.Errorf("%s: %s tab renders %d rows, tab bar says %d", label, tabNames[tab], got, want)
+			}
+			total += counts[tab]
+		}
+		if total == 0 {
+			t.Errorf("%s: every tab is empty, the check proves nothing", label)
+		}
+	}
+
+	check("unfiltered")
+
+	a.dashboard.filterText = "alpha"
+	check("text filter")
+
+	a.dashboard.filterText = ""
+	a.dashboard.typeFilter = ticket.TypeBug
+	check("type filter")
 }
 
 func TestDashboardSortKeys(t *testing.T) {

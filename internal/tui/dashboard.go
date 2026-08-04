@@ -27,12 +27,21 @@ type column struct {
 	less   func(a, b *ticket.Ticket) bool
 }
 
+// row is one rendered line: a tab item, or a child nested under an expanded
+// epic on the epics tab. The cursor indexes rows, not items.
+type row struct {
+	item  ticket.InboxItem
+	child bool
+}
+
 type dashboardModel struct {
 	all            []*ticket.Ticket
-	items          []ticket.InboxItem
-	epics          map[string]bool // set of bare epic IDs, from bareEpicIDs
-	childCounts    map[string]int  // bare epic ID -> child count (shown on backlog tab)
-	activeTab      tabID           // set by app-level tab switching
+	items          []ticket.InboxItem          // the tab's rows, sorted; epic groups on the epics tab
+	rows           []row                       // rendered lines: items plus the children of expanded epics
+	epics          map[string]bool             // set of bare epic IDs, from bareEpicIDs
+	children       map[string][]*ticket.Ticket // bare parent ID -> children, from childrenByParent
+	expanded       map[string]bool             // epic ID -> expanded, epics tab
+	activeTab      tabID                       // set by app-level tab switching
 	cursor         int
 	offset         int
 	width          int
@@ -211,7 +220,12 @@ func columnsFor(tab tabID, epics map[string]bool) []column {
 		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colCompleted, colDuration, colTitle}
 	case tabAll:
 		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colCompleted, colAgeOrDuration, colTitle}
-	default: // inbox, backlog
+	case tabBacklog, tabEpics:
+		// No EPIC column: backlog rows are epics or tickets whose parent names
+		// no known epic, and every epics-tab row is an epic or is drawn directly
+		// under the epic it belongs to.
+		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colAge, colTitle}
+	default: // inbox
 		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colAge, colTitle}
 	}
 }
@@ -223,6 +237,12 @@ func defaultSort(tab tabID) (int, sortDir) {
 	case tabDone, tabAll:
 		for i, c := range cols {
 			if c.name == "COMPLETED" {
+				return i, desc
+			}
+		}
+	case tabEpics:
+		for i, c := range cols {
+			if c.name == "AGE" {
 				return i, desc
 			}
 		}
@@ -265,8 +285,8 @@ func (m *dashboardModel) buildItemsPreservingCursor() {
 	if selectedID == "" {
 		return
 	}
-	for i, item := range m.items {
-		if item.Ticket.ID == selectedID {
+	for i, r := range m.rows {
+		if r.item.Ticket.ID == selectedID {
 			m.cursor = i
 			m.clampOffset()
 			return
@@ -283,8 +303,8 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 	m.all = tickets
 	m.buildItems()
 	if selectedID != "" {
-		for i, item := range m.items {
-			if item.Ticket.ID == selectedID {
+		for i, r := range m.rows {
+			if r.item.Ticket.ID == selectedID {
 				m.cursor = i
 				m.clampOffset()
 				return
@@ -293,106 +313,128 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 	}
 }
 
-// childCountsByEpic counts each epic's children, keyed on the epic's bare ID.
-// A map key can't tolerate the namespace mismatch the way SameTicketID does,
-// and the central store records children with a namespaced parent while
-// tickets written before the namespacing rollout record it bare. The epics tab
-// groups children the same way, so both views report the same set.
-func childCountsByEpic(tickets []*ticket.Ticket) map[string]int {
-	counts := make(map[string]int)
-	for _, t := range tickets {
-		if t.Parent == "" {
-			continue
-		}
-		_, parent := ticket.ParseNamespacedID(t.Parent)
-		counts[parent]++
+// tabShows reports whether a ticket is a row on tab, under the active type
+// filter and the lowercased search needle. This is the one place the per-tab
+// rules are written down — buildItems builds the rows with it and App.tabCounts
+// counts with it, so a tab's rows and its tab-bar count cannot disagree:
+//
+//	tab      rows                      epics             an epic's children
+//	inbox    open, ready               hidden            shown
+//	backlog  backlog                   shown as rollups  hidden (rolled up)
+//	epics    epics, not done/closed    shown as groups   nested, when expanded
+//	done     done, closed              shown             shown
+//	all      anything but done/closed  hidden            shown
+//
+// A ticket with no status is a row on no tab.
+//
+// One divergence, on the epics tab: a child nested under an expanded epic
+// belongs to a group this predicate already counted, so it is not a row of its
+// own and the tab bar counts epic groups rather than rendered lines —
+// expanding a group must not inflate the count. That is the agreed contract,
+// pinned by TestEpicsCountsGroupsNotExpandedChildren. A filter therefore
+// selects epics, and an expanded epic still shows all of its children.
+func tabShows(tab tabID, t *ticket.Ticket, epics map[string]bool, typeFilter ticket.TicketType, needle string) bool {
+	if t.Status == "" {
+		return false
 	}
-	return counts
+	isEpic := t.Type == ticket.TypeEpic
+
+	switch tab {
+	case tabBacklog:
+		if t.Status != ticket.StatusBacklog {
+			return false
+		}
+		// Children roll up under their epic; hide them here. An epic is never
+		// hidden: a store written before the one-level rule can hold an epic
+		// under an epic, and hiding it would take its own children — which roll
+		// up under it — off the tab with it.
+		if !isEpic && epicOf(t, epics) != "" {
+			return false
+		}
+	case tabInbox:
+		if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady {
+			return false
+		}
+		if isEpic {
+			return false
+		}
+	case tabEpics:
+		if !isEpic || t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed {
+			return false
+		}
+	case tabDone:
+		if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
+			return false
+		}
+	case tabAll:
+		if t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed {
+			return false
+		}
+		if isEpic {
+			return false
+		}
+	}
+
+	if typeFilter != "" && t.Type != typeFilter {
+		return false
+	}
+	if needle != "" {
+		if !strings.Contains(strings.ToLower(t.Title), needle) &&
+			!strings.Contains(strings.ToLower(t.ID), needle) {
+			return false
+		}
+	}
+	return true
+}
+
+// rowsFor returns the rows tab renders under the given filters, unordered:
+// buildItems sorts them. epics is the bareEpicIDs set for tickets.
+func rowsFor(tab tabID, tickets []*ticket.Ticket, epics map[string]bool, typeFilter ticket.TicketType, filterText string) []ticket.InboxItem {
+	needle := strings.ToLower(filterText)
+
+	var items []ticket.InboxItem
+	for _, t := range tickets {
+		if tabShows(tab, t, epics, typeFilter, needle) {
+			items = append(items, ticket.NextAction(t))
+		}
+	}
+	return items
 }
 
 func (m *dashboardModel) buildItems() {
-	m.items = nil
-	m.childCounts = nil
-	needle := strings.ToLower(m.filterText)
-
-	// Backlog shows each epic as a rollup carrying its child count, and hides
-	// the children themselves as rows. The epic set decides membership for both
-	// the rollup and the EPIC column.
+	// The epic set decides membership and feeds the EPIC column; the child map
+	// feeds both the backlog rollup counts and the epics tab's expansion.
 	m.epics = bareEpicIDs(m.all)
-	childCounts := childCountsByEpic(m.all)
-
-	for _, t := range m.all {
-		if t.Status == "" {
-			continue
-		}
-
-		isEpic := t.Type == ticket.TypeEpic
-		hasEpic := epicOf(t, m.epics) != ""
-
-		// Per-tab status filtering.
-		switch m.activeTab {
-		case tabBacklog:
-			if t.Status != ticket.StatusBacklog {
-				continue
-			}
-			// Children roll up under their epic; hide them here. An epic is
-			// never hidden: a store written before the one-level rule can hold
-			// an epic under an epic, and hiding it would take its own children —
-			// which roll up under it — off the tab with it.
-			if !isEpic && hasEpic {
-				continue
-			}
-		case tabInbox:
-			if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady {
-				continue
-			}
-			// Epics live in the epics tab.
-			if isEpic {
-				continue
-			}
-		case tabDone:
-			// Done shows every done/closed ticket, including epics.
-			if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
-				continue
-			}
-		case tabAll:
-			// Show everything except done/closed.
-			if t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed {
-				continue
-			}
-			if isEpic {
-				continue
-			}
-		}
-
-		if m.typeFilter != "" && t.Type != m.typeFilter {
-			continue
-		}
-		if needle != "" {
-			if !strings.Contains(strings.ToLower(t.Title), needle) &&
-				!strings.Contains(strings.ToLower(t.ID), needle) {
-				continue
-			}
-		}
-
-		item := ticket.NextAction(t)
-		m.items = append(m.items, item)
-	}
-
-	if m.activeTab == tabBacklog {
-		m.childCounts = childCounts
-	}
+	m.children = childrenByParent(m.all)
+	m.items = rowsFor(m.activeTab, m.all, m.epics, m.typeFilter, m.filterText)
 
 	m.sortItems()
 
-	if m.cursor >= len(m.items) {
-		m.cursor = max(0, len(m.items)-1)
+	if m.cursor >= len(m.rows) {
+		m.cursor = max(0, len(m.rows)-1)
 	}
 	m.clampOffset()
 }
 
+// rebuildRows flattens items into rendered lines: on the epics tab an expanded
+// epic is followed by its children, which are not items of their own.
+func (m *dashboardModel) rebuildRows() {
+	m.rows = nil
+	for _, item := range m.items {
+		m.rows = append(m.rows, row{item: item})
+		if m.activeTab != tabEpics || !m.expanded[item.Ticket.ID] {
+			continue
+		}
+		for _, child := range m.epicChildren(item.Ticket) {
+			m.rows = append(m.rows, row{item: ticket.NextAction(child), child: true})
+		}
+	}
+}
+
 // sortItems stably sorts items by the active column, honoring direction, with
 // priority as a secondary tiebreaker when priority is not the active column.
+// Children follow their epic, so only the items are reordered; the rendered
+// rows are rebuilt from the new order before returning, so callers need not.
 func (m *dashboardModel) sortItems() {
 	cols := columnsFor(m.activeTab, m.epics)
 	if m.sortIdx < 0 || m.sortIdx >= len(cols) {
@@ -417,11 +459,12 @@ func (m *dashboardModel) sortItems() {
 		}
 		return false
 	})
+	m.rebuildRows()
 }
 
 func (m dashboardModel) selected() *ticket.Ticket {
-	if m.cursor >= 0 && m.cursor < len(m.items) {
-		return m.items[m.cursor].Ticket
+	if m.cursor >= 0 && m.cursor < len(m.rows) {
+		return m.rows[m.cursor].item.Ticket
 	}
 	return nil
 }
@@ -483,7 +526,7 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 					m.clampOffset()
 				}
 			case "down":
-				if m.cursor < len(m.items)-1 {
+				if m.cursor < len(m.rows)-1 {
 					m.cursor++
 					m.clampOffset()
 				}
@@ -513,7 +556,7 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				m.clampOffset()
 			}
 		case "down", "j":
-			if m.cursor < len(m.items)-1 {
+			if m.cursor < len(m.rows)-1 {
 				m.cursor++
 				m.clampOffset()
 			}
@@ -525,15 +568,15 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.clampOffset()
 		case "pgdown":
 			m.cursor += m.visibleRows()
-			if m.cursor > len(m.items)-1 {
-				m.cursor = max(0, len(m.items)-1)
+			if m.cursor > len(m.rows)-1 {
+				m.cursor = max(0, len(m.rows)-1)
 			}
 			m.clampOffset()
 		case "g":
 			m.cursor = 0
 			m.clampOffset()
 		case "G":
-			m.cursor = max(0, len(m.items)-1)
+			m.cursor = max(0, len(m.rows)-1)
 			m.clampOffset()
 		case "t":
 			types := []ticket.TicketType{"", ticket.TypeFeature, ticket.TypeBug, ticket.TypeEpic}
@@ -577,14 +620,18 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.clampOffset()
 		case tea.MouseButtonWheelDown:
 			m.cursor += 3
-			if m.cursor > len(m.items)-1 {
-				m.cursor = max(0, len(m.items)-1)
+			if m.cursor > len(m.rows)-1 {
+				m.cursor = max(0, len(m.rows)-1)
 			}
 			m.clampOffset()
 		}
 	}
 	return m, nil
 }
+
+// emptyRowsLabel is the placeholder a tab draws when nothing passes its rules
+// and filters — "no rows" alone reads as a rendering fault on any tab.
+const emptyRowsLabel = "No tickets found."
 
 func (m dashboardModel) view() string {
 	if m.width == 0 || m.height == 0 {
@@ -599,17 +646,25 @@ func (m dashboardModel) view() string {
 	// Rows.
 	visible := m.visibleRows()
 	end := m.offset + visible
-	if end > len(m.items) {
-		end = len(m.items)
+	if end > len(m.rows) {
+		end = len(m.rows)
+	}
+
+	// A tab with no rows draws the placeholder on the first line instead.
+	lines := end - m.offset
+	if len(m.rows) == 0 {
+		b.WriteString(StyleDim.Render("  " + emptyRowsLabel))
+		b.WriteString("\n")
+		lines = 1
 	}
 
 	for i := m.offset; i < end; i++ {
-		b.WriteString(m.renderRow(m.items[i], i == m.cursor, 0))
+		b.WriteString(m.renderRow(m.rows[i], i == m.cursor))
 		b.WriteString("\n")
 	}
 
 	// Pad empty rows.
-	for i := end - m.offset; i < visible; i++ {
+	for i := lines; i < visible; i++ {
 		b.WriteString("\n")
 	}
 
@@ -647,8 +702,8 @@ func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style,
 	}
 }
 
-func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) string {
-	t := item.Ticket
+func (m dashboardModel) renderRow(r row, selected bool) string {
+	t := r.item.Ticket
 	now := time.Now()
 
 	selBg := lipgloss.NewStyle()
@@ -660,21 +715,28 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		bg = &selBg
 	}
 
-	sp := "  "
-	if selected {
-		sp = selBg.Render("  ")
+	// An epic group carries its expand indicator in the two-column lead; every
+	// other row, children included, keeps the plain indent.
+	lead := "  "
+	group := m.activeTab == tabEpics && !r.child
+	if group {
+		lead = expandIndicator(m.expanded[t.ID]) + " "
 	}
-	line := sp
+	if selected {
+		lead = selBg.Render(lead)
+	}
+	line := lead
 	for _, c := range columnsFor(m.activeTab, m.epics) {
 		line += renderCell(c, t, now, selBg, bg, selected)
 	}
 
 	// On the backlog tab, show "(N children)" next to epic rows so they act as rollups.
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
-		_, bareID := ticket.ParseNamespacedID(t.ID)
-		n := m.childCounts[bareID]
-		label := fmt.Sprintf("  (%d children)", n)
+		label := fmt.Sprintf("  (%d children)", len(m.epicChildren(t)))
 		line += selBg.Foreground(colorSubtle).Render(label)
+	}
+	if group {
+		line += m.epicProgress(t, selBg)
 	}
 
 	// Pad to full width for selection highlight.

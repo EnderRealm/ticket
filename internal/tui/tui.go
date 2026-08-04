@@ -55,8 +55,7 @@ type App struct {
 	// Views
 	activeTab tabID
 	overlay   overlayID
-	dashboard dashboardModel // Tickets tab
-	epics     epicsModel     // Epics tab
+	dashboard dashboardModel // every tab: the shared table
 	detail    detailModel
 	form      formModel
 
@@ -120,8 +119,6 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 	}
 	a.dashboard.activeTab = tabInbox
 	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(tabInbox)
-	a.epics.sortIdx = epicDefaultSortIdx()
-	a.epics.sortDir = desc
 	return a
 }
 
@@ -188,7 +185,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		contentH := a.contentHeight()
 		a.dashboard.setSize(a.width, contentH)
-		a.epics.setSize(a.width, contentH)
 		a.detail.setSize(a.width, a.height) // overlays use full height
 		a.form.setSize(a.width, a.height)
 		return a, nil
@@ -203,7 +199,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.tickets = msg
 		a.dashboard.activeTab = a.activeTab
 		a.dashboard.refreshTickets(a.tickets)
-		a.epics.refreshTickets(a.tickets)
 		if a.overlay == overlayDetail && a.detail.ticket != nil {
 			// If the user is mid-input (move picker, note entry, etc.), don't
 			// disturb them — a background refresh should never reset their
@@ -312,10 +307,8 @@ func (a App) updateCommandBar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Search: apply filter to dashboard.
-		if a.isTicketTab() {
-			a.dashboard.filterText = val
-			a.dashboard.refreshTickets(a.tickets)
-		}
+		a.dashboard.filterText = val
+		a.dashboard.refreshTickets(a.tickets)
 		return a, nil
 	}
 
@@ -384,7 +377,7 @@ func (a App) delegateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// When dashboard has active input (filter or delete confirm), delegate
 	// immediately so keystrokes reach the input instead of triggering shortcuts.
-	if a.activeTab != tabEpics && a.dashboard.inputActive() {
+	if a.dashboard.inputActive() {
 		return a.delegateTab(msg)
 	}
 
@@ -406,86 +399,75 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Tab-specific keys.
+	// Epics tab: space and enter expand the epic group at the cursor. A child
+	// row is not a group, so enter on one falls through to opening it.
 	if a.activeTab == tabEpics {
 		switch msg.String() {
-		case "enter", "o":
-			if t := a.epics.selectedTicket(); t != nil {
-				if t.Type == ticket.TypeEpic {
-					a.epics.toggleExpand()
-					return a, nil
-				}
-				a.detail = newDetailModel(t, a.width, a.height)
-				a.overlay = overlayDetail
-				return a, nil
-			}
 		case " ":
-			a.epics.toggleExpand()
+			a.dashboard.toggleExpand()
 			return a, nil
-		case "e":
-			if t := a.epics.selectedTicket(); t != nil {
-				a.form = newEditFormModel(t, a.width, a.height)
-				a.overlay = overlayForm
+		case "enter", "o":
+			if a.dashboard.toggleExpand() {
 				return a, nil
 			}
 		}
-	} else {
-		// Ticket tabs (backlog, triage, inbox, done, all).
-		switch msg.String() {
-		case "enter", "o":
+	}
+
+	// Row keys, shared by every tab.
+	switch msg.String() {
+	case "enter", "o":
+		if t := a.dashboard.selected(); t != nil {
+			a.openDashboardTicket(t)
+			return a, nil
+		}
+	case "e":
+		if t := a.dashboard.selected(); t != nil {
+			a.form = newEditFormModel(t, a.width, a.height)
+			a.overlay = overlayForm
+			return a, nil
+		}
+	case "m":
+		if t := a.dashboard.selected(); t != nil {
+			a.detail = newDetailModel(t, a.width, a.height)
+			a.detail.startMovePicker(a.ticketsDir)
+			a.overlay = overlayDetail
+			return a, nil
+		}
+	case "d":
+		if t := a.dashboard.selected(); t != nil {
+			a.dashboard.confirmDelete = true
+			a.dashboard.deleteTargetID = t.ID
+			return a, nil
+		}
+	case "p":
+		if t := a.dashboard.selected(); t != nil {
+			return a, func() tea.Msg { return cyclePriorityMsg{id: t.ID} }
+		}
+	case "r":
+		if a.activeTab == tabBacklog {
 			if t := a.dashboard.selected(); t != nil {
-				a.openDashboardTicket(t)
-				return a, nil
+				return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusReady} }
 			}
-		case "e":
+		}
+	case "b":
+		if a.activeTab == tabInbox {
 			if t := a.dashboard.selected(); t != nil {
-				a.form = newEditFormModel(t, a.width, a.height)
-				a.overlay = overlayForm
-				return a, nil
+				return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusBacklog} }
 			}
-		case "m":
+		}
+	case "x":
+		if a.activeTab == tabInbox {
 			if t := a.dashboard.selected(); t != nil {
-				a.detail = newDetailModel(t, a.width, a.height)
-				a.detail.startMovePicker(a.ticketsDir)
-				a.overlay = overlayDetail
-				return a, nil
+				return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusDone} }
 			}
-		case "d":
-			if t := a.dashboard.selected(); t != nil {
-				a.dashboard.confirmDelete = true
-				a.dashboard.deleteTargetID = t.ID
-				return a, nil
-			}
-		case "p":
-			if t := a.dashboard.selected(); t != nil {
-				return a, func() tea.Msg { return cyclePriorityMsg{id: t.ID} }
-			}
-		case "r":
-			if a.activeTab == tabBacklog {
-				if t := a.dashboard.selected(); t != nil {
-					return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusReady} }
-				}
-			}
-		case "b":
-			if a.activeTab == tabInbox {
-				if t := a.dashboard.selected(); t != nil {
-					return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusBacklog} }
-				}
-			}
-		case "x":
-			if a.activeTab == tabInbox {
-				if t := a.dashboard.selected(); t != nil {
-					return a, func() tea.Msg { return setStatusMsg{id: t.ID, status: ticket.StatusDone} }
-				}
-			}
-		case "y":
-			if t := a.dashboard.selected(); t != nil {
-				return a, yankID(t.ID)
-			}
-		case "w":
-			if t := a.dashboard.selected(); t != nil {
-				return a, a.spawnWork(t)
-			}
+		}
+	case "y":
+		if t := a.dashboard.selected(); t != nil {
+			return a, yankID(t.ID)
+		}
+	case "w":
+		if t := a.dashboard.selected(); t != nil {
+			return a, a.spawnWork(t)
 		}
 	}
 
@@ -494,12 +476,6 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) delegateTab(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if a.activeTab == tabEpics {
-		var cmd tea.Cmd
-		a.epics, cmd = a.epics.update(msg)
-		return a, cmd
-	}
-	// All other tabs use the dashboard.
 	var cmd tea.Cmd
 	a.dashboard, cmd = a.dashboard.update(msg)
 	return a, cmd
@@ -526,7 +502,6 @@ func (a App) View() string {
 		contentH = 1
 	}
 	a.dashboard.setSize(a.width, contentH)
-	a.epics.setSize(a.width, contentH)
 
 	// Project name + tab bar on same line, with an info segment flush right.
 	name := lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(a.projectName)
@@ -555,12 +530,7 @@ func (a App) View() string {
 	b.WriteString("\n")
 
 	// Tab content.
-	var content string
-	if a.activeTab == tabEpics {
-		content = a.epics.view()
-	} else {
-		content = a.dashboard.view()
-	}
+	content := a.dashboard.view()
 
 	// If overlay active, dim the background content.
 	if a.overlay != overlayNone {
@@ -591,38 +561,20 @@ var tabColors = []lipgloss.Color{
 	colorYellow,  // all
 }
 
+// tabCounts is what each tab shows, counted with the same tabShows the
+// dashboard builds its rows from and under the filters the dashboard has
+// active — a count and its tab agree, filtered or not, with the one divergence
+// tabShows documents: on the epics tab a count is the number of epic groups,
+// so an expanded group renders more lines than it is counted as.
 func (a App) tabCounts() map[tabID]int {
-	counts := make(map[tabID]int)
-
-	// Mirror dashboard.buildItems filtering so counts match what each tab shows.
 	epics := bareEpicIDs(a.tickets)
-
-	for _, t := range a.tickets {
-		isEpic := t.Type == ticket.TypeEpic
-		hasEpic := epicOf(t, epics) != ""
-		done := t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed
-
-		switch t.Status {
-		case ticket.StatusBacklog:
-			// Backlog shows epics as rollups; children roll up under them, and
-			// an epic always keeps its own row even under a legacy parent epic.
-			if isEpic || !hasEpic {
-				counts[tabBacklog]++
+	needle := strings.ToLower(a.dashboard.filterText)
+	counts := make(map[tabID]int)
+	for tab := tabInbox; tab < tabCount; tab++ {
+		for _, t := range a.tickets {
+			if tabShows(tab, t, epics, a.dashboard.typeFilter, needle) {
+				counts[tab]++
 			}
-		case ticket.StatusDone, ticket.StatusClosed:
-			// Done includes epics.
-			counts[tabDone]++
-		case ticket.StatusOpen, ticket.StatusReady:
-			if !isEpic {
-				counts[tabInbox]++
-			}
-		}
-
-		if isEpic && !done {
-			counts[tabEpics]++
-		}
-		if !done && !isEpic {
-			counts[tabAll]++
 		}
 	}
 	return counts
@@ -705,9 +657,6 @@ func (a App) renderCommandBar() string {
 // filterInfoText returns the unstyled filter segment for the current state, so
 // footerView can combine it with the help text for wrapping.
 func (a App) filterInfoText() string {
-	if !a.isTicketTab() {
-		return ""
-	}
 	if a.dashboard.filterActive {
 		return "/ " + a.dashboard.filterText + "█"
 	}
@@ -724,9 +673,6 @@ func (a App) filterInfoText() string {
 // helpText returns the unstyled help string for the current state, used by
 // footerView so it can wrap the plain text and style each wrapped line.
 func (a App) helpText() string {
-	if a.activeTab == tabEpics {
-		return "↑↓ select  enter expand  (e)dit  (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (c)reate  (q)uit"
-	}
 	if a.dashboard.confirmDelete {
 		return ""
 	}
@@ -735,6 +681,12 @@ func (a App) helpText() string {
 	if a.dashboard.filterActive {
 		return "↑↓ select  enter apply  esc clear"
 	}
+	// Every tab is the same table, so it takes the same keys; only enter differs,
+	// expanding an epic group rather than opening it.
+	action := "enter (o)pen"
+	if a.activeTab == tabEpics {
+		action = "enter expand"
+	}
 	status := ""
 	switch a.activeTab {
 	case tabBacklog:
@@ -742,7 +694,7 @@ func (a App) helpText() string {
 	case tabInbox:
 		status = "(b)acklog (x)done "
 	}
-	return "↑↓ select  │  enter (o)pen (c)reate (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+	return "↑↓ select  │  " + action + " (c)reate (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 }
 
 func (a App) renderHelp() string {
@@ -830,11 +782,6 @@ func styleFooterLine(wl wrappedLine, filterEnd int) string {
 	}
 }
 
-// isTicketTab returns true if the active tab shows ticket list (not epics).
-func (a App) isTicketTab() bool {
-	return a.activeTab != tabEpics
-}
-
 // openDashboardTicket opens a ticket selected from a ticket tab. Epics on the
 // backlog tab are rollups: opening one jumps to the epics tab focused on that
 // epic rather than showing a detail overlay.
@@ -843,7 +790,7 @@ func (a *App) openDashboardTicket(t *ticket.Ticket) {
 		epicID := t.ID
 		a.activeTab = tabEpics
 		a.syncDashboardTab()
-		a.epics.focusEpic(epicID)
+		a.dashboard.focusEpic(epicID)
 		return
 	}
 	a.detail = newDetailModel(t, a.width, a.height)
@@ -857,7 +804,6 @@ func (a *App) syncDashboardTab() {
 	a.dashboard.offset = 0
 	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(a.activeTab)
 	a.dashboard.buildItems()
-	a.epics.resetSort()
 }
 
 // contentHeight returns the available height for tab/overlay content,

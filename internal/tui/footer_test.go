@@ -19,7 +19,6 @@ func newTestApp(w, h int) App {
 	a := App{activeTab: tabInbox, width: w, height: h}
 	a.dashboard.activeTab = tabInbox
 	a.dashboard.setSize(w, a.contentHeight())
-	a.epics.setSize(w, a.contentHeight())
 	return a
 }
 
