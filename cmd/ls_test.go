@@ -75,7 +75,7 @@ func TestLsBacklogOnlyNotEmpty(t *testing.T) {
 func TestLsParentMatchesBareAndNamespacedParent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TICKETS_DIR", dir)
-	store := ticket.NewFileStore(dir)
+	store := ticket.NewProjectFileStore(dir, "proj")
 
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. Both are children.
@@ -84,10 +84,14 @@ func TestLsParentMatchesBareAndNamespacedParent(t *testing.T) {
 		"ls-child-ns":   "proj/ls-epic-0001",
 	}
 	for _, id := range []string{"ls-epic-0001", "ls-child-bare", "ls-child-ns"} {
+		typ := ticket.TypeFeature
+		if id == "ls-epic-0001" {
+			typ = ticket.TypeEpic
+		}
 		tk := &ticket.Ticket{
 			ID:      id,
 			Status:  ticket.StatusOpen,
-			Type:    ticket.TypeFeature,
+			Type:    typ,
 			Parent:  parents[id],
 			Created: time.Now(),
 			Title:   "Item " + id,

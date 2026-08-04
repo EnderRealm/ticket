@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -133,5 +135,87 @@ func TestReadyKeyInertOnInbox(t *testing.T) {
 	}
 	if got.Status != ticket.StatusOpen {
 		t.Errorf("after r on inbox tab: status = %q, want unchanged %q", got.Status, ticket.StatusOpen)
+	}
+}
+
+// legacyParentApp returns an App over a store holding a feature p-0001 and a
+// child c-0002 parented to it — a shape the one-level rule refuses but that a
+// store written before the rule can hold — along with the child as loaded.
+func legacyParentApp(t *testing.T) (App, *ticket.Ticket) {
+	t.Helper()
+	dir := t.TempDir()
+	store := ticket.NewFileStore(dir)
+	if err := store.Create(&ticket.Ticket{ID: "p-0001", Title: "A feature", Status: ticket.StatusOpen, Type: ticket.TypeFeature}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	child := &ticket.Ticket{ID: "c-0002", Title: "Child", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "p-0001"}
+	data, err := ticket.Serialize(child)
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, child.ID+".md"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	a := App{store: store, activeTab: tabInbox, width: 80, height: 24}
+	a.dashboard.activeTab = tabInbox
+	a.dashboard.refreshTickets([]*ticket.Ticket{child})
+	return a, child
+}
+
+func TestSetStatusRejectsLegacyNonEpicParent(t *testing.T) {
+	// A ticket whose parent predates the one-level rule still loads, but the
+	// TUI's write path refuses it and reports why instead of writing.
+	a, _ := legacyParentApp(t)
+
+	msg := a.handleSetStatus("c-0002", ticket.StatusDone)()
+	reported, ok := msg.(statusMsg)
+	if !ok {
+		t.Fatalf("expected a status message, got %T", msg)
+	}
+	if !strings.Contains(string(reported), "not an epic") {
+		t.Errorf("status line = %q, want the parent rejection reason", reported)
+	}
+
+	got, err := a.store.Get("c-0002")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != ticket.StatusOpen {
+		t.Errorf("status = %q, want unchanged %q — the write should have been refused", got.Status, ticket.StatusOpen)
+	}
+}
+
+func TestEditFormClearsRejectedParent(t *testing.T) {
+	// The rejection tells the user to clear the parent, so the edit form has to
+	// expose the field: seeded with the ticket's parent, refusing a bad one in
+	// place, and clearing it when left empty.
+	a, child := legacyParentApp(t)
+
+	form := newEditFormModel(child, 80, 24)
+	if form.fields[fieldParent] != "p-0001" {
+		t.Fatalf("edit form parent field = %q, want the ticket's parent p-0001", form.fields[fieldParent])
+	}
+
+	// Saving without touching the parent is still refused, and says why.
+	msg := form.submit().(formSubmitMsg)
+	reported, ok := a.handleEditTicket(msg)().(statusMsg)
+	if !ok {
+		t.Fatalf("expected a status message on a refused edit")
+	}
+	if !strings.Contains(string(reported), "not an epic") {
+		t.Errorf("status line = %q, want the parent rejection reason", reported)
+	}
+
+	// Clearing the field performs the remedy the message names.
+	form.fields[fieldParent] = ""
+	a.handleEditTicket(form.submit().(formSubmitMsg))
+
+	got, err := a.store.Get("c-0002")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Parent != "" {
+		t.Errorf("parent = %q, want it cleared by the empty form field", got.Parent)
 	}
 }

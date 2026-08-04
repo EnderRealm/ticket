@@ -32,7 +32,7 @@ func registerEditFlags(cmd *cobra.Command) {
 	f.StringP("priority", "p", "", "priority (0-4)")
 	f.String("external-ref", "", "external reference")
 	f.String("branch", "", "git branch name")
-	f.String("parent", "", "parent ticket ID")
+	f.String("parent", "", "parent epic ID (an epic in the same project)")
 	f.String("tags", "", "comma-separated tags")
 	f.String("note", "", "append a timestamped note")
 	f.StringArray("set", nil, "set extra field (key=value, blank value removes)")

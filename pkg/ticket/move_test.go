@@ -147,7 +147,7 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 	parent := &Ticket{
 		ID:       "cargo-parent-0001",
 		Status:   StatusReady,
-		Type:     TypeFeature,
+		Type:     TypeEpic,
 		Priority: 2,
 		Title:    "Cargo parent",
 		Deps:     []string{},
@@ -207,14 +207,13 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. A recursive move must
-	// carry both forms, and the levels below them.
+	// carry both forms.
 	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
 	dst := &FileStore{Dir: t.TempDir()}
 
 	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusOpen, "")
 	mkMovable(t, src, "mv-bare-0002", TypeFeature, StatusClosed, "mv-epic-0001")
 	mkMovable(t, src, "mv-ns-0003", TypeFeature, StatusClosed, "proj/mv-epic-0001")
-	mkMovable(t, src, "mv-grand-0004", TypeFeature, StatusClosed, "proj/mv-ns-0003")
 
 	results, err := MoveTicket(src, dst, "mv-epic-0001", true)
 	if err != nil {
@@ -225,19 +224,18 @@ func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
 	for _, r := range results {
 		moved[r.OldID] = r.NewID
 	}
-	for _, id := range []string{"mv-epic-0001", "mv-bare-0002", "mv-ns-0003", "mv-grand-0004"} {
+	for _, id := range []string{"mv-epic-0001", "mv-bare-0002", "mv-ns-0003"} {
 		if moved[id] == "" {
 			t.Fatalf("%s was left behind, moved set = %v", id, moved)
 		}
 	}
 
 	// Carrying the tickets is only half the move — a namespaced parent must
-	// remap to the moving parent's new ID, not be dropped as if it stayed.
+	// remap to the moving epic's new ID, not be dropped as if it stayed.
 	wantParent := map[string]string{
-		"mv-epic-0001":  "",
-		"mv-bare-0002":  moved["mv-epic-0001"],
-		"mv-ns-0003":    moved["mv-epic-0001"],
-		"mv-grand-0004": moved["mv-ns-0003"],
+		"mv-epic-0001": "",
+		"mv-bare-0002": moved["mv-epic-0001"],
+		"mv-ns-0003":   moved["mv-epic-0001"],
 	}
 	for oldID, want := range wantParent {
 		got, err := dst.Get(moved[oldID])
@@ -253,8 +251,8 @@ func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List target: %v", err)
 	}
-	if len(dstTickets) != 4 {
-		t.Errorf("target holds %d tickets, want 4", len(dstTickets))
+	if len(dstTickets) != 3 {
+		t.Errorf("target holds %d tickets, want 3", len(dstTickets))
 	}
 }
 
@@ -268,7 +266,9 @@ func TestMoveRecursiveSkipsForeignProjectChild(t *testing.T) {
 
 	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusOpen, "")
 	mkMovable(t, src, "mv-own-0002", TypeFeature, StatusClosed, "proj/mv-epic-0001")
-	mkMovable(t, src, "mv-foreign-0003", TypeFeature, StatusClosed, "otherproj/mv-epic-0001")
+	// A parent in another project is refused on write; this one predates that
+	// rule, and the walk still has to leave it alone.
+	writeLegacy(t, src, movable("mv-foreign-0003", TypeFeature, StatusClosed, "otherproj/mv-epic-0001"))
 
 	results, err := MoveTicket(src, dst, "mv-epic-0001", true)
 	if err != nil {
@@ -308,7 +308,7 @@ func TestMoveRemapsNamespacedDepsAndLinks(t *testing.T) {
 	dst := &FileStore{Dir: t.TempDir()}
 
 	parent := &Ticket{
-		ID: "nsdep-parent-0001", Status: StatusReady, Type: TypeFeature, Priority: 2,
+		ID: "nsdep-parent-0001", Status: StatusReady, Type: TypeEpic, Priority: 2,
 		Title: "Namespaced dep parent", Deps: []string{}, Links: []string{},
 	}
 	child := &Ticket{
@@ -356,9 +356,10 @@ func TestMoveRemapsNamespacedDepsAndLinks(t *testing.T) {
 
 func TestCollectDescendantsTerminatesOnParentCycle(t *testing.T) {
 	// Two tickets naming each other as parent must not spin the BFS forever.
+	// A cycle is only writable in a store that predates the one-level rule.
 	src := &FileStore{Dir: t.TempDir()}
-	mkMovable(t, src, "cyc-a-0001", TypeFeature, StatusOpen, "cyc-b-0002")
-	mkMovable(t, src, "cyc-b-0002", TypeFeature, StatusOpen, "cyc-a-0001")
+	writeLegacy(t, src, movable("cyc-a-0001", TypeFeature, StatusOpen, "cyc-b-0002"))
+	writeLegacy(t, src, movable("cyc-b-0002", TypeFeature, StatusOpen, "cyc-a-0001"))
 
 	type walk struct {
 		descendants []*Ticket
@@ -531,14 +532,17 @@ func TestMovePartialFailureReportsWhatLanded(t *testing.T) {
 	}
 }
 
-func mkMovable(t *testing.T, store *FileStore, id string, typ TicketType, status Status, parent string) {
-	t.Helper()
-	tk := &Ticket{
+func movable(id string, typ TicketType, status Status, parent string) *Ticket {
+	return &Ticket{
 		ID: id, Status: status, Type: typ, Priority: 2, Parent: parent,
 		Created: time.Now(), Title: "Item " + id, Body: "\n",
 		Deps: []string{}, Links: []string{},
 	}
-	if err := store.Create(tk); err != nil {
+}
+
+func mkMovable(t *testing.T, store *FileStore, id string, typ TicketType, status Status, parent string) {
+	t.Helper()
+	if err := store.Create(movable(id, typ, status, parent)); err != nil {
 		t.Fatalf("Create %s: %v", id, err)
 	}
 }

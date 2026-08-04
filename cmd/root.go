@@ -25,6 +25,7 @@ Viewing:
   ls|list [filters]          List tickets (default: workflow grouped)
   frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
+  audit [--project=NAME]     Report tickets whose parent is not a valid epic (central store)
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
   A criterion declares its check on an indented continuation line:
@@ -102,7 +103,8 @@ Create & edit options:
   -p, --priority       0-4, 0=highest [default: 2]
   --status             Ticket status (edit only)
   --title              New title (edit only)
-  --parent             Parent ticket ID
+  --parent             Parent epic ID (an epic in the same project; an epic
+                       itself cannot have a parent)
   --tags               Comma-separated (e.g., --tags ui,backend)
   --external-ref       External reference (e.g., gh-123)
   --branch             Git branch name (edit only)

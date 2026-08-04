@@ -22,7 +22,7 @@ func init() {
 	f.StringP("type", "t", "feature", "ticket type (feature, bug, epic)")
 	f.StringP("priority", "p", "2", "priority (0-4)")
 	f.String("external-ref", "", "external reference")
-	f.String("parent", "", "parent ticket ID")
+	f.String("parent", "", "parent epic ID (an epic in the same project)")
 	f.String("tags", "", "comma-separated tags")
 	f.StringArray("set", nil, "set extra field (key=value)")
 

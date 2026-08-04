@@ -16,6 +16,20 @@ func testStore(t *testing.T) (*FileStore, func()) {
 	return store, func() {}
 }
 
+// writeLegacy writes a ticket straight to disk, bypassing the write-path
+// validation. Stores written before the one-level parent rule hold shapes
+// Create and Update now reject — a non-epic parent, a nested epic, a parent in
+// another project, a cycle — and reads must still cope with them.
+func writeLegacy(t *testing.T, store *FileStore, tk *Ticket) {
+	t.Helper()
+	if err := store.EnsureDir(); err != nil {
+		t.Fatalf("ensure dir: %v", err)
+	}
+	if err := store.writeTicket(tk); err != nil {
+		t.Fatalf("write %s: %v", tk.ID, err)
+	}
+}
+
 func sampleTicket(id string) *Ticket {
 	return &Ticket{
 		ID:       id,

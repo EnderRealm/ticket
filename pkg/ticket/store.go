@@ -53,6 +53,9 @@ func (s *FileStore) Create(t *Ticket) error {
 	if err := ValidateStateTransition(s, t); err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
+	if err := ResolveParent(s, t); err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
 	if err := s.EnsureDir(); err != nil {
 		return err
 	}
@@ -99,6 +102,12 @@ func (s *FileStore) Get(id string) (*Ticket, error) {
 // updated via PropagateStatusUp.
 func (s *FileStore) Update(t *Ticket) error {
 	if err := t.Validate(); err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	// Checked on every update, not only when parent changes: a ticket that
+	// predates the one-level rule must be fixed before any of its fields is
+	// written back.
+	if err := ResolveParent(s, t); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
 	// Verify the file exists and read the previous status.

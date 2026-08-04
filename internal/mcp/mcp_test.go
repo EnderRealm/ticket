@@ -2444,3 +2444,106 @@ func TestVerifyNoAcceptanceCriteria(t *testing.T) {
 		t.Fatalf("ticket_verify should error on a ticket with no acceptance criteria: %v", result.Content)
 	}
 }
+
+func TestCreateRejectsNonEpicParent(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	featureID := createTicketID(t, session, map[string]any{"title": "A feature", "type": "feature"})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Child of a feature", "type": "feature", "parent": featureID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_create should reject a non-epic parent: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, featureID) || !strings.Contains(text, "not an epic") {
+		t.Errorf("error should name the parent and its type, got: %s", text)
+	}
+}
+
+func TestEditRejectsParentOnEpic(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	epicID := createTicketID(t, session, map[string]any{"title": "An epic", "type": "epic"})
+	childID := createTicketID(t, session, map[string]any{"title": "A child", "type": "feature", "parent": epicID})
+
+	// Promoting a child to an epic would give an epic a parent.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": childID, "type": "epic"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_edit should reject an epic with a parent: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "epics are top level") {
+		t.Errorf("error should explain that epics are top level, got: %s", text)
+	}
+}
+
+func TestEditClearsParent(t *testing.T) {
+	// The remedy the validation error names is "repoint or clear it", so an
+	// explicit empty parent has to clear the field rather than mean "no change".
+	session := testServer(t)
+	ctx := context.Background()
+
+	epicID := createTicketID(t, session, map[string]any{"title": "An epic", "type": "epic"})
+	childID := createTicketID(t, session, map[string]any{"title": "A child", "type": "feature", "parent": epicID})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": childID, "parent": ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit with an empty parent should clear it: %v", result.Content)
+	}
+
+	var tk map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if parent, ok := tk["parent"]; ok && parent != "" {
+		t.Errorf("parent = %v, want cleared", parent)
+	}
+
+	// An omitted parent still means "no change".
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": childID, "parent": epicID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit should accept an epic parent: %v", result.Content)
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": childID, "title": "A renamed child"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit: %v", result.Content)
+	}
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if tk["parent"] != epicID {
+		t.Errorf("parent = %v after an edit that omitted it, want %s", tk["parent"], epicID)
+	}
+}

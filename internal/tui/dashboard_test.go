@@ -335,28 +335,85 @@ func TestBacklogRollsUpBareAndNamespacedChildren(t *testing.T) {
 	}
 }
 
-func TestEpicAncestorsWalksParentChain(t *testing.T) {
-	// Parent is a free-form ticket ID, so the walk has to cope with chains that
-	// pass through non-epics, dangling parents and cycles.
+func TestBacklogRollupAndEpicsTabAgreeOnChildren(t *testing.T) {
+	// One definition of an epic's children: the backlog rollup count and the
+	// epics tab's expansion must report the same set for the same epic.
 	tickets := []*ticket.Ticket{
-		{ID: "ep-0001", Title: "Epic", Status: ticket.StatusOpen, Type: ticket.TypeEpic},
-		{ID: "mid-0002", Title: "Middle", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001"},
-		{ID: "leaf-0003", Title: "Leaf", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "mid-0002"},
-		{ID: "noep-0004", Title: "No epic", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "mid-0002x"},
-		{ID: "mid-0002x", Title: "Epicless middle", Status: ticket.StatusOpen, Type: ticket.TypeFeature},
-		{ID: "gone-0005", Title: "Dangling parent", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "missing-9999"},
-		{ID: "cyc-0006", Title: "Cycle A", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "cyc-0007"},
-		{ID: "cyc-0007", Title: "Cycle B", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "cyc-0006"},
+		{ID: "proj/ep-0001", Title: "Epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
+		{ID: "proj/ch-bare", Title: "Bare child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-0001", Created: time.Now()},
+		{ID: "proj/ch-ns", Title: "Namespaced child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "proj/ep-0001", Created: time.Now()},
+		{ID: "proj/loose", Title: "Loose", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Created: time.Now()},
 	}
-	epicOf := epicAncestors(tickets)
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabBacklog
+	m.buildItems()
 
-	if got := epicOf["leaf-0003"]; got != "ep-0001" {
-		t.Errorf("nested chain: epicOf[leaf-0003] = %q, want ep-0001", got)
+	var e epicsModel
+	e.refreshTickets(tickets)
+	if len(e.rows) != 1 {
+		t.Fatalf("epics tab rows = %d, want 1", len(e.rows))
 	}
-	for _, id := range []string{"noep-0004", "gone-0005", "cyc-0006", "cyc-0007"} {
-		if got, ok := epicOf[id]; ok {
-			t.Errorf("epicOf[%s] = %q, want no entry", id, got)
+	if got, want := m.childCounts["ep-0001"], len(e.rows[0].children); got != want {
+		t.Errorf("backlog rollup counts %d children, epics tab expands %d", got, want)
+	}
+	if got := m.childCounts["ep-0001"]; got != 2 {
+		t.Errorf("epic child count = %d, want 2", got)
+	}
+}
+
+func TestBacklogKeepsTicketWhoseEpicIsGone(t *testing.T) {
+	// `tk delete <epic>` leaves its children with a parent that names nothing.
+	// The epics tab only builds children under epics that exist, so if the
+	// backlog hid these rows too they would be accounted for nowhere.
+	tickets := []*ticket.Ticket{
+		{ID: "orph-0001", Title: "Epic was deleted", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-9999", Created: time.Now()},
+		{ID: "notep-0002", Title: "Parent is a feature", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "orph-0001", Created: time.Now()},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabBacklog
+	m.buildItems()
+
+	if got, want := itemIDs(m.items), []string{"orph-0001", "notep-0002"}; !slices.Equal(got, want) {
+		t.Errorf("backlog rows = %v, want %v (a parent that names no epic must not hide the row)", got, want)
+	}
+	// The EPIC column reads the same way: no known epic, no epic.
+	for i := range m.items {
+		if row := m.renderRow(m.items[i], false, 0); !strings.Contains(row, emDash) {
+			t.Errorf("row for %s should show an em-dash in the EPIC column, got:\n%s", m.items[i].Ticket.ID, row)
 		}
+	}
+
+	// Counts have to agree with the rows they label.
+	a := App{tickets: tickets}
+	if got := a.tabCounts()[tabBacklog]; got != len(m.items) {
+		t.Errorf("backlog tab count = %d, want %d to match the rows shown", got, len(m.items))
+	}
+}
+
+func TestBacklogKeepsLegacySubEpicRollup(t *testing.T) {
+	// A store written before the one-level rule can hold an epic under an epic.
+	// Hiding the sub-epic as a child would take its own children with it —
+	// they roll up under a row that is no longer drawn — so it keeps its row.
+	tickets := []*ticket.Ticket{
+		{ID: "top-0001", Title: "Top epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
+		{ID: "sub-0002", Title: "Sub epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Parent: "top-0001", Created: time.Now()},
+		{ID: "ch-0003", Title: "Child one", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "sub-0002", Created: time.Now()},
+		{ID: "ch-0004", Title: "Child two", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "sub-0002", Created: time.Now()},
+	}
+	m := newDashboardModel(tickets, 80, 24)
+	m.activeTab = tabBacklog
+	m.buildItems()
+
+	if got, want := itemIDs(m.items), []string{"top-0001", "sub-0002"}; !slices.Equal(got, want) {
+		t.Errorf("backlog rows = %v, want %v (a sub-epic keeps its own rollup row)", got, want)
+	}
+	if n := m.childCounts["sub-0002"]; n != 2 {
+		t.Errorf("sub-epic child count = %d, want 2", n)
+	}
+
+	a := App{tickets: tickets}
+	if got := a.tabCounts()[tabBacklog]; got != len(m.items) {
+		t.Errorf("backlog tab count = %d, want %d to match the rows shown", got, len(m.items))
 	}
 }
 

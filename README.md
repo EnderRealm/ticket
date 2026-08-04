@@ -138,6 +138,7 @@ Viewing:
   ls|list [filters]          List tickets (default: workflow grouped)
   frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
+  audit [--project=NAME]     Report tickets whose parent is not a valid epic (central store)
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
 Creating & Editing:
@@ -211,6 +212,8 @@ Tickets use a simple status model:
 | epic | Container for related features |
 | feature | New functionality |
 | bug | Defect fix |
+
+The hierarchy is one level deep: a ticket's `parent` must name an epic in the same project, and an epic itself has no parent. `tk audit` reports tickets that break the rule.
 
 ### Verifiable Acceptance Criteria
 

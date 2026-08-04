@@ -167,7 +167,7 @@ func TestProjects(t *testing.T) {
 func TestProjects_CountsBareAndNamespacedChildren(t *testing.T) {
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. Both roll up to the epic.
-	store := NewFileStore(t.TempDir())
+	store := NewProjectFileStore(t.TempDir(), "proj")
 
 	epic := &Ticket{
 		ID: "ns-epic-0001", Status: StatusOpen, Type: TypeEpic, Priority: 0,

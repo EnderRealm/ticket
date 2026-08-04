@@ -595,17 +595,18 @@ func (a App) tabCounts() map[tabID]int {
 	counts := make(map[tabID]int)
 
 	// Mirror dashboard.buildItems filtering so counts match what each tab shows.
-	byID := indexByBareID(a.tickets)
+	epics := bareEpicIDs(a.tickets)
 
 	for _, t := range a.tickets {
 		isEpic := t.Type == ticket.TypeEpic
-		hasEpicAncestor := !isEpic && nearestEpicAncestor(t, byID) != ""
+		hasEpic := epicOf(t, epics) != ""
 		done := t.Status == ticket.StatusDone || t.Status == ticket.StatusClosed
 
 		switch t.Status {
 		case ticket.StatusBacklog:
-			// Backlog shows epics as rollups; descendants roll up under them.
-			if !hasEpicAncestor {
+			// Backlog shows epics as rollups; children roll up under them, and
+			// an epic always keeps its own row even under a legacy parent epic.
+			if isEpic || !hasEpic {
 				counts[tabBacklog]++
 			}
 		case ticket.StatusDone, ticket.StatusClosed:
@@ -990,6 +991,10 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 	if msg.status != "" {
 		t.Status = msg.status
 	}
+	// Assigned unconditionally: the form is seeded with the current parent, so
+	// an empty field means the user cleared it — half the remedy the one-level
+	// rule's rejection names, and the half the TUI could not perform before.
+	t.Parent = msg.parent
 
 	t.Body = ticket.UpdateSection(t.Body, "", msg.description)
 

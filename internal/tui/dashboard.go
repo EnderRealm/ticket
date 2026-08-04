@@ -30,9 +30,9 @@ type column struct {
 type dashboardModel struct {
 	all            []*ticket.Ticket
 	items          []ticket.InboxItem
-	childCounts    map[string]int    // epic ID -> total child count (shown on backlog tab)
-	epicOf         map[string]string // ticket ID -> nearest epic ancestor ID (see epicAncestors)
-	activeTab      tabID             // set by app-level tab switching
+	epics          map[string]bool // set of bare epic IDs, from bareEpicIDs
+	childCounts    map[string]int  // bare epic ID -> child count (shown on backlog tab)
+	activeTab      tabID           // set by app-level tab switching
 	cursor         int
 	offset         int
 	width          int
@@ -120,21 +120,53 @@ var (
 	}
 )
 
-// epicColumn renders the nearest epic ancestor's short ID, or an em-dash when
-// the ticket has none. It needs per-model state (epicOf, from epicAncestors), so
-// unlike the other columns it is built per call; a nil map renders every row as
-// epic-less, which is what defaultSort's name-only lookup wants.
-func epicColumn(epicOf map[string]string) column {
+// bareEpicIDs is the set of epic IDs present, keyed bare. A map key can't
+// tolerate the namespace mismatch the way SameTicketID does, and the central
+// store records children with a namespaced parent while tickets written before
+// the namespacing rollout record it bare.
+func bareEpicIDs(tickets []*ticket.Ticket) map[string]bool {
+	epics := make(map[string]bool)
+	for _, t := range tickets {
+		if t.Type == ticket.TypeEpic {
+			_, bareID := ticket.ParseNamespacedID(t.ID)
+			epics[bareID] = true
+		}
+	}
+	return epics
+}
+
+// epicOf returns the bare ID of the epic a ticket belongs to, or "" when it
+// belongs to none. Parent names the epic directly — a set lookup, not a walk up
+// a chain. A parent that names no epic in the set reads as epic-less: `tk
+// delete` on an epic leaves its children pointing at nothing, and such a ticket
+// must stay visible on the backlog tab rather than rolling up under an epic
+// that the epics tab no longer shows.
+func epicOf(t *ticket.Ticket, epics map[string]bool) string {
+	if t.Parent == "" {
+		return ""
+	}
+	_, bareID := ticket.ParseNamespacedID(t.Parent)
+	if !epics[bareID] {
+		return ""
+	}
+	return bareID
+}
+
+// epicColumn renders the epic the ticket belongs to, or an em-dash when it
+// belongs to none. It needs the epic set, so unlike the other columns it is
+// built per call; a nil set renders every row as epic-less, which is what
+// defaultSort's name-only lookup wants.
+func epicColumn(epics map[string]bool) column {
 	return column{
 		name: "EPIC", width: 6,
 		render: func(t *ticket.Ticket, _ time.Time) string {
-			if epicID := epicOf[t.ID]; epicID != "" {
+			if epicID := epicOf(t, epics); epicID != "" {
 				return IDSuffix(epicID)
 			}
 			return emDash
 		},
 		less: func(a, b *ticket.Ticket) bool {
-			ea, eb := epicOf[a.ID], epicOf[b.ID]
+			ea, eb := epicOf(a, epics), epicOf(b, epics)
 			// Epic-less rows sort last ascending (and first descending, since
 			// sortItems inverts this comparator rather than the ordering).
 			if (ea == "") != (eb == "") {
@@ -170,10 +202,10 @@ func adaptiveSpan(t *ticket.Ticket) time.Duration {
 	return time.Since(t.Created)
 }
 
-// columnsFor returns the column set for a tab. epicOf feeds the EPIC column and
+// columnsFor returns the column set for a tab. epics feeds the EPIC column and
 // may be nil when only column names/widths matter.
-func columnsFor(tab tabID, epicOf map[string]string) []column {
-	colEpic := epicColumn(epicOf)
+func columnsFor(tab tabID, epics map[string]bool) []column {
+	colEpic := epicColumn(epics)
 	switch tab {
 	case tabDone:
 		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colCompleted, colDuration, colTitle}
@@ -261,54 +293,21 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 	}
 }
 
-// indexByBareID indexes tickets by their namespace-stripped ID, the key form
-// nearestEpicAncestor requires. A map key can't tolerate the namespace mismatch
-// the way SameTicketID does, and the central store records children with a
-// namespaced parent while tickets written before the namespacing rollout record
-// it bare.
-func indexByBareID(tickets []*ticket.Ticket) map[string]*ticket.Ticket {
-	byID := make(map[string]*ticket.Ticket, len(tickets))
+// childCountsByEpic counts each epic's children, keyed on the epic's bare ID.
+// A map key can't tolerate the namespace mismatch the way SameTicketID does,
+// and the central store records children with a namespaced parent while
+// tickets written before the namespacing rollout record it bare. The epics tab
+// groups children the same way, so both views report the same set.
+func childCountsByEpic(tickets []*ticket.Ticket) map[string]int {
+	counts := make(map[string]int)
 	for _, t := range tickets {
-		_, bareID := ticket.ParseNamespacedID(t.ID)
-		byID[bareID] = t
+		if t.Parent == "" {
+			continue
+		}
+		_, parent := ticket.ParseNamespacedID(t.Parent)
+		counts[parent]++
 	}
-	return byID
-}
-
-// nearestEpicAncestor walks t's parent chain and returns the ID of the closest
-// epic ancestor, or "" if none. Handles missing parents and cycles defensively.
-// byID must come from indexByBareID.
-func nearestEpicAncestor(t *ticket.Ticket, byID map[string]*ticket.Ticket) string {
-	seen := make(map[string]bool)
-	_, cur := ticket.ParseNamespacedID(t.Parent)
-	for cur != "" {
-		if seen[cur] {
-			return ""
-		}
-		seen[cur] = true
-		p, ok := byID[cur]
-		if !ok {
-			return ""
-		}
-		if p.Type == ticket.TypeEpic {
-			return p.ID
-		}
-		_, cur = ticket.ParseNamespacedID(p.Parent)
-	}
-	return ""
-}
-
-// epicAncestors maps each ticket's stored ID to the stored ID of its nearest
-// epic ancestor, omitting tickets whose parent chain holds no epic.
-func epicAncestors(tickets []*ticket.Ticket) map[string]string {
-	byID := indexByBareID(tickets)
-	epicOf := make(map[string]string, len(tickets))
-	for _, t := range tickets {
-		if epicID := nearestEpicAncestor(t, byID); epicID != "" {
-			epicOf[t.ID] = epicID
-		}
-	}
-	return epicOf
+	return counts
 }
 
 func (m *dashboardModel) buildItems() {
@@ -316,22 +315,11 @@ func (m *dashboardModel) buildItems() {
 	m.childCounts = nil
 	needle := strings.ToLower(m.filterText)
 
-	// Epic ancestry drives three behaviors:
-	//  - backlog hides any ticket with an epic anywhere up the chain,
-	//  - backlog shows epics as rollups with a descendant count,
-	//  - the EPIC column shows the ancestor on every non-epic tab.
-	m.epicOf = epicAncestors(m.all)
-	// childCounts is keyed on the epic's stored ID, matching the lookup in
-	// renderRow — both read it off the same ticket.
-	childCounts := make(map[string]int)
-	for _, t := range m.all {
-		if t.Type == ticket.TypeEpic {
-			continue
-		}
-		if epicID := m.epicOf[t.ID]; epicID != "" {
-			childCounts[epicID]++
-		}
-	}
+	// Backlog shows each epic as a rollup carrying its child count, and hides
+	// the children themselves as rows. The epic set decides membership for both
+	// the rollup and the EPIC column.
+	m.epics = bareEpicIDs(m.all)
+	childCounts := childCountsByEpic(m.all)
 
 	for _, t := range m.all {
 		if t.Status == "" {
@@ -339,7 +327,7 @@ func (m *dashboardModel) buildItems() {
 		}
 
 		isEpic := t.Type == ticket.TypeEpic
-		hasEpicAncestor := !isEpic && m.epicOf[t.ID] != ""
+		hasEpic := epicOf(t, m.epics) != ""
 
 		// Per-tab status filtering.
 		switch m.activeTab {
@@ -347,8 +335,11 @@ func (m *dashboardModel) buildItems() {
 			if t.Status != ticket.StatusBacklog {
 				continue
 			}
-			// Descendants of epics roll up under the epic; hide them here.
-			if hasEpicAncestor {
+			// Children roll up under their epic; hide them here. An epic is
+			// never hidden: a store written before the one-level rule can hold
+			// an epic under an epic, and hiding it would take its own children —
+			// which roll up under it — off the tab with it.
+			if !isEpic && hasEpic {
 				continue
 			}
 		case tabInbox:
@@ -403,7 +394,7 @@ func (m *dashboardModel) buildItems() {
 // sortItems stably sorts items by the active column, honoring direction, with
 // priority as a secondary tiebreaker when priority is not the active column.
 func (m *dashboardModel) sortItems() {
-	cols := columnsFor(m.activeTab, m.epicOf)
+	cols := columnsFor(m.activeTab, m.epics)
 	if m.sortIdx < 0 || m.sortIdx >= len(cols) {
 		m.sortIdx = 0
 	}
@@ -557,7 +548,7 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.filterActive = true
 			m.filterText = ""
 		case "s":
-			cols := columnsFor(m.activeTab, m.epicOf)
+			cols := columnsFor(m.activeTab, m.epics)
 			m.sortIdx = (m.sortIdx + 1) % len(cols)
 			m.sortDir = asc
 			m.sortItems()
@@ -602,7 +593,7 @@ func (m dashboardModel) view() string {
 
 	var b strings.Builder
 
-	b.WriteString(renderColumnHeader(columnsFor(m.activeTab, m.epicOf), m.sortIdx, m.sortDir))
+	b.WriteString(renderColumnHeader(columnsFor(m.activeTab, m.epics), m.sortIdx, m.sortDir))
 	b.WriteString("\n")
 
 	// Rows.
@@ -674,13 +665,14 @@ func (m dashboardModel) renderRow(item ticket.InboxItem, selected bool, _ int) s
 		sp = selBg.Render("  ")
 	}
 	line := sp
-	for _, c := range columnsFor(m.activeTab, m.epicOf) {
+	for _, c := range columnsFor(m.activeTab, m.epics) {
 		line += renderCell(c, t, now, selBg, bg, selected)
 	}
 
 	// On the backlog tab, show "(N children)" next to epic rows so they act as rollups.
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
-		n := m.childCounts[t.ID]
+		_, bareID := ticket.ParseNamespacedID(t.ID)
+		n := m.childCounts[bareID]
 		label := fmt.Sprintf("  (%d children)", n)
 		line += selBg.Foreground(colorSubtle).Render(label)
 	}

@@ -31,6 +31,7 @@ const (
 	fieldType
 	fieldPriority
 	fieldStatus
+	fieldParent
 	fieldNote
 	fieldCount
 )
@@ -80,7 +81,7 @@ func (m formModel) statusOptions() []ticket.Status {
 }
 
 func (m formModel) isTextField(f formField) bool {
-	return f == fieldTitle || f == fieldDescription || f == fieldNote
+	return f == fieldTitle || f == fieldDescription || f == fieldParent || f == fieldNote
 }
 
 func (m formModel) isMultilineField(f formField) bool {
@@ -122,8 +123,10 @@ func newEditFormModel(t *ticket.Ticket, w, h int) formModel {
 	}
 	m.fields[fieldTitle] = t.Title
 	m.fields[fieldDescription] = extractDescription(t.Body)
+	m.fields[fieldParent] = t.Parent
 	m.cursors[fieldTitle] = len(m.fields[fieldTitle])
 	m.cursors[fieldDescription] = len(m.fields[fieldDescription])
+	m.cursors[fieldParent] = len(m.fields[fieldParent])
 	return m
 }
 
@@ -307,6 +310,7 @@ func (m formModel) submit() tea.Msg {
 		description: strings.TrimSpace(m.fields[fieldDescription]),
 		ticketType:  ticketTypes[m.typeIdx],
 		priority:    m.priority,
+		parent:      strings.TrimSpace(m.fields[fieldParent]),
 		note:        strings.TrimSpace(m.fields[fieldNote]),
 		status:      m.statusOptions()[m.statusIdx],
 	}
@@ -337,7 +341,7 @@ func (m formModel) view() string {
 
 	lines = append(lines, "") // leading blank
 
-	labels := [fieldCount]string{"Title:", "Description:", "Type:", "Priority:", "Status:", "Note:"}
+	labels := [fieldCount]string{"Title:", "Description:", "Type:", "Priority:", "Status:", "Parent:", "Note:"}
 	last := m.lastField()
 
 	for i := formField(0); i <= last; i++ {
@@ -490,6 +494,7 @@ type formSubmitMsg struct {
 	ticketType  ticket.TicketType
 	priority    int
 	status      ticket.Status
+	parent      string // edit mode only; empty clears the parent
 	note        string
 }
 

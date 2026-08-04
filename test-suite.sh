@@ -352,6 +352,30 @@ assert_fail "tk delete" "Reject delete without id"
 assert_fail "tk show nonexistent_id_xyz" "Reject nonexistent ticket"
 assert_fail "tk create" "Reject create without title"
 assert_fail "tk create 'No type' -t chore" "Reject removed type on create"
+assert_fail "tk create 'Child of a feature' --parent $ID1" "Reject non-epic parent"
+assert_fail "tk create 'Sub-epic' -t epic --parent $ID3" "Reject parent on an epic"
+
+# ─── PARENT HIERARCHY ───────────────────────────────────────────────────────
+log_section "PARENT HIERARCHY"
+
+EPIC_CHILD=$(tk create "Child of an epic" --parent "$ID3" | extract_id)
+assert_contains "tk show $EPIC_CHILD" "parent: $ID3" "Create under an epic"
+assert_ok "tk edit $EPIC_CHILD --parent=''" "Clear a parent"
+assert_not_contains "tk show $EPIC_CHILD" "^parent:" "Cleared parent is gone"
+
+# Every ticket above was written through a validated path, so nothing violates.
+assert_contains "tk audit" "No parent violations." "Audit reports a clean store"
+
+# Plant a ticket the write path would have refused, so the report has something
+# to name — an exit-0 assertion alone would pass with the reporting gutted.
+STORE_DIR="$CENTRAL_ROOT/tickets/tktest"
+printf -- '---\nid: bad-9999\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\nparent: %s\n---\n# Planted violation\n' "$ID1" > "$STORE_DIR/bad-9999.md"
+assert_contains "tk audit" "bad-9999" "Audit names the violating ticket"
+assert_contains "tk audit" "parent-not-epic" "Audit classifies the violation"
+assert_contains "tk audit --project tktest" "bad-9999" "Audit scoped to a project"
+assert_fail "tk edit bad-9999 --priority 0" "Editing a violating ticket is refused"
+assert_ok "tk edit bad-9999 --parent=''" "The remedy the audit names clears it"
+assert_contains "tk audit" "No parent violations." "Audit clean once the parent is cleared"
 
 # ─── DELETE ─────────────────────────────────────────────────────────────────
 log_section "DELETE"

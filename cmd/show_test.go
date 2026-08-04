@@ -115,17 +115,21 @@ func TestLocalizeTimestampsZeroCompleted(t *testing.T) {
 
 func TestShowListsBareAndNamespacedChildren(t *testing.T) {
 	dir := t.TempDir()
-	store := ticket.NewFileStore(dir)
+	store := ticket.NewProjectFileStore(dir, "proj")
 
 	parents := map[string]string{
 		"sh-child-bare": "sh-epic-0001",
 		"sh-child-ns":   "proj/sh-epic-0001",
 	}
 	for _, id := range []string{"sh-epic-0001", "sh-child-bare", "sh-child-ns"} {
+		typ := ticket.TypeFeature
+		if id == "sh-epic-0001" {
+			typ = ticket.TypeEpic
+		}
 		tk := &ticket.Ticket{
 			ID:      id,
 			Status:  ticket.StatusOpen,
-			Type:    ticket.TypeFeature,
+			Type:    typ,
 			Parent:  parents[id],
 			Created: time.Now(),
 			Title:   "Item " + id,
@@ -151,18 +155,19 @@ func TestShowListsBareAndNamespacedChildren(t *testing.T) {
 
 func TestShowAnnotatesNamespacedParent(t *testing.T) {
 	dir := t.TempDir()
-	store := ticket.NewFileStore(dir)
+	store := ticket.NewProjectFileStore(dir, "proj")
 
 	for _, id := range []string{"sp-epic-0001", "sp-child-0002"} {
 		tk := &ticket.Ticket{
 			ID:      id,
 			Status:  ticket.StatusOpen,
-			Type:    ticket.TypeFeature,
+			Type:    ticket.TypeEpic,
 			Created: time.Now(),
 			Title:   "Item " + id,
 			Body:    "\n",
 		}
 		if id == "sp-child-0002" {
+			tk.Type = ticket.TypeFeature
 			tk.Parent = "proj/sp-epic-0001"
 		}
 		if err := store.Create(tk); err != nil {

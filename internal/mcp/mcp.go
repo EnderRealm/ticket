@@ -529,7 +529,7 @@ type createArgs struct {
 	Acceptance  string            `json:"acceptance,omitempty" jsonschema:"acceptance criteria"`
 	Type        string            `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
 	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
-	Parent      string            `json:"parent,omitempty" jsonschema:"parent ticket ID"`
+	Parent      string            `json:"parent,omitempty" jsonschema:"parent epic ID; must name an epic in the same project"`
 	Tags        string            `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
@@ -652,7 +652,7 @@ type editArgs struct {
 	Status      string            `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed"`
 	Type        string            `json:"type,omitempty" jsonschema:"new type"`
 	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
-	Parent      string            `json:"parent,omitempty" jsonschema:"new parent ticket ID"`
+	Parent      *string           `json:"parent,omitempty" jsonschema:"new parent epic ID; must name an epic in the same project. Pass an empty string to clear it"`
 	Tags        string            `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
 	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
@@ -691,8 +691,12 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 		if args.Priority != nil {
 			t.Priority = int(*args.Priority)
 		}
-		if args.Parent != "" {
-			t.Parent = args.Parent
+		// A pointer, unlike the other string fields: the remedy for a rejected
+		// parent is "repoint or clear it", so an explicit "" has to mean clear
+		// rather than "no change" — otherwise the only fix an agent can apply
+		// over MCP is repointing.
+		if args.Parent != nil {
+			t.Parent = *args.Parent
 		}
 		if args.ExternalRef != "" {
 			t.ExternalRef = args.ExternalRef
