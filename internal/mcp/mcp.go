@@ -99,6 +99,7 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 type ticketJSON struct {
 	ID          string            `json:"id"`
 	Status      string            `json:"status"`
+	Abandoned   bool              `json:"abandoned,omitempty"`
 	Deps        []string          `json:"deps"`
 	Links       []string          `json:"links"`
 	Created     string            `json:"created"`
@@ -117,6 +118,10 @@ type ticketJSON struct {
 	Outputs     map[string]string `json:"outputs,omitempty"`
 	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
 	Extra       map[string]string `json:"-"`
+	// ClosedChildren names the children an edit that abandoned an epic closed
+	// along with it. Set by ticket_edit alone — every other tool leaves it
+	// empty, and it is omitted from the response then.
+	ClosedChildren []string `json:"closed_children,omitempty"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -148,6 +153,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 	j := ticketJSON{
 		ID:          t.ID,
 		Status:      string(t.Status),
+		Abandoned:   t.Abandoned,
 		Deps:        nonNil(t.Deps),
 		Links:       nonNil(t.Links),
 		Created:     t.Created.UTC().Format("2006-01-02T15:04:05Z"),
@@ -649,7 +655,7 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 type editArgs struct {
 	ID          string            `json:"id" jsonschema:"ticket ID"`
 	Title       string            `json:"title,omitempty" jsonschema:"new title"`
-	Status      string            `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed"`
+	Status      string            `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed. An epic's status is derived from its children; the only one that can be set on an epic is closed, which closes its children too"`
 	Type        string            `json:"type,omitempty" jsonschema:"new type"`
 	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
 	Parent      *string           `json:"parent,omitempty" jsonschema:"new parent epic ID; must name an epic in the same project. Pass an empty string to clear it"`
@@ -667,7 +673,7 @@ type editArgs struct {
 func registerEdit(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
-		Description: "Edit an existing ticket's fields.",
+		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -766,7 +772,10 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 			}
 		}
 
-		if err := store.Update(t); err != nil {
+		// An omitted status means no change, so only a status the caller passed
+		// says anything about an epic's abandon intent.
+		closed, err := ticket.SaveEdit(store, t, args.Status != "")
+		if err != nil {
 			r, _ := errResult("failed to update ticket: %v", err)
 			return r, nil, nil
 		}
@@ -777,7 +786,11 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 			r, _ := errResult("failed to re-read ticket: %v", err)
 			return r, nil, nil
 		}
-		r, err := jsonResult(toJSON(t))
+		// The edit closed other tickets, so it reports them rather than leaving
+		// the caller to discover the cascade by listing the epic's children.
+		j := toJSON(t)
+		j.ClosedChildren = closed
+		r, err := jsonResult(j)
 		return r, nil, err
 	})
 }

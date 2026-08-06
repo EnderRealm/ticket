@@ -105,20 +105,20 @@ func TestIsReady_Simple(t *testing.T) {
 }
 
 func TestIsReady_ParentGating(t *testing.T) {
-	// Parent epic is done → child not ready (parent done = work complete).
-	epic := mk("t-epic", StatusDone)
-	epic.Type = TypeEpic
-	child := mkWithParent("t-child", StatusReady, "t-epic")
+	// Parent done → child not ready (parent done = work complete). Only a store
+	// predating the one-level rule holds a done parent over a live child: an
+	// epic derives done just once every child of it is terminal.
+	s := depStore(t, mk("t-parent", StatusDone))
+	writeLegacy(t, s, mkWithParent("t-child", StatusReady, "t-parent"))
 
-	s := depStore(t, epic, child)
 	tk, _ := s.Get("t-child")
 	if IsReady(s, tk) {
-		t.Error("child of done epic should not be ready")
+		t.Error("child of done parent should not be ready")
 	}
 }
 
 func TestIsReady_ParentActive(t *testing.T) {
-	epic := mk("t-epic", StatusOpen)
+	epic := mk("t-epic", StatusBacklog)
 	epic.Type = TypeEpic
 	child := mkWithParent("t-child", StatusReady, "t-epic")
 
@@ -130,11 +130,9 @@ func TestIsReady_ParentActive(t *testing.T) {
 }
 
 func TestIsReadyOpen_BypassesParentGate(t *testing.T) {
-	epic := mk("t-epic", StatusDone)
-	epic.Type = TypeEpic
-	child := mkWithParent("t-child", StatusReady, "t-epic")
+	s := depStore(t, mk("t-parent", StatusDone))
+	writeLegacy(t, s, mkWithParent("t-child", StatusReady, "t-parent"))
 
-	s := depStore(t, epic, child)
 	tk, _ := s.Get("t-child")
 	if !IsReadyOpen(s, tk) {
 		t.Error("IsReadyOpen should bypass parent gating")
@@ -252,6 +250,171 @@ func TestBlockedTickets(t *testing.T) {
 	}
 	if len(blocked) != 1 || blocked[0].ID != "t-2" {
 		t.Errorf("blocked = %v, want [t-2]", ids2(blocked))
+	}
+}
+
+// countingStore counts the single-ticket reads a caller makes through it, so a
+// loop over the whole store can be held to answering from what it listed.
+type countingStore struct {
+	*FileStore
+	gets int
+}
+
+func (c *countingStore) Get(id string) (*Ticket, error) {
+	c.gets++
+	return c.FileStore.Get(id)
+}
+
+func TestStoreWideLoopsResolveDepsFromTheListedSet(t *testing.T) {
+	// A dep naming an epic resolves through Store.Get, which derives the epic —
+	// a read of the whole store. Three loops answer the deps of every ticket in
+	// the store, so one store read per epic dep per ticket is the cost of
+	// resolving them anywhere but from the set the loop already listed.
+	s := &countingStore{FileStore: depStore(t,
+		mkEpic("look-epic-0001", StatusBacklog, ""),
+		mkWithParent("look-child-0002", StatusDone, "look-epic-0001"),
+		mk("look-ready-0003", StatusReady, "look-epic-0001"),
+		mk("look-ready-0004", StatusReady, "look-epic-0001"),
+		mk("look-open-0005", StatusOpen, "look-blocker-0006"),
+		mk("look-blocker-0006", StatusOpen),
+	)}
+
+	for _, c := range []struct {
+		name string
+		run  func() ([]*Ticket, error)
+	}{
+		{"ReadyTickets", func() ([]*Ticket, error) { return ReadyTickets(s) }},
+		{"ReadyTicketsOpen", func() ([]*Ticket, error) { return ReadyTicketsOpen(s) }},
+		{"FrontierTickets", func() ([]*Ticket, error) { return FrontierTickets(s) }},
+		{"BlockedTickets", func() ([]*Ticket, error) { return BlockedTickets(s) }},
+	} {
+		s.gets = 0
+		if _, err := c.run(); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if s.gets != 0 {
+			t.Errorf("%s resolved %d reference(s) through the store; a loop over the store must answer them from the set it listed", c.name, s.gets)
+		}
+	}
+
+	// The answers themselves: the epic dep is terminal because its child is, so
+	// the tickets waiting on it are ready.
+	ready, err := ReadyTickets(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"look-ready-0003": true, "look-ready-0004": true, "look-blocker-0006": true}
+	for _, tk := range ready {
+		delete(want, tk.ID)
+	}
+	if len(ready) != 3 || len(want) != 0 {
+		t.Errorf("ready = %v, want the two waiting on the finished epic plus the unblocked open one", ids2(ready))
+	}
+	blocked, err := BlockedTickets(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked) != 1 || blocked[0].ID != "look-open-0005" {
+		t.Errorf("blocked = %v, want [look-open-0005]", ids2(blocked))
+	}
+}
+
+func TestDepTreeResolvesDepsFromOneListing(t *testing.T) {
+	// The walk resolves every dep it reaches, and one naming an epic resolves
+	// through Store.Get, which reads the whole store to derive it. One listing
+	// answers them all; only the root is read through the store.
+	s := &countingStore{FileStore: depStore(t,
+		mkEpic("tree-epic-0001", StatusBacklog, ""),
+		mkWithParent("tree-child-0002", StatusDone, "tree-epic-0001"),
+		mk("tree-root-0003", StatusOpen, "tree-epic-0001"),
+	)}
+
+	s.gets = 0
+	nodes, err := DepTree(s, "tree-root-0003", false)
+	if err != nil {
+		t.Fatalf("DepTree: %v", err)
+	}
+	if s.gets != 1 {
+		t.Errorf("DepTree made %d store read(s), want 1 — the root, with the deps answered from the listing", s.gets)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("nodes = %+v, want the root and its epic dep", nodes)
+	}
+	if nodes[1].ID != "tree-epic-0001" || nodes[1].Status != StatusDone {
+		t.Errorf("dep node = %+v, want tree-epic-0001 reading %q", nodes[1], StatusDone)
+	}
+}
+
+func TestLookupsMatchANamespacedIDAgainstABareListing(t *testing.T) {
+	// A project-scoped store lists bare IDs while the central store records
+	// parents and deps namespaced. An index keyed on the listed form alone
+	// misses every one of those, putting the store read back in the loop it was
+	// taken out of.
+	s := NewProjectFileStore(t.TempDir(), "proj")
+	for _, tk := range []*Ticket{
+		mkEpic("ns-epic-0001", StatusBacklog, ""),
+		mkWithParent("ns-child-0002", StatusReady, "proj/ns-epic-0001", "proj/ns-epic-0001"),
+	} {
+		if err := s.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", tk.ID, err)
+		}
+	}
+	tickets, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var child *Ticket
+	for _, tk := range tickets {
+		if tk.ID == "ns-child-0002" {
+			child = tk
+		}
+	}
+
+	reads := 0
+	fallback := func(id string) (*Ticket, error) {
+		reads++
+		return s.Get(id)
+	}
+	parentOf := parentLookup(s, tickets, fallback)
+	parent, err := parentOf(child)
+	if err != nil {
+		t.Fatalf("parentLookup: %v", err)
+	}
+	if parent.ID != "ns-epic-0001" {
+		t.Errorf("parent = %s, want ns-epic-0001", parent.ID)
+	}
+
+	dep, err := depLookup(s, tickets)(child.Deps[0])
+	if err != nil {
+		t.Fatalf("depLookup: %v", err)
+	}
+	if dep.ID != "ns-epic-0001" {
+		t.Errorf("dep = %s, want ns-epic-0001", dep.ID)
+	}
+	if reads != 0 {
+		t.Errorf("%d lookup(s) fell through to the store, want the index to answer a namespaced ID against a bare listing", reads)
+	}
+
+	// A prefix naming another project is not stripped: FileStore.Resolve refuses
+	// one, so matching it here would resolve a same-suffix ticket of ours.
+	if _, ok := ticketsByID(tickets, s.Project)("other/ns-epic-0001"); ok {
+		t.Error("an ID prefixed with another project matched this project's listing")
+	}
+}
+
+func TestStoreProjectSeesThroughAWrapper(t *testing.T) {
+	// A store that wraps a FileStore answers with the wrapped store's project.
+	// Read off the concrete type it would report none, after which every
+	// namespaced parent in a listing counts as another project's and is dropped.
+	s := &countingStore{FileStore: NewProjectFileStore(t.TempDir(), "proj")}
+	if got := storeProject(s); got != "proj" {
+		t.Errorf("storeProject = %q, want %q", got, "proj")
+	}
+	if isCrossProjectParent(s, mkWithParent("c-0001", StatusOpen, "proj/e-0002")) {
+		t.Error("a parent in the wrapped store's own project was called cross-project")
+	}
+	if !isCrossProjectParent(s, mkWithParent("c-0003", StatusOpen, "other/e-0004")) {
+		t.Error("a parent in another project was not called cross-project")
 	}
 }
 

@@ -377,6 +377,87 @@ assert_fail "tk edit bad-9999 --priority 0" "Editing a violating ticket is refus
 assert_ok "tk edit bad-9999 --parent=''" "The remedy the audit names clears it"
 assert_contains "tk audit" "No parent violations." "Audit clean once the parent is cleared"
 
+# ─── EPIC STATUS ────────────────────────────────────────────────────────────
+log_section "EPIC STATUS"
+
+# An epic's status is computed from its children, so the CLI shows what the
+# children imply and refuses a status set by hand.
+STATUS_EPIC=$(tk create "Epic with derived status" -t epic | extract_id)
+assert_contains "tk show $STATUS_EPIC" "status: backlog" "Childless epic reads backlog"
+
+STATUS_CHILD=$(tk create "Child of the derived epic" --parent "$STATUS_EPIC" | extract_id)
+tk edit "$STATUS_CHILD" --status open > /dev/null
+assert_contains "tk show $STATUS_EPIC" "status: open" "Epic follows an open child"
+assert_not_contains "tk frontier" "$STATUS_EPIC" "Frontier holds no epic"
+
+assert_fail "tk edit $STATUS_EPIC --status done" "Reject a status set by hand on an epic"
+assert_contains "tk edit $STATUS_EPIC --status done" "derived from its children" "Rejection says the status is derived"
+
+tk edit "$STATUS_CHILD" --status done > /dev/null
+assert_contains "tk show $STATUS_EPIC" "status: done" "Epic follows its last child done"
+
+# A child abandoned rather than finished: the epic did not complete either.
+STATUS_CLOSED_CHILD=$(tk create "Abandoned child of the derived epic" --parent "$STATUS_EPIC" | extract_id)
+tk edit "$STATUS_CLOSED_CHILD" --status closed > /dev/null
+assert_contains "tk show $STATUS_EPIC" "status: closed" "Epic reads closed when a child was closed, not done"
+assert_ok "tk delete $STATUS_CLOSED_CHILD" "Drop the abandoned child again"
+assert_contains "tk show $STATUS_EPIC" "status: done" "Epic reads done once every remaining child is done"
+
+# Promoting a ticket to an epic is one ordinary edit: the status it carries is
+# the one it was read with, not a status chosen for an epic.
+PROMOTED=$(tk create "Grew into an epic" | extract_id)
+tk edit "$PROMOTED" --status open > /dev/null
+assert_ok "tk edit $PROMOTED --type epic" "Promote a ticket to an epic"
+assert_contains "tk show $PROMOTED" "status: backlog" "The promoted epic reads what a childless epic derives"
+
+# A status set in the same call is a status set on the epic the edit makes:
+# closed abandons it, and anything else is refused like on any other epic.
+PROMOTED_CLOSED=$(tk create "Grew into an abandoned epic" | extract_id)
+assert_ok "tk edit $PROMOTED_CLOSED --type epic --status closed" "Promote a ticket and abandon it in one edit"
+assert_contains "tk show $PROMOTED_CLOSED" "status: closed" "The abandon set with the promotion was recorded"
+PROMOTED_READY=$(tk create "Grew into an epic set ready" | extract_id)
+assert_fail "tk edit $PROMOTED_READY --type epic --status ready" "Reject a status set alongside the promotion"
+assert_contains "tk show $PROMOTED_READY" "type: feature" "The refused edit promoted nothing"
+
+# Closing an epic closes its children, and reopening one un-closes the epic.
+tk edit "$STATUS_CHILD" --status open > /dev/null
+assert_contains "tk edit $STATUS_EPIC --status closed" "closed 1 child ticket(s)" "Closing an epic reports the child it closed"
+assert_contains "tk show $STATUS_CHILD" "status: closed" "Closing an epic closes its children"
+assert_contains "tk show $STATUS_EPIC" "status: closed" "Closed epic reads closed"
+tk edit "$STATUS_CHILD" --status open > /dev/null
+assert_contains "tk show $STATUS_EPIC" "status: open" "Reopening a child un-closes the epic"
+
+# An edit to any other field carries the status the epic was read with, and must
+# not overwrite the abandon intent with it.
+tk edit "$STATUS_EPIC" --note "An unrelated edit" > /dev/null
+assert_contains "tk show $STATUS_CHILD" "status: open" "An unrelated edit to the epic closes no child"
+tk edit "$STATUS_CHILD" --status done > /dev/null
+assert_contains "tk show $STATUS_EPIC" "status: closed" "The abandon intent survives an unrelated edit"
+assert_ok "tk edit $STATUS_EPIC --status done" "A status set by hand takes the abandon back"
+assert_contains "tk show $STATUS_EPIC" "status: done" "The un-abandoned epic reads done"
+
+# The other direction: an epic that derives closed from its children alone holds
+# no abandon intent, and an edit carrying that status back must not record one.
+INVENT_EPIC=$(tk create "Epic that derives closed" -t epic | extract_id)
+INVENT_DONE=$(tk create "Finished child" --parent "$INVENT_EPIC" | extract_id)
+INVENT_LEFT=$(tk create "Abandoned child" --parent "$INVENT_EPIC" | extract_id)
+tk edit "$INVENT_DONE" --status done > /dev/null
+tk edit "$INVENT_LEFT" --status closed > /dev/null
+assert_contains "tk show $INVENT_EPIC" "status: closed" "Epic derives closed from its children alone"
+tk edit "$INVENT_EPIC" --note "An unrelated edit" > /dev/null
+tk edit "$INVENT_LEFT" --status done > /dev/null
+assert_contains "tk show $INVENT_EPIC" "status: done" "An unrelated edit invents no abandon intent"
+
+# Stored statuses were left in place and are no longer read, so `tk audit` is
+# the only place the two can still be compared. Plant an epic the way a store
+# written before derivation holds one.
+printf -- '---\nid: legacy-epic-9999\nstatus: closed\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: epic\npriority: 2\n---\n# Planted legacy epic\n' > "$STORE_DIR/legacy-epic-9999.md"
+assert_contains "tk audit" "legacy-epic-9999" "Audit names the epic whose stored status is no longer read"
+assert_contains "tk audit" "stored-closed" "Audit calls out an epic storing closed separately"
+assert_contains "tk audit --project tktest" "legacy-epic-9999" "Epic report scoped to a project"
+assert_ok "tk edit legacy-epic-9999 --status closed" "The remedy the audit names re-records the abandon"
+assert_not_contains "tk audit" "legacy-epic-9999" "Audit clean once the abandon is re-recorded"
+
 # ─── DELETE ─────────────────────────────────────────────────────────────────
 log_section "DELETE"
 

@@ -189,6 +189,36 @@ func TestCreateFormStatusBacklogReadyOnly(t *testing.T) {
 	}
 }
 
+func TestCreateFormEpicStatusBacklogOnly(t *testing.T) {
+	// An epic's status is derived from its children and a new one has none, so
+	// the store refuses an epic created as ready — the form must not offer it.
+	m := newFormModel(80, 40)
+	m.focus = fieldStatus
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight}) // ready
+
+	m.focus = fieldType
+	for ticketTypes[m.typeIdx] != ticket.TypeEpic {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight})
+	}
+
+	if got := m.statusOptions(); len(got) != 1 || got[0] != ticket.StatusBacklog {
+		t.Fatalf("epic create statusOptions: got %v, want [backlog]", got)
+	}
+	m.fields[fieldTitle] = "Test epic"
+	if msg := m.submit().(formSubmitMsg); msg.status != ticket.StatusBacklog {
+		t.Errorf("epic create status: got %q, want %q", msg.status, ticket.StatusBacklog)
+	}
+
+	// Cycling back off epic restores the wider set with a selection in range.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := m.statusOptions(); len(got) != len(createStatuses) {
+		t.Fatalf("statusOptions after leaving epic: got %v, want %v", got, createStatuses)
+	}
+	if msg := m.submit().(formSubmitMsg); msg.status != ticket.StatusBacklog {
+		t.Errorf("status after leaving epic: got %q, want %q", msg.status, ticket.StatusBacklog)
+	}
+}
+
 func TestEditFormStatusUnchanged(t *testing.T) {
 	// Edit mode still offers all five statuses.
 	m := newEditFormModel(&ticket.Ticket{

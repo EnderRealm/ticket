@@ -305,7 +305,7 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 					continue
 				}
 				// Project-scoped: auto-close writes go through the same
-				// propagation hooks as MCP writes and must resolve the
+				// validation as MCP writes and must resolve the
 				// namespaced parent/dep IDs the central store records.
 				store = ticket.NewProjectFileStore(dir, name)
 			} else if entry.Path != "" {

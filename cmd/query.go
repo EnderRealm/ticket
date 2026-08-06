@@ -25,6 +25,7 @@ func init() {
 type ticketJSON struct {
 	ID          string            `json:"id"`
 	Status      string            `json:"status"`
+	Abandoned   bool              `json:"abandoned,omitempty"`
 	Deps        []string          `json:"deps"`
 	Links       []string          `json:"links"`
 	Created     string            `json:"created"`
@@ -63,6 +64,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 	return ticketJSON{
 		ID:          t.ID,
 		Status:      string(t.Status),
+		Abandoned:   t.Abandoned,
 		Deps:        t.Deps,
 		Links:       t.Links,
 		Created:     t.Created.UTC().Format("2006-01-02T15:04:05Z"),

@@ -27,8 +27,8 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 		t.Fatalf("mkdir target: %v", err)
 	}
 
-	mkMoveTicket(t, src, "mv-epic-0001", ticket.TypeEpic, "")
-	mkMoveTicket(t, src, "mv-child-0002", ticket.TypeFeature, "mv-epic-0001")
+	mkMoveTicket(t, src, "mv-epic-0001", ticket.TypeEpic, ticket.StatusBacklog, "")
+	mkMoveTicket(t, src, "mv-child-0002", ticket.TypeFeature, ticket.StatusOpen, "mv-epic-0001")
 
 	// The child's close fails after its target copy is written.
 	childFile := filepath.Join(srcDir, "mv-child-0002.md")
@@ -82,10 +82,10 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 	}
 }
 
-func mkMoveTicket(t *testing.T, store *ticket.FileStore, id string, typ ticket.TicketType, parent string) {
+func mkMoveTicket(t *testing.T, store *ticket.FileStore, id string, typ ticket.TicketType, status ticket.Status, parent string) {
 	t.Helper()
 	tk := &ticket.Ticket{
-		ID: id, Status: ticket.StatusOpen, Type: typ, Priority: 2, Parent: parent,
+		ID: id, Status: status, Type: typ, Priority: 2, Parent: parent,
 		Created: time.Now(), Title: "Item " + id, Body: "\n",
 		Deps: []string{}, Links: []string{},
 	}

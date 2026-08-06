@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,10 +206,11 @@ func TestWatchCycle_AutoCloseOutputs(t *testing.T) {
 	}
 }
 
-func TestWatchCycle_AutoClosePropagatesToNamespacedParent(t *testing.T) {
+func TestWatchCycle_AutoCloseCountsTowardsNamespacedParent(t *testing.T) {
 	// The watcher builds a project-scoped store for central-store projects, so
-	// an auto-close must roll its parent epic up even though the central store
-	// records the parent namespaced.
+	// an auto-closed child must count towards its parent epic even though the
+	// central store records the parent namespaced. Nothing writes the epic —
+	// its status is derived from what the watcher wrote to the child.
 	t.Setenv("HOME", t.TempDir())
 
 	repoDir := initTestRepo(t)
@@ -219,7 +221,7 @@ func TestWatchCycle_AutoClosePropagatesToNamespacedParent(t *testing.T) {
 		ID:       ticket.GenerateID("Parent epic"),
 		Title:    "Parent epic",
 		Type:     ticket.TypeEpic,
-		Status:   ticket.StatusOpen,
+		Status:   ticket.StatusBacklog,
 		Priority: 2,
 	}
 	if err := store.Create(epic); err != nil {
@@ -256,7 +258,50 @@ func TestWatchCycle_AutoClosePropagatesToNamespacedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if updated.Status != ticket.StatusDone {
-		t.Errorf("epic status = %q, want done (auto-close must propagate to a namespaced parent)", updated.Status)
+		t.Errorf("epic status = %q, want done (a namespaced child has to count towards its epic)", updated.Status)
+	}
+}
+
+func TestWatchCycle_AutoCloseSkipsEpic(t *testing.T) {
+	// An epic is closed by its children, not by a commit. Writing one would be
+	// inert while still appending a note and counting a close that never
+	// happened, so the watcher names it as a warning instead.
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "epic-test")
+
+	epic := &ticket.Ticket{
+		ID:       ticket.GenerateID("Epic closed by commit"),
+		Title:    "Epic closed by commit",
+		Type:     ticket.TypeEpic,
+		Status:   ticket.StatusBacklog,
+		Priority: 2,
+	}
+	if err := store.Create(epic); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "fix.go", "package fix\n", "Closes: ["+epic.ID+"] Landed it")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("epic-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 0 {
+		t.Errorf("Closed = %d, want 0 — a commit cannot close an epic", result.Closed)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], epic.ID) {
+		t.Fatalf("warnings = %v, want the skipped epic named", result.Warnings)
+	}
+
+	updated, err := store.Get(epic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Notes) != 0 {
+		t.Errorf("notes = %v, want none — nothing was closed", updated.Notes)
 	}
 }
 

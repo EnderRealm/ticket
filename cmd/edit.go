@@ -155,11 +155,12 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no options provided")
 	}
 
-	if err := store.Update(t); err != nil {
+	closed, err := ticket.SaveEdit(store, t, cmd.Flags().Changed("status"))
+	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Updated %s\n", t.ID)
+	fmt.Printf("Updated %s%s\n", t.ID, ticket.ClosedChildrenNote(closed))
 	return nil
 }
 

@@ -103,9 +103,15 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 
 			if action == "close" && cfg.AutoClose && store != nil {
 				t, err := store.Get(ticketID)
-				if err != nil {
+				switch {
+				case err != nil:
 					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
-				} else {
+				case t.Type == ticket.TypeEpic:
+					// An epic's status is derived from its children, so writing
+					// one here would change nothing while appending a note and
+					// counting a close that did not happen.
+					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s skipped: an epic is closed by its children, not by a commit", ticketID))
+				default:
 					t.Status = ticket.StatusDone
 					t.Notes = append(t.Notes, ticket.Note{
 						Timestamp: time.Now().UTC(),

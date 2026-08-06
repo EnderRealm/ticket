@@ -51,6 +51,14 @@ var createStatuses = []ticket.Status{
 	ticket.StatusReady,
 }
 
+// epicCreateStatuses is the create form's status set for an epic. An epic's
+// status is derived from its children and a new one has none, so backlog is the
+// only value the store accepts — offering ready would make every epic created
+// through the form fail on save.
+var epicCreateStatuses = []ticket.Status{
+	ticket.StatusBacklog,
+}
+
 type formModel struct {
 	editID    string // non-empty = edit mode
 	fields    [fieldCount]string
@@ -59,9 +67,15 @@ type formModel struct {
 	typeIdx   int
 	priority  int
 	statusIdx int
-	offset    int
-	width     int
-	height    int
+	// statusSeed is the status the form was opened with, so submit can say
+	// whether the user chose a status or left the one they were shown. The
+	// seeded value is a snapshot of the ticket as the list held it, and the
+	// write re-reads from disk — carrying it back as a status the user set
+	// would assert a value that may have moved since.
+	statusSeed ticket.Status
+	offset     int
+	width      int
+	height     int
 }
 
 func (m formModel) lastField() formField {
@@ -72,12 +86,24 @@ func (m formModel) lastField() formField {
 }
 
 // statusOptions returns the status choices for the current mode: the full set
-// when editing, the backlog/ready pair when creating.
+// when editing, the backlog/ready pair when creating, and backlog alone when
+// creating an epic.
 func (m formModel) statusOptions() []ticket.Status {
 	if m.editID != "" {
 		return allStatuses
 	}
+	if ticketTypes[m.typeIdx] == ticket.TypeEpic {
+		return epicCreateStatuses
+	}
 	return createStatuses
+}
+
+// clampStatus pulls the status selection back into range after the type changes
+// under it: cycling to epic narrows the options a selection was made against.
+func (m *formModel) clampStatus() {
+	if n := len(m.statusOptions()); m.statusIdx >= n {
+		m.statusIdx = n - 1
+	}
 }
 
 func (m formModel) isTextField(f formField) bool {
@@ -114,12 +140,13 @@ func newEditFormModel(t *ticket.Ticket, w, h int) formModel {
 	}
 
 	m := formModel{
-		editID:    t.ID,
-		typeIdx:   typeIdx,
-		priority:  t.Priority,
-		statusIdx: statusIdx,
-		width:     w,
-		height:    h,
+		editID:     t.ID,
+		typeIdx:    typeIdx,
+		priority:   t.Priority,
+		statusIdx:  statusIdx,
+		statusSeed: t.Status,
+		width:      w,
+		height:     h,
 	}
 	m.fields[fieldTitle] = t.Title
 	m.fields[fieldDescription] = extractDescription(t.Body)
@@ -216,6 +243,7 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				}
 			} else if m.focus == fieldType {
 				m.typeIdx = (m.typeIdx - 1 + len(ticketTypes)) % len(ticketTypes)
+				m.clampStatus()
 			} else if m.focus == fieldPriority {
 				if m.priority > 0 {
 					m.priority--
@@ -231,6 +259,7 @@ func (m formModel) update(msg tea.Msg) (formModel, tea.Cmd) {
 				}
 			} else if m.focus == fieldType {
 				m.typeIdx = (m.typeIdx + 1) % len(ticketTypes)
+				m.clampStatus()
 			} else if m.focus == fieldPriority {
 				if m.priority < 4 {
 					m.priority++
@@ -304,6 +333,7 @@ func (m formModel) submit() tea.Msg {
 	if title == "" {
 		return nil
 	}
+	status := m.statusOptions()[m.statusIdx]
 	msg := formSubmitMsg{
 		editID:      m.editID,
 		title:       title,
@@ -312,7 +342,8 @@ func (m formModel) submit() tea.Msg {
 		priority:    m.priority,
 		parent:      strings.TrimSpace(m.fields[fieldParent]),
 		note:        strings.TrimSpace(m.fields[fieldNote]),
-		status:      m.statusOptions()[m.statusIdx],
+		status:      status,
+		statusSet:   status != m.statusSeed,
 	}
 	return msg
 }
@@ -494,6 +525,7 @@ type formSubmitMsg struct {
 	ticketType  ticket.TicketType
 	priority    int
 	status      ticket.Status
+	statusSet   bool   // the user chose a status rather than leaving the seeded one
 	parent      string // edit mode only; empty clears the parent
 	note        string
 }

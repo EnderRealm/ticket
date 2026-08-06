@@ -21,7 +21,7 @@ func TestResolveParent_RejectsNonEpicParentOnCreate(t *testing.T) {
 
 func TestResolveParent_RejectsNonEpicParentOnUpdate(t *testing.T) {
 	s := depStore(t,
-		mkEpic("epic-1111", StatusOpen, ""),
+		mkEpic("epic-1111", StatusBacklog, ""),
 		mk("feat-2222", StatusOpen),
 		mkWithParent("child-3333", StatusOpen, "epic-1111"),
 	)
@@ -43,9 +43,9 @@ func TestResolveParent_RejectsNonEpicParentOnUpdate(t *testing.T) {
 }
 
 func TestResolveParent_RejectsParentOnEpic(t *testing.T) {
-	s := depStore(t, mkEpic("epic-1111", StatusOpen, ""))
+	s := depStore(t, mkEpic("epic-1111", StatusBacklog, ""))
 
-	err := s.Create(mkEpic("epic-2222", StatusOpen, "epic-1111"))
+	err := s.Create(mkEpic("epic-2222", StatusBacklog, "epic-1111"))
 	if err == nil {
 		t.Fatal("expected an epic with a parent to be rejected, got nil")
 	}
@@ -71,7 +71,7 @@ func TestResolveParent_StoresTheResolvedEpicID(t *testing.T) {
 	// namespaced under the store's own project — but every reader matches a
 	// parent by ID, so what lands on disk has to be the resolved epic.
 	s := NewProjectFileStore(t.TempDir(), "proj")
-	if err := s.Create(mkEpic("epic-abcd", StatusOpen, "")); err != nil {
+	if err := s.Create(mkEpic("epic-abcd", StatusBacklog, "")); err != nil {
 		t.Fatal(err)
 	}
 	forms := map[string]struct{ typed, stored string }{
@@ -121,7 +121,7 @@ func TestResolveParent_LegacyTicketReadsButDoesNotWrite(t *testing.T) {
 
 func TestAuditParentsReportsEachViolationClass(t *testing.T) {
 	s := NewProjectFileStore(t.TempDir(), "proj")
-	if err := s.Create(mkEpic("epic-1111", StatusOpen, "")); err != nil {
+	if err := s.Create(mkEpic("epic-1111", StatusBacklog, "")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Create(mkWithParent("good-2222", StatusOpen, "epic-1111")); err != nil {
@@ -133,9 +133,9 @@ func TestAuditParentsReportsEachViolationClass(t *testing.T) {
 	writeLegacy(t, s, mkWithParent("cyc-6666", StatusOpen, "cyc-7777"))
 	writeLegacy(t, s, mkWithParent("cyc-7777", StatusOpen, "cyc-6666"))
 
-	audit, err := AuditParents(s)
+	audit, err := Audit(s)
 	if err != nil {
-		t.Fatalf("AuditParents: %v", err)
+		t.Fatalf("Audit: %v", err)
 	}
 
 	got := map[string]ParentViolationKind{}
@@ -173,11 +173,11 @@ func TestAuditParentsMatchesEnforcementAcrossProjects(t *testing.T) {
 	beta := NewProjectFileStore(filepath.Join(root, "beta"), "beta")
 
 	for _, s := range []*FileStore{alpha, beta} {
-		if err := s.Create(mkEpic("epic-1111", StatusOpen, "")); err != nil {
+		if err := s.Create(mkEpic("epic-1111", StatusBacklog, "")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := beta.Create(mkEpic("epic-7777", StatusOpen, "")); err != nil {
+	if err := beta.Create(mkEpic("epic-7777", StatusBacklog, "")); err != nil {
 		t.Fatal(err)
 	}
 	// Resolves through MultiStore.Get, but every write to it is refused.
@@ -190,9 +190,9 @@ func TestAuditParentsMatchesEnforcementAcrossProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	audit, err := AuditParents(ms)
+	audit, err := Audit(ms)
 	if err != nil {
-		t.Fatalf("AuditParents: %v", err)
+		t.Fatalf("Audit: %v", err)
 	}
 
 	got := map[string]ParentViolationKind{}
@@ -235,7 +235,7 @@ func TestAuditParentsDoesNotMutate(t *testing.T) {
 	if err := s.Create(mk("feat-1111", StatusOpen)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Create(mkEpic("epic-abcd", StatusOpen, "")); err != nil {
+	if err := s.Create(mkEpic("epic-abcd", StatusBacklog, "")); err != nil {
 		t.Fatal(err)
 	}
 	writeLegacy(t, s, mkWithParent("child-2222", StatusOpen, "feat-1111"))
@@ -252,8 +252,8 @@ func TestAuditParentsDoesNotMutate(t *testing.T) {
 		before[name] = string(data)
 	}
 
-	if _, err := AuditParents(s); err != nil {
-		t.Fatalf("AuditParents: %v", err)
+	if _, err := Audit(s); err != nil {
+		t.Fatalf("Audit: %v", err)
 	}
 
 	for name, want := range before {
@@ -281,9 +281,9 @@ func TestAuditParentsNamesUnreadableProject(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(unreadable, 0o755) })
 
-	audit, err := AuditParents(ms)
+	audit, err := Audit(ms)
 	if err != nil {
-		t.Fatalf("AuditParents: %v", err)
+		t.Fatalf("Audit: %v", err)
 	}
 	if len(audit.Violations) != 1 {
 		t.Errorf("violations = %v, want the one in the readable project", audit.Violations)

@@ -120,6 +120,9 @@ func Serialize(t *Ticket) ([]byte, error) {
 	buf.WriteString("---\n")
 	writeField(&buf, "id", t.ID)
 	writeField(&buf, "status", string(t.Status))
+	if t.Abandoned {
+		writeField(&buf, "abandoned", "true")
+	}
 	writeFlowArray(&buf, "deps", t.Deps)
 	writeFlowArray(&buf, "links", t.Links)
 	writeField(&buf, "created", t.Created.UTC().Format(time.RFC3339))

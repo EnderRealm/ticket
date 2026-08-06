@@ -94,8 +94,13 @@ type Note struct {
 // YAML frontmatter fields are mapped via yaml tags. Title and body
 // content are parsed from the markdown outside the frontmatter.
 type Ticket struct {
-	ID          string     `yaml:"id"`
-	Status      Status     `yaml:"status"`
+	ID     string `yaml:"id"`
+	Status Status `yaml:"status"`
+	// Abandoned records that an epic was given up on. It is the only thing
+	// about an epic's status a human still asserts — the rest is derived from
+	// the children — and it is stored rather than inferred so that a generic
+	// read-modify-write round-trips it instead of recomputing one.
+	Abandoned   bool       `yaml:"abandoned,omitempty"`
 	Type        TicketType `yaml:"type"`
 	Priority    int        `yaml:"priority"`
 	Parent      string     `yaml:"parent,omitempty"`
@@ -150,7 +155,7 @@ func (t *Ticket) Validate() error {
 // Extra fields are flattened to the top level in JSON, so both namespaces must be reserved.
 var reservedKeys = map[string]bool{
 	// YAML frontmatter fields.
-	"id": true, "status": true,
+	"id": true, "status": true, "abandoned": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
 	"dep-cargo": true,

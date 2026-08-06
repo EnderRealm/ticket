@@ -12,11 +12,12 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Report tickets whose parent breaks the one-level epic hierarchy",
+	Short: "Report tickets whose parent breaks the one-level epic hierarchy, and epics whose stored status is no longer read",
 	Long: "Report tickets whose parent breaks the one-level epic hierarchy: a parent that is not an epic, " +
 		"a parent that does not resolve, a parent in another project, an epic that has a parent, or a parent cycle. " +
 		"Each parent is resolved within the project that owns the ticket, so the report matches what a write would accept. " +
-		"Read-only — nothing is rewritten.",
+		"Also report every epic whose stored status differs from the status it now derives from its children, since " +
+		"stored statuses were left in place and are no longer read. Read-only — nothing is rewritten.",
 	Args: cobra.NoArgs,
 	RunE: runAudit,
 }
@@ -33,7 +34,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	}
 	store := ticket.NewMultiStore(filepath.Join(root, "tickets"))
 
-	audit, err := ticket.AuditParents(store)
+	audit, err := ticket.Audit(store)
 	if err != nil {
 		return err
 	}
@@ -53,6 +54,13 @@ func runAudit(cmd *cobra.Command, args []string) error {
 			}
 		}
 		audit.Violations = filtered
+		var drift []ticket.EpicStatusDrift
+		for _, d := range audit.EpicStatus {
+			if p, _ := ticket.ParseNamespacedID(d.ID); p == proj {
+				drift = append(drift, d)
+			}
+		}
+		audit.EpicStatus = drift
 		var skipped []ticket.ProjectSkip
 		for _, s := range audit.Skipped {
 			if s.Project == proj {
@@ -65,6 +73,9 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	if jsonOutput {
 		if audit.Violations == nil {
 			audit.Violations = []ticket.ParentViolation{}
+		}
+		if audit.EpicStatus == nil {
+			audit.EpicStatus = []ticket.EpicStatusDrift{}
 		}
 		data, err := json.MarshalIndent(audit, "", "  ")
 		if err != nil {
@@ -82,8 +93,10 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("\n%d ticket(s) violate the one-level epic hierarchy — clear or repoint each parent\n", len(audit.Violations))
 	}
+	printEpicStatusDrift(audit.EpicStatus)
 	// A project the audit could not read is named rather than dropped: without
 	// it, "No parent violations." would speak for a store never fully read.
+	// It covers both sections, which are read in the same per-project pass.
 	if len(audit.Skipped) > 0 {
 		fmt.Printf("\nwarning: %d project(s) could not be read, so this report is incomplete:\n", len(audit.Skipped))
 		for _, s := range audit.Skipped {
@@ -91,4 +104,45 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// printEpicStatusDrift reports the epics reading a different status than their
+// file stores. Statuses were derived without migrating what was stored, so this
+// is the only place the two can still be compared — an operator has no other
+// way to find the epics whose displayed status moved.
+func printEpicStatusDrift(drift []ticket.EpicStatusDrift) {
+	if len(drift) == 0 {
+		fmt.Println("\nNo epic reads a different status than its file stores.")
+		return
+	}
+	fmt.Println()
+	storedClosed := 0
+	for _, d := range drift {
+		if d.Kind == ticket.EpicDriftStoredClosed {
+			storedClosed++
+		}
+		fmt.Printf("%s  %s  stored: %s  reads: %s\n", d.ID, d.Kind, storedStatus(d.Stored), d.Derived)
+	}
+	fmt.Printf("\n%d epic(s) read the status their children imply rather than the one stored — the stored value is ignored, not migrated\n", len(drift))
+	// Neither class is bounded to files written before statuses were derived:
+	// every write of an epic bakes the status it derived at that moment into the
+	// file, so an ordinary edit today produces both. Said plainly, because the
+	// remedy below is only a remedy for the older ones.
+	fmt.Println("Both classes also arise from ordinary edits made since: any write of an epic stores the status it derived at that moment, which the next change to a child makes stale.")
+	if storedClosed > 0 {
+		fmt.Printf("%d epic(s) of those store `closed` with no abandon flag: either a hand-close from before statuses were derived, or a write that carried a derived `closed` into the file — the file cannot say which. "+
+			"A stored value is evidence of a decision only on a file older than derived statuses; run `tk edit <id> --status closed` on each of those that should stay abandoned, and do it before editing the epic, since the next write of the epic replaces the stored value with the derived one. "+
+			"On a file written since, the stored `closed` is an artifact — closing the epic would close a child nobody asked to close\n", storedClosed)
+	}
+}
+
+// storedStatus renders a status read straight off a ticket file. A status is
+// checked only when tk writes one, so a file another machine pushed into the
+// central store can carry anything at all — an unrecognised value is quoted
+// rather than printed into the terminal as it stands.
+func storedStatus(s ticket.Status) string {
+	if ticket.ValidateStatus(s) != nil {
+		return fmt.Sprintf("%q", string(s))
+	}
+	return string(s)
 }

@@ -89,6 +89,10 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		newTicket := &copied
 		newTicket.ID = newID
 		newTicket.Status = StatusBacklog
+		// The copy starts over, so an abandoned epic does not arrive abandoned:
+		// the flag is the record of a decision taken about the work that stayed
+		// behind, not about the work that landed here.
+		newTicket.Abandoned = false
 		newTicket.Tags = copyStrings(t.Tags)
 		newTicket.Deps = nil
 		newTicket.Links = nil
@@ -161,10 +165,13 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			Timestamp: now,
 			Text:      closeNote,
 		})
-		// Closed, not done: the ticket did not complete here, it left. Done
-		// would also assert an epic finished with its children still open,
-		// which the state guard rejects, and would roll a parent epic staying
-		// behind up to done when its last non-terminal child moves away.
+		// Closed, not done: the ticket did not complete here, it left. It is an
+		// epic's children that carry this — an epic derives done only once every
+		// child of it is done, so a child that moved away leaves the epic
+		// staying behind reading closed rather than finished. On an epic that is
+		// itself moving the status written here is inert: an epic's status is
+		// derived, and the write goes through Update, which records no abandon
+		// intent, so what stays behind reads as whatever children stayed with it.
 		t.Status = StatusClosed
 		if err := src.Update(t); err != nil {
 			return results, fmt.Errorf("closing %s in source: %w. %s was written to %s but %s is still "+

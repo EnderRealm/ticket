@@ -25,7 +25,7 @@ Viewing:
   ls|list [filters]          List tickets (default: workflow grouped)
   frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
-  audit [--project=NAME]     Report tickets whose parent is not a valid epic (central store)
+  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read (central store)
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
   A criterion declares its check on an indented continuation line:
@@ -113,6 +113,20 @@ Create & edit options:
                        (edit only, repeatable, blank value removes)
 
 Statuses: backlog, ready, open, done, closed
+  An epic's status is derived from its children, never set: no children reads
+  backlog, any child open reads open, all children done reads done, and all
+  terminal with one of them closed reads closed — an epic whose work was
+  abandoned did not complete. An epic never reads ready, and its completion
+  date is its last child's. Setting a status by hand is refused — change the
+  children, or set the epic closed to abandon it, which records the intent
+  (abandoned: true) and closes its children too, naming them in the line that
+  reports the edit; setting any other status on an abandoned epic takes that
+  back. The same applies to a status set alongside --type epic. Statuses
+  stored on epics before this were left in place and are ignored, not
+  migrated; tk audit lists every epic that now reads a different one, and the
+  ones it reports as stored-closed should be re-recorded before those epics
+  are edited — but only where the file predates the change, since a later
+  write of an epic leaves the same shape behind.
 
 Global flags:
   --repo <path>    Operate on a different repo

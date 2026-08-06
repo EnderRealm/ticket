@@ -28,7 +28,10 @@ func ResolveParent(store Store, t *Ticket) error {
 		return fmt.Errorf("ticket %s: parent %s is in another project: an epic and its children must live in the same project. "+
 			"Repoint the parent at an epic in this project, or clear it", t.ID, t.Parent)
 	}
-	parent, err := store.Get(t.Parent)
+	// readStored, not Get: only the parent's type and resolved ID matter here,
+	// and deriving the status of an epic — which every legitimate parent is —
+	// would read the whole store on every child write.
+	parent, err := readStored(store, t.Parent)
 	if err != nil {
 		return fmt.Errorf("ticket %s: parent %s does not resolve: %w. "+
 			"Repoint the parent at an existing epic, or clear it", t.ID, t.Parent, err)
@@ -56,12 +59,43 @@ func ResolveParent(store Store, t *Ticket) error {
 // as a bare "not found": an epic and its children are meant to live together.
 // Shared by ResolveParent and the audit so both apply one rule.
 func isCrossProjectParent(store Store, t *Ticket) bool {
-	fs, ok := store.(*FileStore)
+	p, ok := store.(projectStore)
 	if !ok {
 		return false
 	}
 	proj, _ := ParseNamespacedID(t.Parent)
-	return proj != "" && proj != fs.Project
+	return proj != "" && proj != p.projectName()
+}
+
+// parentLookup resolves the ticket a child names as its parent, against a set
+// the caller has already read. A loop over a store would otherwise resolve one
+// parent per ticket through Store.Get, which reads the whole store again for
+// every epic — and a parent is always meant to be an epic. Anything the set
+// cannot answer falls through to read, which is where a parent field written
+// before the one-level rule lands: a partial ID only the store's own matching
+// resolves.
+func parentLookup(store Store, tickets []*Ticket, read func(string) (*Ticket, error)) func(*Ticket) (*Ticket, error) {
+	index := ticketsByID(tickets, storeProject(store))
+	return func(t *Ticket) (*Ticket, error) {
+		if parent, ok := index(qualifiedParent(t)); ok {
+			return parent, nil
+		}
+		return read(t.Parent)
+	}
+}
+
+// qualifiedParent returns the parent ID a ticket names, in the ticket's own
+// namespace. An epic and its children live in the same project, so a parent
+// recorded bare — as everything written before the namespacing rollout was —
+// names one in the child's project; matching it against a bare key across a
+// central store would find a same-named ticket in another project.
+func qualifiedParent(t *Ticket) string {
+	proj, _ := ParseNamespacedID(t.ID)
+	parentProj, bare := ParseNamespacedID(t.Parent)
+	if proj == "" || parentProj != "" {
+		return t.Parent
+	}
+	return FormatNamespacedID(proj, bare)
 }
 
 // ParentViolationKind classifies how a ticket breaks the one-level hierarchy.
@@ -89,18 +123,22 @@ type ProjectSkip struct {
 	Error   string `json:"error"`
 }
 
-// ParentAudit is what AuditParents found: the violations, and the projects it
+// AuditReport is what Audit found: the parent violations, the epics whose
+// stored status no longer matches the one they derive, and the projects it
 // could not read. Skipped projects are part of the result rather than swallowed
 // — a report that silently covered less than the whole store would call a store
 // clean that a write can still trip on, which is the wrong way to fail.
-type ParentAudit struct {
+type AuditReport struct {
 	Violations []ParentViolation `json:"violations"`
+	EpicStatus []EpicStatusDrift `json:"epic_status"`
 	Skipped    []ProjectSkip     `json:"skipped,omitempty"`
 }
 
-// AuditParents reports every ticket whose parent breaks the one-level
-// hierarchy, so a store predating the rule can be cleaned before a write trips
-// on it. Strictly read-only: nothing is repaired or rewritten.
+// Audit reports every ticket whose parent breaks the one-level hierarchy, so a
+// store predating the rule can be cleaned before a write trips on it, and every
+// epic reading a different status than its file stores, so a store predating
+// derived epic statuses can be reconciled. Strictly read-only: nothing is
+// repaired or rewritten.
 //
 // A MultiStore is audited project by project, against the same per-project
 // FileStore the write path validates against. Resolving through MultiStore.Get
@@ -108,49 +146,70 @@ type ParentAudit struct {
 // project's prefix, resolves a bare ID into another project, and turns a bare
 // ID that matches in two projects into a false parent-missing — so the audit
 // would clear tickets that no write can touch and flag tickets writes accept.
-func AuditParents(store Store) (ParentAudit, error) {
+func Audit(store Store) (AuditReport, error) {
 	m, ok := store.(*MultiStore)
 	if !ok {
-		violations, err := auditStoreParents(store)
-		return ParentAudit{Violations: violations}, err
+		return auditStore(store)
 	}
 
 	projects, err := m.projects()
 	if err != nil {
-		return ParentAudit{}, err
+		return AuditReport{}, err
 	}
-	var audit ParentAudit
+	var report AuditReport
 	for _, proj := range projects {
 		projStore, err := m.storeFor(proj)
 		if err != nil {
-			audit.Skipped = append(audit.Skipped, ProjectSkip{Project: proj, Error: err.Error()})
+			report.Skipped = append(report.Skipped, ProjectSkip{Project: proj, Error: err.Error()})
 			continue
 		}
-		violations, err := auditStoreParents(projStore)
+		projReport, err := auditStore(projStore)
 		if err != nil {
-			audit.Skipped = append(audit.Skipped, ProjectSkip{Project: proj, Error: err.Error()})
+			report.Skipped = append(report.Skipped, ProjectSkip{Project: proj, Error: err.Error()})
 			continue
 		}
-		for _, v := range violations {
+		for _, v := range projReport.Violations {
 			v.ID = FormatNamespacedID(proj, v.ID)
-			audit.Violations = append(audit.Violations, v)
+			report.Violations = append(report.Violations, v)
+		}
+		for _, d := range projReport.EpicStatus {
+			d.ID = FormatNamespacedID(proj, d.ID)
+			report.EpicStatus = append(report.EpicStatus, d)
 		}
 	}
-	return audit, nil
+	return report, nil
+}
+
+// auditStore runs both audits over one project's tickets.
+func auditStore(store Store) (AuditReport, error) {
+	violations, err := auditStoreParents(store)
+	if err != nil {
+		return AuditReport{}, err
+	}
+	drift, err := auditStoreEpicStatus(store)
+	if err != nil {
+		return AuditReport{}, err
+	}
+	return AuditReport{Violations: violations, EpicStatus: drift}, nil
 }
 
 // auditStoreParents runs the checks ResolveParent runs over one store's
 // tickets, plus the cycle class only a pre-rule store can hold. Parents resolve
-// through store.Get, which accepts the full, partial, and namespaced forms
-// stored parent fields actually carry; unlike the write path it only reads them
-// — nothing here rewrites a parent to what it resolved to. One violation per
-// ticket, most specific first — a cycle is reported as a cycle rather than as
-// the non-epic parent each of its members also has.
+// against the tickets it already listed, falling back to the store for the
+// partial forms stored parent fields can carry; unlike the write path it only
+// reads them — nothing here rewrites a parent to what it resolved to. One
+// violation per ticket, most specific first — a cycle is reported as a cycle
+// rather than as the non-epic parent each of its members also has.
 func auditStoreParents(store Store) ([]ParentViolation, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
 	}
+	// Only stored fields are read here, so neither the index nor its fallback
+	// needs a derived status — an audit of N tickets reads the store once.
+	parentOf := parentLookup(store, tickets, func(id string) (*Ticket, error) {
+		return readStored(store, id)
+	})
 
 	var violations []ParentViolation
 	report := func(t *Ticket, kind ParentViolationKind, detail string) {
@@ -168,12 +227,12 @@ func auditStoreParents(store Store) ([]ParentViolation, error) {
 			report(t, ViolationParentCrossProject, "an epic and its children must live in the same project")
 			continue
 		}
-		parent, err := store.Get(t.Parent)
+		parent, err := parentOf(t)
 		if err != nil {
 			report(t, ViolationParentMissing, err.Error())
 			continue
 		}
-		if chain := parentCycle(store, t); chain != "" {
+		if chain := parentCycle(parentOf, t); chain != "" {
 			report(t, ViolationParentCycle, chain)
 			continue
 		}
@@ -188,12 +247,12 @@ func auditStoreParents(store Store) ([]ParentViolation, error) {
 // revisits a ticket, or "" if it terminates. Only a store written before the
 // one-level rule can hold such a chain; an unresolvable link ends the walk and
 // is reported against the ticket that carries it.
-func parentCycle(store Store, t *Ticket) string {
+func parentCycle(parentOf func(*Ticket) (*Ticket, error), t *Ticket) string {
 	chain := []string{t.ID}
 	seen := map[string]bool{t.ID: true}
 	cur := t
 	for cur.Parent != "" {
-		next, err := store.Get(cur.Parent)
+		next, err := parentOf(cur)
 		if err != nil {
 			return ""
 		}

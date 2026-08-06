@@ -638,6 +638,54 @@ func TestSerialize_NoExtraFieldsUnchanged(t *testing.T) {
 	}
 }
 
+func TestAbandoned_RoundTrip(t *testing.T) {
+	// The abandon intent is stored, not derived, so it has to survive the file:
+	// a writer that read a ticket carries the flag back and must write the same
+	// value it was given.
+	tk := &Ticket{
+		ID:        "t-aband",
+		Status:    StatusClosed,
+		Abandoned: true,
+		Type:      TypeEpic,
+		Priority:  2,
+		Deps:      []string{},
+		Links:     []string{},
+		Created:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:     "Abandoned epic",
+		Body:      "\nDescription.\n",
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if !strings.Contains(string(data), "abandoned: true\n") {
+		t.Errorf("frontmatter does not carry the flag:\n%s", data)
+	}
+
+	parsed, err := Parse(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !parsed.Abandoned {
+		t.Error("Abandoned = false after a round trip, want true")
+	}
+	if len(parsed.Extra) != 0 {
+		t.Errorf("Extra = %v, want empty — abandoned is a known field, not an unknown one", parsed.Extra)
+	}
+
+	// An epic that was never abandoned writes no key at all, so the field costs
+	// nothing on the tickets that do not use it.
+	tk.Abandoned = false
+	data, err = Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if strings.Contains(string(data), "abandoned") {
+		t.Errorf("frontmatter carries an abandoned key it does not need:\n%s", data)
+	}
+}
+
 func TestOutputs_RoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:       "t-out1",

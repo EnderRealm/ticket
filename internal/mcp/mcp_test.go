@@ -2547,3 +2547,181 @@ func TestEditClearsParent(t *testing.T) {
 		t.Errorf("parent = %v after an edit that omitted it, want %s", tk["parent"], epicID)
 	}
 }
+
+func TestEpicStatusDerivedInResponses(t *testing.T) {
+	// An epic's status is computed from its children, so every response that
+	// carries one has to show the same value.
+	session := testServer(t)
+	ctx := context.Background()
+
+	epicID := createTicketID(t, session, map[string]any{"title": "An epic", "type": "epic"})
+	childID := createTicketID(t, session, map[string]any{"title": "A child", "type": "feature", "parent": epicID})
+
+	epic := showResult(t, session, map[string]any{"id": epicID})
+	if epic["status"] != "backlog" {
+		t.Errorf("ticket_show: epic status = %v, want backlog", epic["status"])
+	}
+
+	editStatus(t, session, childID, "open")
+	epic = showResult(t, session, map[string]any{"id": epicID})
+	if epic["status"] != "open" {
+		t.Errorf("ticket_show: epic status = %v, want open", epic["status"])
+	}
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{"type": "epic"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	listed := resp["tickets"].([]any)[0].(map[string]any)
+	if listed["status"] != "open" {
+		t.Errorf("ticket_list: epic status = %v, want open", listed["status"])
+	}
+
+	editStatus(t, session, childID, "done")
+	epic = showResult(t, session, map[string]any{"id": epicID})
+	if epic["status"] != "done" {
+		t.Errorf("ticket_show: epic status = %v, want done once every child is terminal", epic["status"])
+	}
+}
+
+func TestEditRejectsManualEpicStatus(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	epicID := createTicketID(t, session, map[string]any{"title": "An epic", "type": "epic"})
+	createTicketID(t, session, map[string]any{"title": "A child", "type": "feature", "parent": epicID})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": epicID, "status": "done"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_edit should reject a status set by hand on an epic: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, epicID) || !strings.Contains(text, "derived from its children") {
+		t.Errorf("error should name the epic and say the status is derived, got: %s", text)
+	}
+}
+
+func TestEditClosingEpicCascadesToChildren(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	epicID := createTicketID(t, session, map[string]any{"title": "An epic", "type": "epic"})
+	childID := createTicketID(t, session, map[string]any{"title": "A child", "type": "feature", "parent": epicID})
+	editStatus(t, session, childID, "open")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": epicID, "status": "closed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit should accept closing an epic: %v", result.Content)
+	}
+
+	// The edit mutated a ticket besides the one it was asked to write, so it
+	// says which rather than leaving the caller to list the epic's children.
+	var edited map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &edited)
+	closed, _ := edited["closed_children"].([]any)
+	if len(closed) != 1 || closed[0] != childID {
+		t.Errorf("closed_children = %v, want [%s]", edited["closed_children"], childID)
+	}
+
+	child := showResult(t, session, map[string]any{"id": childID})
+	if child["status"] != "closed" {
+		t.Errorf("child status = %v, want closed — closing an epic closes its children", child["status"])
+	}
+	epic := showResult(t, session, map[string]any{"id": epicID})
+	if epic["status"] != "closed" {
+		t.Errorf("epic status = %v, want closed", epic["status"])
+	}
+	if _, ok := epic["closed_children"]; ok {
+		t.Errorf("ticket_show carried closed_children: %v", epic["closed_children"])
+	}
+}
+
+func TestEditPromotesToEpic(t *testing.T) {
+	// Changing a ticket's type to epic carries the status it was read with,
+	// which was never a status chosen for an epic — the promotion is one normal
+	// edit, not one that has to reset the status in the same call.
+	session := testServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{"title": "Grew into an epic", "type": "feature"})
+	editStatus(t, session, id, "open")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "type": "epic"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit should accept promoting a ticket to an epic: %v", result.Content)
+	}
+
+	tk := showResult(t, session, map[string]any{"id": id})
+	if tk["type"] != "epic" {
+		t.Errorf("type = %v, want epic", tk["type"])
+	}
+	if tk["status"] != "backlog" {
+		t.Errorf("status = %v, want backlog — a childless epic derives backlog", tk["status"])
+	}
+}
+
+func TestEditPromotesToEpicWithAStatus(t *testing.T) {
+	// type and status arrive in one call, so the status was passed rather than
+	// carried: closed is the abandon it looks like, and any other status is
+	// refused the way it is on an epic that already existed.
+	session := testServer(t)
+	ctx := context.Background()
+
+	closedID := createTicketID(t, session, map[string]any{"title": "Promoted and abandoned", "type": "feature"})
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": closedID, "type": "epic", "status": "closed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit should accept promoting a ticket and abandoning it: %v", result.Content)
+	}
+	tk := showResult(t, session, map[string]any{"id": closedID})
+	if tk["status"] != "closed" || tk["abandoned"] != true {
+		t.Errorf("promoted epic = %v [abandoned %v], want closed with the intent recorded", tk["status"], tk["abandoned"])
+	}
+
+	readyID := createTicketID(t, session, map[string]any{"title": "Promoted and set ready", "type": "feature"})
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": readyID, "type": "epic", "status": "ready"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_edit should refuse a status set alongside the promotion: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "derived from its children") {
+		t.Errorf("error should say an epic's status is derived, got: %s", text)
+	}
+	if tk := showResult(t, session, map[string]any{"id": readyID}); tk["type"] == "epic" {
+		t.Error("the refused edit promoted the ticket anyway")
+	}
+}

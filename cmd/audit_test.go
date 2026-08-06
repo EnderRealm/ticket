@@ -33,6 +33,16 @@ func auditTicket(t *testing.T, store *ticket.FileStore, id string, typ ticket.Ti
 	})
 }
 
+// auditEpic writes an epic carrying a stored status, the way a store written
+// before epic statuses were derived holds one.
+func auditEpic(t *testing.T, store *ticket.FileStore, id string, status ticket.Status) {
+	t.Helper()
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: id, Status: status, Type: ticket.TypeEpic,
+		Created: time.Now(), Title: "Epic " + id, Body: "\n",
+	})
+}
+
 func captureAudit(t *testing.T, args ...string) string {
 	t.Helper()
 	if err := auditCmd.Flags().Set("project", ""); err != nil {
@@ -88,7 +98,7 @@ func TestAuditJSONAndProjectFilter(t *testing.T) {
 
 	out := captureAudit(t, "project", "beta")
 
-	var result ticket.ParentAudit
+	var result ticket.AuditReport
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("json parse: %v\noutput: %s", err, out)
 	}
@@ -100,6 +110,69 @@ func TestAuditJSONAndProjectFilter(t *testing.T) {
 	}
 	if result.Violations[0].Kind != ticket.ViolationParentMissing {
 		t.Errorf("kind = %q, want %q", result.Violations[0].Kind, ticket.ViolationParentMissing)
+	}
+}
+
+func TestAuditReportsEpicsReadingADifferentStatus(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	store := stores["alpha"]
+	auditEpic(t, store, "au-hand-0001", ticket.StatusClosed)
+	auditEpic(t, store, "au-drift-0002", ticket.StatusDone)
+	auditTicket(t, store, "au-child-0003", ticket.TypeFeature, "au-drift-0002")
+	auditEpic(t, store, "au-agrees-0004", ticket.StatusBacklog)
+
+	out := captureAudit(t)
+
+	if !contains(out, "au-hand-0001") || !contains(out, string(ticket.EpicDriftStoredClosed)) {
+		t.Errorf("audit should call out the epic storing closed separately:\n%s", out)
+	}
+	if !contains(out, "tk edit <id> --status closed") {
+		t.Errorf("audit should name the remedy for an epic storing closed:\n%s", out)
+	}
+	if !contains(out, "before editing the epic") {
+		t.Errorf("audit should say the stored value is lost to the next write of the epic:\n%s", out)
+	}
+	if !contains(out, "ordinary edits made since") {
+		t.Errorf("audit should say neither class is bounded to files written before the change:\n%s", out)
+	}
+	if !contains(out, "older than derived statuses") {
+		t.Errorf("audit should say a stored value is evidence of intent only on an older file:\n%s", out)
+	}
+	if !contains(out, "au-drift-0002") || !contains(out, string(ticket.EpicDriftStale)) {
+		t.Errorf("audit should report the epic whose stored status its children never agreed with:\n%s", out)
+	}
+	if contains(out, "au-agrees-0004") {
+		t.Errorf("audit should not report an epic that reads what its file stores:\n%s", out)
+	}
+	if !contains(out, "2 epic(s)") {
+		t.Errorf("audit should count exactly the two epics whose displayed status moved:\n%s", out)
+	}
+}
+
+func TestAuditEpicStatusJSONAndProjectFilter(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha", "beta")
+	auditEpic(t, stores["alpha"], "au-alpha-0001", ticket.StatusClosed)
+	auditEpic(t, stores["beta"], "au-beta-0001", ticket.StatusClosed)
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	out := captureAudit(t, "project", "beta")
+
+	var result ticket.AuditReport
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, out)
+	}
+	if len(result.EpicStatus) != 1 {
+		t.Fatalf("audit --project=beta returned %d epics, want 1: %s", len(result.EpicStatus), out)
+	}
+	got := result.EpicStatus[0]
+	want := ticket.EpicStatusDrift{
+		ID: "beta/au-beta-0001", Stored: ticket.StatusClosed,
+		Derived: ticket.StatusBacklog, Kind: ticket.EpicDriftStoredClosed,
+	}
+	if got != want {
+		t.Errorf("epic_status[0] = %+v, want %+v", got, want)
 	}
 }
 
@@ -124,7 +197,7 @@ func TestAuditWarnsAboutUnreadableProject(t *testing.T) {
 	jsonOutput = true
 	defer func() { jsonOutput = false }()
 
-	var result ticket.ParentAudit
+	var result ticket.AuditReport
 	jsonOut := captureAudit(t)
 	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
 		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)

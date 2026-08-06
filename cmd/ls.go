@@ -34,6 +34,10 @@ func runLs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Built from the whole listing, before the filters narrow it: the workflow
+	// grouping asks whether each row is blocked, and a dep naming an epic
+	// resolves through the store, which reads every ticket to derive it.
+	blocked := ticket.BlockedFunc(store, tickets)
 
 	opts, err := parseFilterFlags(cmd)
 	if err != nil {
@@ -77,7 +81,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if groupBy != "" {
-		return printGrouped(store, tickets, groupBy)
+		return printGrouped(blocked, tickets, groupBy)
 	}
 
 	ticket.SortByStatusPriorityID(tickets)
@@ -85,7 +89,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy string) error {
+func printGrouped(blocked func(*ticket.Ticket) bool, tickets []*ticket.Ticket, groupBy string) error {
 	type group struct {
 		name    string
 		order   int
@@ -101,7 +105,7 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 
 		switch groupBy {
 		case "workflow":
-			name, order = workflowGroup(store, t)
+			name, order = workflowGroup(blocked, t)
 		case "type":
 			name = string(t.Type)
 			order = ticket.TypeOrder(t.Type)
@@ -174,8 +178,8 @@ func printGrouped(store *ticket.FileStore, tickets []*ticket.Ticket, groupBy str
 	return nil
 }
 
-func workflowGroup(store *ticket.FileStore, t *ticket.Ticket) (string, int) {
-	if ticket.IsBlocked(store, t) {
+func workflowGroup(blocked func(*ticket.Ticket) bool, t *ticket.Ticket) (string, int) {
+	if blocked(t) {
 		return "Blocked", 99
 	}
 	status := t.Status

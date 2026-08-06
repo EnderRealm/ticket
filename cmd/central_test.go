@@ -54,7 +54,7 @@ func mkCentral(t *testing.T, store *ticket.FileStore, id string, typ ticket.Tick
 	}
 }
 
-func TestEditPropagatesToNamespacedParent(t *testing.T) {
+func TestEditDerivesNamespacedParentStatus(t *testing.T) {
 	store := centralStore(t, "cs-prop")
 	mkCentral(t, store, "epic-1111", ticket.TypeEpic, ticket.StatusBacklog, "")
 	mkCentral(t, store, "child-2222", ticket.TypeFeature, ticket.StatusOpen, "cs-prop/epic-1111")
@@ -68,21 +68,28 @@ func TestEditPropagatesToNamespacedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if epic.Status != ticket.StatusDone {
-		t.Errorf("epic status = %q, want %q (CLI write must propagate to a namespaced parent)", epic.Status, ticket.StatusDone)
+		t.Errorf("epic status = %q, want %q (a namespaced child has to count towards its epic)", epic.Status, ticket.StatusDone)
 	}
 }
 
-func TestEditEpicDoneGuardWithNamespacedChild(t *testing.T) {
+func TestEditRejectsManualEpicStatus(t *testing.T) {
 	store := centralStore(t, "cs-guard")
-	mkCentral(t, store, "epic-3333", ticket.TypeEpic, ticket.StatusOpen, "")
+	mkCentral(t, store, "epic-3333", ticket.TypeEpic, ticket.StatusBacklog, "")
 	mkCentral(t, store, "child-4444", ticket.TypeFeature, ticket.StatusOpen, "cs-guard/epic-3333")
 
 	err := runEditWith(t, "epic-3333", "status", "done")
 	if err == nil {
-		t.Fatal("expected error marking epic done with an open namespaced child, got nil")
+		t.Fatal("expected error marking an epic done by hand, got nil")
 	}
-	if !contains(err.Error(), "child-4444") {
-		t.Errorf("error should name child-4444, got: %v", err)
+	if !contains(err.Error(), "epic-3333") || !contains(err.Error(), "derived from its children") {
+		t.Errorf("error should name the epic and say the status is derived, got: %v", err)
+	}
+	epic, err := store.Get("epic-3333")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != ticket.StatusOpen {
+		t.Errorf("epic status = %q, want the derived %q", epic.Status, ticket.StatusOpen)
 	}
 }
 

@@ -27,13 +27,23 @@ func NewMultiStore(rootDir string) *MultiStore {
 // Get retrieves a ticket by namespaced ("project/id") or bare ID.
 // Bare IDs are resolved across all projects; ambiguous matches return an error.
 func (m *MultiStore) Get(id string) (*Ticket, error) {
+	return m.get(id, (*FileStore).Get)
+}
+
+// getStored retrieves a ticket without deriving an epic's status, against the
+// project store that owns it.
+func (m *MultiStore) getStored(id string) (*Ticket, error) {
+	return m.get(id, (*FileStore).getStored)
+}
+
+func (m *MultiStore) get(id string, read func(*FileStore, string) (*Ticket, error)) (*Ticket, error) {
 	proj, ticketID := ParseNamespacedID(id)
 	if proj != "" {
 		store, err := m.storeFor(proj)
 		if err != nil {
 			return nil, err
 		}
-		t, err := store.Get(ticketID)
+		t, err := read(store, ticketID)
 		if err != nil {
 			return nil, fmt.Errorf("project %s: %w", proj, err)
 		}
@@ -41,9 +51,7 @@ func (m *MultiStore) Get(id string) (*Ticket, error) {
 		return t, nil
 	}
 
-	return m.resolveAcrossProjects(ticketID, func(store *FileStore, bareID string) (*Ticket, error) {
-		return store.Get(bareID)
-	})
+	return m.resolveAcrossProjects(ticketID, read)
 }
 
 // List returns all tickets from all projects with namespaced IDs.
@@ -122,6 +130,26 @@ func (m *MultiStore) Create(t *Ticket) error {
 // Update writes a ticket back to disk. Accepts namespaced or bare IDs.
 // Bare IDs are resolved across all projects.
 func (m *MultiStore) Update(t *Ticket) error {
+	return m.update(t, (*FileStore).Update)
+}
+
+// saveEdit writes an edit against the project store that owns the ticket, so an
+// abandoned epic cascades into its own project's children and no other's. The
+// children it closed come back namespaced, like every other ID this store
+// reports.
+func (m *MultiStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
+	var closed []string
+	err := m.update(t, func(s *FileStore, t *Ticket) error {
+		bare, err := s.saveEdit(t, statusSet)
+		for _, id := range bare {
+			closed = append(closed, FormatNamespacedID(s.Project, id))
+		}
+		return err
+	})
+	return closed, err
+}
+
+func (m *MultiStore) update(t *Ticket, write func(*FileStore, *Ticket) error) error {
 	proj, ticketID := ParseNamespacedID(t.ID)
 	if proj != "" {
 		store, err := m.storeFor(proj)
@@ -129,15 +157,13 @@ func (m *MultiStore) Update(t *Ticket) error {
 			return err
 		}
 		t.ID = ticketID
-		err = store.Update(t)
+		err = write(store, t)
 		t.ID = FormatNamespacedID(proj, t.ID)
 		return err
 	}
 
 	// Bare ID — find which project owns it.
-	matched, err := m.resolveAcrossProjects(ticketID, func(store *FileStore, bareID string) (*Ticket, error) {
-		return store.Get(bareID)
-	})
+	matched, err := m.resolveAcrossProjects(ticketID, (*FileStore).getStored)
 	if err != nil {
 		return err
 	}
@@ -147,7 +173,7 @@ func (m *MultiStore) Update(t *Ticket) error {
 		return err
 	}
 	t.ID = ticketID
-	err = store.Update(t)
+	err = write(store, t)
 	t.ID = FormatNamespacedID(ownerProject, t.ID)
 	return err
 }
@@ -165,9 +191,7 @@ func (m *MultiStore) Delete(id string) error {
 	}
 
 	// Bare ID — find which project owns it.
-	matched, err := m.resolveAcrossProjects(ticketID, func(store *FileStore, bareID string) (*Ticket, error) {
-		return store.Get(bareID)
-	})
+	matched, err := m.resolveAcrossProjects(ticketID, (*FileStore).getStored)
 	if err != nil {
 		return err
 	}

@@ -219,3 +219,108 @@ func TestEditFormClearsRejectedParent(t *testing.T) {
 		t.Errorf("parent = %q, want it cleared by the empty form field", got.Parent)
 	}
 }
+
+func TestSetStatusReportsTheChildrenAnAbandonClosed(t *testing.T) {
+	// Closing an epic writes its children too, so the status line names them
+	// rather than reporting only the row the user was on.
+	store := ticket.NewFileStore(t.TempDir())
+	epic := &ticket.Ticket{ID: "e-0001", Title: "An epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic}
+	if err := store.Create(epic); err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+	if err := store.Create(&ticket.Ticket{ID: "c-0002", Title: "Child", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "e-0001"}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	a := App{store: store, activeTab: tabAll, width: 80, height: 24}
+	a.dashboard.activeTab = tabAll
+	a.dashboard.refreshTickets([]*ticket.Ticket{epic})
+
+	reported := statusLine(t, a.handleSetStatus("e-0001", ticket.StatusClosed))
+	if !strings.Contains(reported, "c-0002") || !strings.Contains(reported, "closed 1 child ticket(s)") {
+		t.Errorf("status line = %q, want it to name the child the abandon closed", reported)
+	}
+
+	reported = statusLine(t, a.handleSetStatus("c-0002", ticket.StatusOpen))
+	if strings.Contains(reported, "child ticket(s)") {
+		t.Errorf("status line = %q for a write that closed nothing, want no cascade reported", reported)
+	}
+}
+
+// statusLine runs a mutation command and returns the status message it produced,
+// out of the batch it is issued in alongside the reload.
+func statusLine(t *testing.T, cmd tea.Cmd) string {
+	t.Helper()
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected a batch of commands, got %T", cmd())
+	}
+	for _, c := range batch {
+		if msg, ok := c().(statusMsg); ok {
+			return string(msg)
+		}
+	}
+	t.Fatal("no status message in the batch")
+	return ""
+}
+
+func TestEditFormLeavesAnUntouchedStatusAlone(t *testing.T) {
+	// The form is seeded from the list held in memory and the save re-reads the
+	// ticket from disk, so a status the user never touched is a snapshot that
+	// may have moved since. On an epic reading closed it would land as an
+	// abandon: recorded, and cascading into the child that just reopened.
+	store := ticket.NewFileStore(t.TempDir())
+	if err := store.Create(&ticket.Ticket{ID: "e-0001", Title: "An epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic}); err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+	for _, tk := range []*ticket.Ticket{
+		{ID: "c-0002", Title: "Finished", Status: ticket.StatusDone, Type: ticket.TypeFeature, Parent: "e-0001"},
+		{ID: "c-0003", Title: "Abandoned", Status: ticket.StatusClosed, Type: ticket.TypeFeature, Parent: "e-0001"},
+	} {
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("create %s: %v", tk.ID, err)
+		}
+	}
+
+	shown, err := store.Get("e-0001")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if shown.Status != ticket.StatusClosed {
+		t.Fatalf("epic status = %q, want closed from its children", shown.Status)
+	}
+	form := newEditFormModel(shown, 80, 24)
+
+	// A child reopens while the form is open.
+	child, err := store.Get("c-0003")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	child.Status = ticket.StatusOpen
+	if err := store.Update(child); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	a := App{store: store, activeTab: tabAll, width: 80, height: 24}
+	a.dashboard.activeTab = tabAll
+	a.dashboard.refreshTickets([]*ticket.Ticket{shown})
+	form.fields[fieldTitle] = "Renamed"
+	msg := form.submit().(formSubmitMsg)
+	if msg.statusSet {
+		t.Fatal("a status field the user never touched was submitted as a status they set")
+	}
+	a.handleEditTicket(msg)
+
+	if got, _ := store.Get("c-0003"); got.Status != ticket.StatusOpen {
+		t.Errorf("child = %q, want %q — the stale status cascaded", got.Status, ticket.StatusOpen)
+	}
+	got, err := store.Get("e-0001")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Renamed" {
+		t.Errorf("title = %q, want the edit applied", got.Title)
+	}
+	if got.Status != ticket.StatusOpen {
+		t.Errorf("epic status = %q, want %q — the stale status was recorded as an abandon", got.Status, ticket.StatusOpen)
+	}
+}

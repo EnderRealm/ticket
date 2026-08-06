@@ -123,12 +123,14 @@ func TestShowListsBareAndNamespacedChildren(t *testing.T) {
 	}
 	for _, id := range []string{"sh-epic-0001", "sh-child-bare", "sh-child-ns"} {
 		typ := ticket.TypeFeature
+		status := ticket.StatusOpen
 		if id == "sh-epic-0001" {
 			typ = ticket.TypeEpic
+			status = ticket.StatusBacklog
 		}
 		tk := &ticket.Ticket{
 			ID:      id,
-			Status:  ticket.StatusOpen,
+			Status:  status,
 			Type:    typ,
 			Parent:  parents[id],
 			Created: time.Now(),
@@ -160,7 +162,7 @@ func TestShowAnnotatesNamespacedParent(t *testing.T) {
 	for _, id := range []string{"sp-epic-0001", "sp-child-0002"} {
 		tk := &ticket.Ticket{
 			ID:      id,
-			Status:  ticket.StatusOpen,
+			Status:  ticket.StatusBacklog,
 			Type:    ticket.TypeEpic,
 			Created: time.Now(),
 			Title:   "Item " + id,

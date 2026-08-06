@@ -124,7 +124,7 @@ func TestProjects(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
 	epic := &Ticket{
-		ID: "t-epic", Status: StatusOpen, Type: TypeEpic, Priority: 0,
+		ID: "t-epic", Status: StatusBacklog, Type: TypeEpic, Priority: 0,
 		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Epic", Body: "\n",
 	}
 	child1 := &Ticket{
@@ -170,7 +170,7 @@ func TestProjects_CountsBareAndNamespacedChildren(t *testing.T) {
 	store := NewProjectFileStore(t.TempDir(), "proj")
 
 	epic := &Ticket{
-		ID: "ns-epic-0001", Status: StatusOpen, Type: TypeEpic, Priority: 0,
+		ID: "ns-epic-0001", Status: StatusBacklog, Type: TypeEpic, Priority: 0,
 		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Epic", Body: "\n",
 	}
 	bare := &Ticket{
@@ -218,10 +218,12 @@ func TestProjects_SplitsSameBareIDEpicsButPoolsTheirChildren(t *testing.T) {
 
 	epicA := sampleTicket("alpha/dup-epic-0001")
 	epicA.Type = TypeEpic
+	epicA.Status = StatusBacklog
 	kidA := sampleTicket("alpha/kid-0002")
 	kidA.Parent = "alpha/dup-epic-0001"
 	epicB := sampleTicket("beta/dup-epic-0001")
 	epicB.Type = TypeEpic
+	epicB.Status = StatusBacklog
 	kidB := sampleTicket("beta/kid-0003")
 	kidB.Parent = "beta/dup-epic-0001"
 

@@ -146,7 +146,7 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 
 	parent := &Ticket{
 		ID:       "cargo-parent-0001",
-		Status:   StatusReady,
+		Status:   StatusBacklog,
 		Type:     TypeEpic,
 		Priority: 2,
 		Title:    "Cargo parent",
@@ -211,7 +211,7 @@ func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
 	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
 	dst := &FileStore{Dir: t.TempDir()}
 
-	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "mv-bare-0002", TypeFeature, StatusClosed, "mv-epic-0001")
 	mkMovable(t, src, "mv-ns-0003", TypeFeature, StatusClosed, "proj/mv-epic-0001")
 
@@ -264,7 +264,7 @@ func TestMoveRecursiveSkipsForeignProjectChild(t *testing.T) {
 	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
 	dst := &FileStore{Dir: t.TempDir()}
 
-	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "mv-own-0002", TypeFeature, StatusClosed, "proj/mv-epic-0001")
 	// A parent in another project is refused on write; this one predates that
 	// rule, and the walk still has to leave it alone.
@@ -308,7 +308,7 @@ func TestMoveRemapsNamespacedDepsAndLinks(t *testing.T) {
 	dst := &FileStore{Dir: t.TempDir()}
 
 	parent := &Ticket{
-		ID: "nsdep-parent-0001", Status: StatusReady, Type: TypeEpic, Priority: 2,
+		ID: "nsdep-parent-0001", Status: StatusBacklog, Type: TypeEpic, Priority: 2,
 		Title: "Namespaced dep parent", Deps: []string{}, Links: []string{},
 	}
 	child := &Ticket{
@@ -386,11 +386,11 @@ func TestCollectDescendantsTerminatesOnParentCycle(t *testing.T) {
 
 func TestMoveRecursiveEpicWithNonTerminalChildren(t *testing.T) {
 	// An epic worth moving to another repo is one that still has open work in
-	// it. The whole tree must land, not trip the epic-done guard on the root.
+	// it. The whole tree must land.
 	src := &FileStore{Dir: t.TempDir()}
 	dst := &FileStore{Dir: t.TempDir()}
 
-	mkMovable(t, src, "live-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "live-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "live-open-0002", TypeFeature, StatusOpen, "live-epic-0001")
 	mkMovable(t, src, "live-ready-0003", TypeFeature, StatusReady, "live-epic-0001")
 	mkMovable(t, src, "live-backlog-0004", TypeFeature, StatusBacklog, "live-epic-0001")
@@ -426,7 +426,8 @@ func TestMoveRecursiveFullyClosedEpic(t *testing.T) {
 	src := &FileStore{Dir: t.TempDir()}
 	dst := &FileStore{Dir: t.TempDir()}
 
-	mkMovable(t, src, "shut-epic-0001", TypeEpic, StatusClosed, "")
+	// The epic reads closed off the child rather than being stored that way.
+	mkMovable(t, src, "shut-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "shut-child-0002", TypeFeature, StatusClosed, "shut-epic-0001")
 
 	results, err := MoveTicket(src, dst, "shut-epic-0001", true)
@@ -454,25 +455,70 @@ func TestMoveRecursiveFullyClosedEpic(t *testing.T) {
 	}
 }
 
-func TestMoveDoesNotCompleteParentStayingBehind(t *testing.T) {
-	// A ticket that moves away has not completed, so an epic left behind must
-	// not roll up to done when its last non-terminal child leaves the repo.
+func TestMoveClosesTheTicketThatLeft(t *testing.T) {
+	// A ticket that moves away is closed in the source, not done: it did not
+	// complete here, it left. The epic staying behind reads that off its
+	// children — every one of them terminal, one of them closed — rather than
+	// off a status of its own, so it does not claim to have finished either.
 	src := &FileStore{Dir: t.TempDir()}
 	dst := &FileStore{Dir: t.TempDir()}
 
-	mkMovable(t, src, "stay-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "stay-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "stay-child-0002", TypeFeature, StatusOpen, "stay-epic-0001")
 
 	if _, err := MoveTicket(src, dst, "stay-child-0002", false); err != nil {
 		t.Fatalf("MoveTicket: %v", err)
 	}
 
+	child, err := src.Get("stay-child-0002")
+	if err != nil {
+		t.Fatalf("Get child: %v", err)
+	}
+	if child.Status != StatusClosed {
+		t.Errorf("child left behind = %q, want %q", child.Status, StatusClosed)
+	}
 	epic, err := src.Get("stay-epic-0001")
 	if err != nil {
 		t.Fatalf("Get epic: %v", err)
 	}
+	if epic.Status != StatusClosed {
+		t.Errorf("epic left behind = %q, want %q — its only child left rather than finished", epic.Status, StatusClosed)
+	}
+}
+
+func TestMoveNonRecursiveLeavesTheChildrenAlone(t *testing.T) {
+	// Moving an epic without -r moves only the epic. Closing it in the source
+	// records that it left, which is not a decision to abandon the children that
+	// stayed — nobody asked for those to be closed.
+	src := &FileStore{Dir: t.TempDir()}
+	dst := &FileStore{Dir: t.TempDir()}
+
+	mkMovable(t, src, "nr-epic-0001", TypeEpic, StatusBacklog, "")
+	mkMovable(t, src, "nr-open-0002", TypeFeature, StatusOpen, "nr-epic-0001")
+	mkMovable(t, src, "nr-ready-0003", TypeFeature, StatusReady, "nr-epic-0001")
+
+	if _, err := MoveTicket(src, dst, "nr-epic-0001", false); err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+
+	for id, want := range map[string]Status{"nr-open-0002": StatusOpen, "nr-ready-0003": StatusReady} {
+		child, err := src.Get(id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if child.Status != want {
+			t.Errorf("child %s = %q, want %q — a move is not an abandon", id, child.Status, want)
+		}
+	}
+	// The closed the move wrote on the epic is inert: an epic's status is
+	// derived, and a move records no abandon intent, so what stayed behind reads
+	// as the children that stayed with it.
+	epic, err := src.Get("nr-epic-0001")
+	if err != nil {
+		t.Fatalf("Get nr-epic-0001: %v", err)
+	}
 	if epic.Status != StatusOpen {
-		t.Errorf("epic left behind = %q, want %q — its child moved away, it did not finish", epic.Status, StatusOpen)
+		t.Errorf("source epic = %q, want %q — its open child stayed put", epic.Status, StatusOpen)
 	}
 }
 
@@ -486,7 +532,7 @@ func TestMovePartialFailureReportsWhatLanded(t *testing.T) {
 	src := &FileStore{Dir: t.TempDir()}
 	dst := &FileStore{Dir: t.TempDir()}
 
-	mkMovable(t, src, "part-epic-0001", TypeEpic, StatusOpen, "")
+	mkMovable(t, src, "part-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "part-child-0002", TypeFeature, StatusOpen, "part-epic-0001")
 
 	childFile := filepath.Join(src.Dir, "part-child-0002.md")

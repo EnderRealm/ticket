@@ -138,7 +138,7 @@ Viewing:
   ls|list [filters]          List tickets (default: workflow grouped)
   frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
   search <query>             Search tickets by relevance (best matches first)
-  audit [--project=NAME]     Report tickets whose parent is not a valid epic (central store)
+  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read (central store)
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
 Creating & Editing:
@@ -214,6 +214,37 @@ Tickets use a simple status model:
 | bug | Defect fix |
 
 The hierarchy is one level deep: a ticket's `parent` must name an epic in the same project, and an epic itself has no parent. `tk audit` reports tickets that break the rule.
+
+### Epic Status
+
+An epic's status is not set, it is computed from its children:
+
+| Children | Epic reads |
+|----------|------------|
+| `abandoned: true` and all children done or closed | closed |
+| none | backlog |
+| any child open | open |
+| all done | done |
+| all done or closed, at least one closed | closed |
+| anything else | backlog |
+
+`done` and `closed` say different things about a finished epic: `done` means the work completed, `closed` means it did not. An epic whose children were every one abandoned, or moved to another repo, reads `closed`.
+
+An epic never reads `ready` — `ready` means "available to pick up" and an epic is not picked up directly. Setting an epic's status by hand is refused; change its children instead.
+
+An epic's completion date is derived alongside its status: it is the date its last child reached a terminal state, and it is blank while the epic is not terminal. Nothing writes an epic when a child of it finishes, so `tk show`, `tk query` and the TUI's COMPLETED and DURATION columns read the children rather than a date on the epic's own file — an epic's file stores no completion date at all.
+
+The one exception is abandoning an epic: `tk edit <epic> --status closed` records `abandoned: true` on the epic and closes every non-terminal child in the same action (children that already finished keep their `done`). The abandoned epic reads `closed` only while every child is terminal, so reopening one un-closes the epic until it finishes again. Setting any other status takes the abandon back, whatever the epic reads at the time. The children the abandon closed are reported with the edit — named on `tk edit`'s and the TUI's own line, returned by MCP `ticket_edit` as `closed_children` — so a write that mutated other tickets says so.
+
+Changing a ticket's type to `epic` is judged the same way: `tk edit <id> --type epic` on its own is one ordinary edit and the status it carries back is not read as a decision, while a status set in the same call is a status set on the epic that edit makes — `closed` abandons it, anything else is refused.
+
+Only a status a writer actually set counts as either decision: `tk edit --status`, the `status` argument to MCP `ticket_edit`, or the TUI edit form's status field cycled off the value it was opened with. A status that merely rode along with an edit to some other field is not a decision and is never judged as one — it can neither record an abandon nor be refused for disagreeing with the children. Writes tk makes on its own behalf express no intent either: `tk move` closes an epic in the source repo to record that it left, and the children staying behind are untouched, and a commit carrying `Closes: [<epic-id>]` closes nothing — the commit watcher skips epics with a warning, since an epic is closed by its children.
+
+The intent lives in its own field because `status` on an epic is what every reader is shown and therefore what every edit carries back: an edit to a title or a note round-trips the flag unchanged, where it would otherwise drop or invent one. An epic's `status:` field is advisory — the derivation never reads it — so a value left there by an unrelated write means nothing.
+
+Epics written before statuses were derived keep whatever `status` their file holds, and it is ignored: an epic closed by hand back then reads as its children imply until it is closed again. Nothing was migrated and no file was rewritten, so `tk audit` reports every epic that now reads a different status than its file stores. An epic whose file stores `closed` with no `abandoned` flag is listed separately as `stored-closed`: that is either a hand-close from before the change or a derived `closed` that some write carried into the file, and nothing in the file tells the two apart. Re-record the ones that should stay abandoned with `tk edit <id> --status closed` — and do it before editing those epics, because the stored value is the only surviving trace of the decision and the next write of the epic replaces it with the derived one.
+
+Neither class is confined to the migration, so the report does not empty out: every write of an epic stores the status it derived at that moment, which the next change to a child makes stale, and an epic that derived `closed` at the time of a write comes back as `stored-closed`. A stored value is evidence of a decision only on a file older than derived statuses; on a newer one it is an artifact, and closing the epic to "re-record" it would close a child nobody asked to close.
 
 ### Verifiable Acceptance Criteria
 

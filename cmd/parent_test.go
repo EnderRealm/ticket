@@ -17,7 +17,7 @@ func parentStore(t *testing.T) *ticket.FileStore {
 	store := ticket.NewFileStore(dir)
 	for _, tk := range []*ticket.Ticket{
 		{ID: "pa-feat-0001", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: time.Now(), Title: "A feature", Body: "\n"},
-		{ID: "pa-epic-0002", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: time.Now(), Title: "An epic", Body: "\n"},
+		{ID: "pa-epic-0002", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now(), Title: "An epic", Body: "\n"},
 	} {
 		if err := store.Create(tk); err != nil {
 			t.Fatalf("Create %s: %v", tk.ID, err)

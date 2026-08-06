@@ -856,11 +856,12 @@ func (a *App) handleSetStatus(id string, status ticket.Status) tea.Cmd {
 	}
 
 	t.Status = status
-	if err := a.store.Update(t); err != nil {
+	closed, err := ticket.SaveEdit(a.store, t, true)
+	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
 
-	msg := fmt.Sprintf("%s -> %s", id, status)
+	msg := fmt.Sprintf("%s -> %s%s", id, status, ticket.ClosedChildrenNote(closed))
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(msg) },
@@ -934,7 +935,11 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 	t.Title = msg.title
 	t.Type = msg.ticketType
 	t.Priority = msg.priority
-	if msg.status != "" {
+	// Only a status the user chose is applied: the form was seeded from the
+	// in-memory list and this ticket was just re-read, so writing an untouched
+	// selection back would assert whatever the row held when the form opened,
+	// over whatever the ticket says now.
+	if msg.statusSet {
 		t.Status = msg.status
 	}
 	// Assigned unconditionally: the form is seeded with the current parent, so
@@ -956,12 +961,13 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 		}
 	}
 
-	if err := a.store.Update(t); err != nil {
+	closed, err := ticket.SaveEdit(a.store, t, msg.statusSet)
+	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
 
 	a.overlay = overlayNone
-	status := fmt.Sprintf("Updated %s", t.ID)
+	status := fmt.Sprintf("Updated %s%s", t.ID, ticket.ClosedChildrenNote(closed))
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },

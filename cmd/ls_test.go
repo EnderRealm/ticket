@@ -85,12 +85,14 @@ func TestLsParentMatchesBareAndNamespacedParent(t *testing.T) {
 	}
 	for _, id := range []string{"ls-epic-0001", "ls-child-bare", "ls-child-ns"} {
 		typ := ticket.TypeFeature
+		status := ticket.StatusOpen
 		if id == "ls-epic-0001" {
 			typ = ticket.TypeEpic
+			status = ticket.StatusBacklog
 		}
 		tk := &ticket.Ticket{
 			ID:      id,
-			Status:  ticket.StatusOpen,
+			Status:  status,
 			Type:    typ,
 			Parent:  parents[id],
 			Created: time.Now(),
