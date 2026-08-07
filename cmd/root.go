@@ -34,9 +34,25 @@ Viewing:
       verify: go test ./pkg/ticket -run TestFrontier
     - Docs updated.
 
-  Each command runs with sh -c in the project directory (120s timeout).
+  Each command runs in the project directory (120s timeout), execed as
+  argv and never through a shell: quotes group arguments, everything else
+  (; | && $() backticks ~) is literal text. A command runs only if its
+  program exactly matches an entry in verify_allow in ~/.ticket/config.yaml;
+  anything else is refused without running. Only that machine-local file
+  grants permission — the shared central-store config, ticket content and
+  MCP arguments cannot, so an agent can never widen the list itself. An
+  empty verify_allow refuses everything, and so does a local config that
+  cannot be parsed.
+  Default: go, make, cargo, pytest. Listing a program trusts whoever
+  writes verify lines with everything that program can do — including
+  "go run pkg@version", "go install pkg@version", "cargo install <crate>"
+  and "make -f <file>", which run code from outside the repo. Shells and
+  interpreters are absent: swift is not in the default because
+  "swift -e <code>" runs arbitrary Swift, so a Swift project adds swift
+  to verify_allow itself to get "swift test" back.
   Criteria with no command are reported unverified. Results are recorded
-  in the ticket's Test Results section; exit is non-zero on any failure.
+  in the ticket's Test Results section; exit is non-zero on any failure
+  or refusal.
 
 Creating & Editing:
   create [title] [options]   Create ticket

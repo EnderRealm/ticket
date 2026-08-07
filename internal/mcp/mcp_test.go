@@ -2294,6 +2294,7 @@ func verifyServer(t *testing.T) (*mcp.ClientSession, string) {
 	}
 	cfg := project.Config{
 		CentralRoot: root,
+		VerifyAllow: []string{"/bin/cat", "/bin/echo", "/bin/sh"},
 		Projects: map[string]project.ProjectConfig{
 			"alpha": {Path: repoDir, Store: "central"},
 		},
@@ -2329,8 +2330,8 @@ func TestVerifyRunsCriterionCommands(t *testing.T) {
 	id := createTicketID(t, session, map[string]any{
 		"title": "Verifiable ticket",
 		"type":  "feature",
-		"acceptance": "- Passing check.\n  verify: cat marker.txt\n" +
-			"- Failing check.\n  verify: echo boom; exit 3\n" +
+		"acceptance": "- Passing check.\n  verify: /bin/cat marker.txt\n" +
+			"- Failing check.\n  verify: /bin/sh -c 'echo boom; exit 3'\n" +
 			"- Docs updated.\n",
 	})
 
@@ -2387,7 +2388,7 @@ func TestVerifyRunsCriterionCommands(t *testing.T) {
 	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown)
 	testResults, _ := shown["test_results"].(string)
 	for _, want := range []string{
-		"1 pass, 1 fail, 1 unverified",
+		"1 pass, 1 fail, 0 refused, 1 unverified",
 		"- PASS (exit 0): Passing check.",
 		"- FAIL (exit 3): Failing check.",
 		"- UNVERIFIED: Docs updated.",
@@ -2408,7 +2409,7 @@ func TestVerifyUnresolvableProject(t *testing.T) {
 	id := createTicketID(t, session, map[string]any{
 		"title":      "Unregistered project",
 		"type":       "feature",
-		"acceptance": "- Passing check.\n  verify: true\n",
+		"acceptance": "- Passing check.\n  verify: /bin/echo ok\n",
 	})
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
@@ -2420,6 +2421,224 @@ func TestVerifyUnresolvableProject(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatalf("ticket_verify should error when no project directory resolves: %v", result.Content)
+	}
+}
+
+// verifyRefusalCase creates a sentinel file and a ticket whose only criterion
+// tries to delete it, then runs ticket_verify. Returns the tool result and the
+// sentinel path so a caller can prove the command never ran.
+func verifyRefusalCase(t *testing.T, session *mcp.ClientSession) (*mcp.CallToolResult, string, string) {
+	t.Helper()
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Hostile ticket",
+		"type":       "feature",
+		"acceptance": "- Hostile check.\n  verify: rm -rf " + sentinel + "\n",
+	})
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result, sentinel, id
+}
+
+func TestVerifyRefusesCommandOutsideAllowList(t *testing.T) {
+	session, _ := verifyServer(t)
+
+	result, sentinel, id := verifyRefusalCase(t, session)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("ticket content deleted the sentinel: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if report.OK {
+		t.Error("ok = true, want false when a criterion was refused")
+	}
+	if report.Summary.Refused != 1 || report.Summary.Fail != 0 {
+		t.Errorf("summary = %+v, want the refusal counted as refused, not failed", report.Summary)
+	}
+	if report.Results[0].Status != string(ticket.VerifyRefused) {
+		t.Errorf("status = %q, want refused", report.Results[0].Status)
+	}
+	for _, want := range []string{"rm", "verify_allow", "~/.ticket/config.yaml"} {
+		if !strings.Contains(report.Results[0].Output, want) {
+			t.Errorf("refusal missing %q, so a user can't act on it:\n%s", want, report.Results[0].Output)
+		}
+	}
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown)
+	testResults, _ := shown["test_results"].(string)
+	if !strings.Contains(testResults, "0 pass, 0 fail, 1 refused, 0 unverified") {
+		t.Errorf("test_results should count the refusal separately:\n%s", testResults)
+	}
+	if strings.Contains(testResults, "FAIL") {
+		t.Errorf("a refusal must not be recorded as a failure:\n%s", testResults)
+	}
+}
+
+func TestVerifySharedConfigCannotWidenAllowList(t *testing.T) {
+	session, _ := verifyServer(t)
+
+	// The shared config lives in the synced tickets repo, so it is reachable by
+	// whatever plants the command. It must not grant permission.
+	sharedPath, err := project.SharedConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sharedPath, []byte("verify_allow:\n  - rm\n"+string(raw)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, sentinel, _ := verifyRefusalCase(t, session)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("an allow-list planted in the shared config widened what runs: %v", err)
+	}
+
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if report.Results[0].Status != string(ticket.VerifyRefused) {
+		t.Errorf("status = %q, want refused", report.Results[0].Status)
+	}
+}
+
+func TestVerifyTicketContentCannotWidenAllowList(t *testing.T) {
+	session, _ := verifyServer(t)
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := createTicketID(t, session, map[string]any{
+		"title":       "Self-permitting ticket",
+		"type":        "feature",
+		"description": "verify_allow: [rm]",
+		"acceptance":  "- Hostile check.\n  verify: rm -rf " + sentinel + "\n",
+	})
+
+	// The ticket is the one place the attacker certainly writes, so plant the
+	// key in its frontmatter too. Frontmatter is a closed struct and VerifyAllow
+	// never reads ticket content, which is what this pins: a future frontmatter
+	// field must not become a permission grant.
+	dir, err := project.CentralProjectDir("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, strings.TrimPrefix(id, "alpha/")+".md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), "---\n", "---\nverify_allow:\n  - rm\n", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("an allow-list planted in the ticket widened what runs: %v", err)
+	}
+
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if report.Results[0].Status != string(ticket.VerifyRefused) {
+		t.Errorf("status = %q, want refused", report.Results[0].Status)
+	}
+}
+
+func TestVerifyToolArgumentCannotWidenAllowList(t *testing.T) {
+	session, _ := verifyServer(t)
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Hostile ticket",
+		"type":       "feature",
+		"acceptance": "- Hostile check.\n  verify: rm -rf " + sentinel + "\n",
+	})
+
+	// ticket_verify takes an id and nothing else: an allow-list argument is
+	// rejected by the tool's schema, so a caller has no way to widen what runs.
+	_, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id, "verify_allow": []string{"rm"}, "allow": "rm"},
+	})
+	if err == nil {
+		t.Error("ticket_verify accepted an allow-list argument")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("a tool argument widened what runs: %v", err)
+	}
+}
+
+func TestVerifyGivesNoShellSemantics(t *testing.T) {
+	session, repoDir := verifyServer(t)
+	sentinel := filepath.Join(repoDir, "sentinel.txt")
+
+	id := createTicketID(t, session, map[string]any{
+		"title": "Metacharacters",
+		"type":  "feature",
+		"acceptance": "- Literal metacharacters.\n" +
+			"  verify: /bin/echo a ; touch " + sentinel + " && echo $(whoami) `id` ~\n",
+	})
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("the second half of a chained command ran: sentinel stat err = %v", err)
+	}
+
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	want := "a ; touch " + sentinel + " && echo $(whoami) `id` ~"
+	if report.Results[0].Status != string(ticket.VerifyPass) || report.Results[0].Output != want {
+		t.Errorf("result = %+v, want a pass echoing the metacharacters literally: %q", report.Results[0], want)
 	}
 }
 

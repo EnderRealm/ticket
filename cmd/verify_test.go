@@ -5,20 +5,27 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/EnderRealm/ticket/v7/internal/project"
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
 // verifyStore creates a temp store, unconfigured HOME included, holding one
-// ticket with the given body.
+// ticket with the given body. The temp HOME gets a machine-local verify_allow
+// permitting the stock binaries the fixtures below run.
 func verifyStore(t *testing.T, id, body string) *ticket.FileStore {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TICKETS_DIR", dir)
+
+	if err := project.Save(project.Config{VerifyAllow: []string{"/bin/echo", "/bin/sh"}}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
 
 	store := ticket.NewFileStore(dir)
 	tk := &ticket.Ticket{
@@ -37,8 +44,8 @@ func verifyStore(t *testing.T, id, body string) *ticket.FileStore {
 
 // mixedCriteriaBody has passing, failing, and command-less criteria.
 const mixedCriteriaBody = "Description.\n\n## Acceptance Criteria\n\n" +
-	"- Passing check.\n  verify: true\n" +
-	"- Failing check.\n  verify: echo boom; exit 3\n" +
+	"- Passing check.\n  verify: /bin/sh -c 'exit 0'\n" +
+	"- Failing check.\n  verify: /bin/sh -c 'echo boom; exit 3'\n" +
 	"- Docs updated.\n"
 
 func captureVerify(t *testing.T, id string) (string, error) {
@@ -72,7 +79,7 @@ func TestVerifyReportsPerCriterion(t *testing.T) {
 		"PASS (exit 0) Passing check.",
 		"FAIL (exit 3) Failing check.",
 		"UNVERIFIED Docs updated.",
-		"1 pass, 1 fail, 1 unverified",
+		"1 pass, 1 fail, 0 refused, 1 unverified",
 		"boom",
 	} {
 		if !contains(out, want) {
@@ -86,7 +93,7 @@ func TestVerifyReportsPerCriterion(t *testing.T) {
 	}
 	for _, want := range []string{
 		"## Test Results",
-		"1 pass, 1 fail, 1 unverified",
+		"1 pass, 1 fail, 0 refused, 1 unverified",
 		"- PASS (exit 0): Passing check.",
 		"- FAIL (exit 3): Failing check.",
 		"- UNVERIFIED: Docs updated.",
@@ -110,7 +117,7 @@ func TestVerifyReplacesPreviousResults(t *testing.T) {
 	if got := strings.Count(tk.Body, "## Test Results"); got != 1 {
 		t.Errorf("got %d Test Results sections after two runs, want 1:\n%s", got, tk.Body)
 	}
-	if got := strings.Count(tk.Body, "1 pass, 1 fail, 1 unverified"); got != 1 {
+	if got := strings.Count(tk.Body, "1 pass, 1 fail, 0 refused, 1 unverified"); got != 1 {
 		t.Errorf("got %d verify records after two runs, want 1:\n%s", got, tk.Body)
 	}
 }
@@ -145,14 +152,75 @@ func TestVerifyJSON(t *testing.T) {
 }
 
 func TestVerifyAllPassingExitsZero(t *testing.T) {
-	verifyStore(t, "vf-ok", "Description.\n\n## Acceptance Criteria\n\n- Passing check.\n  verify: true\n- Docs updated.\n")
+	verifyStore(t, "vf-ok", "Description.\n\n## Acceptance Criteria\n\n- Passing check.\n  verify: /bin/echo ok\n- Docs updated.\n")
 
 	out, err := captureVerify(t, "vf-ok")
 	if err != nil {
 		t.Errorf("verify with no failures should not error: %v", err)
 	}
-	if !contains(out, "1 pass, 0 fail, 1 unverified") {
+	if !contains(out, "1 pass, 0 fail, 0 refused, 1 unverified") {
 		t.Errorf("output missing summary:\n%s", out)
+	}
+}
+
+func TestVerifyRefusesCommandOutsideAllowList(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := verifyStore(t, "vf-evil",
+		"Description.\n\n## Acceptance Criteria\n\n- Hostile check.\n  verify: rm -rf "+sentinel+"\n")
+
+	out, err := captureVerify(t, "vf-evil")
+	if _, statErr := os.Stat(sentinel); statErr != nil {
+		t.Fatalf("ticket content deleted the sentinel: %v", statErr)
+	}
+	if err == nil {
+		t.Error("verify with a refused criterion should return an error")
+	}
+	for _, want := range []string{"REFUSED Hostile check.", "verify_allow", "0 pass, 0 fail, 1 refused, 0 unverified"} {
+		if !contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	tk, err := store.Get("vf-evil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(tk.Body, "- REFUSED (rm -rf "+sentinel+"): Hostile check.") {
+		t.Errorf("recorded test results should name the refused command:\n%s", tk.Body)
+	}
+	if contains(tk.Body, "FAIL") {
+		t.Errorf("a refusal must not be recorded as a failure:\n%s", tk.Body)
+	}
+}
+
+func TestVerifyStripsControlCharactersFromCriterionText(t *testing.T) {
+	// The bullet text is ticket content too: an escape planted there prints on
+	// the same line as the verdict, and the recorded record replays it on every
+	// later `tk show`.
+	store := verifyStore(t, "vf-spoof",
+		"Description.\n\n## Acceptance Criteria\n\n- \x1b[1A\x1b[2KPASS (exit 0) all good.\n  verify: /bin/echo ok\n")
+
+	out, err := captureVerify(t, "vf-spoof")
+	if err != nil {
+		t.Fatalf("verify with a passing criterion should not error: %v", err)
+	}
+	if strings.ContainsRune(out, 0x1b) {
+		t.Errorf("CLI output printed a raw escape from the criterion text:\n%q", out)
+	}
+
+	tk, err := store.Get("vf-spoof")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The criteria section still holds what the author wrote; the record verify
+	// wrote must not.
+	_, record, _ := strings.Cut(tk.Body, "## Test Results")
+	if strings.ContainsRune(record, 0x1b) {
+		t.Errorf("recorded test results replay a raw escape from the criterion text:\n%q", record)
 	}
 }
 

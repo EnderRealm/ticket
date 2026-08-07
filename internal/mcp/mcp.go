@@ -1181,7 +1181,7 @@ type verifyArgs struct {
 func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute with sh -c on the server host, in the ticket's project repo directory. Criteria with no command are reported as unverified.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the ticket's project repo directory, as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Criteria with no command are reported as unverified.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -1201,7 +1201,10 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 
-		results, err := ticket.RunVerify(ctx, criteria, dir)
+		// The allow-list comes from machine-local config only — no tool argument
+		// carries it, so a caller cannot widen what runs.
+		allow, allowErr := project.VerifyAllow()
+		results, err := ticket.RunVerify(ctx, criteria, dir, allow, allowErr)
 		if err != nil {
 			r, _ := errResult("cannot run verify commands: %v", err)
 			return r, nil, nil

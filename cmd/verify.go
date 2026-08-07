@@ -43,7 +43,10 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	dir := verifyWorkDir()
-	results, err := ticket.RunVerify(cmd.Context(), criteria, dir)
+	// The allow-list comes from machine-local config only — there is no flag for
+	// it, so nothing in a ticket or the synced store can widen what runs.
+	allow, allowErr := project.VerifyAllow()
+	results, err := ticket.RunVerify(cmd.Context(), criteria, dir, allow, allowErr)
 	if err != nil {
 		return err
 	}
@@ -65,27 +68,40 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("verifying %s in %s\n", t.ID, dir)
 		for _, r := range results {
-			if r.Status == ticket.VerifyUnverified {
+			switch r.Status {
+			case ticket.VerifyUnverified:
 				fmt.Printf("UNVERIFIED %s\n", r.Criterion.Text)
 				continue
+			case ticket.VerifyRefused:
+				fmt.Printf("REFUSED %s\n", r.Criterion.Text)
+			default:
+				fmt.Printf("%s (exit %d) %s\n", strings.ToUpper(string(r.Status)), r.ExitCode, r.Criterion.Text)
 			}
-			fmt.Printf("%s (exit %d) %s\n", strings.ToUpper(string(r.Status)), r.ExitCode, r.Criterion.Text)
-			if r.Status == ticket.VerifyFail && r.Output != "" {
+			if r.Status != ticket.VerifyPass && r.Output != "" {
 				for _, line := range strings.Split(r.Output, "\n") {
 					fmt.Printf("  %s\n", line)
 				}
 			}
 		}
-		fmt.Printf("%d pass, %d fail, %d unverified\n",
-			report.Summary.Pass, report.Summary.Fail, report.Summary.Unverified)
+		fmt.Printf("%d pass, %d fail, %d refused, %d unverified\n",
+			report.Summary.Pass, report.Summary.Fail, report.Summary.Refused, report.Summary.Unverified)
 	}
 
 	if report.RecordError != "" && !jsonOutput {
 		fmt.Fprintf(os.Stderr, "warning: failed to record verify results: %s\n", report.RecordError)
 	}
 
+	// Only the non-zero counts appear, so a refusal with nothing failing does not
+	// report "0 ... failed" alongside it.
+	var problems []string
 	if report.Summary.Fail > 0 {
-		return fmt.Errorf("%d of %d criteria failed", report.Summary.Fail, len(criteria))
+		problems = append(problems, fmt.Sprintf("%d failed", report.Summary.Fail))
+	}
+	if report.Summary.Refused > 0 {
+		problems = append(problems, fmt.Sprintf("%d refused", report.Summary.Refused))
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%s of %d criteria", strings.Join(problems, " and "), len(criteria))
 	}
 	return nil
 }

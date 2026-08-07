@@ -3,6 +3,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -493,6 +494,142 @@ func TestSharedConfigExclusions(t *testing.T) {
 	sp := shared.Projects["proj"]
 	if sp.Path != "" {
 		t.Errorf("shared project has path: %q", sp.Path)
+	}
+}
+
+func TestVerifyAllowDefaultsWhenUnset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	got, err := VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	// Spelled out rather than compared to defaultVerifyAllow: widening what a
+	// ticket may run by default has to be a deliberate edit in two places.
+	want := []string{"go", "make", "cargo", "pytest"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("VerifyAllow() = %q, want the built-in default %q", got, want)
+	}
+
+	// The default slice itself must not escape: a caller appending within
+	// capacity or writing an element would edit it for the whole process.
+	got[0] = "sh"
+	if defaultVerifyAllow[0] != "go" {
+		t.Errorf("defaultVerifyAllow = %q, want it unchanged by a caller writing to the returned slice", defaultVerifyAllow)
+	}
+}
+
+func TestVerifyAllowFailsClosedOnUnreadableConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	localPath, _ := ConfigPath()
+	os.MkdirAll(filepath.Dir(localPath), 0o755)
+	// A half-synced or conflicted local config must not silently restore the
+	// defaults over a list the user had narrowed.
+	if err := os.WriteFile(localPath, []byte("<<<<<<< HEAD\nverify_allow:\n  - make\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := VerifyAllow()
+	if err == nil {
+		t.Error("VerifyAllow() returned no error for an unparseable local config")
+	}
+	if len(got) != 0 {
+		t.Errorf("VerifyAllow() = %q, want an empty list when the local config cannot be read", got)
+	}
+}
+
+func TestVerifyAllowExplicitEmptyRefusesEverything(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	localPath, _ := ConfigPath()
+	os.MkdirAll(filepath.Dir(localPath), 0o755)
+	if err := os.WriteFile(localPath, []byte("verify_allow: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("VerifyAllow() = %q, want an empty list: an explicit empty verify_allow refuses everything", got)
+	}
+
+	// A save round-trip (project registration, for one) must not drop the key
+	// and hand the defaults back.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err = VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("VerifyAllow() = %q after a round-trip, want the explicit empty list preserved", got)
+	}
+}
+
+func TestVerifyAllowReadsLocalOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	localPath, _ := ConfigPath()
+	writeFileAtomic(localPath, Config{CentralRoot: centralRoot, VerifyAllow: []string{"go"}})
+	// An entry planted in the synced shared config must not widen the list —
+	// the same push that carries a hostile verify command could write it.
+	writeFileAtomic(filepath.Join(centralRoot, configFileName), Config{VerifyAllow: []string{"rm"}})
+
+	got, _ := VerifyAllow()
+	if len(got) != 1 || got[0] != "go" {
+		t.Errorf("VerifyAllow() = %q, want only the machine-local [go]", got)
+	}
+}
+
+func TestVerifyAllowSurvivesSave(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	if err := Save(Config{CentralRoot: centralRoot, VerifyAllow: []string{"go", "make"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// A load/save round-trip (project registration, for one) must not drop the
+	// user's allow-list.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.VerifyAllow) != 2 {
+		t.Fatalf("merged verify_allow = %q, want the local list", cfg.VerifyAllow)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, _ := VerifyAllow()
+	if len(got) != 2 || got[0] != "go" || got[1] != "make" {
+		t.Errorf("VerifyAllow() = %q after a round-trip, want [go make]", got)
+	}
+
+	shared, err := loadFile(filepath.Join(centralRoot, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile shared: %v", err)
+	}
+	if len(shared.VerifyAllow) != 0 {
+		t.Errorf("shared config has verify_allow: %q", shared.VerifyAllow)
 	}
 }
 

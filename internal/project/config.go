@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,8 +22,47 @@ type Config struct {
 	DefaultStore string                   `yaml:"default_store,omitempty" json:"default_store,omitempty"`
 	SyncInterval string                   `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
 	SpawnCommand string                   `yaml:"spawn_command,omitempty" json:"spawn_command,omitempty"`
+	VerifyAllow  VerifyAllowList          `yaml:"verify_allow,omitempty" json:"verify_allow,omitempty"`
 	Projects     map[string]ProjectConfig `yaml:"projects"`
 }
+
+// VerifyAllowList is the verify_allow setting. Absent and present-but-empty
+// mean different things — fall back to the default, versus refuse everything —
+// so it defines IsZero rather than letting omitempty collapse them: a save
+// round-trip (project registration, for one) must not turn a user's explicit
+// `verify_allow: []` back into an unset key, which would silently restore the
+// defaults.
+type VerifyAllowList []string
+
+// IsZero reports whether omitempty should drop the field. Only an absent list
+// is dropped.
+func (l VerifyAllowList) IsZero() bool { return l == nil }
+
+// defaultVerifyAllow is the argv[0] allow-list used when local config sets no
+// verify_allow: the ordinary test runners. Allow-listing a program is not a
+// claim that it is safe — it trusts whoever can write a verify line with
+// everything that program can do, including the forms that reach outside the
+// repo:
+//
+//   - `go run pkg@version` and `go install pkg@version` fetch and execute a
+//     remote module.
+//   - `cargo install <crate>` fetches a remote crate and executes its build.rs
+//     at build time.
+//   - `make -f <file>` (or `make -C <dir>`) runs recipes from a file the
+//     command line names rather than the repo's Makefile.
+//
+// All are reachable here; `go test` is the primary use case and cannot be
+// dropped over them. Shells and general-purpose language interpreters are
+// absent because they make that reach unconditional and buy nothing back:
+// `sh -c` or `python3 -c` runs whatever string the ticket supplied. swift is
+// absent for that reason and not as a build driver — `swift -e '<code>'` runs
+// arbitrary Swift with the full standard library, so a Swift project wanting
+// `swift test` adds swift to verify_allow deliberately, accepting that a verify
+// line can then run any Swift the ticket names. npm, pnpm and yarn are absent
+// because `npm exec`, `pnpm dlx` and `yarn dlx` fetch and run an arbitrary
+// remote package as a documented feature, so a JS project that adds one back is
+// opting into a verify line being able to run any package on the registry.
+var defaultVerifyAllow = []string{"go", "make", "cargo", "pytest"}
 
 // ProjectConfig stores per-project settings.
 type ProjectConfig struct {
@@ -133,6 +173,33 @@ func IsConfigured() bool {
 	return local.CentralRoot != ""
 }
 
+// VerifyAllow returns the argv[0] allow-list a ticket's verify commands are
+// checked against, plus the error that made it unreadable. It reads
+// ~/.ticket/config.yaml directly rather than the merged config on purpose: the
+// shared config lives inside the synced tickets repo, so whatever can push a
+// malicious verify command there could widen the list meant to refuse it in
+// the same push.
+//
+// Three states are kept apart so the control fails closed. A local config that
+// cannot be read or parsed — partial write, merge conflict markers, bad
+// permissions — returns an empty list and the error, so nothing runs and the
+// refusal can say why rather than silently restoring defaults over a list the
+// user had narrowed. A `verify_allow` that is present but empty returns empty,
+// which is how a user refuses everything. Only a genuinely absent key falls
+// back to defaultVerifyAllow.
+func VerifyAllow() ([]string, error) {
+	local, err := loadLocalOnly()
+	if err != nil {
+		return []string{}, err
+	}
+	if local.VerifyAllow == nil {
+		// A copy: a caller appending within capacity would otherwise rewrite the
+		// process-wide default of a security control.
+		return slices.Clone(defaultVerifyAllow), nil
+	}
+	return local.VerifyAllow, nil
+}
+
 // CentralStoreRoot returns the central ticket store root directory.
 // Returns an error if central_root is not configured — run `tk init` first.
 func CentralStoreRoot() (string, error) {
@@ -235,6 +302,7 @@ func mergeConfigs(local, shared Config) Config {
 		DefaultStore: local.DefaultStore,
 		SyncInterval: local.SyncInterval,
 		SpawnCommand: local.SpawnCommand,
+		VerifyAllow:  local.VerifyAllow,
 		Projects:     map[string]ProjectConfig{},
 	}
 
@@ -276,6 +344,7 @@ func saveLocal(cfg Config) error {
 		DefaultStore: cfg.DefaultStore,
 		SyncInterval: cfg.SyncInterval,
 		SpawnCommand: cfg.SpawnCommand,
+		VerifyAllow:  cfg.VerifyAllow,
 		Projects:     map[string]ProjectConfig{},
 	}
 

