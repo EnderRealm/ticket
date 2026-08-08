@@ -31,6 +31,10 @@ func init() {
 }
 
 func runSync(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("sync"); err != nil {
+		return err
+	}
+
 	storeRoot, err := project.CentralStoreRoot()
 	if err != nil {
 		return fmt.Errorf("cannot resolve central store: %w", err)

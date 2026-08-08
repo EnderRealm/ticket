@@ -116,8 +116,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	if err := bootstrapCentralStoreGit(centralRoot); err != nil {
+	// A throwaway store keeps no history, and bootstrapping git in one is not
+	// merely useless: the bootstrap's `git add -A` carries no pathspec, so an
+	// override root nested inside another repo would stage and commit that
+	// repo's whole worktree.
+	//
+	// `init` is gate-exempt, so the pre-run check that refuses a set-but-unusable
+	// override never ran for it — but project.Load above resolves through the
+	// same override and has already failed on one, so the error return here is
+	// defence in depth rather than where that refusal lives.
+	_, isolated, err := project.StoreRootOverride()
+	if err != nil {
 		return err
+	}
+	if !isolated {
+		if err := bootstrapCentralStoreGit(centralRoot); err != nil {
+			return err
+		}
 	}
 
 	cfg.UpsertProject(projectName, project.ProjectConfig{

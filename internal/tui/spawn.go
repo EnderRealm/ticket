@@ -62,11 +62,16 @@ const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w 
 // "PROJECT -- ID4 -- TITLE" window name).
 //
 // {id} and {title} come from the central store, a git repo other machines push
-// to, so both are untrusted here; {dir} and {project} come from machine-local
-// config and stay raw (the single-quote limitation on {dir} above still
-// applies). {title} is sanitized rather than refused because titles are free
-// text — refusing to spawn over an apostrophe would be absurd — while an id
-// has a generated shape, so an id outside it returns an error and no command.
+// to, so both are untrusted here; {dir} and {project} come from the merged
+// config, whose local half is the machine owner's own file or — under
+// TK_STORE_ROOT — the override root's, and stay raw (the single-quote
+// limitation on {dir} above still applies). The template itself is not merged:
+// project.SpawnCommand reads it from ~/.ticket/config.yaml alone, because it is
+// the string handed to `sh -c`.
+//
+// {title} is sanitized rather than refused because titles are free text —
+// refusing to spawn over an apostrophe would be absurd — while an id has a
+// generated shape, so an id outside it returns an error and no command.
 // The refusal lives here, at the shell boundary, rather than in the caller: a
 // second spawn path must not be able to reach the interpolation without it.
 //

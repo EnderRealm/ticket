@@ -267,6 +267,69 @@ func TestInitNonInteractive(t *testing.T) {
 	}
 }
 
+// TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone holds `tk init` to the
+// documented "nothing is committed or pushed" under TK_STORE_ROOT. The
+// bootstrap's `git add -A` carries no pathspec — `-C` sets the working
+// directory, not the pathspec — so running it against an override root nested
+// inside another repo would stage and commit that repo's entire uncommitted
+// worktree. The enclosing repo here is built under t.TempDir: no test may reach
+// the machine's own store.
+func TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone(t *testing.T) {
+	setupTestHome(t)
+
+	enclosing := t.TempDir()
+	runGit(t, enclosing, "init")
+	runGit(t, enclosing, "config", "user.email", "test@test.com")
+	runGit(t, enclosing, "config", "user.name", "test")
+	tracked := filepath.Join(enclosing, "tracked.txt")
+	os.WriteFile(tracked, []byte("committed\n"), 0o644)
+	runGit(t, enclosing, "add", "-A")
+	runGit(t, enclosing, "commit", "-m", "initial")
+
+	// Uncommitted work of the kind the bootstrap would sweep up.
+	os.WriteFile(tracked, []byte("uncommitted edit\n"), 0o644)
+	os.WriteFile(filepath.Join(enclosing, ".env"), []byte("SECRET\n"), 0o644)
+
+	override := filepath.Join(enclosing, "sandbox")
+	os.MkdirAll(override, 0o755)
+	t.Setenv(project.StoreRootEnv, override)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(enclosing)
+	defer os.Chdir(oldDir)
+
+	initCmd.Flags().Set("yes", "true")
+	initCmd.Flags().Set("project", "sandbox")
+	defer func() {
+		initCmd.Flags().Set("yes", "false")
+		initCmd.Flags().Set("project", "")
+	}()
+
+	if err := runInit(initCmd, nil); err != nil {
+		t.Fatalf("runInit under the override: %v", err)
+	}
+
+	// The project must still register — a harness needs `tk init` to work
+	// under the override, because central writes to unregistered projects are
+	// refused.
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p, ok := cfg.Projects["sandbox"]; !ok || p.Store != "central" {
+		t.Errorf("sandbox project = %+v (present=%v), want store: central", p, ok)
+	}
+
+	count, _ := execCommand("git", "-C", enclosing, "rev-list", "--count", "HEAD")
+	if count != "1" {
+		t.Errorf("enclosing repo has %s commits, want 1: init committed under the override", count)
+	}
+	staged, _ := execCommand("git", "-C", enclosing, "diff", "--cached", "--name-only")
+	if staged != "" {
+		t.Errorf("enclosing repo has staged paths %q, want none", staged)
+	}
+}
+
 func TestInitBootstrapGitConfigIdentity(t *testing.T) {
 	home := setupTestHome(t)
 

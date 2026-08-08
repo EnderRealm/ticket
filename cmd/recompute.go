@@ -26,6 +26,10 @@ func init() {
 }
 
 func runRecompute(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("recompute"); err != nil {
+		return err
+	}
+
 	cfg, err := project.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

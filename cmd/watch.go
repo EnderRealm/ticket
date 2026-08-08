@@ -108,6 +108,10 @@ func watchRunningPID(pidPath string) (int, bool) {
 }
 
 func runWatchStart(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("watch"); err != nil {
+		return err
+	}
+
 	pidPath, err := watchPIDPath()
 	if err != nil {
 		return err
@@ -163,6 +167,10 @@ func runWatchStart(cmd *cobra.Command, args []string) error {
 }
 
 func runWatchStop(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("watch"); err != nil {
+		return err
+	}
+
 	pidPath, err := watchPIDPath()
 	if err != nil {
 		return err
@@ -194,6 +202,10 @@ func runWatchStop(cmd *cobra.Command, args []string) error {
 }
 
 func runWatchStatus(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("watch"); err != nil {
+		return err
+	}
+
 	pidPath, err := watchPIDPath()
 	if err != nil {
 		return err
@@ -224,6 +236,10 @@ func runWatchStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runWatchLogs(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("watch"); err != nil {
+		return err
+	}
+
 	logPath, err := watchLogPath()
 	if err != nil {
 		return err
@@ -259,6 +275,10 @@ func runWatchLogs(cmd *cobra.Command, args []string) error {
 }
 
 func runWatchRun(cmd *cobra.Command, args []string) error {
+	if err := refuseIsolatedStore("watch"); err != nil {
+		return err
+	}
+
 	if watchInterval <= 0 {
 		return fmt.Errorf("--interval must be > 0")
 	}

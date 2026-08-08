@@ -12,18 +12,35 @@ import (
 const (
 	configDirName  = ".ticket"
 	configFileName = "config.yaml"
+
+	// StoreRootEnv names the environment variable that overrides the configured
+	// central store root with an explicit one, so a test harness or an agent can
+	// point tk — `tk serve` above all — at a throwaway store without touching the
+	// real one. It is an environment variable rather than a cobra flag on purpose:
+	// pkg/ticket and internal/mcp resolve config directly and never see cobra's
+	// flags, and the env is the lever a harness has over a subprocess it spawns.
+	StoreRootEnv = "TK_STORE_ROOT"
 )
 
 // Config stores tk project configuration (merged view of local + shared).
 type Config struct {
-	CentralRoot  string                   `yaml:"central_root,omitempty" json:"central_root,omitempty"`
-	GitEmail     string                   `yaml:"git_email,omitempty" json:"git_email,omitempty"`
-	GitName      string                   `yaml:"git_name,omitempty" json:"git_name,omitempty"`
-	DefaultStore string                   `yaml:"default_store,omitempty" json:"default_store,omitempty"`
-	SyncInterval string                   `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
-	SpawnCommand string                   `yaml:"spawn_command,omitempty" json:"spawn_command,omitempty"`
-	VerifyAllow  VerifyAllowList          `yaml:"verify_allow,omitempty" json:"verify_allow,omitempty"`
-	Projects     map[string]ProjectConfig `yaml:"projects"`
+	CentralRoot  string `yaml:"central_root,omitempty" json:"central_root,omitempty"`
+	GitEmail     string `yaml:"git_email,omitempty" json:"git_email,omitempty"`
+	GitName      string `yaml:"git_name,omitempty" json:"git_name,omitempty"`
+	DefaultStore string `yaml:"default_store,omitempty" json:"default_store,omitempty"`
+	SyncInterval string `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
+	// SpawnCommand: read it via project.SpawnCommand(). The value here is the
+	// merged one, whose local half is the override root's config under
+	// TK_STORE_ROOT, and it exists for Save's round-trip only — never as a read
+	// path, because the template is the string handed to `sh -c` as the machine
+	// owner.
+	SpawnCommand string `yaml:"spawn_command,omitempty" json:"spawn_command,omitempty"`
+	// VerifyAllow: read it via project.VerifyAllow(), for the same reason and on
+	// the same terms — merged from a half the override root may own, kept here so
+	// Save round-trips it, and never a read path, because the list decides which
+	// programs run as the machine owner.
+	VerifyAllow VerifyAllowList          `yaml:"verify_allow,omitempty" json:"verify_allow,omitempty"`
+	Projects    map[string]ProjectConfig `yaml:"projects"`
 }
 
 // VerifyAllowList is the verify_allow setting. Absent and present-but-empty
@@ -85,7 +102,10 @@ func Load() (Config, error) {
 	}
 
 	// Resolve central root from local config to find shared config
-	centralRoot := centralStoreRootFromLocal(local)
+	centralRoot, err := centralStoreRootFromLocal(local)
+	if err != nil {
+		return Config{}, err
+	}
 	var shared Config
 	if centralRoot != "" {
 		sharedPath := filepath.Join(centralRoot, configFileName)
@@ -113,12 +133,20 @@ func Save(cfg Config) error {
 		cfg.Projects = map[string]ProjectConfig{}
 	}
 
-	if err := saveLocal(cfg); err != nil {
+	// One resolution decides both halves: saveLocal must leave the shared-owned
+	// per-project fields out of the local file exactly when saveShared is about
+	// to write them, or a stale local copy keeps merging `store: central` for a
+	// project the shared config no longer lists.
+	centralRoot, err := centralStoreRootFromLocal(cfg)
+	if err != nil {
+		return err
+	}
+
+	if err := saveLocal(cfg, centralRoot != ""); err != nil {
 		return err
 	}
 
 	// Only write shared config if central root is configured
-	centralRoot := centralStoreRootFromLocal(cfg)
 	if centralRoot != "" {
 		sharedPath := filepath.Join(centralRoot, configFileName)
 		return saveShared(cfg, sharedPath)
@@ -126,8 +154,51 @@ func Save(cfg Config) error {
 	return nil
 }
 
-// ConfigPath returns ~/.ticket/config.yaml.
+// StoreRootOverride returns the TK_STORE_ROOT store root, whether the variable
+// is set at all, and the error a set-but-unusable value is. A value that is not
+// an absolute path is that error and never falls back to the configured root:
+// silently resolving the real central store from a broken override is the exact
+// failure the override exists to prevent.
+//
+// Presence is tested with LookupEnv rather than by comparing the value to "",
+// because the empty string is a set-but-unusable value, not an absent one: a
+// harness exporting a variable that expanded to nothing has named a store root
+// tk cannot resolve, and treating it as unset would resolve the configured one.
+func StoreRootOverride() (string, bool, error) {
+	root, ok := os.LookupEnv(StoreRootEnv)
+	if !ok {
+		return "", false, nil
+	}
+	if !filepath.IsAbs(root) {
+		return "", true, fmt.Errorf("%s must be an absolute path, got %q", StoreRootEnv, root)
+	}
+	return root, true, nil
+}
+
+// ConfigPath returns ~/.ticket/config.yaml, or the override root's own
+// .ticket/config.yaml when TK_STORE_ROOT is set. Keeping the local config
+// inside the override root mirrors the production layout and keeps an isolated
+// run from reading or writing the machine's shared one.
 func ConfigPath() (string, error) {
+	if root, ok, err := StoreRootOverride(); ok {
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(root, configDirName, configFileName), nil
+	}
+	return homeConfigPath()
+}
+
+// homeConfigPath returns ~/.ticket/config.yaml — the machine owner's own
+// config, which TK_STORE_ROOT never relocates. Only the controls that must
+// answer to the machine owner rather than to whoever set the environment use
+// it directly; everything else goes through ConfigPath.
+//
+// Two settings are read from it: verify_allow and spawn_command. They share the
+// property that decides it — each one decides code that runs as the machine
+// owner, verify_allow by permitting a program and spawn_command by being a
+// shell string — so neither may come from a root whoever set the variable owns.
+func homeConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -164,8 +235,19 @@ func CentralRegistered(cfg Config, name string) bool {
 	return ok && p.Store == "central"
 }
 
-// IsConfigured returns true if ~/.ticket/config.yaml exists and has central_root set.
+// IsConfigured returns true if ~/.ticket/config.yaml exists and has central_root
+// set, or if TK_STORE_ROOT is set — an override is configuration in itself, so an
+// isolated run needs no local config file at all.
+//
+// A set-but-unusable override still reports configured: it is a broken store
+// root, not a missing configuration, and the CLI refuses it before this gate
+// with an error naming the variable. Reporting it unconfigured here would send
+// the reader to `tk init`, and falling through to the local config would
+// resolve the real store.
 func IsConfigured() bool {
+	if _, ok, _ := StoreRootOverride(); ok {
+		return true
+	}
 	local, err := loadLocalOnly()
 	if err != nil {
 		return false
@@ -180,6 +262,14 @@ func IsConfigured() bool {
 // malicious verify command there could widen the list meant to refuse it in
 // the same push.
 //
+// It reads the home path directly rather than ConfigPath for the same reason:
+// TK_STORE_ROOT deliberately does not move this one setting. The override root
+// belongs to whoever set the variable — a harness, or an agent — so relocating
+// the allow-list there would let a sandbox widen it (`verify_allow: [sh]`), and
+// a fresh sandbox with no config at all would silently restore the defaults
+// over a list the machine owner had narrowed. The allow-list always comes from
+// the machine owner's own config, so a sandbox can neither widen nor narrow it.
+//
 // Three states are kept apart so the control fails closed. A local config that
 // cannot be read or parsed — partial write, merge conflict markers, bad
 // permissions — returns an empty list and the error, so nothing runs and the
@@ -188,7 +278,11 @@ func IsConfigured() bool {
 // which is how a user refuses everything. Only a genuinely absent key falls
 // back to defaultVerifyAllow.
 func VerifyAllow() ([]string, error) {
-	local, err := loadLocalOnly()
+	path, err := homeConfigPath()
+	if err != nil {
+		return []string{}, err
+	}
+	local, err := loadFile(path)
 	if err != nil {
 		return []string{}, err
 	}
@@ -200,9 +294,35 @@ func VerifyAllow() ([]string, error) {
 	return local.VerifyAllow, nil
 }
 
-// CentralStoreRoot returns the central ticket store root directory.
+// SpawnCommand returns the TUI's spawn_command template, plus the error that
+// made it unreadable. It reads ~/.ticket/config.yaml directly for the same
+// reason VerifyAllow does: the template is handed to `sh -c`, so whoever
+// supplies it runs code as the machine owner, and neither the synced shared
+// config nor a TK_STORE_ROOT root the caller named may be that source.
+//
+// An empty template is the caller's signal to use the built-in default, so a
+// sandbox with no home config gets the machine owner's default rather than a
+// template of its own.
+func SpawnCommand() (string, error) {
+	path, err := homeConfigPath()
+	if err != nil {
+		return "", err
+	}
+	local, err := loadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return local.SpawnCommand, nil
+}
+
+// CentralStoreRoot returns the central ticket store root directory, or the
+// TK_STORE_ROOT override when set — which is answered without reading any
+// config file, so no configured store is touched.
 // Returns an error if central_root is not configured — run `tk init` first.
 func CentralStoreRoot() (string, error) {
+	if root, ok, err := StoreRootOverride(); ok {
+		return root, err
+	}
 	local, err := loadLocalOnly()
 	if err != nil {
 		return "", fmt.Errorf("tk is not configured: %w", err)
@@ -282,13 +402,18 @@ func loadFile(path string) (Config, error) {
 	return cfg, nil
 }
 
-// centralStoreRootFromLocal extracts central_root from a config.
+// centralStoreRootFromLocal extracts central_root from a config, or returns the
+// TK_STORE_ROOT override when set — the shared config lives under whichever root
+// wins, so an isolated run must not read or write the configured store's.
 // Returns empty string if not configured.
-func centralStoreRootFromLocal(cfg Config) string {
-	if cfg.CentralRoot != "" && filepath.IsAbs(cfg.CentralRoot) {
-		return cfg.CentralRoot
+func centralStoreRootFromLocal(cfg Config) (string, error) {
+	if root, ok, err := StoreRootOverride(); ok {
+		return root, err
 	}
-	return ""
+	if cfg.CentralRoot != "" && filepath.IsAbs(cfg.CentralRoot) {
+		return cfg.CentralRoot, nil
+	}
+	return "", nil
 }
 
 // mergeConfigs combines local and shared configs. Local provides top-level fields
@@ -330,8 +455,10 @@ func mergeConfigs(local, shared Config) Config {
 	return merged
 }
 
-// saveLocal writes ~/.ticket/config.yaml with local-only fields.
-func saveLocal(cfg Config) error {
+// saveLocal writes ~/.ticket/config.yaml with local-only fields. hasShared says
+// whether a shared config is being written alongside it, and comes from Save's
+// single resolution of the central root.
+func saveLocal(cfg Config, hasShared bool) error {
 	path, err := ConfigPath()
 	if err != nil {
 		return err
@@ -348,7 +475,6 @@ func saveLocal(cfg Config) error {
 		Projects:     map[string]ProjectConfig{},
 	}
 
-	hasShared := cfg.CentralRoot != ""
 	for name, p := range cfg.Projects {
 		if hasShared {
 			// Only store path locally — shared fields go to shared config

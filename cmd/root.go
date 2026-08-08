@@ -148,6 +148,36 @@ Global flags:
   --repo <path>    Operate on a different repo
   --json           Output in JSON format
 
+Environment:
+  TK_STORE_ROOT <abs path>
+    Resolve the whole store against this root instead of the configured
+    central_root: tickets in <root>/tickets, shared config <root>/config.yaml,
+    local config <root>/.ticket/config.yaml. Nothing reads or writes the
+    configured store or ~/.ticket/config.yaml, and tk serve starts without a
+    local config.
+    No sync, commit, push or journal watch runs: tk serve starts neither loop,
+    and tk sync, tk watch and tk recompute refuse to run — sync would commit and
+    push the git repo enclosing the sandbox, and the journal (recompute rebuilds
+    it; watch appends to it, alongside its pid file and log) stays under HOME,
+    which the override does not move. That is the one store path HOME still
+    decides. tk init still registers a project, since central writes to an
+    unregistered one are refused, but skips the store's git bootstrap.
+    verify_allow and spawn_command are the settings it does not move: both are
+    always read from ~/.ticket/config.yaml, because each decides code that runs
+    as you — the allow-list by permitting a program, spawn_command by being the
+    string handed to sh -c. So a store root can neither widen the allow-list nor
+    supply a spawn template, and a root with no config falls back to your own.
+    That bounds what a store root can supply, not a caller who also controls the
+    environment: whoever can set TK_STORE_ROOT can generally set HOME too.
+    A value that is not an absolute path is an error on any command, before any
+    store is resolved — there is no fall-back to the configured store. The empty
+    string is such a value, not an absent one.
+    It covers tk's own store resolution and nothing wider. Outside it, under
+    separate controls: ticket_create's "repo" argument, which resolves a
+    caller-supplied path before any config lookup; and a verify command that
+    verify_allow permits — "go run pkg@version" and "make -f <file>" run code
+    from outside the repo, which can reach any path.
+
 Partial ID matching: 'tk show 5c4' matches 'nw-5c46'
 Run 'tk init' to configure and register a project.`
 
@@ -207,6 +237,14 @@ func init() {
 		if gateExempt[cmd.Name()] {
 			return nil
 		}
+		// Before the config gate and before any store resolution: IsConfigured
+		// reports a set-but-unusable override as configured, and the resolutions
+		// downstream (ticketsDirFromConfigFor, and every project.Load behind it)
+		// swallow the error and fall back to a store the operator did not name.
+		if _, _, err := project.StoreRootOverride(); err != nil {
+			cmd.SilenceUsage = true
+			return err
+		}
 		if !project.IsConfigured() {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -215,6 +253,33 @@ func init() {
 		}
 		return nil
 	}
+}
+
+// refuseIsolatedStore returns an error naming TK_STORE_ROOT for the commands
+// whose work leaves the isolated store: `tk sync` commits and pushes the git
+// repo enclosing the store root, which under the override publishes a sandbox
+// to whatever remote that repo has; `tk watch` runs journal cycles that
+// auto-close tickets; and `tk recompute` deletes and rebuilds a project's
+// commit journal from whatever the sandbox's config points at. Journal state —
+// the watcher's pid file and log with it — lives under HOME, which the override
+// does not move, so a sandbox naming a project the machine also has would
+// rewrite the machine owner's journal for it. Refusing is what makes the
+// documented "no sync, commit, push or journal watch runs" true of the whole
+// CLI rather than of `tk serve` alone.
+//
+// `tk watch status`, `logs` and `stop` read or signal rather than write, and
+// are refused all the same: they manage the machine's real watcher, and a shell
+// that asked to be isolated from the machine's store has no business doing that
+// either.
+func refuseIsolatedStore(command string) error {
+	_, isolated, err := project.StoreRootOverride()
+	if err != nil {
+		return err
+	}
+	if isolated {
+		return fmt.Errorf("tk %s does not run while %s is set: it writes outside the isolated store — unset %s to run it against the configured store", command, project.StoreRootEnv, project.StoreRootEnv)
+	}
+	return nil
 }
 
 func Execute() {

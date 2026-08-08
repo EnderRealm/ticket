@@ -99,7 +99,7 @@ Shared project registry (store type, auto_link, etc.) is stored in `<central_roo
 
 ### `spawn_command`
 
-The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the local `spawn_command` template, executed with `sh -c`. These placeholders are substituted:
+The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the `spawn_command` template, executed with `sh -c`. Like `verify_allow`, it is read from `~/.ticket/config.yaml` only — a `spawn_command` in the shared config is ignored, and `TK_STORE_ROOT` does not relocate it — because the template *is* the code that runs as you. These placeholders are substituted:
 
 - `{dir}` — the ticket's project working directory (absolute path)
 - `{id}` — the namespaced ticket ID (e.g. `myproject/tk-...`)
@@ -111,7 +111,7 @@ The template runs through `sh -c`, and a ticket ID is a filename in the central 
 
 `{title}` and `{wtitle}` are free text — an apostrophe in a title is ordinary, not an attack — so they are sanitized rather than refused: quotes, backslashes, `$`, backticks, `!`, control characters and the invisible Unicode format characters become spaces, since `$` and a backtick would otherwise expand in the interactive shell the default template types its command into, `!` would trigger its history expansion (which double quotes do not suppress, and which kills the line outright when no history event matches), and a bidi override makes a title render as something other than what runs. Sanitizing removes what would break a *quoting layer*, not everything that is shell syntax — `;`, `&`, `|` and `>` survive in a title — so a custom template must still quote `{title}` where it interpolates it, exactly as it must `{dir}`.
 
-Watch which quotes you mean. In a `write text` payload the quotes you see are AppleScript's, not the shell's — the default's outer `"..."` is consumed by AppleScript, and what reaches the interactive shell is the escaped `\"...\"`. That is why the default's `{wtitle}` is safe inside `printf \"...\" \"{wtitle}\"` and a placeholder dropped into the visible outer quotes would not be. The default template uses only `{wtitle}`. `{dir}` and `{project}` come from your local config and are passed through as-is (see the single-quote limitation below).
+Watch which quotes you mean. In a `write text` payload the quotes you see are AppleScript's, not the shell's — the default's outer `"..."` is consumed by AppleScript, and what reaches the interactive shell is the escaped `\"...\"`. That is why the default's `{wtitle}` is safe inside `printf \"...\" \"{wtitle}\"` and a placeholder dropped into the visible outer quotes would not be. The default template uses only `{wtitle}`. `{dir}` and `{project}` come from project resolution rather than the shared store — your local config, or the override root's under `TK_STORE_ROOT` — and are passed through as-is (see the single-quote limitation below).
 
 When unset, the default opens a new iTerm window (macOS), names it `{wtitle}`, cds to the project, and starts Claude Code on the ticket:
 
@@ -408,6 +408,28 @@ If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is
 - The `project` parameter on `ticket_list`, `ticket_create`, `ticket_ready`, and `ticket_inbox` overrides the default
 
 Other tools (`ticket_show`, `ticket_edit`, etc.) accept namespaced IDs directly — pass `forge/my-ticket-1234` to operate on a specific project's ticket.
+
+### Isolated stores (`TK_STORE_ROOT`)
+
+Set `TK_STORE_ROOT` to an absolute path and tk resolves its whole store against that root instead of the configured `central_root` — for a test harness driving `tk serve`, or anything else that must not write to the real store:
+
+```bash
+TK_STORE_ROOT=/tmp/tk-sandbox tk serve
+```
+
+With the override set:
+
+- The store is `<root>/tickets/<project>/`, the shared config `<root>/config.yaml`, and the local config `<root>/.ticket/config.yaml`. Neither the configured store tree nor `~/.ticket/config.yaml` is read or written.
+- `tk serve` starts without a `~/.ticket/config.yaml` at all — the override is the configuration.
+- No sync and no journal watch run, so nothing is committed or pushed and no ticket is auto-closed. `tk serve` starts neither loop (and logs that it did not), and `tk sync`, `tk watch` and `tk recompute` refuse to run at all: sync would commit and push whatever git repo encloses the sandbox, and the commit journal stays under `$HOME`, which the override does not move — so watch would auto-close sandbox tickets while journalling into the real home, and recompute would delete and rebuild your journal for any project name the sandbox happens to register. Journal state is the one *store* path `$HOME` still decides; every other store path the override resolves for itself.
+- `tk init` still registers a project — a harness needs it to, since central writes to an unregistered project are refused — but it skips the store's git bootstrap. A throwaway store keeps no history, and bootstrapping one nested inside another repo would stage and commit that repo's worktree.
+- `verify_allow` and `spawn_command` are the settings the override does not move: both are read from `~/.ticket/config.yaml` always. The override root belongs to whoever set the variable, and each of these decides code that runs as you — so following it there would let a sandbox widen the allow-list (`verify_allow: [sh]`) or hand the TUI its own `sh -c` template, and a sandbox with no config would restore the defaults over an allow-list you had narrowed. Pinning them to `$HOME` bounds what a *store root* can supply, not a caller who also controls the environment: whoever can set `TK_STORE_ROOT` can generally set `HOME` too.
+- A value that is not an absolute path is an error, on any command, before any store is resolved. There is no fall-back to the configured store — a silent fall-back is the failure this exists to prevent. The empty string is such a value: `TK_STORE_ROOT=` is a store root tk cannot resolve, not an unset variable.
+
+The guarantee covers tk's own store resolution and nothing wider. Two things are outside it, by design and under separate controls:
+
+- **`ticket_create`'s `repo` argument.** It resolves a caller-supplied absolute path before any config lookup, so its write target sits outside the override by construction.
+- **Commands a ticket's `verify` lines run.** `verify_allow` defaults include `go` and `make`, and `go run pkg@version` or `make -f <file>` run code from outside the repo — code that can reach any path. The allow-list is pinned to `~/.ticket/config.yaml`, but the *directory* a verify command runs in is not: it comes from the project `path` in whichever config wins, so under the override the sandbox root names it — `make` there runs that directory's Makefile. See [What may run](#what-may-run).
 
 ## Development
 
