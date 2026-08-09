@@ -1,0 +1,5 @@
+{
+  "anchors": [
+    { "name": "test", "executable": "go", "arguments": ["test", "./..."] }
+  ]
+}
