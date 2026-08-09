@@ -20,6 +20,17 @@ const (
 	syncBlockedFile     = ".tk-sync-blocked"
 )
 
+// centralStorePaths are the tk-managed paths inside the central store root: the
+// tickets directory and the shared config. They are the only paths init's
+// bootstrap and every sync cycle stage. `git -C` sets the working directory but
+// not the pathspec, so staging without one sweeps up the entire worktree of a
+// repo the store root happens to be nested inside. init's bootstrap scopes its
+// staged-changes check and its commit to them as well; sync's commit below is
+// still pathspec-less, so it takes whatever else is in the index — tracked in
+// ticket/tk-sync-commits-cc08, along with findGitRoot resolving above the store
+// root in the nested case.
+var centralStorePaths = []string{"tickets/", "config.yaml"}
+
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync ticket changes to git (stage, commit, push)",
@@ -110,8 +121,9 @@ func syncCentralStore(gitDir string) string {
 	}
 
 	// Stage only tk-managed paths (tickets directory and shared config)
-	exec.Command("git", "-C", gitDir, "add", "tickets/").Run()
-	exec.Command("git", "-C", gitDir, "add", "config.yaml").Run()
+	for _, path := range centralStorePaths {
+		exec.Command("git", "-C", gitDir, "add", "--", path).Run()
+	}
 
 	// Check for staged changes
 	diff := exec.Command("git", "-C", gitDir, "diff", "--cached", "--quiet")

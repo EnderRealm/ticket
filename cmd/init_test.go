@@ -268,12 +268,11 @@ func TestInitNonInteractive(t *testing.T) {
 }
 
 // TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone holds `tk init` to the
-// documented "nothing is committed or pushed" under TK_STORE_ROOT. The
-// bootstrap's `git add -A` carries no pathspec — `-C` sets the working
-// directory, not the pathspec — so running it against an override root nested
-// inside another repo would stage and commit that repo's entire uncommitted
-// worktree. The enclosing repo here is built under t.TempDir: no test may reach
-// the machine's own store.
+// documented "nothing is committed or pushed" under TK_STORE_ROOT. Running the
+// bootstrap against an override root nested inside another repo would stage and
+// commit the sandbox's own store files into that repo, so the bootstrap is
+// skipped entirely. The enclosing repo here is built under t.TempDir: no test
+// may reach the machine's own store.
 func TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone(t *testing.T) {
 	setupTestHome(t)
 
@@ -327,6 +326,131 @@ func TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone(t *testing.T) {
 	staged, _ := execCommand("git", "-C", enclosing, "diff", "--cached", "--name-only")
 	if staged != "" {
 		t.Errorf("enclosing repo has staged paths %q, want none", staged)
+	}
+}
+
+// TestInitBootstrapGitNestedStoreStagesOnlyStorePaths pins the bootstrap's
+// pathspec on every git operation it runs. `-C` sets the working directory but
+// not the pathspec, so a pathspec-less `add -A` swept the enclosing repo's
+// entire worktree — unrelated in-progress edits and untracked files such as
+// .env — into the store's init commit, and a pathspec-less commit did the same
+// with anything the repo's owner had already staged. The enclosing repo here is
+// built under t.TempDir: no test may reach the machine's own store.
+func TestInitBootstrapGitNestedStoreStagesOnlyStorePaths(t *testing.T) {
+	setupTestHome(t)
+
+	enclosing := t.TempDir()
+	runGit(t, enclosing, "init")
+	runGit(t, enclosing, "config", "user.email", "test@test.com")
+	runGit(t, enclosing, "config", "user.name", "test")
+	tracked := filepath.Join(enclosing, "tracked.txt")
+	os.WriteFile(tracked, []byte("committed\n"), 0o644)
+	runGit(t, enclosing, "add", "-A")
+	runGit(t, enclosing, "commit", "-m", "initial")
+
+	// Unrelated in-progress work the bootstrap must not touch: an edit left in
+	// the worktree, a file the repo's owner had already staged, and a file that
+	// is never staged at all — `add -A` swept up all three.
+	os.WriteFile(tracked, []byte("uncommitted edit\n"), 0o644)
+	os.WriteFile(filepath.Join(enclosing, ".env"), []byte("SECRET\n"), 0o644)
+	runGit(t, enclosing, "add", ".env")
+	os.WriteFile(filepath.Join(enclosing, "scratch.txt"), []byte("untracked\n"), 0o644)
+
+	storeRoot := filepath.Join(enclosing, "store")
+	os.MkdirAll(filepath.Join(storeRoot, "tickets", "myproject"), 0o755)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "myproject", "ticket-1234.md"),
+		[]byte("---\ntitle: Test\n---\n"), 0o644)
+	os.WriteFile(filepath.Join(storeRoot, "config.yaml"), []byte("projects: {}\n"), 0o644)
+
+	if err := bootstrapCentralStoreGit(storeRoot); err != nil {
+		t.Fatalf("bootstrapCentralStoreGit: %v", err)
+	}
+
+	committed, _ := execCommand("git", "-C", enclosing, "show", "--name-only", "--pretty=format:", "HEAD")
+	for _, name := range []string{"tracked.txt", ".env", "scratch.txt"} {
+		if contains(committed, name) {
+			t.Errorf("commit contains enclosing repo path %q; committed files:\n%s", name, committed)
+		}
+	}
+	for _, name := range []string{"store/tickets/myproject/ticket-1234.md", "store/config.yaml"} {
+		if !contains(committed, name) {
+			t.Errorf("commit missing store path %q; committed files:\n%s", name, committed)
+		}
+	}
+
+	// The enclosing repo's own work stays exactly as its owner left it: .env
+	// still staged and uncommitted, tracked.txt's edit still only in the
+	// worktree, scratch.txt still untracked.
+	staged, _ := execCommand("git", "-C", enclosing, "diff", "--cached", "--name-only")
+	if staged != ".env" {
+		t.Errorf("enclosing repo staged paths = %q, want %q", staged, ".env")
+	}
+	if head, _ := execCommand("git", "-C", enclosing, "show", "HEAD:tracked.txt"); head != "committed" {
+		t.Errorf("tracked.txt at HEAD = %q, want the original content", head)
+	}
+	untracked, _ := execCommand("git", "-C", enclosing, "ls-files", "--others", "--exclude-standard")
+	if !contains(untracked, "scratch.txt") {
+		t.Errorf("scratch.txt is no longer untracked; untracked files:\n%s", untracked)
+	}
+}
+
+// TestInitBootstrapGitMissingSharedConfig covers a central root whose
+// config.yaml is absent — `git add` on a pathspec that matches nothing is a
+// hard error, so the bootstrap must skip the missing path rather than fail.
+func TestInitBootstrapGitMissingSharedConfig(t *testing.T) {
+	home := setupTestHome(t)
+
+	storeRoot := filepath.Join(home, "central")
+	os.MkdirAll(filepath.Join(storeRoot, "tickets", "myproject"), 0o755)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "myproject", "ticket-1234.md"),
+		[]byte("---\ntitle: Test\n---\n"), 0o644)
+
+	if err := bootstrapCentralStoreGit(storeRoot); err != nil {
+		t.Fatalf("bootstrapCentralStoreGit without config.yaml: %v", err)
+	}
+
+	committed, _ := execCommand("git", "-C", storeRoot, "show", "--name-only", "--pretty=format:", "HEAD")
+	if !contains(committed, "tickets/myproject/ticket-1234.md") {
+		t.Errorf("commit missing the ticket file; committed files:\n%s", committed)
+	}
+	if contains(committed, "config.yaml") {
+		t.Errorf("commit contains config.yaml, which never existed; committed files:\n%s", committed)
+	}
+}
+
+// TestInitBootstrapGitIgnoredStoreRoot pins the one case the pathspec'd add
+// fails loudly where `add -A` used to succeed badly: an enclosing repo whose
+// .gitignore covers the store root. `git add -- tickets/` exits non-zero there,
+// so the bootstrap must return the error — and init abort before registering —
+// rather than report success on a store the enclosing repo would never keep.
+// The enclosing repo here is built under t.TempDir: no test may reach the
+// machine's own store.
+func TestInitBootstrapGitIgnoredStoreRoot(t *testing.T) {
+	setupTestHome(t)
+
+	enclosing := t.TempDir()
+	runGit(t, enclosing, "init")
+	runGit(t, enclosing, "config", "user.email", "test@test.com")
+	runGit(t, enclosing, "config", "user.name", "test")
+	os.WriteFile(filepath.Join(enclosing, ".gitignore"), []byte("store/\n"), 0o644)
+	runGit(t, enclosing, "add", ".gitignore")
+	runGit(t, enclosing, "commit", "-m", "initial")
+
+	storeRoot := filepath.Join(enclosing, "store")
+	os.MkdirAll(filepath.Join(storeRoot, "tickets", "myproject"), 0o755)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "myproject", "ticket-1234.md"),
+		[]byte("---\ntitle: Test\n---\n"), 0o644)
+	os.WriteFile(filepath.Join(storeRoot, "config.yaml"), []byte("projects: {}\n"), 0o644)
+
+	err := bootstrapCentralStoreGit(storeRoot)
+	if err == nil {
+		t.Fatal("bootstrapCentralStoreGit on an ignored store root returned nil, want an error")
+	}
+	if !contains(err.Error(), "tickets/") {
+		t.Errorf("error does not name the path it failed on: %v", err)
+	}
+	if !contains(err.Error(), "ignored") {
+		t.Errorf("error does not report the .gitignore as the cause: %v", err)
 	}
 }
 

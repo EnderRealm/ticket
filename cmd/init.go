@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,9 +119,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 	// A throwaway store keeps no history, and bootstrapping git in one is not
-	// merely useless: the bootstrap's `git add -A` carries no pathspec, so an
-	// override root nested inside another repo would stage and commit that
-	// repo's whole worktree.
+	// merely useless: an override root nested inside another repo would stage
+	// and commit the sandbox's own files into that repo, which the override's
+	// "nothing is committed or pushed" contract forbids.
 	//
 	// `init` is gate-exempt, so the pre-run check that refuses a set-but-unusable
 	// override never ran for it — but project.Load above resolves through the
@@ -197,17 +199,43 @@ func bootstrapCentralStoreGit(storeRoot string) error {
 		}
 	}
 
-	if out, err := exec.Command("git", "-C", storeRoot, "add", "-A").CombinedOutput(); err != nil {
-		return fmt.Errorf("central store git add failed: %v (%s)", err, strings.TrimSpace(string(out)))
+	// Stage the store's own contents, and scope the staged-changes check and the
+	// commit to the same paths. `-C` sets the working directory but not the
+	// pathspec, so a pathspec-less add, diff or commit reaches the whole index of
+	// the enclosing repo when the store root is nested inside one: the store's
+	// init commit would carry whatever that repo's owner had staged, and could
+	// consist of nothing else.
+	var changed []string
+	for _, path := range centralStorePaths {
+		// config.yaml is normally written before the bootstrap runs, but a
+		// central root whose config.yaml was deleted reaches here without one,
+		// and `git add` on a pathspec that matches nothing is a hard error.
+		// Only absence is skippable — a stat that fails any other way would
+		// otherwise drop the path from the commit silently.
+		if _, err := os.Stat(filepath.Join(storeRoot, path)); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("central store stat %s failed: %w", path, err)
+		}
+		if out, err := exec.Command("git", "-C", storeRoot, "add", "--", path).CombinedOutput(); err != nil {
+			return fmt.Errorf("central store git add %s failed: %v (%s)", path, err, strings.TrimSpace(string(out)))
+		}
+		// Commit only the paths that actually have staged changes: `git commit`
+		// errors on a pathspec it knows nothing about, and an empty tickets/
+		// directory stages nothing. Unlike add, a diff pathspec matching nothing
+		// is not an error — it simply reports no changes.
+		diff := exec.Command("git", "-C", storeRoot, "diff", "--cached", "--quiet", "--", path)
+		if err := diff.Run(); err != nil {
+			changed = append(changed, path)
+		}
 	}
-
-	// Only commit if there are staged changes
-	diff := exec.Command("git", "-C", storeRoot, "diff", "--cached", "--quiet")
-	if err := diff.Run(); err == nil {
+	if len(changed) == 0 {
 		return nil
 	}
 
-	if out, err := exec.Command("git", "-C", storeRoot, "commit", "-m", "tk: init central store").CombinedOutput(); err != nil {
+	commitArgs := append([]string{"-C", storeRoot, "commit", "-m", "tk: init central store", "--"}, changed...)
+	if out, err := exec.Command("git", commitArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("central store git commit failed: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
