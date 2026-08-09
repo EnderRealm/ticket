@@ -337,7 +337,7 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.detail.startInput(inputNote)
 			return a, nil
 		case "m":
-			a.detail.startMovePicker(a.ticketsDir)
+			a.detail.startMovePicker(a.workDir)
 			return a, nil
 		case "e":
 			a.form = newEditFormModel(a.detail.ticket, a.width, a.contentHeight())
@@ -429,7 +429,7 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "m":
 		if t := a.dashboard.selected(); t != nil {
 			a.detail = newDetailModel(t, a.width, a.height)
-			a.detail.startMovePicker(a.ticketsDir)
+			a.detail.startMovePicker(a.workDir)
 			a.overlay = overlayDetail
 			return a, nil
 		}
@@ -987,8 +987,12 @@ func (a *App) handleDelete(id string) tea.Cmd {
 }
 
 func (a *App) handleMove(id, targetRepo string) tea.Cmd {
-	targetDir := filepath.Join(targetRepo, ".tickets")
-	dst := ticket.NewFileStore(targetDir)
+	// The same resolution `tk move` uses, so the two cannot land a ticket in
+	// different places for the same target repo.
+	dst, unregistered, err := ticket.ResolveStoreForRepo(targetRepo)
+	if err != nil {
+		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
+	}
 
 	results, err := ticket.MoveTicket(a.store, dst, id, false)
 	if err != nil {
@@ -1000,6 +1004,11 @@ func (a *App) handleMove(id, targetRepo string) tea.Cmd {
 		parts = append(parts, fmt.Sprintf("%s → %s", r.OldID, r.NewID))
 	}
 	msg := fmt.Sprintf("Moved %s to %s", strings.Join(parts, ", "), targetRepo)
+	// The warning the CLI prints on stderr, carried on the status line: a
+	// stderr write here lands in the alt screen and corrupts the frame.
+	if unregistered {
+		msg += "; " + ticket.UnregisteredWarning(dst)
+	}
 	a.overlay = overlayNone
 	return tea.Batch(
 		loadTickets(a.store),

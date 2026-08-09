@@ -157,6 +157,8 @@ Creating & Editing:
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
+  move <id> <repo-path>      Move a ticket to another repo's ticket store
+    -r, --recursive          Move the ticket and all its descendants
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency
@@ -387,6 +389,17 @@ tk query '.status == "ready"' | jq -r '.id' | xargs -I{} tk edit {} --status bac
 ```
 
 Partial ID matching: `tk show 5c4` matches `nw-5c46`.
+
+### Moving Tickets Between Repos
+
+```bash
+tk move <id> ~/code/other-repo        # one ticket
+tk move <id> ~/code/other-repo -r     # and every descendant
+```
+
+The target is a repo path, and it resolves to the project that repo owns in the central store, else to a `.tickets/` the repo owns. A repo that resolves to neither is refused — no store is created for it, since a directory nothing else reads would orphan whatever landed there. A project that has a central directory but is not registered `store: central` is warned about by name: the move lands there, but nothing else writes to it.
+
+The ticket is created in the destination with a new ID in that project's namespace, and its `parent`, `deps` and `links` are remapped to the new IDs of the tickets moving with it; references to tickets staying behind are stripped and named in the close note. The original is closed rather than deleted, so it is hidden from a default `tk ls` — list moved tickets with `tk ls --status=closed`. The move is not atomic: the destination copy is written first, and a failure part way reports which tickets landed.
 
 ### Git Sync
 

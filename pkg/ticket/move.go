@@ -18,25 +18,23 @@ type MoveResult struct {
 // MoveTicket moves a single ticket from src store to dst store.
 // The ticket is closed in src with a note, and created in dst with a new ID.
 //
+// Both stores are resolved by the caller (ResolveStoreForRepo), which is where
+// a destination that resolves to no store is refused: nothing here checks that
+// dst.Dir exists, because a registered central project that has never held a
+// ticket legitimately has no directory yet and dst.Create makes it.
+//
 // The move is not atomic and nothing is rolled back on failure: the results
 // for the tickets that completed (created in dst and closed in src) are
 // returned alongside the error, and the error names any ticket already
 // written to dst whose source copy is still open, so it can be reconciled.
 func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, error) {
-	srcDir, err := filepath.Abs(src.Dir)
+	srcWhere, err := storeLabel(src)
 	if err != nil {
 		return nil, err
 	}
-	dstDir, err := filepath.Abs(dst.Dir)
+	dstWhere, err := storeLabel(dst)
 	if err != nil {
 		return nil, err
-	}
-	srcRepo := filepath.Dir(srcDir)
-	dstRepo := filepath.Dir(dstDir)
-
-	// Validate target .tickets/ dir exists.
-	if _, err := os.Stat(dst.Dir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("target tickets directory %s does not exist", dst.Dir)
 	}
 
 	root, err := src.Get(id)
@@ -61,6 +59,11 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 	// mismatch the way SameTicketID does, and a moving ticket can name a
 	// moving parent, dep, or link namespaced. Bare IDs are unique within one
 	// store directory, so the bare form is an unambiguous key.
+	//
+	// The mapped value is the new ID in the destination's namespace: a central
+	// project's tickets reference each other namespaced, so a remapped parent,
+	// dep or link has to carry the destination's prefix rather than the one it
+	// arrived with. The file itself is written under the bare half.
 	idMap := map[string]string{}
 	for _, t := range toMove {
 		newID := GenerateIDFrom(t.Title, time.Now())
@@ -73,7 +76,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 			newID = GenerateIDFrom(t.Title, time.Now())
 		}
 		_, bare := ParseNamespacedID(t.ID)
-		idMap[bare] = newID
+		idMap[bare] = qualifyForStore(dst, newID)
 	}
 
 	now := time.Now().UTC()
@@ -84,10 +87,14 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		newID := idMap[bare]
 		result := MoveResult{OldID: t.ID, NewID: newID}
 
-		// Shallow copy all fields, then override what needs to change.
+		// Shallow copy all fields, then override what needs to change. The file
+		// is written under the bare half of the new ID — a project store's files
+		// are named for it, and the namespace is what the destination's readers
+		// put back — while every reference to it carries the destination's prefix.
+		_, bareNew := ParseNamespacedID(newID)
 		copied := *t
 		newTicket := &copied
-		newTicket.ID = newID
+		newTicket.ID = bareNew
 		newTicket.Status = StatusBacklog
 		// The copy starts over, so an abandoned epic does not arrive abandoned:
 		// the flag is the record of a decision taken about the work that stayed
@@ -145,7 +152,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		// Add provenance note to target ticket.
 		newTicket.Notes = append(newTicket.Notes, Note{
 			Timestamp: now,
-			Text:      fmt.Sprintf("Moved from %s in %s", t.ID, srcRepo),
+			Text:      fmt.Sprintf("Moved from %s in %s", t.ID, srcWhere),
 		})
 
 		// Create in target.
@@ -154,7 +161,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		}
 
 		// Close original with note.
-		closeNote := fmt.Sprintf("Moved to %s in %s", newID, dstRepo)
+		closeNote := fmt.Sprintf("Moved to %s in %s", newID, dstWhere)
 		if len(result.StrippedDeps) > 0 {
 			closeNote += fmt.Sprintf(". Stripped deps: %v", result.StrippedDeps)
 		}
@@ -176,13 +183,39 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		if err := src.Update(t); err != nil {
 			return results, fmt.Errorf("closing %s in source: %w. %s was written to %s but %s is still "+
 				"open here — delete the target copy or close it by hand",
-				t.ID, err, newID, dstRepo, t.ID)
+				t.ID, err, newID, dstWhere, t.ID)
 		}
 
 		results = append(results, result)
 	}
 
 	return results, nil
+}
+
+// qualifyForStore returns a bare ID in the store's namespace, so a reference
+// written into a project store resolves the way every other reference in it
+// does. A store with no project — a repo's own .tickets/ — never sees a
+// namespaced ID and gets the bare form back.
+func qualifyForStore(store *FileStore, id string) string {
+	if store.Project == "" {
+		return id
+	}
+	return FormatNamespacedID(store.Project, id)
+}
+
+// storeLabel names a store for the provenance notes a move writes on both
+// sides. A project store is named by its project: its directory is a path
+// inside the central store, which says nothing about where the work went. A
+// repo's own .tickets/ is named by the repo holding it.
+func storeLabel(store *FileStore) (string, error) {
+	if store.Project != "" {
+		return "project " + store.Project, nil
+	}
+	dir, err := filepath.Abs(store.Dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(dir), nil
 }
 
 // collectDescendants returns all descendants (children, grandchildren, etc.)

@@ -59,6 +59,14 @@ Creating & Editing:
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
+  move <id> <repo-path>      Move a ticket to another repo's ticket store
+    -r, --recursive          Move the ticket and all its descendants
+
+  The target resolves to the project that repo owns in the central store,
+  else to a .tickets/ the repo owns. A repo that resolves to neither is
+  refused rather than having a store created for it. The moved
+  ticket gets a new ID in the destination project, and the original is closed
+  with a note — so list moved tickets with 'tk ls --status=closed'.
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency (id depends on dep-id)
@@ -352,52 +360,22 @@ func ticketsDirFromConfig() (string, string, bool, bool) {
 
 // ticketsDirFromConfigFor resolves a repo path to its central ticket directory,
 // the project name, whether that project is unregistered, and whether anything
-// was resolved at all.
+// was resolved at all. The rules live in ticket.CentralStoreForRepo, which
+// `tk move` resolves its destination through as well, so a move cannot land
+// tickets in a directory this resolution would never read back.
 func ticketsDirFromConfigFor(dir string) (ticketsDir, name string, unregistered, ok bool) {
-	cfg, err := project.Load()
-	if err != nil {
+	// Why nothing resolved does not change this path: a config that failed to
+	// load and a repo with no central project both fall through to the local
+	// search below. `tk move` takes the reason, where the resolution feeds a
+	// write into another repo's store.
+	store, unregistered, ok, _ := ticket.CentralStoreForRepo(dir)
+	if !ok {
 		return "", "", false, false
 	}
-	name, _ = project.ResolveName(cfg, dir, "")
-	// ValidName, not merely non-empty: the config-path source of ResolveName
-	// returns the config map key verbatim, and filepath.Join cleans traversal
-	// segments rather than failing, so a crafted key would resolve a store
-	// outside the central root — and this resolution feeds writes (TicketStore),
-	// not just reads. MultiStore.storeFor guards the identical name-into-path
-	// join.
-	if !project.ValidName(name) {
-		return "", "", false, false
+	if unregistered {
+		fmt.Fprintln(os.Stderr, ticket.UnregisteredWarning(store))
 	}
-	ticketsDir, err = project.CentralProjectDir(name)
-	if err != nil {
-		return "", "", false, false
-	}
-	if project.CentralRegistered(cfg, name) {
-		return ticketsDir, name, false, true
-	}
-	// An unregistered project can still hold tickets centrally — written before
-	// MultiStore.Create started refusing them, or replicated from another
-	// machine. Falling through would resolve to a local store and report an
-	// empty list while the tickets sit on disk. Surfacing them is read-only:
-	// registering the project is `tk init`'s job, so warn rather than write
-	// config.
-	//
-	// Lstat, not Stat: this resolution feeds writes as well as reads
-	// (TicketStore), so following a symlink here would land a `tk create`
-	// outside the store — exactly what MultiStore.Create refuses — and the
-	// listing walk does not follow it either.
-	if info, err := os.Lstat(ticketsDir); err != nil || !info.IsDir() {
-		return "", "", false, false
-	}
-	// The name that got here is a guess — a git remote or a directory basename —
-	// so it can collide with an unrelated project's central dir. A repo holding
-	// its own .tickets/ keeps it, which also leaves a project deliberately
-	// registered with a non-central store on the store it actually has.
-	if _, found := ticket.FindTicketsDir(dir); found {
-		return "", "", false, false
-	}
-	fmt.Fprintf(os.Stderr, "warning: project %q is not registered but has a ticket directory at %s — run `tk init` to register it\n", name, ticketsDir)
-	return ticketsDir, name, true, true
+	return store.Dir, store.Project, unregistered, true
 }
 
 func mustGetwd() string {

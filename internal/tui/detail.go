@@ -67,8 +67,8 @@ func (m *detailModel) startInput(mode inputMode) {
 	m.inputText = ""
 }
 
-func (m *detailModel) startMovePicker(ticketsDir string) {
-	repos := discoverSiblingRepos(ticketsDir)
+func (m *detailModel) startMovePicker(repoRoot string) {
+	repos := discoverSiblingRepos(repoRoot)
 	repos = append(repos, enterPathOption)
 	m.pickerItems = repos
 	m.pickerCursor = 0
@@ -76,10 +76,12 @@ func (m *detailModel) startMovePicker(ticketsDir string) {
 	m.inputText = ""
 }
 
-// discoverSiblingRepos finds git repositories adjacent to the repo that owns ticketsDir.
-func discoverSiblingRepos(ticketsDir string) []string {
-	repoRoot := filepath.Dir(ticketsDir) // /path/to/repo/.tickets -> /path/to/repo
-	parentDir := filepath.Dir(repoRoot)  // /path/to/repo -> /path/to
+// discoverSiblingRepos finds git repositories adjacent to the given repo. The
+// repo is the caller's working directory, not the tickets directory: a central
+// project's tickets live under the store root, whose siblings are other
+// projects' ticket directories rather than repos.
+func discoverSiblingRepos(repoRoot string) []string {
+	parentDir := filepath.Dir(repoRoot) // /path/to/repo -> /path/to
 	repoName := filepath.Base(repoRoot)
 
 	entries, err := os.ReadDir(parentDir)

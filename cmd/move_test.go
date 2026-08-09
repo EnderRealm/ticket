@@ -17,6 +17,9 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the read-only file mode this test relies on")
 	}
+	// The target's resolution reads config, so without a sandboxed HOME the
+	// temp repo's basename is resolved against the developer's own projects.
+	t.Setenv("HOME", t.TempDir())
 	srcDir := t.TempDir()
 	t.Setenv("TICKETS_DIR", srcDir)
 	src := ticket.NewFileStore(srcDir)
@@ -79,6 +82,34 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 	}
 	if !contains(moveErr.Error(), "mv-child-0002") {
 		t.Errorf("error %q does not name the source ticket left open", moveErr)
+	}
+}
+
+// An unregistered central project is one MultiStore.Create refuses to write to
+// and `tk ls` warns about, so a move into it — the one write that lands in
+// another repo's store — has to say so too.
+func TestMoveWarnsWhenTheTargetProjectIsUnregistered(t *testing.T) {
+	strayDir, strayRepo := unregisteredCentral(t, true, nil)
+	srcDir := t.TempDir()
+	t.Setenv("TICKETS_DIR", srcDir)
+	src := ticket.NewFileStore(srcDir)
+	mkMoveTicket(t, src, "mv-stray-0001", ticket.TypeFeature, ticket.StatusReady, "")
+
+	_, stderr, err := captureMove(t, "mv-stray-0001", strayRepo)
+	if err != nil {
+		t.Fatalf("runMove: %v", err)
+	}
+	landed, err := filepath.Glob(filepath.Join(strayDir, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(landed) != 1 {
+		t.Fatalf("unregistered project holds %v, want the moved ticket", landed)
+	}
+	for _, want := range []string{"cs-stray", "not registered", "tk init"} {
+		if !contains(stderr, want) {
+			t.Errorf("stderr = %q, want to contain %q", stderr, want)
+		}
 	}
 }
 

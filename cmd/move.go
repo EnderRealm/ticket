@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 	"github.com/spf13/cobra"
@@ -11,8 +10,10 @@ import (
 
 var moveCmd = &cobra.Command{
 	Use:   "move <id> <repo-path>",
-	Short: "Move a ticket to another repo",
-	Long: "Move a ticket to another project's .tickets/ directory. Closes the original with a note. " +
+	Short: "Move a ticket to another repo's ticket store",
+	Long: "Move a ticket to the target repo's store: the project it owns in the central store, or " +
+		"a .tickets/ the repo owns. A repo that resolves to neither is refused. " +
+		"Closes the original with a note. " +
 		"A closed ticket is hidden from a default 'tk ls', so list moved tickets with 'tk ls --status=closed'.",
 	Args: cobra.ExactArgs(2),
 	RunE: runMove,
@@ -27,12 +28,25 @@ func runMove(cmd *cobra.Command, args []string) error {
 	id := args[0]
 	targetRepo := args[1]
 	recursive, _ := cmd.Flags().GetBool("recursive")
+	// Everything below fails on the state of the store, not on how the command
+	// was typed — the usage dump would bury the error naming the repo, and a
+	// partial move's diagnostic with it. Arg count is still cobra's, before this.
+	cmd.SilenceUsage = true
 
-	// Resolve target tickets directory.
-	targetDir := filepath.Join(targetRepo, ".tickets")
-
+	// Resolve the target to the project it owns in the central store, then to a
+	// .tickets/ it owns, so the moved ticket lands where `tk ls`, `tk ui` and
+	// the MCP server will find it.
 	src := TicketStore()
-	dst := ticket.NewFileStore(targetDir)
+	dst, unregistered, err := ticket.ResolveStoreForRepo(targetRepo)
+	if err != nil {
+		return err
+	}
+	// The same warning the CLI's own resolution prints: an unregistered project
+	// is one MultiStore.Create refuses to write to, so a move into it is the
+	// quietest way to put a ticket where nothing else will.
+	if unregistered {
+		fmt.Fprintln(os.Stderr, ticket.UnregisteredWarning(dst))
+	}
 
 	results, err := ticket.MoveTicket(src, dst, id, recursive)
 	for _, r := range results {
