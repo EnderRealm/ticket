@@ -134,8 +134,8 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, allow []st
 		// A criterion's text and command are both untrusted markdown that every
 		// consumer prints. Sanitizing here, where the result is produced, keeps
 		// each print site from having to remember to.
-		res.Criterion.Text = sanitizeControl(res.Criterion.Text)
-		res.Criterion.Command = sanitizeControl(res.Criterion.Command)
+		res.Criterion.Text = SanitizeControl(res.Criterion.Text)
+		res.Criterion.Command = SanitizeControl(res.Criterion.Command)
 		results = append(results, res)
 	}
 	return results, nil
@@ -212,22 +212,25 @@ func refusal(command, argv0 string, allowErr error) string {
 	}
 	return capOutput(cause + remedy + fmt.Sprintf("The verify_allow list is read from "+
 		"machine-local config only — an entry in the shared central-store config, in the ticket, or in a tool argument is ignored.\n"+
-		"command: %s", sanitizeControl(command)))
+		"command: %s", SanitizeControl(command)))
 }
 
-// sanitizeControl replaces C0 and C1 control characters, DEL, and the Unicode
-// format characters with U+FFFD. A criterion's text and command are untrusted
-// content that a refusal echoes to the operator's terminal at the one moment
-// they are asked to judge it: a raw escape sequence could repaint that output —
-// including making a REFUSED line read as PASS — and a bidi control such as
-// U+202E RIGHT-TO-LEFT OVERRIDE reverses what is rendered without changing what
-// would run.
+// SanitizeControl replaces C0 and C1 control characters, DEL, and the Unicode
+// format characters with U+FFFD. It is the shared rule for any untrusted string
+// tk prints to an operator or writes into a line-oriented record. A criterion's
+// text and command are the case it was written for: content that a refusal
+// echoes to the operator's terminal at the one moment they are asked to judge
+// it, where a raw escape sequence could repaint that output — including making a
+// REFUSED line read as PASS — and a bidi control such as U+202E RIGHT-TO-LEFT
+// OVERRIDE reverses what is rendered without changing what would run. `tk sync`
+// applies it to the ticket filenames it names in warnings, which arrive over git
+// from other machines.
 //
 // TAB is exempt: it carries none of that repaint risk and is ordinary inside a
 // hand-written markdown bullet. Newline and carriage return are not exempt,
 // because FormatVerifyRecord writes one line per criterion and an embedded
 // break would forge record lines that every later read replays.
-func sanitizeControl(s string) string {
+func SanitizeControl(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\t' {
 			return r
@@ -245,7 +248,7 @@ func runCriterion(ctx context.Context, c Criterion, dir string, allow []string, 
 		return VerifyResult{
 			Criterion: c,
 			Status:    VerifyRefused,
-			Output:    capOutput(fmt.Sprintf("refused: cannot parse this criterion's command: %v\ncommand: %s", err, sanitizeControl(c.Command))),
+			Output:    capOutput(fmt.Sprintf("refused: cannot parse this criterion's command: %v\ncommand: %s", err, SanitizeControl(c.Command))),
 		}
 	}
 	// Defensive: RunVerify calls this only for a non-empty Command, but a caller

@@ -106,8 +106,10 @@ func startBackgroundLoops(ctx context.Context) error {
 	}
 
 	if storeRoot, err := project.CentralStoreRoot(); err == nil {
-		if gitRoot, err := findGitRoot(storeRoot); err == nil {
-			go syncLoop(ctx, gitRoot, syncInterval())
+		// findGitRoot is only the gate — whether the store sits in a git repo at
+		// all. syncLoop operates on the store root itself; see syncCentralStore.
+		if _, err := findGitRoot(storeRoot); err == nil {
+			go syncLoop(ctx, storeRoot, syncInterval())
 		}
 	}
 	go watchLoop(ctx, syncInterval())

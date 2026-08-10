@@ -68,7 +68,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			info.DataBranch = gitBranchName(gitRoot)
 			info.RepoStatus = gitRepoStatus(gitRoot)
 			info.LastSync = lastSyncTime(gitRoot)
-			info.SyncStatus = syncStatus(gitRoot)
+			// The blocked marker is a machine-local tk artifact sync writes in
+			// the store root, which for a nested store is not the toplevel the
+			// other four read.
+			info.SyncStatus = syncStatus(centralRoot)
 		}
 	}
 
@@ -191,8 +194,8 @@ func lastSyncTime(gitDir string) string {
 	return fmt.Sprintf("%dd ago", int(ago.Hours()/24))
 }
 
-func syncStatus(gitDir string) string {
-	blocked := readSyncBlocked(gitDir)
+func syncStatus(storeRoot string) string {
+	blocked := readSyncBlocked(storeRoot)
 	if blocked != "" {
 		return "blocked: " + blocked
 	}

@@ -185,17 +185,17 @@ func spawnWindowTitle(project, id, title string) string {
 // silently dead spawn) or splices history text in to be re-parsed.
 //
 // Control characters — C0, DEL and C1, all three via unicode.IsControl — and
-// the Cf format characters go as well, matching ticket.sanitizeControl against
+// the Cf format characters go as well, matching ticket.SanitizeControl against
 // the same threat: a title is untrusted content that lands in a window title and
 // on the operator's terminal, where a raw escape sequence repaints what they
 // read and U+202E RIGHT-TO-LEFT OVERRIDE makes the command that runs render as
 // something else.
 //
-// TAB is not exempt here, where sanitizeControl exempts it: this text is
+// TAB is not exempt here, where SanitizeControl exempts it: this text is
 // embedded in an AppleScript string literal and in a title truncated to 20
 // runes, neither of which has anything for a tab stop to align, so mapping it to
 // a space loses nothing a caller wanted. ZWJ and ZWNJ are Cf and legitimate in
-// Persian, Hindi and emoji sequences; they go too, matching sanitizeControl's
+// Persian, Hindi and emoji sequences; they go too, matching SanitizeControl's
 // tradeoff rather than opening a per-rune allowlist over a display string.
 func sanitizeSpawnText(s string) string {
 	return strings.Map(func(r rune) rune {

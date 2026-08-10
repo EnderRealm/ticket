@@ -128,6 +128,53 @@ func TestStatusJSON(t *testing.T) {
 	os.MkdirAll(ticketDir, 0o755)
 	os.WriteFile(filepath.Join(ticketDir, "t-1.md"), []byte("x"), 0o644)
 
+	result := statusJSON(t)
+
+	if result.CentralRoot != centralRoot {
+		t.Errorf("central_root = %q, want %q", result.CentralRoot, centralRoot)
+	}
+	if len(result.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(result.Projects))
+	}
+	if result.Projects[0].Name != "proj" {
+		t.Errorf("project name = %q, want proj", result.Projects[0].Name)
+	}
+	if result.Projects[0].Tickets != 1 {
+		t.Errorf("ticket count = %d, want 1", result.Projects[0].Tickets)
+	}
+	if result.SyncStatus != "ok" {
+		t.Errorf("sync_status = %q, want ok", result.SyncStatus)
+	}
+}
+
+func TestStatusSyncBlockedNestedStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TICKETS_DIR", "")
+
+	parent, storeRoot, _ := nestedStore(t)
+	cfg := project.Config{CentralRoot: storeRoot, Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
+
+	// The marker sync writes lives in the store root, which for a nested store
+	// is not the toplevel findGitRoot resolves.
+	writeSyncBlocked(storeRoot, "sync blocked: test conflict")
+	if got := statusJSON(t).SyncStatus; got != "blocked: sync blocked: test conflict" {
+		t.Errorf("sync_status = %q, want the store root's marker", got)
+	}
+
+	// A marker at the enclosing repo's root is either another repo's business
+	// or one a pre-upgrade tk left behind; neither blocks this store.
+	clearSyncBlocked(storeRoot)
+	writeSyncBlocked(parent, "sync blocked: stale marker")
+	if got := statusJSON(t).SyncStatus; got != "ok" {
+		t.Errorf("sync_status = %q, want ok", got)
+	}
+}
+
+func statusJSON(t *testing.T) statusInfo {
+	t.Helper()
+
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -147,24 +194,9 @@ func TestStatusJSON(t *testing.T) {
 	buf := make([]byte, 8192)
 	n, _ := r.Read(buf)
 
-	var result statusInfo
-	if err := json.Unmarshal(buf[:n], &result); err != nil {
+	var info statusInfo
+	if err := json.Unmarshal(buf[:n], &info); err != nil {
 		t.Fatalf("json parse: %v\noutput: %s", err, string(buf[:n]))
 	}
-
-	if result.CentralRoot != centralRoot {
-		t.Errorf("central_root = %q, want %q", result.CentralRoot, centralRoot)
-	}
-	if len(result.Projects) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(result.Projects))
-	}
-	if result.Projects[0].Name != "proj" {
-		t.Errorf("project name = %q, want proj", result.Projects[0].Name)
-	}
-	if result.Projects[0].Tickets != 1 {
-		t.Errorf("ticket count = %d, want 1", result.Projects[0].Tickets)
-	}
-	if result.SyncStatus != "ok" {
-		t.Errorf("sync_status = %q, want ok", result.SyncStatus)
-	}
+	return info
 }
