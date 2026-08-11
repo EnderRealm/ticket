@@ -21,7 +21,8 @@ type MoveResult struct {
 // Both stores are resolved by the caller (ResolveStoreForRepo), which is where
 // a destination that resolves to no store is refused: nothing here checks that
 // dst.Dir exists, because a registered central project that has never held a
-// ticket legitimately has no directory yet and dst.Create makes it.
+// ticket legitimately has no directory yet and dst.Create makes it. A dst that
+// is the same directory as src is refused here, before anything is written.
 //
 // The move is not atomic and nothing is rolled back on failure: the results
 // for the tickets that completed (created in dst and closed in src) are
@@ -35,6 +36,21 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 	dstWhere, err := storeLabel(dst)
 	if err != nil {
 		return nil, err
+	}
+
+	// Refused here rather than in the callers, and before anything is read or
+	// written: a destination that resolves to the source store would rename the
+	// ticket — new ID, old one closed — for no gain, and the move is not atomic,
+	// so a recursive run has to be refused as a whole rather than partway.
+	same, err := sameStoreDir(src, dst)
+	if err != nil {
+		return nil, err
+	}
+	if same {
+		// Says only what the guard checked. It runs ahead of src.Get, so the
+		// requested ID has not been looked up yet and naming it as living here
+		// would be an unverified claim on a typo'd ID.
+		return nil, fmt.Errorf("destination resolves to %s, the source store — no move performed", srcWhere)
 	}
 
 	root, err := src.Get(id)
@@ -216,6 +232,55 @@ func storeLabel(store *FileStore) (string, error) {
 		return "", err
 	}
 	return filepath.Dir(dir), nil
+}
+
+// sameStoreDir reports whether two stores are the same directory. Directory
+// identity, not the project name: a repo's own .tickets/ carries no project, so
+// comparing names would read two unrelated local stores as one store.
+//
+// Identity is the inode where both directories exist, because a canonicalized
+// path string still misses spellings that name one directory: EvalSymlinks
+// resolves links but does not fold case, and APFS is case-insensitive by
+// default, so a repo-owned store reached as ../proj from /Users/me/code/Proj
+// compares unequal to itself — as does one directory reached through a bind
+// mount or a hard-linked parent. Comparing the canonicalized strings is the
+// fallback for a directory that cannot be stat'd, which is the ordinary case
+// for a registered central project that has never held a ticket: it has no
+// directory until dst.Create makes one.
+func sameStoreDir(a, b *FileStore) (bool, error) {
+	dirA, err := storeDir(a)
+	if err != nil {
+		return false, err
+	}
+	dirB, err := storeDir(b)
+	if err != nil {
+		return false, err
+	}
+	fiA, errA := os.Stat(dirA)
+	fiB, errB := os.Stat(dirB)
+	if errA == nil && errB == nil {
+		return os.SameFile(fiA, fiB), nil
+	}
+	return dirA == dirB, nil
+}
+
+// storeDir canonicalizes a store's directory for comparison. Symlinks are
+// resolved because the same directory reached by two spellings is one store —
+// /tmp and /var are symlinks on macOS — but only on a best effort basis:
+// EvalSymlinks fails on a path that does not exist, and a registered central
+// project that has never held a ticket legitimately has no directory yet.
+// internal/project.canonicalPath applies the same string-level rule to match a
+// repo against a registered project path, so a change to what counts as one
+// path here has a counterpart there.
+func storeDir(store *FileStore) (string, error) {
+	abs, err := filepath.Abs(store.Dir)
+	if err != nil {
+		return "", err
+	}
+	if eval, err := filepath.EvalSymlinks(abs); err == nil {
+		return eval, nil
+	}
+	return abs, nil
 }
 
 // collectDescendants returns all descendants (children, grandchildren, etc.)

@@ -64,7 +64,9 @@ Creating & Editing:
 
   The target resolves to the project that repo owns in the central store,
   else to a .tickets/ the repo owns. A repo that resolves to neither is
-  refused rather than having a store created for it. The moved
+  refused rather than having a store created for it, and so is a target
+  resolving to the store the ticket already lives in — that renames rather
+  than moves it; re-parent within a project with 'tk edit --parent'. The moved
   ticket gets a new ID in the destination project, and the original is closed
   with a note — so list moved tickets with 'tk ls --status=closed'.
 

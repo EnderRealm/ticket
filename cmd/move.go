@@ -12,7 +12,9 @@ var moveCmd = &cobra.Command{
 	Use:   "move <id> <repo-path>",
 	Short: "Move a ticket to another repo's ticket store",
 	Long: "Move a ticket to the target repo's store: the project it owns in the central store, or " +
-		"a .tickets/ the repo owns. A repo that resolves to neither is refused. " +
+		"a .tickets/ the repo owns. A repo that resolves to neither is refused, as is a target " +
+		"that resolves to the store the ticket already lives in — that would rename it rather " +
+		"than move it; re-parenting within a project is 'tk edit --parent'. " +
 		"Closes the original with a note. " +
 		"A closed ticket is hidden from a default 'tk ls', so list moved tickets with 'tk ls --status=closed'.",
 	Args: cobra.ExactArgs(2),

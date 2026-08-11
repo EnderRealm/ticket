@@ -578,6 +578,183 @@ func TestMovePartialFailureReportsWhatLanded(t *testing.T) {
 	}
 }
 
+// A destination that resolves to the source store is a rename, not a move: the
+// ticket would lose the ID other tickets and commit messages reference, and land
+// back where it started.
+func TestMoveRefusesADestinationThatIsTheSourceStore(t *testing.T) {
+	dir := t.TempDir()
+	src := NewProjectFileStore(dir, "self")
+	dst := NewProjectFileStore(dir, "self")
+
+	mkMovable(t, src, "self-move-0001", TypeFeature, StatusOpen, "")
+
+	results, err := MoveTicket(src, dst, "self-move-0001", false)
+	if err == nil {
+		t.Fatal("MoveTicket succeeded, want a refusal")
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %v, want none written", results)
+	}
+	for _, want := range []string{"project self", "no move performed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	orig, err := src.Get("self-move-0001")
+	if err != nil {
+		t.Fatalf("Get source: %v", err)
+	}
+	if orig.Status != StatusOpen {
+		t.Errorf("source status = %q, want %q — nothing was moved", orig.Status, StatusOpen)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) != 1 {
+		t.Errorf("store holds %v, want only the original", files)
+	}
+}
+
+// The refusal lands before anything is written. MoveTicket is not atomic, so a
+// recursive self-move discovered partway would leave some descendants renamed
+// and some not.
+func TestMoveRefusesARecursiveSelfMoveAsAWhole(t *testing.T) {
+	dir := t.TempDir()
+	src := NewProjectFileStore(dir, "self-rec")
+	dst := NewProjectFileStore(dir, "self-rec")
+
+	mkMovable(t, src, "rec-epic-0001", TypeEpic, StatusBacklog, "")
+	mkMovable(t, src, "rec-child-0002", TypeFeature, StatusOpen, "rec-epic-0001")
+	mkMovable(t, src, "rec-child-0003", TypeFeature, StatusReady, "rec-epic-0001")
+
+	if _, err := MoveTicket(src, dst, "rec-epic-0001", true); err == nil {
+		t.Fatal("MoveTicket succeeded, want a refusal")
+	}
+
+	for id, want := range map[string]Status{"rec-child-0002": StatusOpen, "rec-child-0003": StatusReady} {
+		got, err := src.Get(id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if got.Status != want {
+			t.Errorf("descendant %s = %q, want %q — the refusal moved part of the tree", id, got.Status, want)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) != 3 {
+		t.Errorf("store holds %v, want the three originals", files)
+	}
+}
+
+// Directory identity, not the string the caller passed: /tmp and /var are
+// symlinks on macOS, so the same store legitimately arrives spelled two ways.
+func TestMoveRefusesTheSourceStoreReachedByAnotherSpelling(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	src := NewProjectFileStore(dir, "spelling")
+	dst := NewProjectFileStore(link, "spelling")
+
+	mkMovable(t, src, "spell-move-0001", TypeFeature, StatusOpen, "")
+
+	if _, err := MoveTicket(src, dst, "spell-move-0001", false); err == nil {
+		t.Fatal("MoveTicket succeeded, want a refusal — the link names the source store")
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) != 1 {
+		t.Errorf("store holds %v, want only the original", files)
+	}
+}
+
+// A case variant is another spelling of the same directory on a case-insensitive
+// filesystem — APFS by default, so this is the everyday macOS case. It is
+// reachable: a repo-owned .tickets/ store's directory comes from walking the path
+// the user typed, so `tk move <id> ../proj` from /Users/me/code/Proj arrives
+// spelled differently from the store it names. EvalSymlinks resolves links but
+// does not fold case, so only stat identity catches it.
+func TestMoveRefusesTheSourceStoreSpelledInAnotherCase(t *testing.T) {
+	parent := t.TempDir()
+	upper := filepath.Join(parent, "Store")
+	if err := os.MkdirAll(upper, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	lower := filepath.Join(parent, "store")
+	if !sameDirOnDisk(t, upper, lower) {
+		t.Skip("case-sensitive filesystem: the two spellings name different directories")
+	}
+
+	src := NewProjectFileStore(upper, "casing")
+	dst := NewProjectFileStore(lower, "casing")
+
+	mkMovable(t, src, "case-move-0001", TypeFeature, StatusOpen, "")
+
+	if _, err := MoveTicket(src, dst, "case-move-0001", false); err == nil {
+		t.Fatal("MoveTicket succeeded, want a refusal — the two spellings name one directory")
+	}
+	orig, err := src.Get("case-move-0001")
+	if err != nil {
+		t.Fatalf("Get source: %v", err)
+	}
+	if orig.Status != StatusOpen {
+		t.Errorf("source status = %q, want %q — nothing was moved", orig.Status, StatusOpen)
+	}
+	files, err := filepath.Glob(filepath.Join(upper, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) != 1 {
+		t.Errorf("store holds %v, want only the original", files)
+	}
+}
+
+// sameDirOnDisk reports whether two paths name one directory, so a test that
+// assumes a case-insensitive filesystem can skip rather than fail on one that
+// is not.
+func sameDirOnDisk(t *testing.T, a, b string) bool {
+	t.Helper()
+	fiA, err := os.Stat(a)
+	if err != nil {
+		t.Fatalf("Stat %s: %v", a, err)
+	}
+	fiB, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fiA, fiB)
+}
+
+// The guard resolves symlinks best effort: a registered central project that has
+// never held a ticket has no directory until dst.Create makes one, and
+// EvalSymlinks fails on a path that does not exist.
+func TestMoveIntoAProjectThatHasNeverHeldATicket(t *testing.T) {
+	src := NewProjectFileStore(t.TempDir(), "unused-from")
+	dstDir := filepath.Join(t.TempDir(), "never-used")
+	dst := NewProjectFileStore(dstDir, "unused-to")
+
+	mkMovable(t, src, "unused-move-0001", TypeFeature, StatusOpen, "")
+
+	results, err := MoveTicket(src, dst, "unused-move-0001", false)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %v, want the one move", results)
+	}
+	if _, err := dst.Get(results[0].NewID); err != nil {
+		t.Fatalf("Get moved: %v", err)
+	}
+}
+
 func movable(id string, typ TicketType, status Status, parent string) *Ticket {
 	return &Ticket{
 		ID: id, Status: status, Type: typ, Priority: 2, Parent: parent,

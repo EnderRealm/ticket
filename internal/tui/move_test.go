@@ -68,6 +68,68 @@ func TestHandleMoveLandsInTheTargetsCentralProject(t *testing.T) {
 	}
 }
 
+// `tk move` refuses a destination that resolves to the store the ticket is
+// already in; the picker takes the same targets, so it says so on the status line
+// rather than renaming the ticket.
+func TestHandleMoveRefusesTheSourcesOwnProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	centralRoot := filepath.Join(home, "central")
+	srcRepo := filepath.Join(home, "tui-self")
+	if err := os.MkdirAll(srcRepo, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cfg := project.Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]project.ProjectConfig{
+			"tui-self": {Path: srcRepo, Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	srcDir := filepath.Join(centralRoot, "tickets", "tui-self")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	src := ticket.NewProjectFileStore(srcDir, "tui-self")
+	if err := src.Create(&ticket.Ticket{
+		ID: "tui-self-0001", Status: ticket.StatusOpen, Type: ticket.TypeFeature,
+		Priority: 2, Created: time.Now(), Title: "Stays put", Body: "\n",
+		Deps: []string{}, Links: []string{},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	a := New(srcDir, "tui-self", "v0", "", srcRepo, false)
+	msg := a.handleMove("tui-self-0001", srcRepo)()
+	status, ok := msg.(statusMsg)
+	if !ok {
+		t.Fatalf("handleMove returned %T — the move ran, want the refusal on the status line", msg)
+	}
+	for _, want := range []string{"error:", "tui-self", "no move performed"} {
+		if !strings.Contains(string(status), want) {
+			t.Errorf("status line = %q, want to contain %q", status, want)
+		}
+	}
+
+	held, err := filepath.Glob(filepath.Join(srcDir, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(held) != 1 {
+		t.Errorf("project holds %v, want only the original", held)
+	}
+	orig, err := src.Get("tui-self-0001")
+	if err != nil {
+		t.Fatalf("Get source: %v", err)
+	}
+	if orig.Status != ticket.StatusOpen {
+		t.Errorf("source status = %q, want %q — nothing was moved", orig.Status, ticket.StatusOpen)
+	}
+}
+
 // The CLI warns on stderr when the move lands in an unregistered central
 // project; in the alt screen that write corrupts the frame, so the TUI carries
 // the same sentence on the status line.

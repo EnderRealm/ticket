@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EnderRealm/ticket/v7/internal/project"
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
@@ -110,6 +111,75 @@ func TestMoveWarnsWhenTheTargetProjectIsUnregistered(t *testing.T) {
 		if !contains(stderr, want) {
 			t.Errorf("stderr = %q, want to contain %q", stderr, want)
 		}
+	}
+}
+
+// The route a user actually hits: a relative target typed from inside a
+// registered repo becomes a path under that repo, which prefix-matches back to
+// the repo's own project. However the target resolves, a move into the store the
+// ticket is already in is refused and nothing is written.
+func TestMoveRefusesATargetResolvingToTheSourceProject(t *testing.T) {
+	home := setupTestHome(t)
+	centralRoot := filepath.Join(home, "central")
+	fromRepo := filepath.Join(home, "mv", "from")
+	toRepo := filepath.Join(home, "mv", "to")
+	for _, dir := range []string{fromRepo, toRepo} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	cfg := project.Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]project.ProjectConfig{
+			"mv-from": {Path: fromRepo, Store: "central"},
+			"mv-to":   {Path: toRepo, Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	srcDir := filepath.Join(centralRoot, "tickets", "mv-from")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	src := ticket.NewProjectFileStore(srcDir, "mv-from")
+	mkMoveTicket(t, src, "mv-self-0001", ticket.TypeFeature, ticket.StatusOpen, "")
+
+	oldDir, _ := os.Getwd()
+	if err := os.Chdir(fromRepo); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer os.Chdir(oldDir)
+
+	stdout, stderr, err := captureMove(t, "mv-self-0001", "to")
+	if err == nil {
+		t.Fatal("runMove succeeded, want a refusal")
+	}
+	for _, want := range []string{"mv-from", "no move performed"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	if contains(stdout, "Moved") {
+		t.Errorf("stdout reports a move that did not happen:\n%s", stdout)
+	}
+	if contains(stderr, "Move failed partway") {
+		t.Errorf("a refusal is not a partial move:\n%s", stderr)
+	}
+
+	orig, err := src.Get("mv-self-0001")
+	if err != nil {
+		t.Fatalf("Get source: %v", err)
+	}
+	if orig.Status != ticket.StatusOpen {
+		t.Errorf("source status = %q, want %q — nothing was moved", orig.Status, ticket.StatusOpen)
+	}
+	landed, err := filepath.Glob(filepath.Join(srcDir, "*.md"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(landed) != 1 {
+		t.Errorf("source project holds %v, want only the original", landed)
 	}
 }
 
