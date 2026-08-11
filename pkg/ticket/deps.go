@@ -294,6 +294,22 @@ func ticketsByID(tickets []*Ticket, project string) func(string) (*Ticket, bool)
 	}
 }
 
+// IndexByID returns a lookup over the given listing. It matches an exact ID
+// first, then the bare half of a namespaced one, and reports not-found for a
+// bare half two listed tickets share and for a reference whose namespace names
+// a project other than the store's — so an ambiguous or foreign reference stays
+// unresolved rather than being answered with a guess. Callers outside this
+// package need those rules stated here, since the function carrying them is
+// unexported.
+//
+// It exists because a display site matching a ticket's deps and links by exact
+// string misses every reference stored in the other ID form, and both forms are
+// on disk. The store supplies the namespace its listed IDs live under, so no
+// caller re-derives it.
+func IndexByID(store Store, tickets []*Ticket) func(string) (*Ticket, bool) {
+	return ticketsByID(tickets, storeProject(store))
+}
+
 // storeProject is the namespace a store's listed IDs belong to when they do not
 // carry one themselves. A MultiStore namespaces every ID it lists, so it has
 // none of its own.

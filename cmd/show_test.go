@@ -183,6 +183,176 @@ func TestShowAnnotatesNamespacedParent(t *testing.T) {
 	}
 }
 
+func TestShowResolvesNamespacedDepsAndLinks(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	createShowTicket(t, store, "sn-blocker-0001", ticket.StatusOpen)
+	createShowTicket(t, store, "sn-bare-0002", ticket.StatusReady)
+	createShowTicket(t, store, "sn-linked-0003", ticket.StatusDone)
+	createShowTicket(t, store, "sn-donedep-0004", ticket.StatusDone)
+
+	subject := &ticket.Ticket{
+		ID:      "sn-subject-0005",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Subject",
+		Deps:    []string{"proj/sn-blocker-0001", "sn-bare-0002", "proj/sn-donedep-0004"},
+		Links:   []string{"proj/sn-linked-0003"},
+		Body:    "\n",
+	}
+	if err := store.Create(subject); err != nil {
+		t.Fatalf("Create subject: %v", err)
+	}
+
+	out := captureShow(t, store, "sn-subject-0005", false)
+
+	want := []string{
+		// A namespaced dep renders with the target's real status and title.
+		"- proj/sn-blocker-0001 [open] Item sn-blocker-0001",
+		// A bare dep renders exactly as before.
+		"- sn-bare-0002 [ready] Item sn-bare-0002",
+		// A namespaced link renders with the target's real status and title.
+		"- proj/sn-linked-0003 [done] Item sn-linked-0003",
+	}
+	for _, w := range want {
+		if !contains(out, w) {
+			t.Errorf("output missing %q:\n%s", w, out)
+		}
+	}
+	// A namespaced dep that is done resolves, so it is not a blocker at all.
+	idx := strings.Index(out, "## Blockers")
+	if idx < 0 {
+		t.Fatalf("show output missing Blockers section:\n%s", out)
+	}
+	if contains(out[idx:], "sn-donedep-0004") {
+		t.Errorf("done namespaced dep listed as a blocker:\n%s", out[idx:])
+	}
+	if contains(out, "[unknown]") {
+		t.Errorf("output has an unresolved reference:\n%s", out)
+	}
+}
+
+func TestShowRendersDanglingReferenceUnknown(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	createShowTicket(t, store, "sg-present-0001", ticket.StatusOpen)
+	subject := &ticket.Ticket{
+		ID:      "sg-subject-0002",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Subject",
+		// Nothing named here exists: an absent bare half, and a bare half this
+		// store holds under a prefix naming another project.
+		Deps:  []string{"proj/sg-missing-0003"},
+		Links: []string{"other/sg-present-0001"},
+		Body:  "\n",
+	}
+	if err := store.Create(subject); err != nil {
+		t.Fatalf("Create subject: %v", err)
+	}
+
+	out := captureShow(t, store, "sg-subject-0002", false)
+
+	for _, w := range []string{
+		"- proj/sg-missing-0003 [unknown]",
+		"- other/sg-present-0001 [unknown]",
+	} {
+		if !contains(out, w) {
+			t.Errorf("output missing %q:\n%s", w, out)
+		}
+	}
+}
+
+func TestShowListsNamespacedDependentAsBlocking(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	createShowTicket(t, store, "sb-subject-0001", ticket.StatusOpen)
+	dependent := &ticket.Ticket{
+		ID:      "sb-dependent-0002",
+		Status:  ticket.StatusReady,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Dependent",
+		Deps:    []string{"proj/sb-subject-0001"},
+		Body:    "\n",
+	}
+	if err := store.Create(dependent); err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+
+	out := captureShow(t, store, "sb-subject-0001", false)
+	idx := strings.Index(out, "## Blocking")
+	if idx < 0 {
+		t.Fatalf("show output missing Blocking section:\n%s", out)
+	}
+	if !contains(out[idx:], "- sb-dependent-0002 [ready] Dependent") {
+		t.Errorf("Blocking section missing the namespaced dependent:\n%s", out[idx:])
+	}
+}
+
+func TestShowLeavesAmbiguousReferenceUnknown(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	createShowTicket(t, store, "sa-target-0001", ticket.StatusOpen)
+	// A second ticket sharing the bare half, which only a file the store did not
+	// write can hold — its ID is namespaced, so it is not this project's
+	// sa-target-0001 and matching the bare half would be a guess between the two.
+	other := &ticket.Ticket{
+		ID:      "other/sa-target-0001",
+		Status:  ticket.StatusDone,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Foreign namesake",
+		Body:    "\n",
+	}
+	data, err := ticket.Serialize(other)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sa-foreign-0002.md"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	subject := &ticket.Ticket{
+		ID:      "sa-subject-0003",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Subject",
+		Deps:    []string{"proj/sa-target-0001"},
+		Body:    "\n",
+	}
+	if err := store.Create(subject); err != nil {
+		t.Fatalf("Create subject: %v", err)
+	}
+
+	out := captureShow(t, store, "sa-subject-0003", false)
+	if !contains(out, "- proj/sa-target-0001 [unknown]") {
+		t.Errorf("ambiguous reference did not stay unknown:\n%s", out)
+	}
+}
+
+func createShowTicket(t *testing.T, store *ticket.FileStore, id string, status ticket.Status) {
+	t.Helper()
+	tk := &ticket.Ticket{
+		ID:      id,
+		Status:  status,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Item " + id,
+		Body:    "\n",
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create %s: %v", id, err)
+	}
+}
+
 func captureShow(t *testing.T, store *ticket.FileStore, id string, metadataOnly bool) string {
 	t.Helper()
 	oldStdout := os.Stdout

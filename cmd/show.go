@@ -55,12 +55,14 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		return nil
 	}
 
-	// Get all tickets for relationship display.
+	// Get all tickets for relationship display. References are resolved through
+	// the index rather than a plain map because a store holds both ID forms: MCP
+	// writes deps and links namespaced while `tk dep` writes them bare, so an
+	// exact-string lookup renders half of them as unknown. The index matches
+	// exactly first, falls back to the bare half, and refuses a bare half two
+	// listed tickets share — ambiguity stays unresolved rather than guessed.
 	allTickets, _ := store.List()
-	byID := map[string]*ticket.Ticket{}
-	for _, tk := range allTickets {
-		byID[tk.ID] = tk
-	}
+	lookup := ticket.IndexByID(store, allTickets)
 
 	// Serialize the base ticket content.
 	data, err := ticket.Serialize(t)
@@ -73,6 +75,14 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 
 	// Annotate parent line with title. The stored parent may be namespaced
 	// while the parent's own ID is bare, so match it the way Children does.
+	//
+	// Deliberately laxer than the `lookup` the reference sections use: this
+	// matches on the bare half alone, with no ambiguity or cross-project guard.
+	// Children below is the same rule for the same reason — it scans for tickets
+	// naming this one as parent, so it compares in the reverse direction and has
+	// no reference to resolve. The laxity costs nothing here because a parent
+	// naming another project is unwritable: ResolveParent requires the parent to
+	// be an epic in the same project, enforced on every write.
 	if t.Parent != "" {
 		for _, tk := range allTickets {
 			if ticket.SameTicketID(tk.ID, t.Parent) {
@@ -116,7 +126,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	// Blockers: deps not at done status.
 	var blockers []string
 	for _, depID := range t.Deps {
-		dep, ok := byID[depID]
+		dep, ok := lookup(depID)
 		if !ok || dep.Status != ticket.StatusDone {
 			blockers = append(blockers, depID)
 		}
@@ -124,7 +134,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	if len(blockers) > 0 {
 		fmt.Print("\n## Blockers\n\n")
 		for _, id := range blockers {
-			if dep, ok := byID[id]; ok {
+			if dep, ok := lookup(id); ok {
 				fmt.Printf("- %s [%s] %s\n", id, dep.Status, dep.Title)
 			} else {
 				fmt.Printf("- %s [unknown]\n", id)
@@ -139,7 +149,10 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 			continue
 		}
 		for _, depID := range tk.Deps {
-			if depID == t.ID {
+			// Resolve the dep through the index and compare the tickets, so a
+			// namespaced dep on this ticket is not silently dropped from the
+			// section — and a dep that resolves elsewhere is not counted here.
+			if dep, ok := lookup(depID); ok && dep.ID == t.ID {
 				blocking = append(blocking, tk.ID)
 				break
 			}
@@ -148,7 +161,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	if len(blocking) > 0 {
 		fmt.Print("\n## Blocking\n\n")
 		for _, id := range blocking {
-			if tk, ok := byID[id]; ok {
+			if tk, ok := lookup(id); ok {
 				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
 			}
 		}
@@ -164,7 +177,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	if len(children) > 0 {
 		fmt.Print("\n## Children\n\n")
 		for _, id := range children {
-			if tk, ok := byID[id]; ok {
+			if tk, ok := lookup(id); ok {
 				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
 			}
 		}
@@ -174,7 +187,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	if len(t.Links) > 0 {
 		fmt.Print("\n## Linked\n\n")
 		for _, id := range t.Links {
-			if tk, ok := byID[id]; ok {
+			if tk, ok := lookup(id); ok {
 				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
 			} else {
 				fmt.Printf("- %s [unknown]\n", id)
