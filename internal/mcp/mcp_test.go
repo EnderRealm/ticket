@@ -1310,15 +1310,26 @@ func TestListDefaultLimitCapsResults(t *testing.T) {
 }
 
 func TestCreateTicketRemoteRepo(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	// Set up an alternate repo with .tickets/ directory.
+	// Set up an alternate repo owning its own central project.
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
 	altDir := t.TempDir()
-	altTicketsDir := filepath.Join(altDir, ".tickets")
+	altTicketsDir := filepath.Join(root, "tickets", "alt")
 	if err := os.MkdirAll(altTicketsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"alt": {Path: altDir, Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testServer(t)
+	ctx := context.Background()
 
 	// Create a ticket targeting the alternate repo.
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
@@ -1398,29 +1409,165 @@ func TestCreateTicketRemoteRepo(t *testing.T) {
 }
 
 func TestCreateTicketRemoteRepoNotFound(t *testing.T) {
+	// A repo owning no central project, sandboxed HOME included so the
+	// resolution cannot match one of the machine's own.
+	t.Setenv("HOME", t.TempDir())
+	if err := project.Save(project.Config{CentralRoot: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	noStoreDir := t.TempDir()
+
 	session := testServer(t)
-	ctx := context.Background()
-
-	// Use a temp dir with no .tickets/ subdirectory.
-	noTicketsDir := t.TempDir()
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "ticket_create",
 		Arguments: map[string]any{
 			"title": "Should fail",
 			"type":  "feature",
-			"repo":  noTicketsDir,
+			"repo":  noStoreDir,
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.IsError {
-		t.Error("expected error when .tickets/ not found")
+		t.Error("expected an error for a repo owning no central project")
 	}
 	text := result.Content[0].(*mcp.TextContent).Text
-	if !strings.Contains(text, "no ticket store found") {
-		t.Errorf("error message = %q, want substring %q", text, "no ticket store found")
+	// The CLI's own wording: one state, one error, whichever surface hits it.
+	for _, want := range []string{"no ticket store found", noStoreDir, "tk init"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error message = %q, want substring %q", text, want)
+		}
+	}
+}
+
+func TestCreateTicketRemoteRepoNamesALegacyTicketsDir(t *testing.T) {
+	// A repo still holding a .tickets/ is told where those tickets are rather
+	// than having the directory written to, and nothing in it is touched.
+	t.Setenv("HOME", t.TempDir())
+	if err := project.Save(project.Config{CentralRoot: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := t.TempDir()
+	legacy := filepath.Join(repoDir, ".tickets")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testServer(t)
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Should fail",
+			"type":  "feature",
+			"repo":  repoDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected an error for a repo holding only a .tickets/")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	for _, want := range []string{legacy, "tk init"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error message = %q, want substring %q", text, want)
+		}
+	}
+	entries, err := os.ReadDir(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf(".tickets/ holds %v, want nothing written into it", entries)
+	}
+}
+
+func TestCreateTicketRemoteRepoWarnsUnregisteredProject(t *testing.T) {
+	// The CLI lists and writes an unregistered central project, warning as it
+	// goes; this surface reported the same repo as having no store at all, so
+	// one repo gave two answers. The warning rides on the response because
+	// stderr here is the server's log, not something the caller reads.
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	repoDir := t.TempDir()
+	if err := project.Save(project.Config{CentralRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	strayDir := filepath.Join(root, "tickets", filepath.Base(repoDir))
+	if err := os.MkdirAll(strayDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testServer(t)
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Into an unregistered project",
+			"type":  "feature",
+			"repo":  repoDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("tool returned error: %v", result.Content)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	warning, _ := resp["unregistered_warning"].(string)
+	for _, want := range []string{filepath.Base(repoDir), "tk init"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("unregistered_warning = %q, want substring %q", warning, want)
+		}
+	}
+	id, _ := resp["id"].(string)
+	if _, err := os.Stat(filepath.Join(strayDir, id+".md")); err != nil {
+		t.Errorf("ticket %s did not land in the unregistered project dir %s: %v", id, strayDir, err)
+	}
+}
+
+func TestCreateTicketRemoteRepoRefusesATraversingProjectName(t *testing.T) {
+	// A project name resolved from a config path mapping is the config map key
+	// verbatim, and the shared config arrives over git from other machines.
+	// filepath.Join cleans the traversal rather than failing, so an unbounded
+	// name steers this write out of the central root.
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	repoDir := t.TempDir()
+	cfg := project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"../escaped": {Path: repoDir, Store: "central"},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testServer(t)
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title": "Should fail",
+			"type":  "feature",
+			"repo":  repoDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected a refusal for a project name that leaves the store, got %v", result.Content)
+	}
+	escaped := filepath.Join(root, "escaped")
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Errorf("a ticket directory was created outside the central tickets root at %s: %v", escaped, err)
 	}
 }
 

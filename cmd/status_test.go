@@ -12,7 +12,6 @@ import (
 func TestStatus(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	centralRoot := setupGitRepo(t)
 
@@ -61,7 +60,6 @@ func TestStatus(t *testing.T) {
 func TestStatusProjects(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	centralRoot := setupGitRepo(t)
 
@@ -112,7 +110,6 @@ func TestStatusProjects(t *testing.T) {
 func TestStatusJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	centralRoot := setupGitRepo(t)
 
@@ -150,7 +147,6 @@ func TestStatusJSON(t *testing.T) {
 func TestStatusSyncBlockedNestedStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	parent, storeRoot, _ := nestedStore(t)
 	cfg := project.Config{CentralRoot: storeRoot, Projects: map[string]project.ProjectConfig{}}

@@ -44,8 +44,8 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 	dir, err := project.CentralProjectDir(name)
 	if err != nil {
 		// Not carried out as a reason: the failure here is an unconfigured
-		// central_root, which is the local-only setup the caller falls through
-		// to a .tickets/ for rather than an error to report.
+		// central_root, which the caller reports as the repo having no store at
+		// all rather than as a distinct error.
 		return nil, false, false, nil
 	}
 	if project.CentralRegistered(cfg, name) {
@@ -53,10 +53,9 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 	}
 	// An unregistered project can still hold tickets centrally — written before
 	// MultiStore.Create started refusing them, or replicated from another
-	// machine. Falling through would resolve to a local store and report an
-	// empty list while the tickets sit on disk. Surfacing them is read-only:
-	// registering the project is `tk init`'s job, so the caller warns rather
-	// than writing config.
+	// machine. Reporting the repo as having no store would leave those tickets
+	// unlisted on disk. Surfacing them is read-only: registering the project is
+	// `tk init`'s job, so the caller warns rather than writing config.
 	//
 	// Lstat, not Stat: this resolution feeds writes as well as reads, so
 	// following a symlink here would land a `tk create` outside the store —
@@ -65,14 +64,58 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
 		return nil, false, false, nil
 	}
-	// The name that got here is a guess — a git remote or a directory basename —
-	// so it can collide with an unrelated project's central dir. A repo holding
-	// its own .tickets/ keeps it, which also leaves a project deliberately
-	// registered with a non-central store on the store it actually has.
-	if _, found := FindTicketsDir(repoDir); found {
-		return nil, false, false, nil
-	}
 	return NewProjectFileStore(dir, name), true, true, nil
+}
+
+// noStoreError is the one error a repo resolving to no central project is. Every
+// resolution reports it — the CLI's own, `tk move`'s destination, and
+// ticket_create's repo argument — so the state reads the same way wherever it is
+// hit, and it never mints a store instead: joining ".tickets" onto the path and
+// letting a write create it produces a directory nothing else reads and orphans
+// whatever lands there.
+//
+// A repo still holding a local .tickets/ is named it. tk reads only the central
+// store now, so those tickets have gone quiet, and the user has to be told where
+// they are rather than left thinking they were lost. Naming it is all that
+// happens to it: nothing in tk deletes or rewrites a .tickets/, and the `tk init`
+// this points at copies the files into the central store and leaves the original
+// in place as a backup.
+//
+// The message names the directory to run `tk init` in rather than saying
+// "there", because the .tickets/ found is not always in the directory the
+// resolution failed for, and the two can be spelled differently — see
+// legacyStoreDir.
+func noStoreError(repoDir string) error {
+	if legacy := legacyStoreDir(repoDir); legacy != "" {
+		return fmt.Errorf("no ticket store found for %s: %s is a local ticket store, which tk no longer reads — run `tk init` in %s to copy those tickets into the central store, which leaves the directory in place", repoDir, legacy, filepath.Dir(legacy))
+	}
+	return fmt.Errorf("no ticket store found for %s — run `tk init` there to register the project", repoDir)
+}
+
+// legacyStoreDir returns the .tickets/ a repo still holds, or "" for none. Two
+// stats, not the unbounded walk-up the old resolution did: the directory itself,
+// then the git top level, which is the same root `tk init` would migrate — so
+// standing in a subdirectory of the repo gets the same answer as standing in its
+// root, where the plain error would have read as the tickets having been lost. A
+// walk-up instead of the git root would, from anywhere under $HOME, reach a
+// central root named ~/.tickets and report the central store itself as a stale
+// local one.
+//
+// The repo directory is probed first so the common case names the path in the
+// caller's own spelling: the git top level comes back canonicalized, which on
+// macOS prints /private/var beside a caller's /var.
+func legacyStoreDir(repoDir string) string {
+	dirs := []string{repoDir}
+	if top := project.DetectProjectPath(repoDir); top != "" && top != repoDir {
+		dirs = append(dirs, top)
+	}
+	for _, dir := range dirs {
+		legacy := filepath.Join(dir, ".tickets")
+		if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+			return legacy
+		}
+	}
+	return ""
 }
 
 // UnregisteredWarning is the one phrasing for a store that resolved to an
@@ -84,20 +127,15 @@ func UnregisteredWarning(store *FileStore) string {
 }
 
 // ResolveStoreForRepo opens the store a repo's tickets live in: its project
-// directory in the central store, then a .tickets/ the repo owns. It reports
-// whether that project is unregistered, because writing into one puts a ticket
-// where MultiStore.Create refuses to write and the caller has to say so. A repo
-// that resolves to neither is an error naming it — the alternative, joining
-// ".tickets" onto the path and letting the write create it, mints a store
-// nothing else reads and orphans whatever lands there.
+// directory in the central store, which is the only store tk resolves. It
+// reports whether that project is unregistered, because writing into one puts a
+// ticket where MultiStore.Create refuses to write and the caller has to say so.
+// A repo that resolves to no project is noStoreError.
 //
-// Two known divergences, both filed rather than resolved here: the CLI's
-// --repo resolution searches the repo's .tickets/ before the central project,
-// the reverse of this order, so a centrally registered repo that still holds a
-// stale .tickets/ is read locally and moved into centrally
-// (ticket/repo-resolves-local-5111); and the project name falls back to a git
-// remote or the directory basename, so a path that is no registered repo can
-// still resolve to a real project's store (ticket/tk-move-resolves-25f7).
+// One known divergence, filed rather than resolved here: the project name falls
+// back to a git remote or the directory basename, so a path that is no
+// registered repo can still resolve to a real project's store
+// (ticket/tk-move-resolves-25f7).
 func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 	abs, err := filepath.Abs(repoDir)
 	if err != nil {
@@ -105,16 +143,13 @@ func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 	}
 	store, unregistered, ok, err := CentralStoreForRepo(abs)
 	if err != nil {
-		// Not a fallthrough to the local search: the config that failed to load
-		// is what decides whether this repo's tickets are central, so a
-		// .tickets/ found without it may be the stale one the move must not use.
+		// The config that failed to load is what decides where this repo's
+		// tickets are, so it is named rather than reported as the repo having
+		// none: `tk init` does not fix a malformed config.
 		return nil, false, fmt.Errorf("load ticket config: %w", err)
 	}
 	if ok {
 		return store, unregistered, nil
 	}
-	if dir, ok := FindTicketsDir(abs); ok {
-		return NewFileStore(dir), false, nil
-	}
-	return nil, false, fmt.Errorf("no ticket store found for %s — run `tk init` there to register the project", abs)
+	return nil, false, noStoreError(abs)
 }

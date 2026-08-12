@@ -10,13 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// depStore creates a temp store holding two ready tickets.
+// depStore creates a central-store project holding two ready tickets.
 func depStore(t *testing.T, ids ...string) *ticket.FileStore {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-
-	store := ticket.NewFileStore(dir)
+	store := centralStore(t, "dp-dep")
 	for _, id := range ids {
 		tk := &ticket.Ticket{
 			ID:      id,

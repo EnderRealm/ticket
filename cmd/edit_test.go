@@ -10,13 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// editStore creates a temp store holding one open ticket on a branch.
+// editStore creates a central-store project holding one open ticket on a
+// branch.
 func editStore(t *testing.T, id string) *ticket.FileStore {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-
-	store := ticket.NewFileStore(dir)
+	store := centralStore(t, "ed-edit")
 	tk := &ticket.Ticket{
 		ID:      id,
 		Status:  ticket.StatusOpen,
@@ -186,9 +184,7 @@ func TestEditPromotingToEpicRefusesAnotherStatus(t *testing.T) {
 func TestEditReportsTheChildrenAnAbandonClosed(t *testing.T) {
 	// Closing an epic writes its children too, so the line reporting the edit
 	// names them — the failure case already did, and success said nothing.
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-	store := ticket.NewFileStore(dir)
+	store := centralStore(t, "ed-abandon")
 	if err := store.Create(&ticket.Ticket{
 		ID: "ed-epic-0001", Status: ticket.StatusBacklog, Type: ticket.TypeEpic,
 		Created: time.Now(), Title: "An epic", Body: "\n",

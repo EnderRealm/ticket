@@ -8,13 +8,11 @@ import (
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
-// parentStore configures a temp store holding one feature and one epic.
+// parentStore configures a central-store project holding one feature and one
+// epic.
 func parentStore(t *testing.T) *ticket.FileStore {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-
-	store := ticket.NewFileStore(dir)
+	store := centralStore(t, "pa-parent")
 	for _, tk := range []*ticket.Ticket{
 		{ID: "pa-feat-0001", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: time.Now(), Title: "A feature", Body: "\n"},
 		{ID: "pa-epic-0002", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now(), Title: "An epic", Body: "\n"},

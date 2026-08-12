@@ -15,8 +15,8 @@ var uiCmd = &cobra.Command{
 	Short: "Interactive ticket browser",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := project.Load()
-		ticketsDir, projectName, unregistered := resolveTicketsDir()
-		workDir := project.ResolveWorkDir(ticketsDir, cfg)
+		ticketsDir, projectName, unregistered := mustResolveTicketsDir()
+		workDir := uiWorkDir(ticketsDir, cfg)
 		// From machine-local config only — the template is handed to `sh -c`, so
 		// neither the synced store nor a TK_STORE_ROOT root may supply it.
 		//
@@ -42,4 +42,18 @@ var uiCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(uiCmd)
+}
+
+// uiWorkDir is the repo directory the TUI spawns a work session in and lists
+// move targets beside: the project's recorded path, or the repo the store was
+// resolved from when the config records none — a project registered on another
+// machine has no local path here. ResolveWorkDir has nothing of its own to fall
+// back to, since a tickets directory sits under the central store rather than in
+// a repo. The error is the one mustResolveTicketsDir has already exited on.
+func uiWorkDir(ticketsDir string, cfg project.Config) string {
+	if dir := project.ResolveWorkDir(ticketsDir, cfg); dir != "" {
+		return dir
+	}
+	dir, _ := repoDir()
+	return dir
 }

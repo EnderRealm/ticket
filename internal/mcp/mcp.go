@@ -122,6 +122,12 @@ type ticketJSON struct {
 	// along with it. Set by ticket_edit alone — every other tool leaves it
 	// empty, and it is omitted from the response then.
 	ClosedChildren []string `json:"closed_children,omitempty"`
+	// UnregisteredWarning says the ticket landed in a project with a directory
+	// in the store but no `store: central` entry in config. Set by ticket_create
+	// with a `repo` argument alone, and the same sentence the CLI prints on
+	// stderr — which is the server's log here, so a warning about where a write
+	// went has to ride on the response the caller reads.
+	UnregisteredWarning string `json:"unregistered_warning,omitempty"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -321,28 +327,6 @@ func unregisteredProjects(tickets []*ticket.Ticket) []string {
 	return out
 }
 
-// resolveTicketsDirFromConfig resolves the tickets directory and project name
-// for a repo path using the central store config. Returns ("", "", false) if
-// the path doesn't match a known central-mode project.
-func resolveTicketsDirFromConfig(repoPath string) (string, string, bool) {
-	cfg, err := project.Load()
-	if err != nil {
-		return "", "", false
-	}
-	name, _ := project.ResolveName(cfg, repoPath, "")
-	if name == "" {
-		return "", "", false
-	}
-	if !project.CentralRegistered(cfg, name) {
-		return "", "", false
-	}
-	dir, err := project.CentralProjectDir(name)
-	if err != nil {
-		return "", "", false
-	}
-	return dir, name, true
-}
-
 // resolveProject returns the effective project: explicit arg > default > empty.
 func resolveProject(explicit, defaultProject string) string {
 	if explicit != "" {
@@ -540,14 +524,14 @@ type createArgs struct {
 	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
 	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
-	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; resolves ticket store via .tickets/ directory or central store config"`
+	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; resolves to the project that repo owns in the central store"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 }
 
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. Supports optional repo parameter for cross-repo creation.",
+		Description: "Create a new ticket. Supports optional repo parameter for cross-repo creation. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		if args.Title == "" {
 			r, _ := errResult("title is required")
@@ -555,25 +539,26 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		}
 
 		targetStore := store
+		unregisteredWarning := ""
 		if args.Repo != "" {
-			abs, err := filepath.Abs(args.Repo)
+			// The resolution the CLI's own store and `tk move`'s destination read
+			// through, so a repo resolves to one store and one error whichever
+			// surface names it — including the project-name bound that keeps a
+			// config key crafted on another machine from steering this write
+			// outside the central root.
+			dst, unregistered, err := ticket.ResolveStoreForRepo(args.Repo)
 			if err != nil {
-				r, _ := errResult("invalid repo path: %v", err)
+				r, _ := errResult("%v", err)
 				return r, nil, nil
 			}
-			// A local .tickets/ store never sees namespaced IDs; only a central
-			// project dir carries a project namespace.
-			name := ""
-			dir, ok := ticket.FindTicketsDir(abs)
-			if !ok {
-				// No .tickets/ dir — try central store config for this repo path.
-				dir, name, ok = resolveTicketsDirFromConfig(abs)
+			if unregistered {
+				// Carried on the response rather than written to stderr, which is
+				// the server's log and not something the calling agent reads: the
+				// project is one MultiStore.Create refuses to write to, so a
+				// create into it puts a ticket where nothing else will.
+				unregisteredWarning = ticket.UnregisteredWarning(dst)
 			}
-			if !ok {
-				r, _ := errResult("no ticket store found for %s", abs)
-				return r, nil, nil
-			}
-			targetStore = ticket.NewProjectFileStore(dir, name)
+			targetStore = dst
 		}
 
 		t := &ticket.Ticket{
@@ -647,7 +632,9 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 
-		r, err := jsonResult(toJSON(t))
+		j := toJSON(t)
+		j.UnregisteredWarning = unregisteredWarning
+		r, err := jsonResult(j)
 		return r, nil, err
 	})
 }

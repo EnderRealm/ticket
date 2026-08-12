@@ -355,6 +355,33 @@ assert_fail "tk create 'No type' -t chore" "Reject removed type on create"
 assert_fail "tk create 'Child of a feature' --parent $ID1" "Reject non-epic parent"
 assert_fail "tk create 'Sub-epic' -t epic --parent $ID3" "Reject parent on an epic"
 
+# ─── STORE RESOLUTION ───────────────────────────────────────────────────────
+log_section "STORE RESOLUTION"
+
+# A repo owning no project in the central store resolves to nothing at all —
+# no directory is minted beside it — and says how to register it.
+UNREGISTERED=$(mktemp -d)
+assert_fail "tk --repo $UNREGISTERED ls" "Reject a repo owning no project"
+assert_contains "tk --repo $UNREGISTERED ls" "no ticket store found" "Refusal names the missing store"
+assert_contains "tk --repo $UNREGISTERED ls" "tk init" "Refusal says how to register the repo"
+assert_fail "test -e $UNREGISTERED/.tickets" "No store is created for an unregistered repo"
+
+# A repo still holding a .tickets/ is told where those tickets are. Nothing
+# reads or rewrites the directory: the file is byte-identical afterwards.
+LEGACY=$(mktemp -d)
+mkdir -p "$LEGACY/.tickets"
+printf -- '---\nid: legacy-0001\nstatus: open\ntype: feature\npriority: 2\n---\n# Legacy ticket\n' > "$LEGACY/.tickets/legacy-0001.md"
+LEGACY_BEFORE=$(cat "$LEGACY/.tickets/legacy-0001.md")
+assert_contains "tk --repo $LEGACY ls" "$LEGACY/.tickets" "Refusal names a legacy .tickets/"
+assert_contains "tk --repo $LEGACY ls" "tk init" "Refusal points at tk init to migrate it"
+assert_not_contains "tk --repo $LEGACY ls" "legacy-0001" "A .tickets/ is not read as a store"
+if [[ "$(cat "$LEGACY/.tickets/legacy-0001.md")" == "$LEGACY_BEFORE" ]]; then
+    log_pass "The legacy .tickets/ is left untouched"
+else
+    log_fail "The legacy .tickets/ is left untouched"
+fi
+rm -rf "$UNREGISTERED" "$LEGACY"
+
 # ─── PARENT HIERARCHY ───────────────────────────────────────────────────────
 log_section "PARENT HIERARCHY"
 

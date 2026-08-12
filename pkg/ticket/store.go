@@ -63,7 +63,12 @@ type FileStore struct {
 	Project string
 }
 
-// NewFileStore creates a FileStore rooted at the given directory.
+// NewFileStore creates a FileStore rooted at the given directory, with no
+// project namespace: a store whose IDs are all bare and which rejects every
+// namespaced one. Nothing in tk resolves such a store any more — every store a
+// repo resolves to is a central project — so this is the shape the type still
+// permits and the unit tests on FileStore itself use. Dropping it is deferred
+// rather than decided.
 func NewFileStore(dir string) *FileStore {
 	return &FileStore{Dir: dir}
 }
@@ -441,23 +446,4 @@ func (s *FileStore) writeTicket(t *Ticket) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
-}
-
-// FindTicketsDir walks up from startDir looking for a .tickets/ subdirectory.
-// startDir should be an absolute path. Returns the path and true if found,
-// or empty string and false.
-func FindTicketsDir(startDir string) (string, bool) {
-	dir := startDir
-	for {
-		candidate := filepath.Join(dir, ".tickets")
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return "", false
 }

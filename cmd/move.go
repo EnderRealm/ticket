@@ -11,8 +11,8 @@ import (
 var moveCmd = &cobra.Command{
 	Use:   "move <id> <repo-path>",
 	Short: "Move a ticket to another repo's ticket store",
-	Long: "Move a ticket to the target repo's store: the project it owns in the central store, or " +
-		"a .tickets/ the repo owns. A repo that resolves to neither is refused, as is a target " +
+	Long: "Move a ticket to the target repo's store: the project it owns in the central store. " +
+		"A repo that owns none is refused, as is a target " +
 		"that resolves to the store the ticket already lives in — that would rename it rather " +
 		"than move it; re-parenting within a project is 'tk edit --parent'. " +
 		"Closes the original with a note. " +
@@ -35,9 +35,8 @@ func runMove(cmd *cobra.Command, args []string) error {
 	// partial move's diagnostic with it. Arg count is still cobra's, before this.
 	cmd.SilenceUsage = true
 
-	// Resolve the target to the project it owns in the central store, then to a
-	// .tickets/ it owns, so the moved ticket lands where `tk ls`, `tk ui` and
-	// the MCP server will find it.
+	// Resolve the target to the project it owns in the central store, so the
+	// moved ticket lands where `tk ls`, `tk ui` and the MCP server will find it.
 	src := TicketStore()
 	dst, unregistered, err := ticket.ResolveStoreForRepo(targetRepo)
 	if err != nil {

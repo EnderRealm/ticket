@@ -17,7 +17,6 @@ import (
 func setupFrontierStore(t *testing.T, projects ...string) map[string]*ticket.FileStore {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("TICKETS_DIR", "")
 
 	centralRoot := t.TempDir()
 	cfg := project.Config{

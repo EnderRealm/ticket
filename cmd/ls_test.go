@@ -10,9 +10,7 @@ import (
 )
 
 func TestLsDefaultStatusSet(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-	store := ticket.NewFileStore(dir)
+	store := centralStore(t, "ls-status")
 
 	// One ticket per status, using the status as a distinctive ID.
 	statuses := []ticket.Status{
@@ -49,9 +47,7 @@ func TestLsDefaultStatusSet(t *testing.T) {
 }
 
 func TestLsBacklogOnlyNotEmpty(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-	store := ticket.NewFileStore(dir)
+	store := centralStore(t, "ls-backlog")
 
 	tk := &ticket.Ticket{
 		ID:      "ls-only-backlog",
@@ -73,9 +69,7 @@ func TestLsBacklogOnlyNotEmpty(t *testing.T) {
 }
 
 func TestLsParentMatchesBareAndNamespacedParent(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TICKETS_DIR", dir)
-	store := ticket.NewProjectFileStore(dir, "proj")
+	store := centralStore(t, "proj")
 
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. Both are children.

@@ -23,9 +23,9 @@ Usage: tk <command> [args]
 Viewing:
   show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
-  frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
+  frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
-  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read (central store)
+  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
   A criterion declares its check on an indented continuation line:
@@ -62,13 +62,13 @@ Creating & Editing:
   move <id> <repo-path>      Move a ticket to another repo's ticket store
     -r, --recursive          Move the ticket and all its descendants
 
-  The target resolves to the project that repo owns in the central store,
-  else to a .tickets/ the repo owns. A repo that resolves to neither is
-  refused rather than having a store created for it, and so is a target
-  resolving to the store the ticket already lives in — that renames rather
-  than moves it; re-parent within a project with 'tk edit --parent'. The moved
-  ticket gets a new ID in the destination project, and the original is closed
-  with a note — so list moved tickets with 'tk ls --status=closed'.
+  The target resolves to the project that repo owns in the central store.
+  A repo that owns none is refused rather than having a store created for it,
+  and so is a target resolving to the store the ticket already lives in — that
+  renames rather than moves it; re-parent within a project with
+  'tk edit --parent'. The moved ticket gets a new ID in the destination
+  project, and the original is closed with a note — so list moved tickets
+  with 'tk ls --status=closed'.
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency (id depends on dep-id)
@@ -238,7 +238,7 @@ var gateExempt = map[string]bool{
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
-	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "path to repo root (resolves via .tickets/ or central store config)")
+	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "path to repo root (resolves to that repo's project in the central store)")
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		fmt.Println(helpText)
 	})
@@ -249,8 +249,8 @@ func init() {
 		}
 		// Before the config gate and before any store resolution: IsConfigured
 		// reports a set-but-unusable override as configured, and the resolutions
-		// downstream (ticketsDirFromConfigFor, and every project.Load behind it)
-		// swallow the error and fall back to a store the operator did not name.
+		// downstream (every project.Load behind resolveTicketsDir) would fall
+		// back to a store the operator did not name.
 		if _, _, err := project.StoreRootOverride(); err != nil {
 			cmd.SilenceUsage = true
 			return err
@@ -299,12 +299,6 @@ func Execute() {
 	}
 }
 
-// TicketsDir returns the directory where tickets are stored.
-func TicketsDir() string {
-	dir, _ := TicketsDirAndProject()
-	return dir
-}
-
 // TicketStore returns a store over the resolved tickets directory, scoped to
 // the project it serves so parent/dep/link IDs namespaced by the central store
 // resolve (see FileStore.Resolve).
@@ -313,71 +307,66 @@ func TicketStore() *ticket.FileStore {
 	return ticket.NewProjectFileStore(dir, name)
 }
 
-// TicketsDirAndProject resolves the tickets directory and the project it holds.
-// Priority: --repo flag → TICKETS_DIR env → config lookup → walk up from CWD → fallback .tickets
-// The project name is non-empty only for a central-store project dir; a local
-// .tickets/ store never sees namespaced IDs and must not accept them.
+// TicketsDirAndProject resolves the tickets directory and the project it holds:
+// the project the repo — --repo when set, else the working directory — owns in
+// the central store. That is the only store tk resolves.
 func TicketsDirAndProject() (string, string) {
-	dir, name, _ := resolveTicketsDir()
+	dir, name, _ := mustResolveTicketsDir()
 	return dir, name
 }
 
-// resolveTicketsDir is TicketsDirAndProject plus whether the resolved project is
-// an unregistered central directory. `tk ui` needs it in the frame — the alt
-// screen swallows the warning the CLI commands print on stderr — and takes it
-// from the resolution that decided it rather than re-deriving it from a second
-// config read.
-func resolveTicketsDir() (string, string, bool) {
-	if repoFlag != "" {
-		abs, err := filepath.Abs(repoFlag)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: invalid --repo path: %v\n", err)
-			os.Exit(1)
-		}
-		if dir, ok := ticket.FindTicketsDir(abs); ok {
-			return dir, "", false
-		}
-		// No .tickets/ dir — try central store config for this repo path.
-		if dir, name, unregistered, ok := ticketsDirFromConfigFor(abs); ok {
-			return dir, name, unregistered
-		}
-		fmt.Fprintf(os.Stderr, "Error: no ticket store found for %s\n", abs)
+// mustResolveTicketsDir is resolveTicketsDir for the callers that cannot carry
+// its error: every command below the resolution needs a store, and there is
+// nothing to fall back to now that a repo either owns a central project or owns
+// no store at all.
+func mustResolveTicketsDir() (string, string, bool) {
+	dir, name, unregistered, err := resolveTicketsDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	if dir := os.Getenv("TICKETS_DIR"); dir != "" {
-		return dir, "", false
-	}
-	if dir, name, unregistered, ok := ticketsDirFromConfig(); ok {
-		return dir, name, unregistered
-	}
-	if dir, ok := ticket.FindTicketsDir(mustGetwd()); ok {
-		return dir, "", false
-	}
-	return ".tickets", "", false
+	return dir, name, unregistered
 }
 
-func ticketsDirFromConfig() (string, string, bool, bool) {
-	return ticketsDirFromConfigFor(mustGetwd())
-}
-
-// ticketsDirFromConfigFor resolves a repo path to its central ticket directory,
-// the project name, whether that project is unregistered, and whether anything
-// was resolved at all. The rules live in ticket.CentralStoreForRepo, which
-// `tk move` resolves its destination through as well, so a move cannot land
-// tickets in a directory this resolution would never read back.
-func ticketsDirFromConfigFor(dir string) (ticketsDir, name string, unregistered, ok bool) {
-	// Why nothing resolved does not change this path: a config that failed to
-	// load and a repo with no central project both fall through to the local
-	// search below. `tk move` takes the reason, where the resolution feeds a
-	// write into another repo's store.
-	store, unregistered, ok, _ := ticket.CentralStoreForRepo(dir)
-	if !ok {
-		return "", "", false, false
+// resolveTicketsDir resolves the tickets directory, the project it holds,
+// whether that project is an unregistered central directory, and the error a
+// repo owning no central project is. `tk ui` needs the unregistered flag in the
+// frame — the alt screen swallows the warning the CLI commands print on stderr —
+// and takes it from the resolution that decided it rather than re-deriving it
+// from a second config read.
+//
+// The rules live in ticket.ResolveStoreForRepo, which `tk move`'s destination
+// and MCP ticket_create's repo argument read through as well: one resolution, so
+// a write cannot land tickets in a directory this one would never read back, and
+// a config that fails to load is named as itself rather than sent to `tk init`.
+func resolveTicketsDir() (string, string, bool, error) {
+	repo, err := repoDir()
+	if err != nil {
+		return "", "", false, err
+	}
+	store, unregistered, err := ticket.ResolveStoreForRepo(repo)
+	if err != nil {
+		return "", "", false, err
 	}
 	if unregistered {
 		fmt.Fprintln(os.Stderr, ticket.UnregisteredWarning(store))
 	}
-	return store.Dir, store.Project, unregistered, true
+	return store.Dir, store.Project, unregistered, nil
+}
+
+// repoDir is the repo tk operates on: --repo when given, else the working
+// directory. Absolute, because it is both what the store resolves from and the
+// directory `tk ui` spawns a work session in when the project's config records
+// no path of its own.
+func repoDir() (string, error) {
+	if repoFlag == "" {
+		return mustGetwd(), nil
+	}
+	abs, err := filepath.Abs(repoFlag)
+	if err != nil {
+		return "", fmt.Errorf("invalid --repo path: %w", err)
+	}
+	return abs, nil
 }
 
 func mustGetwd() string {

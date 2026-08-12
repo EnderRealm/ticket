@@ -81,7 +81,6 @@ Config lives in `~/.ticket/config.yaml` (created by `tk init`):
 central_root: /Users/you/code/forge-data/tickets
 git_email: tk@local
 git_name: tk
-default_store: central
 sync_interval: 5s
 verify_allow:
     - go
@@ -97,11 +96,17 @@ Shared project registry (store type, auto_link, etc.) is stored in `<central_roo
 
 `--repo` flag overrides project resolution for a single command.
 
+### Where tickets live
+
+Every command resolves one way: the repo — `--repo` when given, else the working directory — to the project that repo owns in `<central_root>/tickets/<project>/`. There is no second kind of store. A repo that owns no project is an error naming it rather than a store minted on the spot, since a directory nothing else reads would orphan whatever landed there; `tk init` registers the project.
+
+tk no longer reads a `.tickets/` directory inside a repo. Nothing deletes or rewrites one — if a repo still has it, the error names that directory, and `tk init` copies the tickets into the central store and leaves the original in place as a backup.
+
 ### `spawn_command`
 
 The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the `spawn_command` template, executed with `sh -c`. Like `verify_allow`, it is read from `~/.ticket/config.yaml` only — a `spawn_command` in the shared config is ignored, and `TK_STORE_ROOT` does not relocate it — because the template *is* the code that runs as you. These placeholders are substituted:
 
-- `{dir}` — the ticket's project working directory (absolute path)
+- `{dir}` — the ticket's project working directory (absolute path): the `path` recorded for the project in your local config, or the repo `tk ui` resolved the store from when it records none
 - `{id}` — the namespaced ticket ID (e.g. `myproject/tk-...`)
 - `{project}` — the project name
 - `{title}` — the ticket title, sanitized like `{wtitle}` (still caller-quoted, like `{dir}`)
@@ -147,9 +152,9 @@ Run `tk help` for the full command reference. Key commands:
 Viewing:
   show <id> [--metadata]     Display ticket details
   ls|list [filters]          List tickets (default: workflow grouped)
-  frontier [--project=NAME]  List ready tickets with all deps done/closed (central store)
+  frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
-  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read (central store)
+  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
 Creating & Editing:
@@ -397,7 +402,7 @@ tk move <id> ~/code/other-repo        # one ticket
 tk move <id> ~/code/other-repo -r     # and every descendant
 ```
 
-The target is a repo path, and it resolves to the project that repo owns in the central store, else to a `.tickets/` the repo owns. A repo that resolves to neither is refused — no store is created for it, since a directory nothing else reads would orphan whatever landed there. A project that has a central directory but is not registered `store: central` is warned about by name: the move lands there, but nothing else writes to it. A target that resolves to the store the ticket already lives in is refused by project name and nothing is written — the move would rename the ticket rather than move it, giving it a new ID and closing the one other tickets and commit messages reference. Re-parenting a ticket within its project is `tk edit --parent`.
+The target is a repo path, and it resolves to the project that repo owns in the central store. A repo that owns none is refused — no store is created for it, since a directory nothing else reads would orphan whatever landed there. A project that has a central directory but is not registered `store: central` is warned about by name: the move lands there, but nothing else writes to it. A target that resolves to the store the ticket already lives in is refused by project name and nothing is written — the move would rename the ticket rather than move it, giving it a new ID and closing the one other tickets and commit messages reference. Re-parenting a ticket within its project is `tk edit --parent`.
 
 The ticket is created in the destination with a new ID in that project's namespace, and its `parent`, `deps` and `links` are remapped to the new IDs of the tickets moving with it; references to tickets staying behind are stripped and named in the close note. The original is closed rather than deleted, so it is hidden from a default `tk ls` — list moved tickets with `tk ls --status=closed`. The move is not atomic: the destination copy is written first, and a failure part way reports which tickets landed.
 

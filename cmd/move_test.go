@@ -18,18 +18,8 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the read-only file mode this test relies on")
 	}
-	// The target's resolution reads config, so without a sandboxed HOME the
-	// temp repo's basename is resolved against the developer's own projects.
-	t.Setenv("HOME", t.TempDir())
-	srcDir := t.TempDir()
-	t.Setenv("TICKETS_DIR", srcDir)
-	src := ticket.NewFileStore(srcDir)
-
-	targetRepo := t.TempDir()
-	targetDir := filepath.Join(targetRepo, ".tickets")
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		t.Fatalf("mkdir target: %v", err)
-	}
+	src, targetRepo, targetDir := movePair(t)
+	srcDir := src.Dir
 
 	mkMoveTicket(t, src, "mv-epic-0001", ticket.TypeEpic, ticket.StatusBacklog, "")
 	mkMoveTicket(t, src, "mv-child-0002", ticket.TypeFeature, ticket.StatusOpen, "mv-epic-0001")
@@ -52,17 +42,19 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 		t.Fatal("runMove succeeded, want a failure closing the read-only child")
 	}
 
-	dstTickets, err := ticket.NewFileStore(targetDir).List()
+	dstTickets, err := ticket.NewProjectFileStore(targetDir, "mv-dst").List()
 	if err != nil {
 		t.Fatalf("List target: %v", err)
 	}
+	// The destination is a central project, so what the command reports and
+	// what its error names are the namespaced forms of the IDs on disk.
 	var movedID, orphanID string
 	for _, dt := range dstTickets {
 		switch dt.Title {
 		case "Item mv-epic-0001":
-			movedID = dt.ID
+			movedID = ticket.FormatNamespacedID("mv-dst", dt.ID)
 		case "Item mv-child-0002":
-			orphanID = dt.ID
+			orphanID = ticket.FormatNamespacedID("mv-dst", dt.ID)
 		}
 	}
 	if movedID == "" || orphanID == "" {
@@ -91,9 +83,7 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 // another repo's store — has to say so too.
 func TestMoveWarnsWhenTheTargetProjectIsUnregistered(t *testing.T) {
 	strayDir, strayRepo := unregisteredCentral(t, true, nil)
-	srcDir := t.TempDir()
-	t.Setenv("TICKETS_DIR", srcDir)
-	src := ticket.NewFileStore(srcDir)
+	src := registerCentralProject(t, "mv-src", mustGetwd())
 	mkMoveTicket(t, src, "mv-stray-0001", ticket.TypeFeature, ticket.StatusReady, "")
 
 	_, stderr, err := captureMove(t, "mv-stray-0001", strayRepo)
@@ -181,6 +171,21 @@ func TestMoveRefusesATargetResolvingToTheSourceProject(t *testing.T) {
 	if len(landed) != 1 {
 		t.Errorf("source project holds %v, want only the original", landed)
 	}
+}
+
+// movePair registers the test process's working directory as the source
+// project and a second repo as the destination, both central. Returns the
+// source store the command resolves through TicketStore(), the destination
+// repo path `tk move` takes as its target, and that project's ticket dir.
+func movePair(t *testing.T) (*ticket.FileStore, string, string) {
+	t.Helper()
+	src := centralStore(t, "mv-src")
+	dstRepo := filepath.Join(t.TempDir(), "mv-dst")
+	if err := os.MkdirAll(dstRepo, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dst := registerCentralProject(t, "mv-dst", dstRepo)
+	return src, dstRepo, dst.Dir
 }
 
 func mkMoveTicket(t *testing.T, store *ticket.FileStore, id string, typ ticket.TicketType, status ticket.Status, parent string) {

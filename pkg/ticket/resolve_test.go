@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,6 +153,9 @@ func TestResolveStoreForRepoRefusesUnresolvableRepo(t *testing.T) {
 	if !strings.Contains(err.Error(), repo) {
 		t.Errorf("error %q does not name the repo %s", err, repo)
 	}
+	if !strings.Contains(err.Error(), "tk init") {
+		t.Errorf("error %q does not name the command that registers the project", err)
+	}
 	if _, err := os.Stat(filepath.Join(repo, ".tickets")); !os.IsNotExist(err) {
 		t.Errorf("a .tickets/ was created in %s: %v", repo, err)
 	}
@@ -215,24 +219,77 @@ func TestResolveStoreForRepoNamesAConfigItCannotLoad(t *testing.T) {
 	}
 }
 
-func TestResolveStoreForRepoFindsLocalTicketsDir(t *testing.T) {
-	// A repo carrying its own .tickets/ still resolves to it, and that store
-	// takes no namespace: it never sees a namespaced ID.
+func TestResolveStoreForRepoNamesALegacyTicketsDirFromASubdirectory(t *testing.T) {
+	// The user most likely to think their tickets vanished is standing somewhere
+	// inside the repo rather than at its root, which is where the plain "no
+	// ticket store found" reads as data loss. The probe is the git top level —
+	// the same root `tk init` migrates — so the two agree on which .tickets/ is
+	// meant.
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v (%s)", err, out)
+	}
+	local := filepath.Join(repo, ".tickets")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	sub := filepath.Join(repo, "pkg", "deep")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	_, _, err := ResolveStoreForRepo(sub)
+	if err == nil {
+		t.Fatal("resolved a store for a repo holding only a .tickets/, want an error")
+	}
+	// The git top level comes back canonicalized, so the directory is matched by
+	// suffix rather than by the spelling this test passed in.
+	if !strings.Contains(err.Error(), filepath.Join(filepath.Base(repo), ".tickets")) {
+		t.Errorf("error %q does not name the repo root's .tickets/", err)
+	}
+	if !strings.Contains(err.Error(), "tk init") {
+		t.Errorf("error %q does not name the command that migrates it", err)
+	}
+}
+
+func TestResolveStoreForRepoNamesALegacyTicketsDir(t *testing.T) {
+	// A repo carrying its own .tickets/ no longer resolves to it — tk reads the
+	// central store alone — so the refusal names the directory and the command
+	// that migrates it, and leaves its contents exactly as they were.
 	t.Setenv("HOME", t.TempDir())
 	repo := t.TempDir()
 	local := filepath.Join(repo, ".tickets")
 	if err := os.MkdirAll(local, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
+	body := "---\nid: legacy-0001\nstatus: open\n---\n\nUntouched.\n"
+	if err := os.WriteFile(filepath.Join(local, "legacy-0001.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	store, _, err := ResolveStoreForRepo(repo)
-	if err != nil {
-		t.Fatalf("ResolveStoreForRepo: %v", err)
+	if err == nil {
+		t.Fatalf("resolved %q for a repo holding only a .tickets/, want an error", store.Dir)
 	}
-	if store.Dir != local {
-		t.Errorf("Dir = %q, want %q", store.Dir, local)
+	for _, want := range []string{local, "tk init"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
 	}
-	if store.Project != "" {
-		t.Errorf("Project = %q, want empty", store.Project)
+
+	entries, readErr := os.ReadDir(local)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf(".tickets/ holds %v, want only the original ticket", entries)
+	}
+	raw, readErr := os.ReadFile(filepath.Join(local, "legacy-0001.md"))
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if string(raw) != body {
+		t.Errorf("the legacy ticket file was rewritten:\n%s", string(raw))
 	}
 }

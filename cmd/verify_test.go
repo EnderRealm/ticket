@@ -14,20 +14,22 @@ import (
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
-// verifyStore creates a temp store, unconfigured HOME included, holding one
-// ticket with the given body. The temp HOME gets a machine-local verify_allow
+// verifyStore creates a central-store project in a sandboxed HOME, holding one
+// ticket with the given body. That HOME gets a machine-local verify_allow
 // permitting the stock binaries the fixtures below run.
 func verifyStore(t *testing.T, id, body string) *ticket.FileStore {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("TICKETS_DIR", dir)
+	store := centralStore(t, "vf-verify")
 
-	if err := project.Save(project.Config{VerifyAllow: []string{"/bin/echo", "/bin/sh"}}); err != nil {
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	cfg.VerifyAllow = []string{"/bin/echo", "/bin/sh"}
+	if err := project.Save(cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
 
-	store := ticket.NewFileStore(dir)
 	tk := &ticket.Ticket{
 		ID:      id,
 		Status:  ticket.StatusOpen,

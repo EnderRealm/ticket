@@ -4,7 +4,6 @@ package tui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -71,24 +70,16 @@ type App struct {
 }
 
 // New creates a new App rooted at the given ticket directory. project is the
-// namespace the store answers to, resolved by the caller: non-empty only for a
-// central-store project, whose parent/dep/link fields carry the prefix. workDir
-// is the project's real repo directory (also resolved by the caller from
-// config), used to spawn `/work` sessions in the right place. unregistered
+// namespace the store answers to, resolved by the caller, and the name the
+// header and a spawned work session are given — deriving it a second time from
+// the tickets directory's basename produced the same string by construction.
+// workDir is the project's real repo directory (also resolved by the caller
+// from config), used to spawn `/work` sessions in the right place. unregistered
 // marks a central project with no `store: central` entry in config — an entry
 // carrying only a path is not a registration; the header carries it for the
 // whole session, since the alt screen hides a warning printed at startup.
 func New(ticketsDir, project, version, spawnCommand, workDir string, unregistered bool) App {
 	store := ticket.NewProjectFileStore(ticketsDir, project)
-
-	// Derive the displayed project name from the tickets directory path.
-	absDir, _ := filepath.Abs(ticketsDir)
-	baseName := filepath.Base(absDir)
-	projectName := baseName
-	if baseName == ".tickets" {
-		// Local store: .tickets is inside the project root.
-		projectName = filepath.Base(filepath.Dir(absDir))
-	}
 
 	// Capture launch directory, abbreviating $HOME to ~.
 	cwd, _ := os.Getwd()
@@ -108,7 +99,7 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 	a := App{
 		store:        store,
 		ticketsDir:   ticketsDir,
-		projectName:  projectName,
+		projectName:  project,
 		unregistered: unregistered,
 		version:      version,
 		cwd:          cwd,

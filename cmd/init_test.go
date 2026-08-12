@@ -12,7 +12,6 @@ func setupTestHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 	return home
 }
 
@@ -116,18 +115,18 @@ func TestTicketsDirCentral(t *testing.T) {
 	centralDir := filepath.Join(centralRoot, "tickets", "myproject")
 	os.MkdirAll(centralDir, 0o755)
 
-	// ticketsDirFromConfig should resolve to central
+	// Resolution should find the central store
 	// We need to be in the project directory for this to work
 	oldDir, _ := os.Getwd()
 	os.Chdir(projDir)
 	defer os.Chdir(oldDir)
 
-	dir, _, _, ok := ticketsDirFromConfig()
-	if !ok {
-		t.Fatal("ticketsDirFromConfig should return true for central store project")
+	dir, _, _, err := resolveTicketsDir()
+	if err != nil {
+		t.Fatalf("resolveTicketsDir should resolve a central store project: %v", err)
 	}
 	if dir != centralDir {
-		t.Errorf("ticketsDirFromConfig = %q, want %q", dir, centralDir)
+		t.Errorf("resolveTicketsDir = %q, want %q", dir, centralDir)
 	}
 }
 
@@ -145,7 +144,7 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	sharedData := []byte("projects:\n    ticket:\n        store: central\n")
 	os.WriteFile(filepath.Join(centralRoot, "config.yaml"), sharedData, 0o644)
 
-	// ticketsDirFromConfig should resolve via git remote
+	// Resolution should go via git remote
 	// Since we're in the ticket repo, git remote gives us "ticket"
 	oldDir, _ := os.Getwd()
 	projDir := filepath.Join(home, "fakerepo")
@@ -156,7 +155,7 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	os.Chdir(projDir)
 	defer os.Chdir(oldDir)
 
-	// ticketsDirFromConfig resolves via ResolveName (dirname fallback)
+	// Resolution goes via ResolveName (dirname fallback)
 	// which matches the shared config's "ticket" project... but our dir
 	// is "fakerepo" not "ticket". Let's use a dir named "ticket".
 	projDir2 := filepath.Join(home, "ticket")
@@ -166,45 +165,13 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	runGit(t, projDir2, "config", "user.name", "t")
 	os.Chdir(projDir2)
 
-	dir, _, _, ok := ticketsDirFromConfig()
-	if !ok {
-		t.Fatal("ticketsDirFromConfig should resolve via shared config + dirname")
+	dir, _, _, err := resolveTicketsDir()
+	if err != nil {
+		t.Fatalf("resolveTicketsDir should resolve via shared config + dirname: %v", err)
 	}
 	expected := filepath.Join(centralRoot, "tickets", "ticket")
 	if dir != expected {
-		t.Errorf("ticketsDirFromConfig = %q, want %q", dir, expected)
-	}
-}
-
-func TestTicketsDirPrecedence(t *testing.T) {
-	home := setupTestHome(t)
-
-	// Set up config with central store
-	projDir := filepath.Join(home, "myproject")
-	os.MkdirAll(projDir, 0o755)
-	cfg := project.Config{Projects: map[string]project.ProjectConfig{
-		"myproject": {Path: projDir, Store: "central"},
-	}}
-	project.Save(cfg)
-
-	// TICKETS_DIR env should take precedence over config
-	envDir := filepath.Join(home, "envtickets")
-	t.Setenv("TICKETS_DIR", envDir)
-
-	oldDir, _ := os.Getwd()
-	os.Chdir(projDir)
-	defer os.Chdir(oldDir)
-
-	result := TicketsDir()
-	if result != envDir {
-		t.Errorf("TicketsDir with TICKETS_DIR env = %q, want %q", result, envDir)
-	}
-
-	// Relative path should be used as-is
-	t.Setenv("TICKETS_DIR", "relative/path")
-	result = TicketsDir()
-	if result != "relative/path" {
-		t.Errorf("TicketsDir with relative TICKETS_DIR = %q, want relative/path", result)
+		t.Errorf("resolveTicketsDir = %q, want %q", dir, expected)
 	}
 }
 

@@ -187,7 +187,6 @@ func TestUpsertProject(t *testing.T) {
 func TestCentralStoreRootNoFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	// No config — should return error, not fallback
 	_, err := CentralStoreRoot()
@@ -229,29 +228,9 @@ func TestCentralStoreRootFromConfig(t *testing.T) {
 	}
 }
 
-func TestCentralStoreRootIgnoresEnv(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "/custom/tickets")
-
-	// Set central_root in config
-	cfg := Config{CentralRoot: "/configured/path", Projects: map[string]ProjectConfig{}}
-	Save(cfg)
-
-	root, err := CentralStoreRoot()
-	if err != nil {
-		t.Fatalf("CentralStoreRoot: %v", err)
-	}
-	// Should use config, not TICKETS_DIR
-	if root != "/configured/path" {
-		t.Errorf("CentralStoreRoot = %q, want /configured/path (should ignore TICKETS_DIR)", root)
-	}
-}
-
 func TestCentralProjectDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	centralRoot := filepath.Join(home, "central")
 	cfg := Config{CentralRoot: centralRoot, Projects: map[string]ProjectConfig{}}
@@ -791,19 +770,17 @@ func TestResolveWorkDir(t *testing.T) {
 		t.Errorf("central store: got %q, want /Users/steve/code/ticket", got)
 	}
 
-	// No config entry → parent of the tickets dir.
-	if got := ResolveWorkDir("/some/repo/.tickets", cfg); got != "/some/repo" {
-		t.Errorf("local .tickets: got %q, want /some/repo", got)
-	}
-
-	// Project present but empty path → fall back to parent of the tickets dir.
-	if got := ResolveWorkDir("/central/tickets/nopath", cfg); got != "/central/tickets" {
-		t.Errorf("empty path fallback: got %q, want /central/tickets", got)
-	}
-
-	// Unknown project under central store → parent fallback.
-	if got := ResolveWorkDir("/central/tickets/unknown", cfg); got != "/central/tickets" {
-		t.Errorf("unknown project: got %q, want /central/tickets", got)
+	// Both no-path cases resolve to nothing rather than to the parent of the
+	// tickets dir: a tickets dir is always <root>/tickets/<project>, so that
+	// parent is the central tickets dir and never a repo — and it is the
+	// directory `tk ui` would spawn a work session in.
+	for _, dir := range []string{
+		"/central/tickets/unknown", // no config entry at all
+		"/central/tickets/nopath",  // entry present, path empty
+	} {
+		if got := ResolveWorkDir(dir, cfg); got != "" {
+			t.Errorf("ResolveWorkDir(%q) = %q, want the empty string", dir, got)
+		}
 	}
 }
 

@@ -210,8 +210,9 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 
 // qualifyForStore returns a bare ID in the store's namespace, so a reference
 // written into a project store resolves the way every other reference in it
-// does. A store with no project — a repo's own .tickets/ — never sees a
-// namespaced ID and gets the bare form back.
+// does. A store with no project never sees a namespaced ID and gets the bare
+// form back — a shape no resolution produces now, kept because the type still
+// permits it.
 func qualifyForStore(store *FileStore, id string) string {
 	if store.Project == "" {
 		return id
@@ -222,7 +223,8 @@ func qualifyForStore(store *FileStore, id string) string {
 // storeLabel names a store for the provenance notes a move writes on both
 // sides. A project store is named by its project: its directory is a path
 // inside the central store, which says nothing about where the work went. A
-// repo's own .tickets/ is named by the repo holding it.
+// store with no project — no resolution produces one now — is named by the
+// directory above it.
 func storeLabel(store *FileStore) (string, error) {
 	if store.Project != "" {
 		return "project " + store.Project, nil
@@ -235,8 +237,8 @@ func storeLabel(store *FileStore) (string, error) {
 }
 
 // sameStoreDir reports whether two stores are the same directory. Directory
-// identity, not the project name: a repo's own .tickets/ carries no project, so
-// comparing names would read two unrelated local stores as one store.
+// identity, not the project name: a store with no project carries no name to
+// compare, so comparing names would read two unrelated ones as a single store.
 //
 // Identity is the inode where both directories exist, because a canonicalized
 // path string still misses spellings that name one directory: EvalSymlinks
@@ -298,8 +300,8 @@ func collectDescendants(store *FileStore, parentID string) ([]*Ticket, error) {
 	// written before the namespacing rollout record it bare. A parent naming a
 	// different project is skipped, not stripped, on the same grounds as
 	// FileStore.Resolve: stripping it would index the child under a same-suffix
-	// ticket in this project and move the wrong one. A local .tickets/ store
-	// carries no project, so every namespaced parent is foreign to it.
+	// ticket in this project and move the wrong one. A store with no project
+	// carries no namespace, so every namespaced parent is foreign to it.
 	childMap := map[string][]*Ticket{}
 	for _, t := range all {
 		if t.Parent == "" {

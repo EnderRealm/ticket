@@ -135,19 +135,10 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 				if !entry.AutoLink && !entry.AutoClose {
 					continue
 				}
-				var store ticket.Store
-				if entry.Store == "central" {
-					dir, err := project.CentralProjectDir(name)
-					if err != nil {
-						log.Printf("watch: %s: resolve store: %v", name, err)
-						continue
-					}
-					// Project-scoped: auto-close writes go through the same
-					// validation as MCP writes and must resolve the
-					// namespaced parent/dep IDs the central store records.
-					store = ticket.NewProjectFileStore(dir, name)
-				} else if entry.Path != "" {
-					store = ticket.NewFileStore(filepath.Join(entry.Path, ".tickets"))
+				store, err := watchStoreFor(cfg, name)
+				if err != nil {
+					log.Printf("watch: %s: resolve store: %v", name, err)
+					continue
 				}
 				result, err := journal.RunWatchCycle(name, entry, store)
 				if err != nil {

@@ -24,9 +24,14 @@ const (
 
 // Config stores tk project configuration (merged view of local + shared).
 type Config struct {
-	CentralRoot  string `yaml:"central_root,omitempty" json:"central_root,omitempty"`
-	GitEmail     string `yaml:"git_email,omitempty" json:"git_email,omitempty"`
-	GitName      string `yaml:"git_name,omitempty" json:"git_name,omitempty"`
+	CentralRoot string `yaml:"central_root,omitempty" json:"central_root,omitempty"`
+	GitEmail    string `yaml:"git_email,omitempty" json:"git_email,omitempty"`
+	GitName     string `yaml:"git_name,omitempty" json:"git_name,omitempty"`
+	// DefaultStore decides nothing and never did since the central store became
+	// the only topology: no code reads it to choose anything, and tk never
+	// writes it. It is retained so an old config still loads and round-trips,
+	// the same terms as ProjectConfig.Store. Not a hook to wire up — a second
+	// store kind is what ticket/remove-local-tickets-3d72 removed.
 	DefaultStore string `yaml:"default_store,omitempty" json:"default_store,omitempty"`
 	SyncInterval string `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
 	// SpawnCommand: read it via project.SpawnCommand(). The value here is the
@@ -83,7 +88,20 @@ var defaultVerifyAllow = []string{"go", "make", "cargo", "pytest"}
 
 // ProjectConfig stores per-project settings.
 type ProjectConfig struct {
-	Path         string `yaml:"path,omitempty" json:"path,omitempty"`
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+	// Store is the registration marker. "central" is the only value tk writes
+	// and the only one that means anything: tk resolves no other kind of store,
+	// so an entry carrying an old `store: local` reads as an unregistered
+	// project — the repo owns no store and every command says so, naming its
+	// .tickets/ if it still has one. The field is kept rather than dropped so
+	// those configs still load, and so a save round-trips whatever a project
+	// entry already carried instead of rewriting another machine's config.
+	//
+	// CentralRegistered is the only reader that decides anything from it, and it
+	// asks only whether the value is "central". The two others neither branch on
+	// a value nor compare one: saveShared tests presence to decide whether a
+	// project entry belongs in the shared config at all, and `tk status` prints
+	// the raw string in its store column.
 	Store        string `yaml:"store,omitempty" json:"store,omitempty"`
 	AutoLink     bool   `yaml:"auto_link" json:"auto_link"`
 	AutoClose    bool   `yaml:"auto_close" json:"auto_close"`
@@ -343,11 +361,16 @@ func CentralProjectDir(projectName string) (string, error) {
 }
 
 // ResolveWorkDir returns the project's real repo working directory for a tickets
-// directory. With the central store, ticketsDir is <centralRoot>/tickets/<project>
-// and its parent is the central tickets dir, NOT the repo — so the project's
-// recorded `path` from config is used when available. Falls back to the parent
-// of ticketsDir (correct for a local .tickets/ at the repo root) when the project
-// has no configured path.
+// directory: the `path` its config entry records, or "" when it records none —
+// a project registered on another machine has no local path, and the local half
+// of the config is the only thing that knows where the repo is.
+//
+// There is nothing to fall back to. ticketsDir is always
+// <centralRoot>/tickets/<project>, so its parent is the central tickets dir and
+// never a repo; returning it would hand the caller a directory inside the ticket
+// store, which for `tk ui` is the directory a spawned work session runs in. The
+// caller decides what to do with "" — it knows which repo the resolution started
+// from, and this does not.
 func ResolveWorkDir(ticketsDir string, cfg Config) string {
 	abs, err := filepath.Abs(ticketsDir)
 	if err != nil {
@@ -355,16 +378,13 @@ func ResolveWorkDir(ticketsDir string, cfg Config) string {
 	}
 
 	// Derive the project name the same way the TUI does: the base of the
-	// tickets dir, or its parent's base when it's a local ".tickets" dir.
+	// tickets dir.
 	name := filepath.Base(abs)
-	if name == ".tickets" {
-		name = filepath.Base(filepath.Dir(abs))
-	}
 
 	if p, ok := cfg.Projects[name]; ok && p.Path != "" {
 		return p.Path
 	}
-	return filepath.Dir(abs)
+	return ""
 }
 
 // --- Internal helpers ---

@@ -733,7 +733,6 @@ func TestSyncBlocked(t *testing.T) {
 func TestServeSyncStarts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	// Create a central store with git
 	storeRoot := filepath.Join(home, ".tickets")
@@ -828,7 +827,6 @@ func TestSyncIntervalConfig(t *testing.T) {
 func TestSyncCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	centralRoot := filepath.Join(home, ".tickets")
 	dir := setupGitRepo(t)
@@ -857,7 +855,6 @@ func TestSyncCommand(t *testing.T) {
 func TestSyncCommandJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	dir := setupGitRepo(t)
 

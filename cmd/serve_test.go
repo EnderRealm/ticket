@@ -26,7 +26,6 @@ import (
 func TestServeIsolatedStoreLeavesConfiguredStoreUntouched(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	// The stand-in "configured" central store, with a registered project and a
 	// ticket in it, reachable only through ~/.ticket/config.yaml.
@@ -135,7 +134,6 @@ func TestServeIsolatedStoreLeavesConfiguredStoreUntouched(t *testing.T) {
 // running syncLoop would commit it well inside the wait.
 func TestServeIsolatedStoreDoesNotSync(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("TICKETS_DIR", "")
 
 	isolated := t.TempDir()
 	runGit(t, isolated, "init")
@@ -177,7 +175,6 @@ func TestServeIsolatedStoreDoesNotSync(t *testing.T) {
 
 func TestServeRelativeStoreRootRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("TICKETS_DIR", "")
 	t.Setenv(project.StoreRootEnv, "relative/store")
 
 	// Cancellable, and cancelled when the test returns: if the guard below ever
@@ -210,7 +207,6 @@ func TestServeRelativeStoreRootRefused(t *testing.T) {
 func TestInvalidStoreRootRefusedBeforeResolution(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("TICKETS_DIR", "")
 
 	// Configured, so the gate below can only be tripped by the override.
 	configured := t.TempDir()
@@ -241,7 +237,6 @@ func TestInvalidStoreRootRefusedBeforeResolution(t *testing.T) {
 // the sandbox's contents.
 func TestSyncWatchAndRecomputeRefuseIsolatedStore(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("TICKETS_DIR", "")
 
 	isolated := t.TempDir()
 	runGit(t, isolated, "init")

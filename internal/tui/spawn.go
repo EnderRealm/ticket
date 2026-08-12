@@ -62,10 +62,15 @@ const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w 
 // "PROJECT -- ID4 -- TITLE" window name).
 //
 // {id} and {title} come from the central store, a git repo other machines push
-// to, so both are untrusted here; {dir} and {project} come from the merged
+// to, so both are untrusted here. {project} and {dir} stay raw (the single-quote
+// limitation on {dir} above still applies): {project} comes from the merged
 // config, whose local half is the machine owner's own file or — under
-// TK_STORE_ROOT — the override root's, and stay raw (the single-quote
-// limitation on {dir} above still applies). The template itself is not merged:
+// TK_STORE_ROOT — the override root's, and {dir} is either that config's
+// recorded path for the project or, when it records none, the repo the store was
+// resolved from — `--repo` if given, else the working directory. Nothing
+// git-synced reaches either, since mergeConfigs takes `path` from the local half
+// alone. Whether {dir} should be sanitized regardless is open:
+// ticket/spawn-command-interpolates-5425. The template itself is not merged:
 // project.SpawnCommand reads it from ~/.ticket/config.yaml alone, because it is
 // the string handed to `sh -c`.
 //

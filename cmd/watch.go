@@ -317,19 +317,10 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 				continue
 			}
 
-			var store ticket.Store
-			if entry.Store == "central" {
-				dir, err := project.CentralProjectDir(name)
-				if err != nil {
-					log.Printf("%s: resolve store: %v", name, err)
-					continue
-				}
-				// Project-scoped: auto-close writes go through the same
-				// validation as MCP writes and must resolve the
-				// namespaced parent/dep IDs the central store records.
-				store = ticket.NewProjectFileStore(dir, name)
-			} else if entry.Path != "" {
-				store = ticket.NewFileStore(filepath.Join(entry.Path, ".tickets"))
+			store, err := watchStoreFor(cfg, name)
+			if err != nil {
+				log.Printf("%s: resolve store: %v", name, err)
+				continue
 			}
 
 			result, err := journal.RunWatchCycle(name, entry, store)
@@ -365,6 +356,30 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 			cycle()
 		}
 	}
+}
+
+// watchStoreFor is the store a journal watch cycle writes into, for `tk watch`
+// and for the loop `tk serve` runs: the project's directory in the central
+// store, or no store at all for a project that is not registered centrally — its
+// commits are still journalled, and RunWatchCycle skips the auto-close that
+// needs a store.
+//
+// "No store" is a nil ticket.Store interface, not a nil *FileStore inside one:
+// RunWatchCycle decides on `store != nil`, which a typed nil satisfies, so
+// returning one would send every unregistered project's auto-close into a store
+// with no directory.
+func watchStoreFor(cfg project.Config, name string) (ticket.Store, error) {
+	if !project.CentralRegistered(cfg, name) {
+		return nil, nil
+	}
+	dir, err := project.CentralProjectDir(name)
+	if err != nil {
+		return nil, err
+	}
+	// Project-scoped: auto-close writes go through the same validation as MCP
+	// writes and must resolve the namespaced parent/dep IDs the central store
+	// records.
+	return ticket.NewProjectFileStore(dir, name), nil
 }
 
 func emitWatchJSON(data map[string]any) error {
