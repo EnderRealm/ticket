@@ -9,6 +9,29 @@ import (
 	"time"
 )
 
+// TestMain points the user cache directory at a temp tree for the whole
+// package. Writing a ticket takes its lock there (FileStore.lockFile), and a
+// lock file's name carries a hash of the store directory — a fresh t.TempDir on
+// every run — so nothing is ever reused and each run would otherwise leave a
+// permanent empty file in the developer's real cache directory. Set here rather
+// than in the store helpers because tests build stores inline as often as
+// through one.
+//
+// Both variables, because os.UserCacheDir reads HOME on darwin and prefers
+// XDG_CACHE_HOME elsewhere. A test that sandboxes HOME for its own reasons
+// overrides this and lands somewhere equally temporary.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "tk-test-cache")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", dir)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func testStore(t *testing.T) (*FileStore, func()) {
 	t.Helper()
 	dir := t.TempDir()
@@ -491,16 +514,20 @@ func TestStampUpdatedBumpedOnUpdate(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	created.Title = "Stamp 2"
-	if err := store.Update(created); err != nil {
+	// Written back from the read that followed the backdating, not from the one
+	// before it: Update compares the version a ticket was read at, so the stale
+	// copy would be refused as a conflict — which is what it is.
+	wasUpdated := before.Updated
+	before.Title = "Stamp 2"
+	if err := store.Update(before); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	updated, err := store.Get("stamp-0001")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !updated.Updated.After(before.Updated) {
-		t.Errorf("Updated not bumped: was %v, now %v", before.Updated, updated.Updated)
+	if !updated.Updated.After(wasUpdated) {
+		t.Errorf("Updated not bumped: was %v, now %v", wasUpdated, updated.Updated)
 	}
 }
 

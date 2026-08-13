@@ -39,16 +39,24 @@ func runLink(cmd *cobra.Command, args []string) error {
 		tickets = append(tickets, t)
 	}
 
-	// Link every pair.
-	for i := 0; i < len(tickets); i++ {
-		for j := i + 1; j < len(tickets); j++ {
-			ticket.AddLink(tickets[i], tickets[j])
-		}
-	}
-
-	// Write all back.
-	for _, t := range tickets {
-		if err := store.Update(t); err != nil {
+	// One Mutate per ticket, each holding its own lock only: the links a ticket
+	// gains are appended to the ones it already holds, so a plain
+	// read-modify-write would drop a link a concurrent writer added. Taking
+	// every ticket's lock at once to make the set atomic would deadlock two
+	// runs naming the same pair in opposite orders, and the write was not
+	// atomic across the set before this either.
+	for i := range tickets {
+		if _, err := ticket.Mutate(store, tickets[i].ID, func(t *ticket.Ticket) error {
+			for j := range tickets {
+				if j != i {
+					// AddLink is symmetric, but the far side here is the copy read
+					// above and is never written — that side is added by its own
+					// pass, against its own current file.
+					ticket.AddLink(t, tickets[j])
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
@@ -69,12 +77,17 @@ func runUnlink(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ticket.RemoveLink(a, b)
-
-	if err := store.Update(a); err != nil {
+	// One side at a time, each under its own lock — see runLink.
+	if _, err := ticket.Mutate(store, a.ID, func(t *ticket.Ticket) error {
+		ticket.RemoveLink(t, b)
+		return nil
+	}); err != nil {
 		return err
 	}
-	if err := store.Update(b); err != nil {
+	if _, err := ticket.Mutate(store, b.ID, func(t *ticket.Ticket) error {
+		ticket.RemoveLink(a, t)
+		return nil
+	}); err != nil {
 		return err
 	}
 

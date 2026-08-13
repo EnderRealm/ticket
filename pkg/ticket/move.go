@@ -120,6 +120,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		newTicket.Deps = nil
 		newTicket.Links = nil
 		newTicket.DepCargo = nil // the shallow copy aliases the source map
+		newTicket.version = ""   // the copy is a new file, not the source's
 		newTicket.Notes = copyNotes(t.Notes)
 		newTicket.Parent = ""
 

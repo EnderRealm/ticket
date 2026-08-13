@@ -27,8 +27,12 @@ func runAddNote(cmd *cobra.Command, args []string) error {
 	store := TicketStore()
 	id := args[0]
 
-	t, err := store.Get(id)
-	if err != nil {
+	// A fast-fail before stdin is read, not the read the write is computed
+	// from: Mutate re-reads under the lock, so this result is deliberately
+	// discarded. Without it a bad ID is only discovered after the note text has
+	// been consumed — which drains a pipe the caller cannot re-send, and
+	// reports "no note provided" for what is actually a wrong ID.
+	if _, err := store.Get(id); err != nil {
 		return err
 	}
 
@@ -54,21 +58,26 @@ func runAddNote(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no note provided")
 	}
 
-	t.Notes = append(t.Notes, ticket.Note{
-		Timestamp: time.Now().UTC(),
-		Text:      noteText,
+	// Through Mutate, not Get plus Update: the note is appended to whatever the
+	// ticket already holds, so a writer that read before another one wrote would
+	// drop that writer's note.
+	t, err := ticket.Mutate(store, id, func(t *ticket.Ticket) error {
+		t.Notes = append(t.Notes, ticket.Note{
+			Timestamp: time.Now().UTC(),
+			Text:      noteText,
+		})
+
+		// Rebuild body with notes section to ensure it's written.
+		// The serializer handles notes from the Notes field.
+		// Strip existing notes section from body to avoid duplication.
+		if idx := strings.Index(t.Body, "\n## Notes\n"); idx >= 0 {
+			t.Body = t.Body[:idx+1]
+		} else if strings.HasPrefix(t.Body, "## Notes\n") {
+			t.Body = "\n"
+		}
+		return nil
 	})
-
-	// Rebuild body with notes section to ensure it's written.
-	// The serializer handles notes from the Notes field.
-	// Strip existing notes section from body to avoid duplication.
-	if idx := strings.Index(t.Body, "\n## Notes\n"); idx >= 0 {
-		t.Body = t.Body[:idx+1]
-	} else if strings.HasPrefix(t.Body, "## Notes\n") {
-		t.Body = "\n"
-	}
-
-	if err := store.Update(t); err != nil {
+	if err != nil {
 		return err
 	}
 

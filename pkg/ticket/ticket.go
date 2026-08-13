@@ -129,6 +129,13 @@ type Ticket struct {
 	Title string `yaml:"-"`
 	Body  string `yaml:"-"`
 	Notes []Note `yaml:"-"`
+
+	// version identifies the file bytes this ticket was read from, for the
+	// compare-and-swap in FileStore.Update. Unexported so it is invisible to
+	// YAML and JSON and to every caller outside this package: it is not a field
+	// of the work item, it is what a write is held against. Empty on a ticket
+	// the caller built rather than read, which writes unconditionally.
+	version string
 }
 
 // Validate checks all fields for consistency. Returns the first error found.

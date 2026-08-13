@@ -11,6 +11,23 @@ import (
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
+// TestMain points the user cache directory at a temp tree, so the per-ticket
+// lock files a write takes (see ticket.FileStore.lockFile) land there and go
+// away with it rather than accumulating in the developer's real cache
+// directory. Both variables: os.UserCacheDir reads HOME on darwin and prefers
+// XDG_CACHE_HOME elsewhere.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "tk-test-cache")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", dir)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // TestHandleMoveLandsInTheTargetsCentralProject holds the TUI to the same target
 // resolution as `tk move`: the picker and the command line both take a repo
 // path, and a ticket moved from either has to land where that repo's own tk

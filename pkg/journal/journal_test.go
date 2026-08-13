@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+// TestMain points the user cache directory at a temp tree, so the per-ticket
+// lock files a write takes (see ticket.FileStore.lockFile) land there and go
+// away with it rather than accumulating in the developer's real cache
+// directory. Both variables: os.UserCacheDir reads HOME on darwin and prefers
+// XDG_CACHE_HOME elsewhere.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "tk-test-cache")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", dir)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func TestJournalPath(t *testing.T) {
 	p, err := JournalPath("myproject")
 	if err != nil {

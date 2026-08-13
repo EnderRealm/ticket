@@ -112,17 +112,23 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 					// counting a close that did not happen.
 					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s skipped: an epic is closed by its children, not by a commit", ticketID))
 				default:
-					t.Status = ticket.StatusDone
-					t.Notes = append(t.Notes, ticket.Note{
-						Timestamp: time.Now().UTC(),
-						Text:      "auto-closed by commit",
+					// Through Mutate: the close appends a note, so a plain
+					// read-modify-write would drop whatever an agent wrote to the
+					// ticket while the watch cycle was walking the commits.
+					_, err := ticket.Mutate(store, ticketID, func(t *ticket.Ticket) error {
+						t.Status = ticket.StatusDone
+						t.Notes = append(t.Notes, ticket.Note{
+							Timestamp: time.Now().UTC(),
+							Text:      "auto-closed by commit",
+						})
+						branch := dr.branch
+						if branch == "" {
+							branch = t.Branch
+						}
+						ticket.PopulateDoneOutputs(t, commit.SHA, branch)
+						return nil
 					})
-					branch := dr.branch
-					if branch == "" {
-						branch = t.Branch
-					}
-					ticket.PopulateDoneOutputs(t, commit.SHA, branch)
-					if err := store.Update(t); err != nil {
+					if err != nil {
 						result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
 					} else {
 						result.Closed++

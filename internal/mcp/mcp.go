@@ -817,19 +817,18 @@ func registerAddNote(server *mcp.Server, store ticket.Store) {
 		Name:        "ticket_add_note",
 		Description: "Append a timestamped note to a ticket.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args addNoteArgs) (*mcp.CallToolResult, any, error) {
-		t, err := store.Get(args.ID)
-		if err != nil {
-			r, _ := errResult("ticket not found: %v", err)
-			return r, nil, nil
-		}
-
-		t.Notes = append(t.Notes, ticket.Note{
-			Timestamp: time.Now().UTC(),
-			Text:      args.Text,
+		// Through Mutate: the note is appended to whatever the ticket already
+		// holds, so agents noting the same ticket at once do not overwrite one
+		// another's notes.
+		t, err := ticket.Mutate(store, args.ID, func(t *ticket.Ticket) error {
+			t.Notes = append(t.Notes, ticket.Note{
+				Timestamp: time.Now().UTC(),
+				Text:      args.Text,
+			})
+			return nil
 		})
-
-		if err := store.Update(t); err != nil {
-			r, _ := errResult("failed to update ticket: %v", err)
+		if err != nil {
+			r, _ := errResult("failed to add note: %v", err)
 			return r, nil, nil
 		}
 
@@ -850,34 +849,34 @@ func registerDep(server *mcp.Server, store ticket.Store) {
 		Name:        "ticket_dep",
 		Description: "Add or remove a dependency. The ticket (id) depends on dep_id. On add, cargo optionally names what concretely flows across the edge.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args depArgs) (*mcp.CallToolResult, any, error) {
-		t, err := store.Get(args.ID)
-		if err != nil {
-			r, _ := errResult("ticket not found: %v", err)
-			return r, nil, nil
-		}
 		dep, err := store.Get(args.DepID)
 		if err != nil {
 			r, _ := errResult("dep ticket not found: %v", err)
 			return r, nil, nil
 		}
-
-		switch args.Action {
-		case "add":
-			ticket.AddDep(t, dep.ID)
-			if strings.TrimSpace(args.Cargo) != "" {
-				if err := ticket.SetDepCargo(t, dep.ID, args.Cargo); err != nil {
-					r, _ := errResult("invalid cargo: %v", err)
-					return r, nil, nil
-				}
-			}
-		case "remove":
-			ticket.RemoveDep(t, dep.ID)
-		default:
+		if args.Action != "add" && args.Action != "remove" {
 			r, _ := errResult("action must be 'add' or 'remove'")
 			return r, nil, nil
 		}
 
-		if err := store.Update(t); err != nil {
+		// Through Mutate: the edge is added to the deps the ticket already
+		// holds, so a concurrent writer's edge is not dropped.
+		t, err := ticket.Mutate(store, args.ID, func(t *ticket.Ticket) error {
+			if args.Action == "remove" {
+				ticket.RemoveDep(t, dep.ID)
+				return nil
+			}
+			if err := ticket.AddDep(t, dep.ID); err != nil {
+				return err
+			}
+			if strings.TrimSpace(args.Cargo) != "" {
+				if err := ticket.SetDepCargo(t, dep.ID, args.Cargo); err != nil {
+					return fmt.Errorf("invalid cargo: %w", err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
 			r, _ := errResult("failed to update ticket: %v", err)
 			return r, nil, nil
 		}
@@ -898,32 +897,44 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 		Name:        "ticket_link",
 		Description: "Add or remove a symmetric link between two tickets.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args linkArgs) (*mcp.CallToolResult, any, error) {
-		t, err := store.Get(args.ID)
-		if err != nil {
-			r, _ := errResult("ticket not found: %v", err)
-			return r, nil, nil
-		}
 		target, err := store.Get(args.TargetID)
 		if err != nil {
 			r, _ := errResult("target ticket not found: %v", err)
 			return r, nil, nil
 		}
-
-		switch args.Action {
-		case "add":
-			ticket.AddLink(t, target)
-		case "remove":
-			ticket.RemoveLink(t, target)
-		default:
+		if args.Action != "add" && args.Action != "remove" {
 			r, _ := errResult("action must be 'add' or 'remove'")
 			return r, nil, nil
 		}
 
-		if err := store.Update(t); err != nil {
+		// One side at a time, each under its own lock: the links are appended to
+		// what each ticket already holds, and holding both locks at once would
+		// deadlock two calls naming the same pair in opposite orders. The pair
+		// was not written atomically before this either.
+		//
+		// AddLink and RemoveLink are symmetric, but the far side each call
+		// passes is a copy that is never written — that side is written by the
+		// other call, against its own current file.
+		t, err := ticket.Mutate(store, args.ID, func(t *ticket.Ticket) error {
+			if args.Action == "add" {
+				ticket.AddLink(t, target)
+			} else {
+				ticket.RemoveLink(t, target)
+			}
+			return nil
+		})
+		if err != nil {
 			r, _ := errResult("failed to update ticket: %v", err)
 			return r, nil, nil
 		}
-		if err := store.Update(target); err != nil {
+		if _, err := ticket.Mutate(store, target.ID, func(cur *ticket.Ticket) error {
+			if args.Action == "add" {
+				ticket.AddLink(t, cur)
+			} else {
+				ticket.RemoveLink(t, cur)
+			}
+			return nil
+		}); err != nil {
 			r, _ := errResult("failed to update target ticket: %v", err)
 			return r, nil, nil
 		}
@@ -1199,9 +1210,15 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		report := ticket.NewVerifyReport(t.ID, dir, results)
 
 		// Record after the run so a store failure degrades to a reported
-		// warning instead of discarding the results.
-		t.Body = ticket.UpdateSection(t.Body, "Test Results", ticket.FormatVerifyRecord(results, time.Now().UTC()))
-		if err := store.Update(t); err != nil {
+		// warning instead of discarding the results. Through Mutate, because a
+		// verify run is long enough for the ticket to have been edited
+		// meanwhile: the record lands in the body as it stands now rather than
+		// in the copy read before the run.
+		record := ticket.FormatVerifyRecord(results, time.Now().UTC())
+		if _, err := ticket.Mutate(store, t.ID, func(t *ticket.Ticket) error {
+			t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
+			return nil
+		}); err != nil {
 			report.RecordError = fmt.Sprintf("failed to record verify results: %v", err)
 		}
 

@@ -345,8 +345,25 @@ func serveSession(t *testing.T, store ticket.Store, defaultProject, centralRoot 
 
 // snapshotTree records every path under root and the contents of every file,
 // so a later comparison catches a write anywhere in the tree.
+//
+// The user cache directory, and the directories leading to it, are excluded:
+// tk keeps its per-ticket lock files there (see FileStore.lockFile), and a lock
+// is machine-local coordination between tk processes keyed on the store
+// directory — deliberately not moved by TK_STORE_ROOT, and holding no content
+// of its own. An isolated run takes locks like any other run, so what the
+// callers assert stays what it is about: no store, config or journal touched.
 func snapshotTree(t *testing.T, root string) map[string]string {
 	t.Helper()
+	cacheRel := ""
+	skip := map[string]bool{}
+	if cache, err := os.UserCacheDir(); err == nil {
+		if rel, err := filepath.Rel(root, cache); err == nil && !strings.HasPrefix(rel, "..") {
+			cacheRel = rel
+			for p := rel; p != "."; p = filepath.Dir(p) {
+				skip[p] = true
+			}
+		}
+	}
 	tree := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -357,6 +374,12 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 			return err
 		}
 		if d.IsDir() {
+			if skip[rel] {
+				if rel == cacheRel {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			tree[rel+string(filepath.Separator)] = ""
 			return nil
 		}

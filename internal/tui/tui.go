@@ -860,23 +860,24 @@ func (a *App) handleSetStatus(id string, status ticket.Status) tea.Cmd {
 }
 
 func (a *App) handleAddNote(id, text string) tea.Cmd {
-	t, err := a.store.Get(id)
-	if err != nil {
-		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
-	}
+	// Through Mutate, unlike the TUI's other writes: a note is appended to what
+	// the ticket already holds, so a plain read-modify-write would drop notes an
+	// agent wrote while the TUI was open. The edits that set a field keep the
+	// plain Update, where a conflict is something the user has to see.
+	_, err := ticket.Mutate(a.store, id, func(t *ticket.Ticket) error {
+		t.Notes = append(t.Notes, ticket.Note{
+			Timestamp: time.Now().UTC(),
+			Text:      text,
+		})
 
-	t.Notes = append(t.Notes, ticket.Note{
-		Timestamp: time.Now().UTC(),
-		Text:      text,
+		if idx := strings.Index(t.Body, "\n## Notes\n"); idx >= 0 {
+			t.Body = t.Body[:idx+1]
+		} else if strings.HasPrefix(t.Body, "## Notes\n") {
+			t.Body = "\n"
+		}
+		return nil
 	})
-
-	if idx := strings.Index(t.Body, "\n## Notes\n"); idx >= 0 {
-		t.Body = t.Body[:idx+1]
-	} else if strings.HasPrefix(t.Body, "## Notes\n") {
-		t.Body = "\n"
-	}
-
-	if err := a.store.Update(t); err != nil {
+	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
 

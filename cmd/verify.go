@@ -53,9 +53,14 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	report := ticket.NewVerifyReport(t.ID, dir, results)
 
 	// Record after the run so a store failure degrades to a warning instead of
-	// discarding the results.
-	t.Body = ticket.UpdateSection(t.Body, "Test Results", ticket.FormatVerifyRecord(results, time.Now().UTC()))
-	if err := store.Update(t); err != nil {
+	// discarding the results. Through Mutate, because a verify run is long
+	// enough for the ticket to have been edited meanwhile: the record lands in
+	// the body as it stands now rather than in the copy read before the run.
+	record := ticket.FormatVerifyRecord(results, time.Now().UTC())
+	if _, err := ticket.Mutate(store, t.ID, func(t *ticket.Ticket) error {
+		t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
+		return nil
+	}); err != nil {
 		report.RecordError = err.Error()
 	}
 

@@ -1,10 +1,13 @@
 package ticket
 
 import (
+	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -138,16 +141,36 @@ func (s *FileStore) Create(t *Ticket) error {
 	// Retry on hash collision (different title, same 4-char hash).
 	const maxRetries = 5
 	for i := 0; i < maxRetries; i++ {
-		path, err = s.ticketFile(t.ID)
+		written, err := s.createLocked(t)
 		if err != nil {
-			return fmt.Errorf("create: %w", err)
+			return err
 		}
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return s.writeTicket(t)
+		if written {
+			return nil
 		}
 		t.ID = GenerateID(t.Title)
 	}
 	return fmt.Errorf("ticket ID collision after %d attempts", maxRetries)
+}
+
+// createLocked writes t if nothing has claimed its ID, holding that ticket's
+// lock across the check and the write so two concurrent creates of one ID
+// cannot both pass the check. Reports whether the write happened; a false
+// return is an ID already taken, which Create retries under a fresh one.
+func (s *FileStore) createLocked(t *Ticket) (bool, error) {
+	path, err := s.ticketFile(t.ID)
+	if err != nil {
+		return false, fmt.Errorf("create: %w", err)
+	}
+	release, err := s.lockTicket(t.ID)
+	if err != nil {
+		return false, fmt.Errorf("create: %w", err)
+	}
+	defer release()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, s.writeTicket(t)
 }
 
 // Get retrieves a ticket by exact or partial ID. An epic comes back with the
@@ -190,23 +213,54 @@ func (s *FileStore) getStored(id string) (*Ticket, error) {
 // never the status field. That is what makes a read-modify-write of any other
 // field of an epic idempotent: the derived status it carries back lands
 // somewhere nothing reads, and the flag it carries back is the stored one.
+//
+// The write is refused with ErrConflict if the file changed since the ticket
+// was read, so a caller that overlapped another writer is told rather than
+// silently overwriting it. A caller whose change is an accumulation — appending
+// a note, a dep, a link — has nothing to decide on that error and goes through
+// Mutate instead, which holds the lock across the read as well.
 func (s *FileStore) Update(t *Ticket) error {
 	if err := t.Validate(); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
 	// Checked on every update, not only when parent changes: a ticket that
 	// predates the one-level rule must be fixed before any of its fields is
-	// written back.
+	// written back. Outside the lock: it reads other tickets, not this one.
 	if err := ResolveParent(s, t); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	// Verify the file exists.
+	release, err := s.lockTicket(t.ID)
+	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	defer release()
+	return s.updateLocked(t)
+}
+
+// updateLocked is the compare-and-swap half of Update, with the ticket's lock
+// already held. The lock alone orders two writers; the version check is what
+// tells the second one that the state it computed from is gone — the two
+// writers may never have overlapped at all, having only read the same file
+// before either wrote.
+//
+// A ticket carrying no version was built by its caller rather than read from
+// the store, and is written unconditionally. That is the compatibility escape
+// and it is deliberate: the CAS protects a read-modify-write, which is where
+// the lost updates were.
+func (s *FileStore) updateLocked(t *Ticket) error {
 	path, err := s.ticketFile(t.ID)
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	current, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
 		return fmt.Errorf("ticket %s not found", t.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	if t.version != "" && versionOf(current) != t.version {
+		return fmt.Errorf("update %s: %w. Re-read it and apply the change again", t.ID, ErrConflict)
 	}
 	return s.writeTicket(t)
 }
@@ -252,6 +306,15 @@ func (s *FileStore) Delete(id string) error {
 	if err != nil {
 		return err
 	}
+	// Under the ticket's lock, keyed on the resolved file's own name the way
+	// mutate keys it: an unlocked delete can land between updateLocked's read
+	// and its rename, and the rename then recreates the ticket the delete
+	// removed.
+	release, err := s.lockTicket(strings.TrimSuffix(filepath.Base(path), ".md"))
+	if err != nil {
+		return err
+	}
+	defer release()
 	return os.Remove(path)
 }
 
@@ -375,8 +438,11 @@ const bareNameHint = "must be a bare name with no path separators — check the 
 // FileStore builds from a ticket ID goes through here, which bounds the filename
 // half; on a MultiStore the directory half comes from an ID's project prefix and
 // is bounded in storeFor. The bound is lexical — it constrains the path string,
-// not the inode it resolves to, so a symlinked ticket file inside the store
-// still redirects the write.
+// not the inode it resolves to. A symlinked ticket file inside the store still
+// redirects a read, which follows the link; it no longer redirects a write,
+// because writeTicket replaces the path by rename and rename replaces the link
+// itself rather than writing through it — so the first write lands in the store
+// and leaves a regular file where the link was.
 func (s *FileStore) ticketFile(id string) (string, error) {
 	if id != filepath.Base(id) {
 		return "", fmt.Errorf("invalid ticket ID %q in %s: %s", id, s.Dir, bareNameHint)
@@ -384,13 +450,22 @@ func (s *FileStore) ticketFile(id string) (string, error) {
 	return filepath.Join(s.Dir, id+".md"), nil
 }
 
+// readFile parses a ticket and stamps it with the version of the bytes it was
+// parsed from, which is what Update compares against before it writes.
 func (s *FileStore) readFile(path string) (*Ticket, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return Parse(f)
+	t, err := Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	// The file's version, not the returned struct's: Get and List derive an
+	// epic's status, so what they hand back already differs from what is stored
+	// and hashing the struct would conflict with itself.
+	t.version = versionOf(data)
+	return t, nil
 }
 
 // stampTimestamps maintains the created/updated/completed fields. It is the
@@ -421,6 +496,57 @@ func stampTimestamps(t *Ticket) {
 	}
 }
 
+// createMode is the mode a ticket file that does not yet exist is created with:
+// 0644 masked by the process umask, which is what os.WriteFile produced before
+// the write became a temp file plus a rename. The kernel applies the umask to
+// an open, not to the chmod that has to follow os.CreateTemp's 0600, so it is
+// read here instead.
+//
+// Read once during package initialization by setting the umask and putting it
+// straight back, because the call is process-global: doing it at write time
+// would leave a window in which another goroutine's file creation saw a zero
+// umask. Initialization runs on one goroutine before main, which closes that
+// window rather than narrowing it.
+var createMode = fs.FileMode(0o644 &^ processUmask())
+
+func processUmask() fs.FileMode {
+	mask := syscall.Umask(0)
+	syscall.Umask(mask)
+	return fs.FileMode(mask)
+}
+
+// writeTicket serializes a ticket and replaces its file atomically: the bytes
+// go to a temp file in the same directory (rename cannot cross filesystems) and
+// are renamed over the target, so no reader can observe a half-written or
+// zero-length ticket the way os.WriteFile's truncate-then-write allowed. The
+// temp name must not end in ".md" — listStored and Resolve select on that
+// suffix and would otherwise pick up a file mid-write.
+//
+// It is the inner half of the write mechanism, which is:
+//
+//   - a per-ticket flock (lock.go) serialises writers to one ticket, and only
+//     to that one, so unrelated tickets stay uncontended;
+//   - Update compares the version the ticket was read at against the file's
+//     current bytes and refuses with ErrConflict on a mismatch, rather than
+//     overwriting a change it never saw;
+//   - Mutate holds the lock across the read as well, for the accumulating
+//     writes that would have nothing to do with a conflict but re-read.
+//
+// No fsync before the rename. The rename is atomic against other readers on a
+// running system, which is the race here; fsync buys crash durability, at a
+// disk flush per note, for a store whose loss window on a power cut is already
+// the one every other file in the git working tree has.
+//
+// The written bytes are stamped back onto the ticket as its new version, so a
+// caller updating the same in-memory ticket twice does not conflict with its
+// own first write.
+//
+// Residual: a writer killed between CreateTemp and Rename strands a
+// `.tk-write-*` file in the store directory, which no later run cleans up and
+// which `tk sync` stages wholesale along with the tickets. Bounded rather than
+// handled — the window is one write, every error path inside it removes the
+// temp file itself, and a stranded file is inert: it parses as nothing, and
+// listStored and Resolve select on the `.md` suffix it does not have.
 func (s *FileStore) writeTicket(t *Ticket) error {
 	// Resolve the path before the stamping below, which mutates the caller's
 	// ticket: a rejected ID must not leave it looking as if it were persisted.
@@ -445,5 +571,57 @@ func (s *FileStore) writeTicket(t *Ticket) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+
+	// The mode the rename is about to publish. os.WriteFile left an existing
+	// file's mode untouched and created a new one at 0644 masked by the umask;
+	// a temp file plus rename publishes whatever the temp file carries, so both
+	// halves are reproduced here. Without the first, a store under umask 077
+	// whose tickets are 0600 would find every one of them widened to
+	// world-readable by the next note — ticket bodies carry work detail and
+	// whatever an agent pasted into a note.
+	mode := createMode
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		// A target the current user cannot write is refused rather than
+		// replaced. Renaming over a file consults the directory's mode and not
+		// the target's, so without this a ticket someone deliberately made
+		// read-only would be silently overwritten where os.WriteFile refused.
+		// The owner-write bit is what such a chmod leaves; a file owned by
+		// another user is not modelled — a store belongs to one user.
+		if info.Mode().Perm()&0o200 == 0 {
+			return &fs.PathError{Op: "write", Path: path, Err: fs.ErrPermission}
+		}
+		mode = info.Mode().Perm()
+	case !os.IsNotExist(err):
+		return err
+	}
+
+	tmp, err := os.CreateTemp(s.Dir, ".tk-write-*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	// CreateTemp opens at 0600 and a chmod is not umask-masked, so the mode has
+	// to be set explicitly before the rename publishes the file — nothing
+	// chmods it afterwards.
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	t.version = versionOf(data)
+	return nil
 }

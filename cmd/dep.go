@@ -48,18 +48,9 @@ func runDep(cmd *cobra.Command, args []string) error {
 	store := TicketStore()
 	id, depID := args[0], args[1]
 
-	t, err := store.Get(id)
-	if err != nil {
-		return err
-	}
-
 	// Verify dep ticket exists.
 	dep, err := store.Get(depID)
 	if err != nil {
-		return err
-	}
-
-	if err := ticket.AddDep(t, dep.ID); err != nil {
 		return err
 	}
 
@@ -69,13 +60,19 @@ func runDep(cmd *cobra.Command, args []string) error {
 	cargoFlag, _ := cmd.Flags().GetString("cargo")
 	cargo := strings.TrimSpace(cargoFlag)
 	cargoSet := cmd.Flags().Changed("cargo")
-	if cargoSet {
-		if err := ticket.SetDepCargo(t, dep.ID, cargo); err != nil {
+
+	// Through Mutate: the edge is added to the deps the ticket already holds, so
+	// a plain read-modify-write would drop an edge a concurrent writer added.
+	t, err := ticket.Mutate(store, id, func(t *ticket.Ticket) error {
+		if err := ticket.AddDep(t, dep.ID); err != nil {
 			return err
 		}
-	}
-
-	if err := store.Update(t); err != nil {
+		if cargoSet {
+			return ticket.SetDepCargo(t, dep.ID, cargo)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 
@@ -125,14 +122,11 @@ func runUndep(cmd *cobra.Command, args []string) error {
 	store := TicketStore()
 	id, depID := args[0], args[1]
 
-	t, err := store.Get(id)
+	t, err := ticket.Mutate(store, id, func(t *ticket.Ticket) error {
+		ticket.RemoveDep(t, depID)
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-
-	ticket.RemoveDep(t, depID)
-
-	if err := store.Update(t); err != nil {
 		return err
 	}
 
