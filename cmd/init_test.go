@@ -258,6 +258,70 @@ func TestInitNonInteractive(t *testing.T) {
 	}
 }
 
+// `tk init` is re-runnable, and it replaces the whole project entry: the fields
+// it does not write itself — the registration date, and the auto_retrospect
+// opt-in nobody but a human sets — have to survive the second run, or re-running
+// it silently turns a feature off.
+func TestInitRerunPreservesRegistrationAndOptIns(t *testing.T) {
+	home := setupTestHome(t)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	project.Save(project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}})
+
+	projDir := filepath.Join(home, "riproject")
+	os.MkdirAll(projDir, 0o755)
+	runGit(t, projDir, "init")
+	runGit(t, projDir, "config", "user.email", "test@test.com")
+	runGit(t, projDir, "config", "user.name", "test")
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(projDir)
+	defer os.Chdir(oldDir)
+
+	initCmd.Flags().Set("yes", "true")
+	initCmd.Flags().Set("project", "riproject")
+	defer func() {
+		initCmd.Flags().Set("yes", "false")
+		initCmd.Flags().Set("project", "")
+	}()
+
+	if err := runInit(initCmd, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	registeredAt := cfg.Projects["riproject"].RegisteredAt
+	if registeredAt == "" {
+		t.Fatal("registration recorded no date")
+	}
+	p := cfg.Projects["riproject"]
+	p.AutoRetrospect = true
+	cfg.UpsertProject("riproject", p)
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := runInit(initCmd, nil); err != nil {
+		t.Fatalf("runInit again: %v", err)
+	}
+
+	reloaded, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	again := reloaded.Projects["riproject"]
+	if !again.AutoRetrospect {
+		t.Error("re-running init cleared auto_retrospect")
+	}
+	if again.RegisteredAt != registeredAt {
+		t.Errorf("registered_at = %q, want the original %q", again.RegisteredAt, registeredAt)
+	}
+}
+
 // TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone holds `tk init` to the
 // documented "nothing is committed or pushed" under TK_STORE_ROOT. Running the
 // bootstrap against an override root nested inside another repo would stage and

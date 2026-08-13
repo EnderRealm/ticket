@@ -102,8 +102,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	registeredAt := time.Now().UTC().Format(time.RFC3339)
-	if existing, ok := cfg.Projects[projectName]; ok && existing.RegisteredAt != "" {
-		registeredAt = existing.RegisteredAt
+	// A re-run must not clear an opt-in nobody re-stated: UpsertProject replaces
+	// the whole entry, and auto_retrospect is set by hand and never by init, so
+	// carrying it over is the only thing that keeps `tk init` re-runnable for a
+	// project that has it on.
+	autoRetrospect := false
+	if existing, ok := cfg.Projects[projectName]; ok {
+		if existing.RegisteredAt != "" {
+			registeredAt = existing.RegisteredAt
+		}
+		autoRetrospect = existing.AutoRetrospect
 	}
 
 	centralDir, err := project.CentralProjectDir(projectName)
@@ -143,11 +151,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// — a default hardcoded here rather than one anybody chose. The flags stay
 	// explicit in the shared config, so turning either back off is an edit.
 	cfg.UpsertProject(projectName, project.ProjectConfig{
-		Path:         repoPath,
-		Store:        "central",
-		AutoLink:     true,
-		AutoClose:    true,
-		RegisteredAt: registeredAt,
+		Path:           repoPath,
+		Store:          "central",
+		AutoLink:       true,
+		AutoClose:      true,
+		AutoRetrospect: autoRetrospect,
+		RegisteredAt:   registeredAt,
 	})
 	if err := project.Save(cfg); err != nil {
 		return err

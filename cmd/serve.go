@@ -151,7 +151,7 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 				summary = reloaded
 			}
 			for name, entry := range cfg.Projects {
-				if !entry.AutoLink && !entry.AutoClose {
+				if !entry.AutoLink && !entry.AutoClose && !entry.AutoRetrospect {
 					continue
 				}
 				store, err := watchStoreFor(cfg, name)
@@ -160,15 +160,21 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 					continue
 				}
 				result, err := journal.RunWatchCycle(name, entry, store)
+				// Reported before the error is: the retrospect scan runs ahead of the
+				// git work, so a project whose repo is missing still fires runs and
+				// still has warnings to report on a cycle that ends in an error.
+				if result.RetrospectFired > 0 {
+					log.Printf("watch: %s: retrospect: fired %d", name, result.RetrospectFired)
+				}
+				for _, w := range result.Warnings {
+					log.Printf("watch: %s: %s", name, w)
+				}
 				if err != nil {
 					log.Printf("watch: %s: %v", name, err)
 					continue
 				}
 				if result.Appended > 0 || result.Closed > 0 {
 					log.Printf("watch: %s: appended %d, closed %d", name, result.Appended, result.Closed)
-				}
-				for _, w := range result.Warnings {
-					log.Printf("watch: %s: %s", name, w)
 				}
 			}
 		}

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -197,7 +199,7 @@ func TestWatchRunMigratesJournalDefaultsAndJournals(t *testing.T) {
 	}
 	buf := make([]byte, 8192)
 	n, _ := r.Read(buf)
-	if out := string(buf[:n]); !contains(out, "wm-proj                  auto_link=true auto_close=true") {
+	if out := string(buf[:n]); !contains(out, "wm-proj                  auto_link=true auto_close=true auto_retrospect=false") {
 		t.Errorf("watch status does not list the project's flags:\n%s", out)
 	}
 }
@@ -258,6 +260,99 @@ func TestMigrateJournalDefaultsWithoutCentralRootIsANoOp(t *testing.T) {
 	if p := cfg.Projects["nr-proj"]; p.AutoLink || p.AutoClose {
 		t.Errorf("nr-proj = %+v, want the flags untouched", p)
 	}
+}
+
+// The summary has to name the same set the cycle loops process, or a
+// retrospect-only project reads as skipped while being processed every tick —
+// and since the string is the reload change-detection key, toggling the flag
+// would never log a config change either.
+func TestJournalingSummaryCountsRetrospectOnlyProjects(t *testing.T) {
+	cfg := project.Config{
+		Projects: map[string]project.ProjectConfig{
+			"js-journal":    {AutoLink: true, AutoClose: true},
+			"js-retrospect": {AutoRetrospect: true},
+			"js-inert":      {},
+		},
+	}
+
+	summary := journalingSummary(cfg)
+	if want := "projects=3 journaling=2 skipped=[js-inert]"; summary != want {
+		t.Errorf("journalingSummary = %q, want %q", summary, want)
+	}
+
+	cfg.Projects["js-inert"] = project.ProjectConfig{AutoRetrospect: true}
+	if reloaded := journalingSummary(cfg); reloaded == summary {
+		t.Errorf("summary unchanged at %q after a project opted in, so no config change is logged", reloaded)
+	}
+}
+
+// The retrospect scan runs ahead of the git work, so a cycle that ends in a git
+// error has still seeded or fired and still has warnings to report. `tk watch
+// run` logs both before the error, or a project whose repo has moved mines its
+// closes silently forever.
+func TestWatchRunReportsRetrospectsOnAFailingCycle(t *testing.T) {
+	home := setupTestHome(t)
+	centralRoot := filepath.Join(home, "central")
+	fakeLoom(t)
+
+	// A registered path with no .git: the cycle fails on git after the scan.
+	noRepo := filepath.Join(home, "wf-nogit")
+	if err := os.MkdirAll(noRepo, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cfg := project.Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]project.ProjectConfig{
+			"wf-nogit": {Path: noRepo, Store: "central", AutoLink: true, AutoClose: true, AutoRetrospect: true},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	central := ticket.NewProjectFileStore(filepath.Join(centralRoot, "tickets", "wf-nogit"), "wf-nogit")
+	mkCentral(t, central, "wf-nogit-0001", ticket.TypeFeature, ticket.StatusDone, "")
+
+	watchOnce = true
+	watchInterval = time.Second
+	t.Cleanup(func() { watchOnce = false })
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if err := runWatchRun(watchRunCmd, nil); err != nil {
+		t.Fatalf("runWatchRun: %v", err)
+	}
+	out := logs.String()
+	if !contains(out, "no git repository") {
+		t.Fatalf("the cycle did not fail on git, so the report is untested:\n%s", out)
+	}
+	if !contains(out, "seeded 1 closed ticket") {
+		t.Errorf("the seed warning was dropped with the error:\n%s", out)
+	}
+
+	logs.Reset()
+	mkCentral(t, central, "wf-nogit-0002", ticket.TypeFeature, ticket.StatusDone, "")
+	if err := runWatchRun(watchRunCmd, nil); err != nil {
+		t.Fatalf("runWatchRun: %v", err)
+	}
+	if out := logs.String(); !contains(out, "retrospect: fired 1") {
+		t.Errorf("the fired count was dropped with the error:\n%s", out)
+	}
+}
+
+// fakeLoom puts an executable `loom` on PATH ahead of anything else, so a cycle
+// that fires a retrospect never reaches the machine's own loom.
+func fakeLoom(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "loom"), []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func commitClosing(t *testing.T, repo, id string) {

@@ -422,7 +422,13 @@ If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is
 
 Two per-project flags in the shared config decide it: `auto_link` writes the journal entries, `auto_close` performs the auto-close. `tk init` sets both to `true`, and a project registered before that — the flags were hardcoded to `false` — is flipped to `true` once, the first time a watcher opens the store. The flip touches only projects with *both* flags off, since a mixed pair is a deliberate link-only or close-only choice; it runs once ever, recorded as `journal_defaults_migrated: true` in `<central_root>/config.yaml`, so turning journaling off afterwards sticks. Both flags stay written out per project, so either can be edited back.
 
-`tk watch status` lists every project with its two flags, and the watcher logs the same summary at startup and whenever a config reload changes it — a watcher that runs but journals nothing says so.
+`tk watch status` lists every project with its flags, and the watcher logs the same summary at startup and whenever a config reload changes it — a watcher that runs but journals nothing says so.
+
+#### `auto_retrospect`
+
+A third per-project flag, off by default and set by hand in `<central_root>/config.yaml`, hands each newly closed ticket to `loom`, the knowledge miner: every cycle, the watcher scans the project's store for tickets reading `done` or `closed` with no marker yet and runs `loom retrospect <project>/<id>` for each. Neither `tk init` nor the journal-defaults migration touches it. The trigger sits on the watch cycle rather than in the tool that closed the ticket, so it catches every close — a commit `Closes:`, `tk edit`, the TUI, an MCP write. Epics are skipped: an epic's `done` is derived from its children, each of which fires its own retrospect.
+
+Each fired ticket is recorded in `~/.ticket/state/<project>/retrospects.jsonl`, so nothing fires twice. The marker is keyed on the ticket ID alone: a ticket reopened and closed again is never mined a second time, deliberately — one lost run costs that ticket's candidates, where a duplicate spends another extraction and files the same ones again. Turning the flag on does *not* mine the store's history: the first cycle records every already-closed ticket without firing and says so in the log, and only closes after that are mined. A cycle starts at most four runs, so a batch of closes arriving at once — a store that just synced, or the backlog a missing `loom` left pending — is spread over the cycles that follow; the truncation is reported in the log and the rest fire seconds later. Everything about it is best-effort — the runs are started and left to finish on their own so an extraction never stalls the watcher, and a missing or failing `loom` is a log line, never an interrupted cycle. When `loom` is not on `PATH` nothing is recorded, so the pending closes fire on the first cycle after it is installed.
 
 ### Mutation Log
 

@@ -18,36 +18,67 @@ import (
 type WatchCycleResult struct {
 	Appended int
 	Closed   int
-	Warnings []string
+	// RetrospectFired counts the `loom retrospect` runs the cycle started;
+	// RetrospectSeeded the closes it recorded without firing, which only the
+	// first cycle after the flag goes on can be nonzero.
+	RetrospectFired  int
+	RetrospectSeeded int
+	Warnings         []string
 }
 
 // RunWatchCycle processes new git commits for a project, extracts ticket
-// references, computes diff stats, appends journal entries, and optionally
-// auto-closes tickets.
+// references, computes diff stats, appends journal entries, optionally
+// auto-closes tickets, and optionally hands each newly closed ticket to
+// `loom retrospect`.
 func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.Store) (WatchCycleResult, error) {
+	var result WatchCycleResult
+
+	// The scan needs the store and the marker file and nothing else, so it runs
+	// around the git work rather than behind it: a project whose repo is missing
+	// or unreadable fails the cycle on a git error, and its closes would never be
+	// mined. This pass catches everything closed before the cycle; the one after
+	// the close loop catches what the cycle itself closed. Neither can duplicate
+	// the other — the marker gate decides what is pending, and a fire writes its
+	// marker first.
+	scanRetrospects := func() {
+		if !cfg.AutoRetrospect || store == nil {
+			return
+		}
+		// One budget across both passes, so the cap is per cycle rather than per
+		// pass.
+		budget := maxRetrospectsPerCycle - result.RetrospectFired
+		if budget <= 0 {
+			return
+		}
+		fired, seeded, warnings := runRetrospects(projectName, store, budget)
+		result.RetrospectFired += fired
+		result.RetrospectSeeded += seeded
+		result.Warnings = append(result.Warnings, warnings...)
+	}
+	scanRetrospects()
+
 	jPath, err := JournalPath(projectName)
 	if err != nil {
-		return WatchCycleResult{}, err
+		return result, err
 	}
 	if err := os.MkdirAll(filepath.Dir(jPath), 0o755); err != nil {
-		return WatchCycleResult{}, err
+		return result, err
 	}
 
 	knownSHAs, lastSHA, err := LoadJournalState(jPath)
 	if err != nil {
-		return WatchCycleResult{}, err
+		return result, err
 	}
 
 	if !dirExists(filepath.Join(cfg.Path, ".git")) {
-		return WatchCycleResult{}, fmt.Errorf("no git repository at %s", cfg.Path)
+		return result, fmt.Errorf("no git repository at %s", cfg.Path)
 	}
 
 	commits, err := CollectCommits(cfg.Path, lastSHA, cfg.RegisteredAt)
 	if err != nil {
-		return WatchCycleResult{}, err
+		return result, err
 	}
 
-	var result WatchCycleResult
 	var toAppend []Entry
 
 	type diffResult struct {
@@ -190,6 +221,14 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 	}
 
 	result.Appended = len(toAppend)
+
+	// The second pass is for the tickets this cycle's own close loop wrote, so it
+	// runs only when there were any: an unconditional one re-lists the store and
+	// repeats whatever the first pass had to warn about, every tick.
+	if result.Closed > 0 {
+		scanRetrospects()
+	}
+
 	return result, nil
 }
 

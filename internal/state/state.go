@@ -1,5 +1,6 @@
 // Package state locates and appends to the JSONL records tk keeps beside the
-// ticket store — the commit journal and the mutation log. It is a leaf package
+// ticket store — the commit journal, the mutation log and the retrospect
+// markers the journal watcher fires from. It is a leaf package
 // so that both pkg/journal and pkg/ticket can reach it: pkg/journal already
 // imports pkg/ticket for the watch cycle, so the primitives the store layer
 // needs cannot live there.
@@ -32,18 +33,36 @@ func Dir(proj string) (string, error) {
 // by every write and cannot be refused, so a sandbox left writing into HOME
 // would file its throwaway tickets in the machine's real audit trail.
 func MutationLogPath(proj string) (string, error) {
+	return overridablePath(proj, "mutations.jsonl")
+}
+
+// RetrospectLogPath returns the project's retrospects.jsonl — the markers that
+// keep the watch cycle from firing `loom retrospect` twice for one close, beside
+// the commit journal under ~/.ticket/state/<project>/.
+//
+// It follows TK_STORE_ROOT on the same terms as MutationLogPath. The watcher
+// never runs under the override — refuseIsolatedStore refuses it, and `tk serve`
+// starts no journal loop there — but a path helper that resolved HOME regardless
+// would be the thing that breaks that seam if one ever did.
+func RetrospectLogPath(proj string) (string, error) {
+	return overridablePath(proj, "retrospects.jsonl")
+}
+
+// overridablePath resolves one of the project's state files under the override
+// root when TK_STORE_ROOT is set and under ~/.ticket/state otherwise.
+func overridablePath(proj, file string) (string, error) {
 	root, ok, err := project.StoreRootOverride()
 	if err != nil {
 		return "", err
 	}
 	if ok {
-		return filepath.Join(root, "state", proj, "mutations.jsonl"), nil
+		return filepath.Join(root, "state", proj, file), nil
 	}
 	dir, err := Dir(proj)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "mutations.jsonl"), nil
+	return filepath.Join(dir, file), nil
 }
 
 // AppendJSONL appends each value to path as one JSON line, creating the parent

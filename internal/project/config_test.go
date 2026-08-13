@@ -757,6 +757,59 @@ func TestNewMachineFlow(t *testing.T) {
 	}
 }
 
+// auto_retrospect is a shared-config field like the two flags beside it — it
+// decides what a watcher on any machine reading the store does — and it is
+// omitempty, so a project that never opted in keeps the key out of the file
+// rather than carrying `auto_retrospect: false` after the next save.
+func TestAutoRetrospectIsShared(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	cfg := Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]ProjectConfig{
+			"mined": {Path: "/local/mined", Store: "central", AutoLink: true, AutoClose: true, AutoRetrospect: true},
+			"plain": {Path: "/local/plain", Store: "central", AutoLink: true, AutoClose: true},
+		},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	shared, err := os.ReadFile(filepath.Join(centralRoot, configFileName))
+	if err != nil {
+		t.Fatalf("read shared config: %v", err)
+	}
+	if !strings.Contains(string(shared), "auto_retrospect: true") {
+		t.Errorf("shared config does not carry the flag:\n%s", string(shared))
+	}
+	if strings.Count(string(shared), "auto_retrospect") != 1 {
+		t.Errorf("an opted-out project carries the key:\n%s", string(shared))
+	}
+
+	local, err := loadLocalOnly()
+	if err != nil {
+		t.Fatalf("loadLocalOnly: %v", err)
+	}
+	if local.Projects["mined"].AutoRetrospect {
+		t.Error("the flag was written to the local config")
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.Projects["mined"].AutoRetrospect {
+		t.Error("mined auto_retrospect lost in the round-trip")
+	}
+	if loaded.Projects["plain"].AutoRetrospect {
+		t.Error("plain auto_retrospect should read false when the key is absent")
+	}
+}
+
 // TestMigrateJournalDefaults covers the one-time flip of the auto_link and
 // auto_close pair `tk init` hardcoded to false: both-false is that un-chosen
 // default and becomes true, a mixed pair is a deliberate choice and is left

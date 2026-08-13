@@ -244,9 +244,10 @@ func runWatchStatus(cmd *cobra.Command, args []string) error {
 			for _, name := range names {
 				p := cfg.Projects[name]
 				projects = append(projects, map[string]any{
-					"project":    name,
-					"auto_link":  p.AutoLink,
-					"auto_close": p.AutoClose,
+					"project":         name,
+					"auto_link":       p.AutoLink,
+					"auto_close":      p.AutoClose,
+					"auto_retrospect": p.AutoRetrospect,
 				})
 			}
 			out["projects"] = projects
@@ -266,7 +267,7 @@ func runWatchStatus(cmd *cobra.Command, args []string) error {
 	}
 	for _, name := range names {
 		p := cfg.Projects[name]
-		fmt.Printf("  %-24s auto_link=%t auto_close=%t\n", name, p.AutoLink, p.AutoClose)
+		fmt.Printf("  %-24s auto_link=%t auto_close=%t auto_retrospect=%t\n", name, p.AutoLink, p.AutoClose, p.AutoRetrospect)
 	}
 	return nil
 }
@@ -358,7 +359,7 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 		}
 
 		for name, entry := range cfg.Projects {
-			if !entry.AutoLink && !entry.AutoClose {
+			if !entry.AutoLink && !entry.AutoClose && !entry.AutoRetrospect {
 				continue
 			}
 
@@ -369,15 +370,21 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 			}
 
 			result, err := journal.RunWatchCycle(name, entry, store)
+			// Reported before the error is: the retrospect scan runs ahead of the
+			// git work, so a project whose repo is missing still fires runs and
+			// still has warnings to report on a cycle that ends in an error.
+			if result.RetrospectFired > 0 {
+				log.Printf("%s: retrospect: fired %d", name, result.RetrospectFired)
+			}
+			for _, w := range result.Warnings {
+				log.Printf("%s: %s", name, w)
+			}
 			if err != nil {
 				log.Printf("%s: %v", name, err)
 				continue
 			}
 			if result.Appended > 0 || result.Closed > 0 {
 				log.Printf("%s: appended %d, closed %d", name, result.Appended, result.Closed)
-			}
-			for _, w := range result.Warnings {
-				log.Printf("%s: %s", name, w)
 			}
 		}
 	}
@@ -405,12 +412,16 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 
 // journalingSummary names which projects the cycle journals and which it walks
 // past, so a watcher that is running but inert is visible in the log rather
-// than silent. Skipped is the both-flags-off set the cycle skips.
+// than silent. The predicate is the one both cycle loops enter on, so skipped is
+// exactly the set they walk past — a project with only auto_retrospect on is
+// processed every tick and belongs on the journaling side. It is also the
+// change-detection key for a config reload, so a flag missing from it makes
+// toggling that flag invisible.
 func journalingSummary(cfg project.Config) string {
 	journaling := 0
 	var skipped []string
 	for name, entry := range cfg.Projects {
-		if entry.AutoLink || entry.AutoClose {
+		if entry.AutoLink || entry.AutoClose || entry.AutoRetrospect {
 			journaling++
 			continue
 		}

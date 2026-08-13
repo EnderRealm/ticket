@@ -107,18 +107,25 @@ type ProjectConfig struct {
 	// a value nor compare one: saveShared tests presence to decide whether a
 	// project entry belongs in the shared config at all, and `tk status` prints
 	// the raw string in its store column.
-	Store        string `yaml:"store,omitempty" json:"store,omitempty"`
-	AutoLink     bool   `yaml:"auto_link" json:"auto_link"`
-	AutoClose    bool   `yaml:"auto_close" json:"auto_close"`
-	RegisteredAt string `yaml:"registered_at,omitempty" json:"registered_at,omitempty"`
+	Store     string `yaml:"store,omitempty" json:"store,omitempty"`
+	AutoLink  bool   `yaml:"auto_link" json:"auto_link"`
+	AutoClose bool   `yaml:"auto_close" json:"auto_close"`
+	// AutoRetrospect fires `loom retrospect <id>` from the watch cycle when a
+	// ticket is first seen done or closed. omitempty, unlike the two flags above:
+	// it is a rare opt-in enabled by hand, and writing `auto_retrospect: false`
+	// into every project entry on the next save would dirty the shared config for
+	// a feature nobody asked for. `tk init` does not set it, and the journal
+	// defaults migration does not touch it.
+	AutoRetrospect bool   `yaml:"auto_retrospect,omitempty" json:"auto_retrospect,omitempty"`
+	RegisteredAt   string `yaml:"registered_at,omitempty" json:"registered_at,omitempty"`
 }
 
 // Load reads both local (~/.ticket/config.yaml) and shared (<central_root>/config.yaml)
 // configs, merging them into a single Config. Local fields (central_root, git_email,
 // git_name, default_store, sync_interval, spawn_command, per-project path) come from local config.
 // Shared fields (journal_defaults_migrated, per-project store, auto_link,
-// auto_close, registered_at) come from shared config. Missing files are not
-// errors — returns what's available.
+// auto_close, auto_retrospect, registered_at) come from shared config. Missing
+// files are not errors — returns what's available.
 func Load() (Config, error) {
 	local, err := loadLocalOnly()
 	if err != nil {
@@ -152,7 +159,7 @@ func Load() (Config, error) {
 // Save writes the config to both local and shared files, splitting fields
 // appropriately. Local gets top-level fields + per-project path. Shared gets
 // journal_defaults_migrated and per-project store, auto_link, auto_close,
-// registered_at.
+// auto_retrospect, registered_at.
 func Save(cfg Config) error {
 	if cfg.Projects == nil {
 		cfg.Projects = map[string]ProjectConfig{}
@@ -474,8 +481,8 @@ func centralStoreRootFromLocal(cfg Config) (string, error) {
 
 // mergeConfigs combines local and shared configs. Local provides top-level fields
 // and per-project path. Shared provides journal_defaults_migrated and per-project
-// store, auto_link, auto_close, registered_at. Projects present in either source
-// are included.
+// store, auto_link, auto_close, auto_retrospect, registered_at. Projects present
+// in either source are included.
 func mergeConfigs(local, shared Config) Config {
 	merged := Config{
 		CentralRoot:  local.CentralRoot,
@@ -491,13 +498,15 @@ func mergeConfigs(local, shared Config) Config {
 		Projects: map[string]ProjectConfig{},
 	}
 
-	// Start with shared projects (store, auto_link, auto_close, registered_at)
+	// Start with shared projects (store, auto_link, auto_close, auto_retrospect,
+	// registered_at)
 	for name, sp := range shared.Projects {
 		merged.Projects[name] = ProjectConfig{
-			Store:        sp.Store,
-			AutoLink:     sp.AutoLink,
-			AutoClose:    sp.AutoClose,
-			RegisteredAt: sp.RegisteredAt,
+			Store:          sp.Store,
+			AutoLink:       sp.AutoLink,
+			AutoClose:      sp.AutoClose,
+			AutoRetrospect: sp.AutoRetrospect,
+			RegisteredAt:   sp.RegisteredAt,
 		}
 	}
 
@@ -560,10 +569,11 @@ func saveShared(cfg Config, path string) error {
 	for name, p := range cfg.Projects {
 		if p.Store != "" {
 			sharedCfg.Projects[name] = ProjectConfig{
-				Store:        p.Store,
-				AutoLink:     p.AutoLink,
-				AutoClose:    p.AutoClose,
-				RegisteredAt: p.RegisteredAt,
+				Store:          p.Store,
+				AutoLink:       p.AutoLink,
+				AutoClose:      p.AutoClose,
+				AutoRetrospect: p.AutoRetrospect,
+				RegisteredAt:   p.RegisteredAt,
 			}
 		}
 	}
