@@ -233,6 +233,28 @@ func parseSections(body string) (desc, design, acceptance, testResults string) {
 	return
 }
 
+// sourceDefault attributes a write by a client that declared no name in the
+// handshake.
+const sourceDefault = "mcp"
+
+// sourceFor decides who a write tool's change is attributed to in the mutation
+// log: the caller's own source argument, else the client name from the MCP
+// handshake, else a bare "mcp". TK_SOURCE is not consulted here — the store
+// applies it ahead of whatever this returns, so it wins on every surface.
+func sourceFor(req *mcp.CallToolRequest, arg string) string {
+	if s := strings.TrimSpace(arg); s != "" {
+		return s
+	}
+	if req != nil && req.Session != nil {
+		if params := req.Session.InitializeParams(); params != nil && params.ClientInfo != nil {
+			if name := strings.TrimSpace(params.ClientInfo.Name); name != "" {
+				return name
+			}
+		}
+	}
+	return sourceDefault
+}
+
 func textResult(text string) (*mcp.CallToolResult, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
@@ -526,6 +548,7 @@ type createArgs struct {
 	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
 	Repo        string            `json:"repo,omitempty" jsonschema:"path to repo root; resolves to the project that repo owns in the central store"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
+	Source      string            `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
 }
 
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
@@ -538,7 +561,8 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 
-		targetStore := store
+		source := sourceFor(req, args.Source)
+		targetStore := ticket.WithSource(store, source)
 		unregisteredWarning := ""
 		if args.Repo != "" {
 			// The resolution the CLI's own store and `tk move`'s destination read
@@ -558,7 +582,7 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 				// create into it puts a ticket where nothing else will.
 				unregisteredWarning = ticket.UnregisteredWarning(dst)
 			}
-			targetStore = dst
+			targetStore = ticket.WithSource(dst, source)
 		}
 
 		t := &ticket.Ticket{
@@ -655,6 +679,7 @@ type editArgs struct {
 	TestResults string            `json:"test_results,omitempty" jsonschema:"test results to record"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
 	Outputs     map[string]string `json:"outputs,omitempty" jsonschema:"set outputs the ticket produced, e.g. branch/commit/artifacts (key: value to set, key: empty string to remove)"`
+	Source      string            `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
 }
 
 func registerEdit(server *mcp.Server, store ticket.Store) {
@@ -761,7 +786,7 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 
 		// An omitted status means no change, so only a status the caller passed
 		// says anything about an epic's abandon intent.
-		closed, err := ticket.SaveEdit(store, t, args.Status != "")
+		closed, err := ticket.SaveEdit(ticket.WithSource(store, sourceFor(req, args.Source)), t, args.Status != "")
 		if err != nil {
 			r, _ := errResult("failed to update ticket: %v", err)
 			return r, nil, nil
@@ -783,7 +808,8 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 }
 
 type deleteArgs struct {
-	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+	ID     string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+	Source string `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
 }
 
 func registerDelete(server *mcp.Server, store ticket.Store) {
@@ -797,7 +823,7 @@ func registerDelete(server *mcp.Server, store ticket.Store) {
 			return r, nil, nil
 		}
 
-		if err := store.Delete(t.ID); err != nil {
+		if err := ticket.WithSource(store, sourceFor(req, args.Source)).Delete(t.ID); err != nil {
 			r, _ := errResult("failed to delete ticket: %v", err)
 			return r, nil, nil
 		}
@@ -808,8 +834,9 @@ func registerDelete(server *mcp.Server, store ticket.Store) {
 }
 
 type addNoteArgs struct {
-	ID   string `json:"id" jsonschema:"ticket ID"`
-	Text string `json:"text" jsonschema:"note text to append"`
+	ID     string `json:"id" jsonschema:"ticket ID"`
+	Text   string `json:"text" jsonschema:"note text to append"`
+	Source string `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
 }
 
 func registerAddNote(server *mcp.Server, store ticket.Store) {
@@ -820,7 +847,7 @@ func registerAddNote(server *mcp.Server, store ticket.Store) {
 		// Through Mutate: the note is appended to whatever the ticket already
 		// holds, so agents noting the same ticket at once do not overwrite one
 		// another's notes.
-		t, err := ticket.Mutate(store, args.ID, func(t *ticket.Ticket) error {
+		t, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, args.Source)), args.ID, func(t *ticket.Ticket) error {
 			t.Notes = append(t.Notes, ticket.Note{
 				Timestamp: time.Now().UTC(),
 				Text:      args.Text,
@@ -842,6 +869,7 @@ type depArgs struct {
 	DepID  string `json:"dep_id" jsonschema:"dependency ticket ID"`
 	Action string `json:"action" jsonschema:"add or remove"`
 	Cargo  string `json:"cargo,omitempty" jsonschema:"optional (add only): the concrete artifact that flows across this edge, e.g. a branch, schema or doc. Edges with no cargo are flagged as unannotated by tk dep tree"`
+	Source string `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
 }
 
 func registerDep(server *mcp.Server, store ticket.Store) {
@@ -861,7 +889,7 @@ func registerDep(server *mcp.Server, store ticket.Store) {
 
 		// Through Mutate: the edge is added to the deps the ticket already
 		// holds, so a concurrent writer's edge is not dropped.
-		t, err := ticket.Mutate(store, args.ID, func(t *ticket.Ticket) error {
+		t, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, args.Source)), args.ID, func(t *ticket.Ticket) error {
 			if args.Action == "remove" {
 				ticket.RemoveDep(t, dep.ID)
 				return nil
@@ -890,6 +918,7 @@ type linkArgs struct {
 	ID       string `json:"id" jsonschema:"ticket ID"`
 	TargetID string `json:"target_id" jsonschema:"ticket to link/unlink"`
 	Action   string `json:"action" jsonschema:"add or remove"`
+	Source   string `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
 }
 
 func registerLink(server *mcp.Server, store ticket.Store) {
@@ -915,7 +944,8 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 		// AddLink and RemoveLink are symmetric, but the far side each call
 		// passes is a copy that is never written — that side is written by the
 		// other call, against its own current file.
-		t, err := ticket.Mutate(store, args.ID, func(t *ticket.Ticket) error {
+		st := ticket.WithSource(store, sourceFor(req, args.Source))
+		t, err := ticket.Mutate(st, args.ID, func(t *ticket.Ticket) error {
 			if args.Action == "add" {
 				ticket.AddLink(t, target)
 			} else {
@@ -927,7 +957,7 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 			r, _ := errResult("failed to update ticket: %v", err)
 			return r, nil, nil
 		}
-		if _, err := ticket.Mutate(store, target.ID, func(cur *ticket.Ticket) error {
+		if _, err := ticket.Mutate(st, target.ID, func(cur *ticket.Ticket) error {
 			if args.Action == "add" {
 				ticket.AddLink(t, cur)
 			} else {
@@ -1215,7 +1245,10 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		// meanwhile: the record lands in the body as it stands now rather than
 		// in the copy read before the run.
 		record := ticket.FormatVerifyRecord(results, time.Now().UTC())
-		if _, err := ticket.Mutate(store, t.ID, func(t *ticket.Ticket) error {
+		// Attributed to the caller like every other write over MCP. No source
+		// argument of its own: what lands on the ticket is the run's output, not
+		// a change the caller composed.
+		if _, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, "")), t.ID, func(t *ticket.Ticket) error {
 			t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
 			return nil
 		}); err != nil {

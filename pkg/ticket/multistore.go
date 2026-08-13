@@ -14,8 +14,12 @@ var _ Store = (*MultiStore)(nil)
 // MultiStore provides multi-project ticket storage by wrapping a FileStore
 // per project subdirectory under a shared root. Ticket IDs are namespaced
 // as "project/ticket-id" for cross-project disambiguation.
+//
+// Source attributes this store's writes in the mutation log; it is carried into
+// every per-project store storeFor builds, and set through WithSource.
 type MultiStore struct {
 	rootDir string
+	Source  string
 }
 
 // NewMultiStore creates a MultiStore rooted at the given directory.
@@ -231,7 +235,11 @@ func (m *MultiStore) storeFor(proj string) (*FileStore, error) {
 	if !project.ValidName(proj) {
 		return nil, fmt.Errorf("invalid project %q in %s: %s", proj, m.rootDir, bareNameHint)
 	}
-	return NewProjectFileStore(filepath.Join(m.rootDir, proj), proj), nil
+	store := NewProjectFileStore(filepath.Join(m.rootDir, proj), proj)
+	// The attribution follows the write down to the store that performs it,
+	// which is where the mutation log is appended.
+	store.Source = m.Source
+	return store, nil
 }
 
 // resolveAcrossProjects searches all project stores for a bare ticket ID.

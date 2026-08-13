@@ -203,6 +203,12 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 				t.ID, err, newID, dstWhere, t.ID)
 		}
 
+		// The move as a move, on both projects' logs. The stores logged the
+		// create and the edit they each performed, which read as two unrelated
+		// writes rather than as one ticket leaving a project for another.
+		dst.logMutation(bareNew, MutationMove, nil)
+		src.logMutation(bare, MutationMove, nil)
+
 		results = append(results, result)
 	}
 

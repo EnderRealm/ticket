@@ -6,15 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/EnderRealm/ticket/v7/internal/state"
 )
 
 // StatePath returns ~/.ticket/state/<project>/.
 func StatePath(project string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".ticket", "state", project), nil
+	return state.Dir(project)
 }
 
 // JournalPath returns ~/.ticket/state/<project>/commits.jsonl.
@@ -107,19 +105,11 @@ func AppendEntriesToPath(path string, entries []Entry) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
+	values := make([]any, len(toWrite))
+	for i, e := range toWrite {
+		values[i] = e
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	for _, e := range toWrite {
-		if err := enc.Encode(e); err != nil {
-			return err
-		}
-	}
-	return nil
+	return state.AppendJSONL(path, values...)
 }
 
 // loadExistingKeys reads existing SHA:Ticket pairs from a JSONL file.

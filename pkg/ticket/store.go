@@ -60,10 +60,13 @@ var _ Store = (*FileStore)(nil)
 
 // FileStore provides filesystem-backed CRUD operations for tickets.
 // Project is the namespace this store's tickets live under; it is empty for
-// single-project stores that never see namespaced IDs.
+// single-project stores that never see namespaced IDs. Source attributes this
+// store's writes in the mutation log (mutation.go); empty means the human at
+// the terminal, and it is set through WithSource rather than in place.
 type FileStore struct {
 	Dir     string
 	Project string
+	Source  string
 }
 
 // NewFileStore creates a FileStore rooted at the given directory, with no
@@ -170,7 +173,11 @@ func (s *FileStore) createLocked(t *Ticket) (bool, error) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		return false, nil
 	}
-	return true, s.writeTicket(t)
+	if err := s.writeTicket(t); err != nil {
+		return false, err
+	}
+	s.logMutation(t.ID, MutationCreate, nil)
+	return true, nil
 }
 
 // Get retrieves a ticket by exact or partial ID. An epic comes back with the
@@ -262,7 +269,14 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 	if t.version != "" && versionOf(current) != t.version {
 		return fmt.Errorf("update %s: %w. Re-read it and apply the change again", t.ID, ErrConflict)
 	}
-	return s.writeTicket(t)
+	if err := s.writeTicket(t); err != nil {
+		return err
+	}
+	// The bytes the write replaced are what the log diffs against. This is the
+	// hook for Mutate as well as Update — mutate writes through here — so a note,
+	// a dep and a link are each recorded as themselves.
+	s.logUpdate(current, t)
+	return nil
 }
 
 // saveEdit writes an edit, recording the abandon intent when the writer set an
@@ -310,12 +324,17 @@ func (s *FileStore) Delete(id string) error {
 	// mutate keys it: an unlocked delete can land between updateLocked's read
 	// and its rename, and the rename then recreates the ticket the delete
 	// removed.
-	release, err := s.lockTicket(strings.TrimSuffix(filepath.Base(path), ".md"))
+	resolved := strings.TrimSuffix(filepath.Base(path), ".md")
+	release, err := s.lockTicket(resolved)
 	if err != nil {
 		return err
 	}
 	defer release()
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	s.logMutation(resolved, MutationDelete, nil)
+	return nil
 }
 
 // List reads all tickets from the directory. Epics come back with the status

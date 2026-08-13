@@ -358,6 +358,10 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// watchSource attributes the journal loop's auto-close writes in the mutation
+// log.
+const watchSource = "watch"
+
 // watchStoreFor is the store a journal watch cycle writes into, for `tk watch`
 // and for the loop `tk serve` runs: the project's directory in the central
 // store, or no store at all for a project that is not registered centrally — its
@@ -378,8 +382,9 @@ func watchStoreFor(cfg project.Config, name string) (ticket.Store, error) {
 	}
 	// Project-scoped: auto-close writes go through the same validation as MCP
 	// writes and must resolve the namespaced parent/dep IDs the central store
-	// records.
-	return ticket.NewProjectFileStore(dir, name), nil
+	// records. Attributed to the watcher in the mutation log: an auto-close is a
+	// daemon acting on a commit, and an unattributed write records "human".
+	return ticket.WithSource(ticket.NewProjectFileStore(dir, name), watchSource), nil
 }
 
 func emitWatchJSON(data map[string]any) error {
