@@ -3,6 +3,8 @@ package ticket
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -348,21 +350,26 @@ func lastOp(entries []MutationEntry, op MutationOp) *MutationEntry {
 	return nil
 }
 
-func TestMutationStillWritesWhenTheLogCannotBe(t *testing.T) {
-	mutationSandbox(t)
+// breakMutationLog puts a regular file where a project's state directory
+// belongs, so the log's MkdirAll fails on the next write.
+func breakMutationLog(t *testing.T, proj string) {
+	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A regular file where the project's state directory belongs: the log's
-	// MkdirAll fails, and the write must not.
 	stateDir := filepath.Join(home, ".ticket", "state")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, "alpha"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(stateDir, proj), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestMutationStillWritesWhenTheLogCannotBe(t *testing.T) {
+	mutationSandbox(t)
+	breakMutationLog(t, "alpha")
 
 	store := NewProjectFileStore(t.TempDir(), "alpha")
 	if err := store.Create(sampleTicket("f-0001")); err != nil {
@@ -370,5 +377,53 @@ func TestMutationStillWritesWhenTheLogCannotBe(t *testing.T) {
 	}
 	if _, err := store.Get("f-0001"); err != nil {
 		t.Errorf("ticket was not written: %v", err)
+	}
+}
+
+func TestMutationLogFailureGoesToTheReplacedSink(t *testing.T) {
+	mutationSandbox(t)
+	breakMutationLog(t, "alpha")
+
+	var warnings []string
+	prev := Warnf
+	Warnf = func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	t.Cleanup(func() { Warnf = prev })
+
+	store := NewProjectFileStore(t.TempDir(), "alpha")
+	if err := store.Create(sampleTicket("w-0001")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("sink received %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "alpha") {
+		t.Errorf("warning does not name the project: %q", warnings[0])
+	}
+	if _, err := store.Get("w-0001"); err != nil {
+		t.Errorf("ticket was not written: %v", err)
+	}
+}
+
+func TestWarnfDefaultsToStderr(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	stderr := os.Stderr
+	// Restored through Cleanup: a t.Fatal before the swap is undone would leave
+	// the test binary's stderr on a pipe nothing reads.
+	t.Cleanup(func() { os.Stderr = stderr })
+	os.Stderr = w
+	Warnf("warning: %s\n", "the log")
+	w.Close()
+
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "warning: the log\n" {
+		t.Errorf("stderr got %q, want %q", got, "warning: the log\n")
 	}
 }

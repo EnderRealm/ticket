@@ -74,6 +74,17 @@ func WithSource(s Store, source string) Store {
 	return s
 }
 
+// Warnf reports a condition this library will not fail a call over. It is a
+// replaceable sink rather than a direct write because a surface that owns the
+// terminal cannot take one: `tk ui` runs bubbletea in the alt screen, where a
+// write straight to stderr paints over the rendered frame, so that surface
+// points this at its own display for the life of the program. The default stays
+// stderr for the CLI and for `tk serve`, where the MCP protocol owns stdout and
+// stderr is the server's log.
+var Warnf = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
 // logMutation appends one entry to the project's mutation log. Every write path
 // reaches it through the store, so no call site is instrumented.
 func (s *FileStore) logMutation(id string, op MutationOp, fields []string) {
@@ -98,8 +109,8 @@ func (s *FileStore) logMutation(id string, op MutationOp, fields []string) {
 		// The log records the write; it does not gate it. The mutation is
 		// already on disk by the time this runs, and failing it here would
 		// report an error for a change that happened — so a broken audit trail
-		// is a warning on stderr and nothing more.
-		fmt.Fprintf(os.Stderr, "warning: mutation log for project %s: %v\n", s.Project, err)
+		// is a warning and nothing more.
+		Warnf("warning: mutation log for project %s: %v\n", s.Project, err)
 	}
 }
 

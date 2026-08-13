@@ -66,7 +66,11 @@ type App struct {
 	width  int
 	height int
 	status string
-	err    error
+	// warning holds what the library's warning sink reported, apart from status
+	// because a mutation emits its success message immediately after the write
+	// the warning came from, and one status line cannot hold both.
+	warning string
+	err     error
 }
 
 // New creates a new App rooted at the given ticket directory. project is the
@@ -120,6 +124,11 @@ type errMsg error
 type statusMsg string
 type clearStatusMsg struct{}
 
+// warnMsg carries one line from the library's warning sink. It is its own
+// message so a success statusMsg cannot take its slot.
+type warnMsg string
+type clearWarnMsg struct{}
+
 type cyclePriorityMsg struct{ id string }
 
 type setStatusMsg struct {
@@ -156,6 +165,37 @@ func clearStatusAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg {
 		return clearStatusMsg{}
 	})
+}
+
+func clearWarnAfter(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return clearWarnMsg{}
+	})
+}
+
+// CaptureWarnings routes pkg/ticket's warnings to the TUI's warning row for the
+// life of the program, returning the restore its caller defers. The alt screen
+// owns the terminal, so the library's default stderr write would land on top of
+// the rendered frame instead of reaching the user.
+//
+// The send is detached because the sink can be invoked from the event-loop
+// goroutine itself: every TUI mutation runs its store write synchronously inside
+// Update, and Send blocks on the unbuffered channel that same goroutine drains,
+// so an inline call would hang the program in the alt screen with no keystroke
+// or signal able to reach it. The detached send lands once Update returns, and
+// falls through on the program's context after shutdown.
+//
+// The message is flattened to one line because View renders it as a single
+// reserved row, the last line of the frame in both the overlay and non-overlay
+// branches — the writes that warn usually leave an overlay open, where the
+// footer is not rendered at all.
+func CaptureWarnings(p *tea.Program) func() {
+	prev := ticket.Warnf
+	ticket.Warnf = func(format string, args ...any) {
+		msg := warnMsg(strings.Join(strings.Fields(fmt.Sprintf(format, args...)), " "))
+		go p.Send(msg)
+	}
+	return func() { ticket.Warnf = prev }
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────────
@@ -224,6 +264,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearStatusMsg:
 		a.status = ""
+		return a, nil
+
+	case warnMsg:
+		a.warning = string(msg)
+		return a, clearWarnAfter(8 * time.Second)
+
+	case clearWarnMsg:
+		a.warning = ""
 		return a, nil
 
 	// Mutation messages
@@ -488,7 +536,11 @@ func (a App) View() string {
 	// authoritative for layout; the Update-time contentHeight() only feeds the
 	// scroll math, which a stale-by-one footer state can never push to overflow.
 	footer, footerLines := a.footerView()
-	contentH := a.height - 3 - footerLines // header(1) + topsep(1) + botsep(1) + footer
+	warnLines := 0
+	if a.warning != "" {
+		warnLines = 1
+	}
+	contentH := a.height - 3 - footerLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + warning
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -539,7 +591,32 @@ func (a App) View() string {
 		b.WriteString(footer)
 	}
 
+	// Last line of the frame in either branch: an overlay renders its own footer
+	// over the whole height, so this is the only row a warning is sure to reach
+	// the user on, and the renderer keeps the frame's trailing rows when it
+	// overflows.
+	if a.warning != "" {
+		b.WriteString("\n")
+		b.WriteString(a.warningView())
+	}
+
 	return b.String()
+}
+
+// warningView renders the warning as one row, clamped to the width inside the
+// footer's padding: a mutation-log warning carries a path and an errno, so it is
+// the likeliest line to exceed the terminal width, and an overflowing row wraps
+// and pushes the frame past a.height.
+func (a App) warningView() string {
+	width := a.width - 2
+	if width < 1 {
+		width = 1
+	}
+	text := a.warning
+	if runes := []rune(text); len(runes) > width {
+		text = string(runes[:width-1]) + "…"
+	}
+	return lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1).Render(StyleWarning.Render(text))
 }
 
 // ─── Render Components ──────────────────────────────────────────────────────

@@ -32,6 +32,8 @@ var uiCmd = &cobra.Command{
 		}
 		app := tui.New(ticketsDir, projectName, version(), spawnCommand, workDir, unregistered)
 		p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		restoreWarnings := tui.CaptureWarnings(p)
+		defer restoreWarnings()
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return err
