@@ -92,14 +92,20 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 		}
 		dr := diffCache[commit.SHA]
 
-		tickets := make([]string, 0, len(actions))
-		for ticketID := range actions {
+		// Refs are resolved to the IDs they are journalled and closed under
+		// before the loop: the raw refs can name one ticket twice, and a ref
+		// naming another project stays namespaced and is reported by the
+		// auto-close warning below.
+		resolved := ResolveActions(projectName, actions)
+
+		tickets := make([]string, 0, len(resolved))
+		for ticketID := range resolved {
 			tickets = append(tickets, ticketID)
 		}
 		sort.Strings(tickets)
 
 		for _, ticketID := range tickets {
-			action := actions[ticketID]
+			action := resolved[ticketID]
 
 			if action == "close" && cfg.AutoClose && store != nil {
 				t, err := store.Get(ticketID)

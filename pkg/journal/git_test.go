@@ -64,6 +64,47 @@ func TestExtractActions(t *testing.T) {
 	}
 }
 
+// TestExtractActionsNamespaced covers the ref form the central store hands an
+// agent — `[project/slug-hash]` — which the pattern predating namespaced IDs
+// matched not at all, so a project whose commits all carry one journalled
+// nothing.
+func TestExtractActionsNamespaced(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want map[string]string
+	}{
+		{
+			msg:  "[warp/dashboard-foo-65c0] Add the dashboard",
+			want: map[string]string{"warp/dashboard-foo-65c0": "ref"},
+		},
+		{
+			msg:  "Closes: [warp/dashboard-foo-65c0] Landed",
+			want: map[string]string{"warp/dashboard-foo-65c0": "close"},
+		},
+		{
+			msg:  "[ticket/a-1234] Closes: [warp/b-5678] [c-9abc]",
+			want: map[string]string{"ticket/a-1234": "ref", "warp/b-5678": "close", "c-9abc": "close"},
+		},
+		{
+			// A second slash is not a namespace tk can resolve, so it is not a ref.
+			msg:  "[a/b/c] Nothing to link",
+			want: map[string]string{},
+		},
+	}
+	for _, tt := range tests {
+		got := ExtractTicketActions(tt.msg)
+		if len(got) != len(tt.want) {
+			t.Errorf("ExtractTicketActions(%q): got %d actions, want %d: %v", tt.msg, len(got), len(tt.want), got)
+			continue
+		}
+		for k, v := range tt.want {
+			if got[k] != v {
+				t.Errorf("ExtractTicketActions(%q)[%q] = %q, want %q", tt.msg, k, got[k], v)
+			}
+		}
+	}
+}
+
 func TestMultiTicketCommit(t *testing.T) {
 	msg := "[ticket-a] [ticket-b] Shared work"
 	actions := ExtractTicketActions(msg)

@@ -44,8 +44,13 @@ type Config struct {
 	// the same terms — merged from a half the override root may own, kept here so
 	// Save round-trips it, and never a read path, because the list decides which
 	// programs run as the machine owner.
-	VerifyAllow VerifyAllowList          `yaml:"verify_allow,omitempty" json:"verify_allow,omitempty"`
-	Projects    map[string]ProjectConfig `yaml:"projects"`
+	VerifyAllow VerifyAllowList `yaml:"verify_allow,omitempty" json:"verify_allow,omitempty"`
+	// JournalDefaultsMigrated marks that MigrateJournalDefaults has run. It is a
+	// shared-config field, alongside the auto_link/auto_close it decides, so the
+	// one-time flip travels with the store instead of re-running on every machine
+	// that reads it.
+	JournalDefaultsMigrated bool                     `yaml:"journal_defaults_migrated,omitempty" json:"journal_defaults_migrated,omitempty"`
+	Projects                map[string]ProjectConfig `yaml:"projects"`
 }
 
 // VerifyAllowList is the verify_allow setting. Absent and present-but-empty
@@ -111,8 +116,9 @@ type ProjectConfig struct {
 // Load reads both local (~/.ticket/config.yaml) and shared (<central_root>/config.yaml)
 // configs, merging them into a single Config. Local fields (central_root, git_email,
 // git_name, default_store, sync_interval, spawn_command, per-project path) come from local config.
-// Shared fields (per-project store, auto_link, auto_close, registered_at) come from
-// shared config. Missing files are not errors — returns what's available.
+// Shared fields (journal_defaults_migrated, per-project store, auto_link,
+// auto_close, registered_at) come from shared config. Missing files are not
+// errors — returns what's available.
 func Load() (Config, error) {
 	local, err := loadLocalOnly()
 	if err != nil {
@@ -145,7 +151,8 @@ func Load() (Config, error) {
 
 // Save writes the config to both local and shared files, splitting fields
 // appropriately. Local gets top-level fields + per-project path. Shared gets
-// per-project store, auto_link, auto_close, registered_at.
+// journal_defaults_migrated and per-project store, auto_link, auto_close,
+// registered_at.
 func Save(cfg Config) error {
 	if cfg.Projects == nil {
 		cfg.Projects = map[string]ProjectConfig{}
@@ -239,6 +246,35 @@ func (cfg *Config) UpsertProject(name string, project ProjectConfig) {
 		cfg.Projects = map[string]ProjectConfig{}
 	}
 	cfg.Projects[name] = project
+}
+
+// MigrateJournalDefaults turns the commit journal on for registrations that
+// never chose to be without it, once ever. `tk init` hardcoded auto_link and
+// auto_close to false, so a project carrying both false holds that un-chosen
+// default and is flipped to true; a mixed pair is a deliberate link-only or
+// close-only choice and is left alone. The marker is what makes it once-ever —
+// a user who disables journaling after the migration stays disabled.
+//
+// It reports the projects it flipped, and separately whether the config needs
+// saving: setting the marker is itself a change worth persisting, or the flip
+// would run again on the next start and undo a later disable.
+func MigrateJournalDefaults(cfg *Config) (flipped []string, changed bool) {
+	if cfg.JournalDefaultsMigrated {
+		return nil, false
+	}
+	cfg.JournalDefaultsMigrated = true
+
+	for name, p := range cfg.Projects {
+		if p.AutoLink || p.AutoClose {
+			continue
+		}
+		p.AutoLink = true
+		p.AutoClose = true
+		cfg.Projects[name] = p
+		flipped = append(flipped, name)
+	}
+	slices.Sort(flipped)
+	return flipped, true
 }
 
 // CentralRegistered reports whether a project is registered with the central
@@ -437,8 +473,9 @@ func centralStoreRootFromLocal(cfg Config) (string, error) {
 }
 
 // mergeConfigs combines local and shared configs. Local provides top-level fields
-// and per-project path. Shared provides per-project store, auto_link, auto_close,
-// registered_at. Projects present in either source are included.
+// and per-project path. Shared provides journal_defaults_migrated and per-project
+// store, auto_link, auto_close, registered_at. Projects present in either source
+// are included.
 func mergeConfigs(local, shared Config) Config {
 	merged := Config{
 		CentralRoot:  local.CentralRoot,
@@ -448,7 +485,10 @@ func mergeConfigs(local, shared Config) Config {
 		SyncInterval: local.SyncInterval,
 		SpawnCommand: local.SpawnCommand,
 		VerifyAllow:  local.VerifyAllow,
-		Projects:     map[string]ProjectConfig{},
+
+		JournalDefaultsMigrated: shared.JournalDefaultsMigrated,
+
+		Projects: map[string]ProjectConfig{},
 	}
 
 	// Start with shared projects (store, auto_link, auto_close, registered_at)
@@ -513,7 +553,8 @@ func saveLocal(cfg Config, hasShared bool) error {
 // saveShared writes <central_root>/config.yaml with shared-only fields.
 func saveShared(cfg Config, path string) error {
 	sharedCfg := Config{
-		Projects: map[string]ProjectConfig{},
+		JournalDefaultsMigrated: cfg.JournalDefaultsMigrated,
+		Projects:                map[string]ProjectConfig{},
 	}
 
 	for name, p := range cfg.Projects {

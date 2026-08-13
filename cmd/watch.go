@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -217,13 +218,40 @@ func runWatchStatus(cmd *cobra.Command, args []string) error {
 
 	pid, running := watchRunningPID(pidPath)
 
+	// A running watcher says nothing about whether it journals anything, so the
+	// per-project flags are part of its status. A config that will not load
+	// costs the flag list, not the status: whether a watcher is running is
+	// answered by the pid file alone, and this command is what a user reaches
+	// for when the config is broken.
+	cfg, cfgErr := project.Load()
+	names := make([]string, 0, len(cfg.Projects))
+	for name := range cfg.Projects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	if jsonOutput {
-		return emitWatchJSON(map[string]any{
+		out := map[string]any{
 			"running":  running,
 			"pid":      pid,
 			"pid_file": pidPath,
 			"log_file": logPath,
-		})
+		}
+		if cfgErr != nil {
+			out["config_error"] = cfgErr.Error()
+		} else {
+			projects := make([]map[string]any, 0, len(names))
+			for _, name := range names {
+				p := cfg.Projects[name]
+				projects = append(projects, map[string]any{
+					"project":    name,
+					"auto_link":  p.AutoLink,
+					"auto_close": p.AutoClose,
+				})
+			}
+			out["projects"] = projects
+		}
+		return emitWatchJSON(out)
 	}
 
 	if running {
@@ -232,6 +260,14 @@ func runWatchStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("watch is not running")
 	}
 	fmt.Printf("log: %s\n", logPath)
+	if cfgErr != nil {
+		fmt.Printf("config error: %v\n", cfgErr)
+		return nil
+	}
+	for _, name := range names {
+		p := cfg.Projects[name]
+		fmt.Printf("  %-24s auto_link=%t auto_close=%t\n", name, p.AutoLink, p.AutoClose)
+	}
 	return nil
 }
 
@@ -302,7 +338,10 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	log.Printf("watch starting: projects=%d interval=%s once=%t", len(cfg.Projects), watchInterval, watchOnce)
+	migrateJournalDefaults(&cfg)
+
+	summary := journalingSummary(cfg)
+	log.Printf("watch starting: %s interval=%s once=%t", summary, watchInterval, watchOnce)
 	defer log.Println("watch stopping")
 
 	cycle := func() {
@@ -310,6 +349,12 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			log.Printf("warning: reload config: %v", err)
 			return
+		}
+		// The config is reloaded every tick, so a project switched on or off
+		// mid-run is reported once rather than every cycle or never.
+		if reloaded := journalingSummary(cfg); reloaded != summary {
+			log.Printf("watch config changed: %s", reloaded)
+			summary = reloaded
 		}
 
 		for name, entry := range cfg.Projects {
@@ -355,6 +400,54 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 		case <-ticker.C:
 			cycle()
 		}
+	}
+}
+
+// journalingSummary names which projects the cycle journals and which it walks
+// past, so a watcher that is running but inert is visible in the log rather
+// than silent. Skipped is the both-flags-off set the cycle skips.
+func journalingSummary(cfg project.Config) string {
+	journaling := 0
+	var skipped []string
+	for name, entry := range cfg.Projects {
+		if entry.AutoLink || entry.AutoClose {
+			journaling++
+			continue
+		}
+		skipped = append(skipped, name)
+	}
+	sort.Strings(skipped)
+	return fmt.Sprintf("projects=%d journaling=%d skipped=%v", len(cfg.Projects), journaling, skipped)
+}
+
+// migrateJournalDefaults applies the one-time journal-defaults migration to cfg
+// and persists it. Both journal entry points run it — `tk watch run` and the
+// loop `tk serve` starts — since either can be the first to open a store whose
+// registrations predate the flip; the marker in the shared config makes the
+// second one a no-op. Both are already past the TK_STORE_ROOT guard, so no
+// sandbox config is rewritten.
+//
+// A failed save is a warning, not a failure: the migration decides whether a
+// journal runs, not whether the watcher or the MCP server may.
+func migrateJournalDefaults(cfg *project.Config) {
+	// The marker is a shared-config field, so with no central root to write it
+	// to, Save would persist the flipped flags and drop the marker — the flip
+	// would run again on every start and re-enable what a user turned off. A
+	// machine without a central root also has no central registration to flip.
+	if _, err := project.CentralStoreRoot(); err != nil {
+		return
+	}
+
+	flipped, changed := project.MigrateJournalDefaults(cfg)
+	if !changed {
+		return
+	}
+	if err := project.Save(*cfg); err != nil {
+		log.Printf("warning: save journal defaults migration: %v", err)
+		return
+	}
+	if len(flipped) > 0 {
+		log.Printf("journal defaults migrated: auto_link and auto_close enabled for %s", strings.Join(flipped, " "))
 	}
 }
 

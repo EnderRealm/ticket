@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/EnderRealm/ticket/v7/pkg/ticket"
 )
 
 // GitCommit represents a parsed git log entry.
@@ -58,10 +60,14 @@ func CollectCommits(repoPath, lastSHA, registeredAt string) ([]GitCommit, error)
 	return commits, nil
 }
 
+// A ref carries an optional single `project/` prefix: the central store
+// namespaces every ID it hands an agent, so `[warp/dashboard-foo-65c0]` is the
+// form most refs take in a commit subject. Bare IDs still match — the two
+// forms name the same ticket, and ResolveRef reconciles them.
 var (
-	refPattern         = regexp.MustCompile(`\[([A-Za-z0-9][A-Za-z0-9_-]*)\]`)
+	refPattern         = regexp.MustCompile(`\[([A-Za-z0-9][A-Za-z0-9_-]*(?:/[A-Za-z0-9][A-Za-z0-9_-]*)?)\]`)
 	closePrefixPattern = regexp.MustCompile(`(?i)\b(?:closes|fixes)\s*:?\s*`)
-	leadingRefPattern  = regexp.MustCompile(`^\[([A-Za-z0-9][A-Za-z0-9_-]*)\]`)
+	leadingRefPattern  = regexp.MustCompile(`^\[([A-Za-z0-9][A-Za-z0-9_-]*(?:/[A-Za-z0-9][A-Za-z0-9_-]*)?)\]`)
 )
 
 // ExtractTicketActions parses a commit message and returns a map of ticket ID
@@ -82,6 +88,38 @@ func ExtractTicketActions(message string) map[string]string {
 		}
 	}
 	return actions
+}
+
+// ResolveRef reduces a ref naming projectName to its bare ID, and leaves any
+// other ref alone. A project's journal file and its store are both scoped to
+// that one project, and every entry written before namespaced IDs existed is
+// bare, so keying the two forms apart would split one ticket's history in two.
+// A ref carrying another project's namespace passes through — a project-scoped
+// store cannot resolve it.
+//
+// Every writer of a journal entry goes through this: the watch cycle and
+// `tk recompute`, which rebuilds the same file from the same extraction.
+func ResolveRef(projectName, ref string) string {
+	if ns, bare := ticket.ParseNamespacedID(ref); ns == projectName {
+		return bare
+	}
+	return ref
+}
+
+// ResolveActions keys one commit's extracted actions by the ID each is
+// journalled under. It collapses the two forms of one ticket, since a single
+// commit can carry both — `[project/foo-1234] Closes: [foo-1234]` — and two
+// entries for one commit and ticket would disagree about the action. A close
+// outranks a plain ref, as it already does per ref in ExtractTicketActions.
+func ResolveActions(projectName string, actions map[string]string) map[string]string {
+	resolved := make(map[string]string, len(actions))
+	for ref, action := range actions {
+		ticketID := ResolveRef(projectName, ref)
+		if resolved[ticketID] != "close" {
+			resolved[ticketID] = action
+		}
+	}
+	return resolved
 }
 
 // extractBracketList extracts consecutive bracket-enclosed IDs from the start of input.

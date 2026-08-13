@@ -105,6 +105,12 @@ func startBackgroundLoops(ctx context.Context) error {
 		return nil
 	}
 
+	if cfg, err := project.Load(); err == nil {
+		migrateJournalDefaults(&cfg)
+	} else {
+		log.Printf("watch: load config: %v", err)
+	}
+
 	if storeRoot, err := project.CentralStoreRoot(); err == nil {
 		// findGitRoot is only the gate — whether the store sits in a git repo at
 		// all. syncLoop operates on the store root itself; see syncCentralStore.
@@ -121,6 +127,15 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Same summary `tk watch run` logs: a serve-hosted watcher that journals
+	// nothing is otherwise indistinguishable on stderr from one that journals
+	// everything.
+	summary := ""
+	if cfg, err := project.Load(); err == nil {
+		summary = journalingSummary(cfg)
+		log.Printf("watch: %s", summary)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -130,6 +145,10 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 			if err != nil {
 				log.Printf("watch: load config: %v", err)
 				continue
+			}
+			if reloaded := journalingSummary(cfg); reloaded != summary {
+				log.Printf("watch: config changed: %s", reloaded)
+				summary = reloaded
 			}
 			for name, entry := range cfg.Projects {
 				if !entry.AutoLink && !entry.AutoClose {

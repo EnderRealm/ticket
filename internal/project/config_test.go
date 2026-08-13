@@ -757,6 +757,95 @@ func TestNewMachineFlow(t *testing.T) {
 	}
 }
 
+// TestMigrateJournalDefaults covers the one-time flip of the auto_link and
+// auto_close pair `tk init` hardcoded to false: both-false is that un-chosen
+// default and becomes true, a mixed pair is a deliberate choice and is left
+// alone, and the marker keeps a later disable disabled.
+func TestMigrateJournalDefaults(t *testing.T) {
+	cfg := Config{Projects: map[string]ProjectConfig{
+		"inert":     {Store: "central"},
+		"link-only": {Store: "central", AutoLink: true},
+		"both":      {Store: "central", AutoLink: true, AutoClose: true},
+	}}
+
+	flipped, changed := MigrateJournalDefaults(&cfg)
+	if !changed {
+		t.Fatal("changed = false, want true — the marker alone has to be saved")
+	}
+	if !slices.Equal(flipped, []string{"inert"}) {
+		t.Errorf("flipped = %q, want [inert]", flipped)
+	}
+	if p := cfg.Projects["inert"]; !p.AutoLink || !p.AutoClose {
+		t.Errorf("inert = %+v, want both flags on", p)
+	}
+	if p := cfg.Projects["link-only"]; !p.AutoLink || p.AutoClose {
+		t.Errorf("link-only = %+v, want the deliberate mixed pair untouched", p)
+	}
+	if !cfg.JournalDefaultsMigrated {
+		t.Error("journal_defaults_migrated not set")
+	}
+
+	// A user who disables journaling after the migration stays disabled.
+	cfg.Projects["inert"] = ProjectConfig{Store: "central"}
+	flipped, changed = MigrateJournalDefaults(&cfg)
+	if changed || len(flipped) != 0 {
+		t.Errorf("second run: flipped = %q, changed = %t, want no change once the marker is set", flipped, changed)
+	}
+	if p := cfg.Projects["inert"]; p.AutoLink || p.AutoClose {
+		t.Errorf("inert = %+v, want the later disable respected", p)
+	}
+}
+
+// The marker belongs to the store, not the machine: it rides in the shared
+// config next to the flags it decided, so a second machine reading the same
+// store does not run the flip again over a disable made on the first.
+func TestMigrateJournalDefaultsMarkerIsShared(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	cfg := Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]ProjectConfig{
+			"proj": {Path: "/local/proj", Store: "central"},
+		},
+	}
+	if _, changed := MigrateJournalDefaults(&cfg); !changed {
+		t.Fatal("MigrateJournalDefaults reported no change")
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	shared, err := loadFile(filepath.Join(centralRoot, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile shared: %v", err)
+	}
+	if !shared.JournalDefaultsMigrated {
+		t.Error("shared config has no journal_defaults_migrated marker")
+	}
+	local, err := loadLocalOnly()
+	if err != nil {
+		t.Fatalf("loadLocalOnly: %v", err)
+	}
+	if local.JournalDefaultsMigrated {
+		t.Error("local config carries the marker; it belongs to the store")
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.JournalDefaultsMigrated {
+		t.Fatal("merged config lost the marker, so the migration would run again")
+	}
+	if p := loaded.Projects["proj"]; !p.AutoLink || !p.AutoClose {
+		t.Errorf("proj = %+v, want the flipped flags persisted", p)
+	}
+}
+
 func TestResolveWorkDir(t *testing.T) {
 	cfg := Config{
 		Projects: map[string]ProjectConfig{

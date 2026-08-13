@@ -90,7 +90,7 @@ projects:
         path: /Users/you/code/myproject
 ```
 
-Shared project registry (store type, auto_link, etc.) is stored in `<central_root>/config.yaml` and synced via git alongside tickets.
+Shared project registry (store type, auto_link, auto_close, etc.) is stored in `<central_root>/config.yaml` and synced via git alongside tickets — see [Commit Journal](#commit-journal) for what the two auto flags decide.
 
 `verify_allow` lists the programs `tk verify` may run — see [Verifiable Acceptance Criteria](#verifiable-acceptance-criteria). It is read from this local file only; a `verify_allow` in the shared config is ignored.
 
@@ -415,6 +415,14 @@ tk sync
 ```
 
 If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is blocked and a `.tk-sync-blocked` marker is written. Resolve the conflict manually, then sync resumes on the next cycle.
+
+### Commit Journal
+
+`tk watch` — and the same loop inside `tk serve` — reads each registered project's git history and appends one line per commit that names a ticket to `~/.ticket/state/<project>/commits.jsonl`. A commit names a ticket with a bracket ref in its message: `[<id>]` links the commit to the ticket, and `Closes:` or `Fixes:` before the ref also marks the ticket `done`. Both the bare `[slug-hash]` and the namespaced `[project/slug-hash]` form the central store hands agents are matched; a ref naming the project being journalled is recorded under its bare ID, and one naming another project is left for that project to resolve.
+
+Two per-project flags in the shared config decide it: `auto_link` writes the journal entries, `auto_close` performs the auto-close. `tk init` sets both to `true`, and a project registered before that — the flags were hardcoded to `false` — is flipped to `true` once, the first time a watcher opens the store. The flip touches only projects with *both* flags off, since a mixed pair is a deliberate link-only or close-only choice; it runs once ever, recorded as `journal_defaults_migrated: true` in `<central_root>/config.yaml`, so turning journaling off afterwards sticks. Both flags stay written out per project, so either can be edited back.
+
+`tk watch status` lists every project with its two flags, and the watcher logs the same summary at startup and whenever a config reload changes it — a watcher that runs but journals nothing says so.
 
 ### Mutation Log
 

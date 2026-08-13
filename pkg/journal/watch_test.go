@@ -262,6 +262,176 @@ func TestWatchCycle_AutoCloseCountsTowardsNamespacedParent(t *testing.T) {
 	}
 }
 
+// TestWatchCycle_NamespacedRef covers the refs central-store projects actually
+// carry: `[project/slug-hash]`, the form every ID an agent is handed takes.
+// They matched nothing at all before, so a project committing that way
+// journalled nothing and auto-closed nothing. The entry is keyed by the bare
+// ID — one project's journal file and its store are both scoped to that
+// project, and every entry written before namespaced IDs existed is bare.
+func TestWatchCycle_NamespacedRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "ns-test")
+
+	tk := &ticket.Ticket{
+		ID:       ticket.GenerateID("Namespaced ref ticket"),
+		Title:    "Namespaced ref ticket",
+		Type:     ticket.TypeFeature,
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "a.go", "package a\n", "[ns-test/"+tk.ID+"] Start the work")
+	commitFile(t, repoDir, "b.go", "package b\n", "Closes: [ns-test/"+tk.ID+"] Land the work")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("ns-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range result.Warnings {
+		t.Logf("warning: %s", w)
+	}
+	if result.Appended != 2 {
+		t.Errorf("Appended = %d, want 2", result.Appended)
+	}
+	if result.Closed != 1 {
+		t.Errorf("Closed = %d, want 1", result.Closed)
+	}
+
+	entries, err := ReadEntries("ns-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("journal has %d entries, want 2", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.Ticket != tk.ID {
+			t.Errorf("entry ticket = %q, want the bare %q", entry.Ticket, tk.ID)
+		}
+	}
+
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("ticket status = %q, want done", updated.Status)
+	}
+}
+
+// TestWatchCycle_DualFormRefIsOneEntry covers a commit naming one ticket in both
+// forms — the subject ref namespaced, the trailer bare. They resolve to the same
+// ID, so the commit gets one entry carrying the close rather than two that
+// disagree about what the commit did to the ticket.
+func TestWatchCycle_DualFormRefIsOneEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "dual-test")
+
+	tk := &ticket.Ticket{
+		ID:       ticket.GenerateID("Dual form ticket"),
+		Title:    "Dual form ticket",
+		Type:     ticket.TypeFeature,
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "a.go", "package a\n", "[dual-test/"+tk.ID+"] Land it\n\nCloses: ["+tk.ID+"]")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("dual-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Appended != 1 {
+		t.Errorf("Appended = %d, want 1 — one commit, one ticket", result.Appended)
+	}
+	if result.Closed != 1 {
+		t.Errorf("Closed = %d, want 1", result.Closed)
+	}
+
+	entries, err := ReadEntries("dual-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("journal has %d entries, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Ticket != tk.ID {
+		t.Errorf("entry ticket = %q, want the bare %q", entries[0].Ticket, tk.ID)
+	}
+	if entries[0].Action != "close" {
+		t.Errorf("entry action = %q, want close — a close outranks the plain ref", entries[0].Action)
+	}
+}
+
+// TestWatchCycle_ForeignNamespacedRef holds a ref naming another project to the
+// warning path: this store is scoped to one project and cannot resolve it, and
+// guessing that the bare half names a local ticket would close the wrong one.
+func TestWatchCycle_ForeignNamespacedRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "home-test")
+
+	tk := &ticket.Ticket{
+		ID:       ticket.GenerateID("Local ticket"),
+		Title:    "Local ticket",
+		Type:     ticket.TypeFeature,
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: [other-project/"+tk.ID+"] Landed elsewhere")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("home-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 0 {
+		t.Errorf("Closed = %d, want 0 — the ref names another project", result.Closed)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("warnings = %v, want the unresolvable ref named", result.Warnings)
+	}
+
+	// The commit is still journalled, under the namespaced form it named: the
+	// entry records what the commit said, and only the close needs a store that
+	// can resolve the ref.
+	if result.Appended != 1 {
+		t.Errorf("Appended = %d, want 1 — the commit is journalled either way", result.Appended)
+	}
+	entries, err := ReadEntries("home-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Ticket != "other-project/"+tk.ID {
+		t.Errorf("entries = %+v, want one keyed %q", entries, "other-project/"+tk.ID)
+	}
+
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusOpen {
+		t.Errorf("ticket status = %q, want open", updated.Status)
+	}
+}
+
 func TestWatchCycle_AutoCloseSkipsEpic(t *testing.T) {
 	// An epic is closed by its children, not by a commit. Writing one would be
 	// inert while still appending a note and counting a close that never

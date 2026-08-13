@@ -80,8 +80,14 @@ func runRecompute(cmd *cobra.Command, args []string) error {
 
 		files, added, removed, branch, _ := journal.GetDiffStats(entry.Path, commit.SHA)
 
-		tickets := make([]string, 0, len(actions))
-		for ticketID := range actions {
+		// Same resolution the watch cycle applies, since this rebuilds the file
+		// the watch cycle appends to: a ref keyed by its namespaced form here
+		// would split one ticket's history across two keys and hide the
+		// recomputed half from every reader that queries by bare ID.
+		resolved := journal.ResolveActions(name, actions)
+
+		tickets := make([]string, 0, len(resolved))
+		for ticketID := range resolved {
 			tickets = append(tickets, ticketID)
 		}
 		sort.Strings(tickets)
@@ -94,7 +100,7 @@ func runRecompute(cmd *cobra.Command, args []string) error {
 				TS:           commit.TS,
 				Msg:          commit.Msg,
 				Author:       commit.Author,
-				Action:       actions[ticketID],
+				Action:       resolved[ticketID],
 				FilesChanged: files,
 				LinesAdded:   added,
 				LinesRemoved: removed,

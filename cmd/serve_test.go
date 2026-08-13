@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,38 @@ func TestServeIsolatedStoreDoesNotSync(t *testing.T) {
 	out, _ := execCommand("git", "-C", isolated, "log", "--oneline")
 	if contains(out, "tk: sync tickets") {
 		t.Errorf("sync ran against the isolated store, log: %s", out)
+	}
+}
+
+// The serve-hosted journal loop is the one most people run, and a fully skipped
+// project set looks exactly like a healthy one on stderr — the summary at
+// startup is the only thing that tells them apart. The context is cancelled
+// before the call so the loop logs and returns without a tick.
+func TestServeWatchLoopLogsJournalingSummary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := project.Config{
+		CentralRoot: filepath.Join(home, "central"),
+		Projects: map[string]project.ProjectConfig{
+			"inert-proj": {Path: filepath.Join(home, "inert-proj"), Store: "central"},
+		},
+		JournalDefaultsMigrated: true,
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	watchLoop(ctx, time.Second)
+
+	if want := "watch: projects=1 journaling=0 skipped=[inert-proj]"; !contains(logged.String(), want) {
+		t.Errorf("log missing %q:\n%s", want, logged.String())
 	}
 }
 

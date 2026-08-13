@@ -137,11 +137,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Journaling on by registration: the `[ticket-id]` commit discipline exists
+	// for the watcher, and the commit journal is the only commit→ticket trail
+	// there is. Registering with both flags off made every store's journal inert
+	// — a default hardcoded here rather than one anybody chose. The flags stay
+	// explicit in the shared config, so turning either back off is an edit.
 	cfg.UpsertProject(projectName, project.ProjectConfig{
 		Path:         repoPath,
 		Store:        "central",
-		AutoLink:     false,
-		AutoClose:    false,
+		AutoLink:     true,
+		AutoClose:    true,
 		RegisteredAt: registeredAt,
 	})
 	if err := project.Save(cfg); err != nil {

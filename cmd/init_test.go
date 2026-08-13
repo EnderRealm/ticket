@@ -250,6 +250,12 @@ func TestInitNonInteractive(t *testing.T) {
 	if p.Store != "central" {
 		t.Errorf("store = %q, want central", p.Store)
 	}
+	// Registration turns the commit journal on: both flags off is what made the
+	// journal inert for every project on the machine, and it was hardcoded here
+	// rather than chosen.
+	if !p.AutoLink || !p.AutoClose {
+		t.Errorf("auto_link = %t, auto_close = %t, want both true", p.AutoLink, p.AutoClose)
+	}
 }
 
 // TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone holds `tk init` to the
