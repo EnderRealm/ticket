@@ -319,7 +319,13 @@ verify_allow:
   - ./scripts/check.sh
 ```
 
-Unset, the list defaults to `go`, `make`, `cargo`, `pytest`. An explicitly empty `verify_allow: []` refuses everything, and so does a `~/.ticket/config.yaml` that cannot be parsed — a half-written or conflicted config never restores the defaults over a list you had narrowed.
+Three spellings, and only the first one grants anything:
+
+- **Key absent** — the list defaults to `go`, `make`, `cargo`, `pytest`.
+- **`verify_allow: []`** — refuses everything.
+- **`verify_allow:` with no value** — also refuses everything. YAML reads a valueless key as null, but tk treats writing the key at all as intent to refuse, so locking a machine down this way does not quietly hand the defaults back.
+
+A `~/.ticket/config.yaml` that cannot be parsed refuses everything too — a half-written or conflicted config never restores the defaults over a list you had narrowed.
 
 **What listing a program actually grants.** An entry is not a claim that the program is safe. It trusts whoever can write a verify line with everything that program can do, including the forms that run code from outside your repo:
 

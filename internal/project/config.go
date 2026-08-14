@@ -20,6 +20,10 @@ const (
 	// pkg/ticket and internal/mcp resolve config directly and never see cobra's
 	// flags, and the env is the lever a harness has over a subprocess it spawns.
 	StoreRootEnv = "TK_STORE_ROOT"
+
+	// nullTag is yaml.v3's resolved short tag for an explicit null scalar —
+	// a bare `key:`, `~` or `null`. The package does not export it.
+	nullTag = "!!null"
 )
 
 // Config stores tk project configuration (merged view of local + shared).
@@ -51,6 +55,35 @@ type Config struct {
 	// that reads it.
 	JournalDefaultsMigrated bool                     `yaml:"journal_defaults_migrated,omitempty" json:"journal_defaults_migrated,omitempty"`
 	Projects                map[string]ProjectConfig `yaml:"projects"`
+}
+
+// UnmarshalYAML decodes a config, then recovers the one distinction the yaml
+// decoder erases on its own. yaml.v3 resolves an explicit null before it
+// consults a field's Unmarshaler, so a bare `verify_allow:` — and `~`, and
+// `null` — decodes to the same nil slice an absent key does, which VerifyAllow
+// reads as unset and answers with the defaults. That fails the allow-list open
+// on a reasonable spelling of "allow nothing": a written key is intent to
+// refuse everything and must not collapse into absent. The raw node is the only
+// thing left that tells the two apart.
+func (cfg *Config) UnmarshalYAML(value *yaml.Node) error {
+	type plainConfig Config // sheds this method, so Decode does not recurse
+	var plain plainConfig
+	if err := value.Decode(&plain); err != nil {
+		return err
+	}
+	*cfg = Config(plain)
+
+	if cfg.VerifyAllow == nil && value.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			if value.Content[i].Value == "verify_allow" {
+				if value.Content[i+1].ShortTag() == nullTag {
+					cfg.VerifyAllow = VerifyAllowList{}
+				}
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // VerifyAllowList is the verify_allow setting. Absent and present-but-empty

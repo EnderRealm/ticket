@@ -555,6 +555,93 @@ func TestVerifyAllowExplicitEmptyRefusesEverything(t *testing.T) {
 	}
 }
 
+// TestVerifyAllowBareKeyRefusesEverything covers the spelling yaml resolves to
+// null. `verify_allow:` with no value is a written key, so it means refuse
+// everything exactly as `verify_allow: []` does — reading it as unset would
+// hand the defaults back to someone who had just locked the machine down.
+func TestVerifyAllowBareKeyRefusesEverything(t *testing.T) {
+	for _, spelling := range []string{"verify_allow:\n", "verify_allow: ~\n", "verify_allow: null\n"} {
+		t.Run(spelling, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+
+			localPath, _ := ConfigPath()
+			os.MkdirAll(filepath.Dir(localPath), 0o755)
+			if err := os.WriteFile(localPath, []byte(spelling), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := VerifyAllow()
+			if err != nil {
+				t.Fatalf("VerifyAllow: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("VerifyAllow() = %q, want an empty list: a valueless verify_allow refuses everything", got)
+			}
+
+			// The meaning must survive a save round-trip (project registration,
+			// for one). Normalizing the key to `[]` on disk is fine; restoring
+			// the defaults is not.
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := Save(cfg); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			got, err = VerifyAllow()
+			if err != nil {
+				t.Fatalf("VerifyAllow: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("VerifyAllow() = %q after a round-trip, want the refusal preserved", got)
+			}
+		})
+	}
+}
+
+// TestVerifyAllowAbsentKeySurvivesSave holds the other half of the three-state
+// design: an unconfigured machine must round-trip to an absent key, not to the
+// empty list that refuses everything.
+func TestVerifyAllowAbsentKeySurvivesSave(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	if err := Save(Config{CentralRoot: centralRoot}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.VerifyAllow != nil {
+		t.Fatalf("merged verify_allow = %q, want it absent", cfg.VerifyAllow)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	localPath, _ := ConfigPath()
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "verify_allow") {
+		t.Errorf("local config gained a verify_allow key:\n%s", raw)
+	}
+
+	got, err := VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if !slices.Equal(got, []string{"go", "make", "cargo", "pytest"}) {
+		t.Errorf("VerifyAllow() = %q after a round-trip, want the built-in default", got)
+	}
+}
+
 func TestVerifyAllowReadsLocalOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
