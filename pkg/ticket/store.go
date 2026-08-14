@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // Store defines the interface for ticket storage backends.
@@ -25,9 +26,50 @@ type storedReader interface {
 	getStored(id string) (*Ticket, error)
 }
 
-// storedLister is a store that can list tickets exactly as their files hold them.
+// storedLister is a store that can list tickets exactly as their files hold
+// them, alongside the files in it that could not be read as tickets at all.
 type storedLister interface {
-	listStored() ([]*Ticket, error)
+	listStored() ([]*Ticket, []FileSkip, error)
+}
+
+// FileSkip is one file in a store that could not be read as a ticket, and why.
+// A skip is carried out of the read rather than swallowed: the file is a ticket
+// somebody wrote, so a listing that drops it silently is a listing that
+// under-reports the store — and since the dropped ticket could be any epic's
+// child, an epic's derived status cannot be trusted while one exists.
+//
+// File is the base filename, not the path: the path names a temp directory in a
+// test and the operator's central store otherwise, and the project is carried
+// beside it. Project is stamped by the audit, which knows which store the
+// listing came from; a listing on its own leaves it empty.
+type FileSkip struct {
+	Project string `json:"project,omitempty"`
+	File    string `json:"file"`
+	Error   string `json:"error"`
+}
+
+// oneLine flattens an error's text to a single line and drops the control runes
+// from it. Both skip types quote a reason that came off a file another machine
+// wrote: yaml.v3's TypeError is multi-line by construction — one indented line
+// per offending key — and it quotes up to ten bytes of the offending scalar
+// verbatim, so a crafted key would otherwise read as further entries in the
+// audit's warning block, where every line is an entry, and an embedded escape
+// would reach the terminal as an escape. Collapsing whitespace alone is not
+// enough for the second half: ESC, BEL and BS are not whitespace and survive
+// Fields, so the control runes are dropped after the join.
+//
+// Done at construction rather than at each print site, so a reason is
+// single-line and inert wherever it surfaces, the JSON included. Paths inside an
+// os error are left as they are — a reason that cannot name the file it is about
+// is not worth printing.
+func oneLine(err error) string {
+	joined := strings.Join(strings.Fields(err.Error()), " ")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, joined)
 }
 
 // projectStore is a store whose tickets all live under one project namespace.
@@ -48,12 +90,15 @@ func readStored(store Store, id string) (*Ticket, error) {
 
 // listStored lists a store's tickets without deriving any epic's status, for
 // callers that need only stored fields — deriving one epic reads its children,
-// so listing through Store.List to derive another would recurse.
-func listStored(store Store) ([]*Ticket, error) {
+// so listing through Store.List to derive another would recurse. The second
+// return is the files the store could not read; a store that cannot report them
+// answers with none, which is all a caller can do with a plain Store.List.
+func listStored(store Store) ([]*Ticket, []FileSkip, error) {
 	if l, ok := store.(storedLister); ok {
 		return l.listStored()
 	}
-	return store.List()
+	tickets, err := store.List()
+	return tickets, nil, err
 }
 
 var _ Store = (*FileStore)(nil)
@@ -112,11 +157,11 @@ func (s *FileStore) Create(t *Ticket) error {
 	// inert rather than wrong, since nothing reads it back, but a status the
 	// caller chose and no reader will ever see is worth refusing.
 	if t.Type == TypeEpic {
-		children, err := epicChildren(s, t.ID)
+		children, incomplete, err := epicChildren(s, t.ID)
 		if err != nil {
 			return fmt.Errorf("create: %w", err)
 		}
-		if derived := DeriveEpicStatus(t.Abandoned, children); t.Status != derived {
+		if derived := derivedEpicStatus(t.Abandoned, children, incomplete); t.Status != derived {
 			// closed is the one value changing the children cannot produce on a
 			// childless epic: it is the abandon intent, and only an edit records
 			// one — so it is refused with the remedy that does.
@@ -193,11 +238,11 @@ func (s *FileStore) Get(id string) (*Ticket, error) {
 	// minority of a store, and reading one has to agree with listing it — but a
 	// caller that only wants stored fields goes through getStored instead.
 	if t.Type == TypeEpic {
-		children, err := epicChildren(s, t.ID)
+		children, incomplete, err := epicChildren(s, t.ID)
 		if err != nil {
 			return nil, err
 		}
-		t.Status, t.Completed = deriveEpicFrom(t.Abandoned, children)
+		t.Status, t.Completed = deriveEpicFrom(t.Abandoned, children, incomplete)
 	}
 	return t, nil
 }
@@ -287,12 +332,13 @@ func (s *FileStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
 	// cascade: one listing serves both, and there is no window in which a second
 	// listing could disagree with the one the decision was made on.
 	var children []*Ticket
+	var incomplete bool
 	if t.Type == TypeEpic {
 		prior, err := s.getStored(t.ID)
 		if err != nil {
 			return nil, err
 		}
-		if children, err = epicChildren(s, t.ID); err != nil {
+		if children, incomplete, err = epicChildren(s, t.ID); err != nil {
 			return nil, err
 		}
 		// Only a ticket that was already an epic has an intent to carry: one
@@ -301,7 +347,7 @@ func (s *FileStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
 		// any other edit — an untouched status decides nothing, so `--type epic`
 		// alone stays one ordinary operation, while a status the writer set with
 		// it is the epic's status they set and is read as one.
-		if abandon, err = resolveAbandonIntent(t, prior.Type == TypeEpic && prior.Abandoned, children, statusSet); err != nil {
+		if abandon, err = resolveAbandonIntent(t, prior.Type == TypeEpic && prior.Abandoned, children, incomplete, statusSet); err != nil {
 			return nil, err
 		}
 	}
@@ -341,12 +387,29 @@ func (s *FileStore) Delete(id string) error {
 // and completion date derived from their children rather than the ones on disk
 // — this is the choke point every consumer reads through, so no display site
 // derives its own.
+//
+// A file that could not be read is warned about here and nowhere else. This is
+// the display choke point, so one CLI command produces one warning per skipped
+// file; warning from listStored instead would repeat it once per internal read
+// — a single `tk ls` derives every epic in the store off the same listing.
 func (s *FileStore) List() ([]*Ticket, error) {
-	tickets, err := s.listStored()
+	tickets, skips, err := s.listStored()
 	if err != nil {
 		return nil, err
 	}
-	deriveEpics(tickets, s.Project)
+	for _, skip := range skips {
+		// Joined here rather than through FormatNamespacedID: a filename is not a
+		// ticket ID — the file did not parse, so it has no ID — and nothing
+		// resolves this string. It is a location for a human to go and look.
+		name := skip.File
+		if s.Project != "" {
+			name = s.Project + "/" + skip.File
+		}
+		// Quoted: a filename arrives over a git remote like the file's contents,
+		// and this goes straight to a terminal.
+		Warnf("warning: %q could not be read (%s), so its ticket is not shown and no epic here reads done or closed\n", name, skip.Error)
+	}
+	deriveEpics(tickets, s.Project, len(skips) > 0)
 	return tickets, nil
 }
 
@@ -355,28 +418,34 @@ func (s *FileStore) List() ([]*Ticket, error) {
 // so the derivation reads through here — going back through List would derive
 // every epic in the store to use one epic's children, and would hand a nested
 // epic to Get already derived, making a single read disagree with a listing.
-func (s *FileStore) listStored() ([]*Ticket, error) {
+//
+// A file that cannot be read is skipped rather than failing the whole listing —
+// one corrupt file must not take a store offline — but it is reported back, so
+// every caller can say what it did not see. Parse tolerates a mistyped field
+// (format.go), so what reaches here is a file with no readable structure at all.
+func (s *FileStore) listStored() ([]*Ticket, []FileSkip, error) {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	var tickets []*Ticket
+	var skips []FileSkip
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
 		t, err := s.readFile(filepath.Join(s.Dir, e.Name()))
 		if err != nil {
-			// Skip unparseable files rather than failing the entire list.
+			skips = append(skips, FileSkip{File: e.Name(), Error: oneLine(err)})
 			continue
 		}
 		tickets = append(tickets, t)
 	}
-	return tickets, nil
+	return tickets, skips, nil
 }
 
 // Resolve finds the full file path for an exact or partial ticket ID.

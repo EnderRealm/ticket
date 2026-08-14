@@ -117,21 +117,26 @@ type ParentViolation struct {
 	Detail string              `json:"detail"`
 }
 
-// ProjectSkip is a project the audit could not read, and why.
+// ProjectSkip is a project the audit could not read, and why. The reason is
+// flattened to one line by oneLine, like a FileSkip's.
 type ProjectSkip struct {
 	Project string `json:"project"`
 	Error   string `json:"error"`
 }
 
 // AuditReport is what Audit found: the parent violations, the epics whose
-// stored status no longer matches the one they derive, and the projects it
-// could not read. Skipped projects are part of the result rather than swallowed
-// — a report that silently covered less than the whole store would call a store
-// clean that a write can still trip on, which is the wrong way to fail.
+// stored status no longer matches the one they derive, the projects it could
+// not read, and the individual files it could not read. Both kinds of skip are
+// part of the result rather than swallowed — a report that silently covered
+// less than the whole store would call a store clean that a write can still
+// trip on, which is the wrong way to fail. A single unreadable file is the same
+// failure at a finer grain, and it is the one the epic-status section cannot
+// work around: the missing ticket may be any epic's child.
 type AuditReport struct {
-	Violations []ParentViolation `json:"violations"`
-	EpicStatus []EpicStatusDrift `json:"epic_status"`
-	Skipped    []ProjectSkip     `json:"skipped,omitempty"`
+	Violations   []ParentViolation `json:"violations"`
+	EpicStatus   []EpicStatusDrift `json:"epic_status"`
+	Skipped      []ProjectSkip     `json:"skipped,omitempty"`
+	SkippedFiles []FileSkip        `json:"skipped_files,omitempty"`
 }
 
 // Audit reports every ticket whose parent breaks the one-level hierarchy, so a
@@ -160,12 +165,12 @@ func Audit(store Store) (AuditReport, error) {
 	for _, proj := range projects {
 		projStore, err := m.storeFor(proj)
 		if err != nil {
-			report.Skipped = append(report.Skipped, ProjectSkip{Project: proj, Error: err.Error()})
+			report.Skipped = append(report.Skipped, ProjectSkip{Project: proj, Error: oneLine(err)})
 			continue
 		}
 		projReport, err := auditStore(projStore)
 		if err != nil {
-			report.Skipped = append(report.Skipped, ProjectSkip{Project: proj, Error: err.Error()})
+			report.Skipped = append(report.Skipped, ProjectSkip{Project: proj, Error: oneLine(err)})
 			continue
 		}
 		for _, v := range projReport.Violations {
@@ -176,21 +181,28 @@ func Audit(store Store) (AuditReport, error) {
 			d.ID = FormatNamespacedID(proj, d.ID)
 			report.EpicStatus = append(report.EpicStatus, d)
 		}
+		report.SkippedFiles = append(report.SkippedFiles, projReport.SkippedFiles...)
 	}
 	return report, nil
 }
 
-// auditStore runs both audits over one project's tickets.
+// auditStore runs both audits over one project's tickets. The unreadable files
+// are stamped with the project here, where the store that produced them is in
+// hand — the ID namespacing above cannot reach them, since a file that did not
+// parse has no ID to namespace.
 func auditStore(store Store) (AuditReport, error) {
 	violations, err := auditStoreParents(store)
 	if err != nil {
 		return AuditReport{}, err
 	}
-	drift, err := auditStoreEpicStatus(store)
+	drift, skipped, err := auditStoreEpicStatus(store)
 	if err != nil {
 		return AuditReport{}, err
 	}
-	return AuditReport{Violations: violations, EpicStatus: drift}, nil
+	for i := range skipped {
+		skipped[i].Project = storeProject(store)
+	}
+	return AuditReport{Violations: violations, EpicStatus: drift, SkippedFiles: skipped}, nil
 }
 
 // auditStoreParents runs the checks ResolveParent runs over one store's

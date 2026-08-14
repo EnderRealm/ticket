@@ -485,6 +485,27 @@ assert_contains "tk audit --project tktest" "legacy-epic-9999" "Epic report scop
 assert_ok "tk edit legacy-epic-9999 --status closed" "The remedy the audit names re-records the abandon"
 assert_not_contains "tk audit" "legacy-epic-9999" "Audit clean once the abandon is re-recorded"
 
+# The central store is a git repo other machines push into, so a ticket file can
+# carry a value tk would never have written. A mistyped typed field costs that
+# field and not the ticket, so the child still counts toward its epic; a file
+# with no readable structure at all cannot count, so it is named rather than
+# dropped and no epic reads terminal while it stands.
+UNREADABLE_EPIC=$(tk create "Epic beside an unreadable file" -t epic | extract_id)
+printf -- '---\nid: mistyped-9998\nstatus: open\nabandoned: maybe\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\nparent: %s\n---\n# Planted mistyped child\n' "$UNREADABLE_EPIC" > "$STORE_DIR/mistyped-9998.md"
+assert_contains "tk show $UNREADABLE_EPIC" "status: open" "A child with a mistyped field still counts toward its epic"
+assert_ok "tk edit mistyped-9998 --status done" "A ticket with a mistyped field is still editable"
+assert_contains "tk show $UNREADABLE_EPIC" "status: done" "Epic reads done once its only child is done"
+
+printf -- '---\nid: broken\n  status: open\n---\n# Planted unreadable file\n' > "$STORE_DIR/broken-9997.md"
+assert_contains "tk show $UNREADABLE_EPIC" "status: backlog" "No epic reads terminal while a file cannot be read"
+assert_contains "tk ls" "broken-9997.md" "A file that cannot be read is named rather than dropped"
+# stderr dropped: the Warnf every listing emits would satisfy these on its own,
+# and what is under test is the audit's own report.
+assert_contains "tk audit 2>/dev/null" "broken-9997.md" "Audit names the file it could not read"
+assert_contains "tk audit 2>/dev/null" "incomplete" "Audit calls a report covering less than the store incomplete"
+rm "$STORE_DIR/broken-9997.md"
+assert_contains "tk show $UNREADABLE_EPIC" "status: done" "The epic reads done again once the file is gone"
+
 # ─── DELETE ─────────────────────────────────────────────────────────────────
 log_section "DELETE"
 

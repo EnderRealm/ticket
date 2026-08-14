@@ -42,6 +42,14 @@ import (
 // it derives closed from those children alone. The flag is what the two cases
 // with nothing to close need: a childless epic, and one whose children had all
 // finished before it was abandoned.
+//
+// This is the undegraded rule, over the children it is handed. It is not what a
+// reader sees: every reader gets an epic's status through the store, which
+// applies one further condition this function cannot know about — a store
+// holding a file it could not read has no business claiming every child is
+// terminal, so a derived done or closed demotes to backlog there
+// (derivedEpicStatus). Call this to ask what a set of children implies; read the
+// store to ask what an epic says.
 func DeriveEpicStatus(abandoned bool, children []*Ticket) Status {
 	allTerminal := true
 	anyOpen := false
@@ -97,10 +105,33 @@ func deriveEpicCompleted(derived Status, children []*Ticket) time.Time {
 	return last
 }
 
-// deriveEpicFrom returns the status and completion date an epic's children
-// imply, given the abandon intent stored on the epic's own file.
-func deriveEpicFrom(abandoned bool, children []*Ticket) (Status, time.Time) {
+// derivedEpicStatus is DeriveEpicStatus over a store that may not have been
+// read in full. incomplete says a file in it could not be read at all; that
+// file is a ticket, it could name any epic as its parent, and nothing about it
+// is knowable — so `every child is terminal` is not a claim the store is in a
+// position to make, and done and closed are exactly the two values that rest on
+// it. Both demote to backlog, which is what the derivation already returns for
+// children it cannot call finished: the outcome is identical to a phantom child
+// of unknown, non-terminal, non-open status.
+//
+// Applied to every path that derives or compares a derived status, so a Get, a
+// List and the audit agree — an epic that quietly read done while live work sat
+// in an unreadable sibling is the failure this exists to remove. It degrades
+// visibly rather than silently: the epic drops off the finished list, and List
+// warns about the file that put it there.
+func derivedEpicStatus(abandoned bool, children []*Ticket, incomplete bool) Status {
 	status := DeriveEpicStatus(abandoned, children)
+	if incomplete && (status == StatusDone || status == StatusClosed) {
+		return StatusBacklog
+	}
+	return status
+}
+
+// deriveEpicFrom returns the status and completion date an epic's children
+// imply, given the abandon intent stored on the epic's own file and whether the
+// store it was read from held a file that could not be read.
+func deriveEpicFrom(abandoned bool, children []*Ticket, incomplete bool) (Status, time.Time) {
+	status := derivedEpicStatus(abandoned, children, incomplete)
 	return status, deriveEpicCompleted(status, children)
 }
 
@@ -117,7 +148,7 @@ func deriveEpicFrom(abandoned bool, children []*Ticket) (Status, time.Time) {
 // contributes the advisory status its file holds rather than a derived one;
 // the one-level rule makes the shape unwritable, and nothing else can hold a
 // child that is itself an epic.
-func deriveEpics(tickets []*Ticket, project string) {
+func deriveEpics(tickets []*Ticket, project string, incomplete bool) {
 	children := childrenByBareParent(tickets, project)
 	type derivation struct {
 		epic      *Ticket
@@ -130,7 +161,7 @@ func deriveEpics(tickets []*Ticket, project string) {
 			continue
 		}
 		_, bare := ParseNamespacedID(t.ID)
-		status, completed := deriveEpicFrom(t.Abandoned, children[bare])
+		status, completed := deriveEpicFrom(t.Abandoned, children[bare], incomplete)
 		derived = append(derived, derivation{epic: t, status: status, completed: completed})
 	}
 	for _, d := range derived {
@@ -170,10 +201,15 @@ func childrenByBareParent(tickets []*Ticket, project string) map[string][]*Ticke
 // A ticket whose parent names another project is skipped: SameTicketID
 // tolerates a namespace mismatch, which would make it a child of this store's
 // same-named epic — and the abandon cascade writes what it matches.
-func epicChildren(store Store, epicID string) ([]*Ticket, error) {
-	tickets, err := listStored(store)
+//
+// The bool reports that the store held a file the listing could not read. Such
+// a file names no parent this can match, so it is absent from the children
+// returned; it is reported instead, because it may be a child of this very epic
+// and the derivation has to know it is working from a partial set.
+func epicChildren(store Store, epicID string) ([]*Ticket, bool, error) {
+	tickets, skips, err := listStored(store)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var children []*Ticket
 	for _, t := range tickets {
@@ -187,15 +223,16 @@ func epicChildren(store Store, epicID string) ([]*Ticket, error) {
 			children = append(children, t)
 		}
 	}
-	return children, nil
+	return children, len(skips) > 0, nil
 }
 
 // resolveAbandonIntent records on t the abandon intent the writer expressed and
 // reports whether this edit abandons the epic — the one thing that has to
 // cascade into the children. priorAbandoned is the intent the epic stands with
-// on disk, children are its children as their files hold them, and statusSet
-// says whether the writer set the status field rather than carrying back the
-// one it was shown.
+// on disk, children are its children as their files hold them, incomplete says
+// the store held a file the listing could not read, and statusSet says whether
+// the writer set the status field rather than carrying back the one it was
+// shown.
 //
 // Nothing is inferred from the status value. An editor is handed the epic's
 // derived status and hands it back with whatever field it did change, so a
@@ -210,7 +247,7 @@ func epicChildren(store Store, epicID string) ([]*Ticket, error) {
 // value landing there means nothing. Set explicitly, closed abandons the epic,
 // and any other status takes an abandon back; where there is no abandon to take
 // back, an epic's status is not a thing to set, so it is refused.
-func resolveAbandonIntent(t *Ticket, priorAbandoned bool, children []*Ticket, statusSet bool) (bool, error) {
+func resolveAbandonIntent(t *Ticket, priorAbandoned bool, children []*Ticket, incomplete, statusSet bool) (bool, error) {
 	t.Abandoned = priorAbandoned
 	switch {
 	case !statusSet:
@@ -228,8 +265,11 @@ func resolveAbandonIntent(t *Ticket, priorAbandoned bool, children []*Ticket, st
 		// The refusal stands whatever the value was, but a status that happens to
 		// equal the derived one has nothing to change about the children: naming
 		// them as the remedy for a value they already produce reads as a
-		// contradiction, so that case says what it means instead.
-		derived := DeriveEpicStatus(false, children)
+		// contradiction, so that case says what it means instead. Derived the way
+		// a reader sees it, degradation included: the refusal quotes a status back
+		// to the writer, and quoting one no view of the store shows would be worse
+		// than useless.
+		derived := derivedEpicStatus(false, children, incomplete)
 		if t.Status == derived {
 			return false, fmt.Errorf("epic %s already reads %s — an epic's status is derived from its children and cannot be set. "+
 				"Change the children, or set the epic closed to abandon it", t.ID, derived)
@@ -361,11 +401,17 @@ type EpicStatusDrift struct {
 //
 // Read through listStored, which is the only path left that reports a stored
 // epic status, and derived with the same function every reader gets its value
-// from. Strictly read-only, like the rest of the audit.
-func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, error) {
-	tickets, err := listStored(store)
+// from — degradation included, or the audit would compare against a status no
+// reader is shown and report drift that is not there while missing drift that
+// is. The files the listing could not read come back with the drift: they are
+// what makes the derived values degraded, and a report that named neither would
+// call a store clean it never read in full.
+//
+// Strictly read-only, like the rest of the audit.
+func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, []FileSkip, error) {
+	tickets, skips, err := listStored(store)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	children := childrenByBareParent(tickets, storeProject(store))
 
@@ -375,7 +421,7 @@ func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, error) {
 			continue
 		}
 		_, bare := ParseNamespacedID(t.ID)
-		derived := DeriveEpicStatus(t.Abandoned, children[bare])
+		derived := derivedEpicStatus(t.Abandoned, children[bare], len(skips) > 0)
 		if derived == t.Status {
 			continue
 		}
@@ -388,5 +434,5 @@ func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, error) {
 		}
 		drift = append(drift, EpicStatusDrift{ID: t.ID, Stored: t.Status, Derived: derived, Kind: kind})
 	}
-	return drift, nil
+	return drift, skips, nil
 }

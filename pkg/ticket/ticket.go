@@ -109,9 +109,19 @@ type Ticket struct {
 	Tags        []string   `yaml:"tags,omitempty,flow"`
 	ExternalRef string     `yaml:"external-ref,omitempty"`
 	Branch      string     `yaml:"branch,omitempty"`
-	Created     time.Time  `yaml:"created"`
-	Updated     time.Time  `yaml:"-"`
-	Completed   time.Time  `yaml:"-"`
+	// The three dates are all read manually in Parse rather than by the struct
+	// decode. A scalar yaml.v3 cannot fit a field reaches d.terror, which records
+	// a TypeError and carries on decoding the rest — the mismatch Parse tolerates.
+	// time.Time never reaches it: it implements encoding.TextUnmarshaler, so the
+	// scalar decode hands it the raw text first (decode.go:591 in v3.0.1) and
+	// calls fail() on the error time.Parse returns, which unwinds the whole
+	// decode. That error is not a TypeError and every field after the bad date
+	// stays zero, so one `created: soon` would cost the ticket its type, priority,
+	// parent and status. parseTimeValue reads the value off the raw map instead
+	// and yields the zero time, which is what updated and completed already did.
+	Created   time.Time `yaml:"-"`
+	Updated   time.Time `yaml:"-"`
+	Completed time.Time `yaml:"-"`
 
 	// Results the ticket produced (branch, commit, artifacts), serialized as a
 	// nested block in format.go.

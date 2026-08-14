@@ -284,6 +284,245 @@ func TestEpicIgnoresAnotherProjectsParentedTicket(t *testing.T) {
 	}
 }
 
+// ─── Derivation over a store that could not be read in full ────────────────
+
+func TestEpicDerivesFromAChildWithAMistypedField(t *testing.T) {
+	// `abandoned: maybe` used to fail the whole parse, dropping a live child out
+	// of its epic's derivation and leaving the epic reading done over work in
+	// progress. The field is lost; the ticket is not.
+	dir := t.TempDir()
+	s := NewProjectFileStore(dir, "proj")
+	if err := s.Create(mkEpic("epic-1111", StatusBacklog, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(mkWithParent("done-2222", StatusDone, "epic-1111")); err != nil {
+		t.Fatal(err)
+	}
+	planted := "---\nid: live-3333\nstatus: open\nabandoned: maybe\ndeps: []\nlinks: []\n" +
+		"created: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\nparent: epic-1111\n---\n# Live child\n"
+	if err := os.WriteFile(filepath.Join(dir, "live-3333.md"), []byte(planted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	epic, err := s.Get("epic-1111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != StatusOpen {
+		t.Errorf("epic status = %q, want %q — a live child with a mistyped field is still a live child", epic.Status, StatusOpen)
+	}
+	all, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]Status{}
+	for _, tk := range all {
+		listed[tk.ID] = tk.Status
+	}
+	if listed["live-3333"] != StatusOpen {
+		t.Errorf("List = %v, want live-3333 shown as open", listed)
+	}
+	if listed["epic-1111"] != StatusOpen {
+		t.Errorf("List reads the epic %q, want %q — it must agree with Get", listed["epic-1111"], StatusOpen)
+	}
+}
+
+func TestEpicNeverTerminalWhileAFileCannotBeRead(t *testing.T) {
+	// An unreadable file could be any epic's child, so "every child is terminal"
+	// is not a claim the store can make. done and closed both degrade to backlog
+	// — visibly, beside the warning List emits — rather than reading finished
+	// over a ticket nobody could read.
+	dir := t.TempDir()
+	s := NewProjectFileStore(dir, "proj")
+	for _, tk := range []*Ticket{
+		mkEpic("done-1111", StatusBacklog, ""),
+		mkWithParent("child-2222", StatusDone, "done-1111"),
+		mkEpic("closed-3333", StatusBacklog, ""),
+		mkWithParent("child-4444", StatusClosed, "closed-3333"),
+		mkEpic("live-5555", StatusBacklog, ""),
+		mkWithParent("child-6666", StatusOpen, "live-5555"),
+	} {
+		if err := s.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]Status{"done-1111": StatusDone, "closed-3333": StatusClosed, "live-5555": StatusOpen} {
+		if epic, _ := s.Get(id); epic.Status != want {
+			t.Fatalf("%s = %q before the planted file, want %q", id, epic.Status, want)
+		}
+	}
+
+	plantUnreadable(t, dir, "broken-9999.md")
+	captureWarnings(t)
+
+	want := map[string]Status{
+		"done-1111":   StatusBacklog,
+		"closed-3333": StatusBacklog,
+		// Nothing degrades an epic a parsed child already holds open: the phantom
+		// child is of unknown status, which cannot make an epic more finished.
+		"live-5555": StatusOpen,
+	}
+	all, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]Status{}
+	for _, tk := range all {
+		listed[tk.ID] = tk.Status
+	}
+	for id, status := range want {
+		if listed[id] != status {
+			t.Errorf("List: %s = %q, want %q", id, listed[id], status)
+		}
+		// A single read has to agree with the listing, or a `tk show` would
+		// contradict the board.
+		epic, err := s.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if epic.Status != status {
+			t.Errorf("Get: %s = %q, want %q", id, epic.Status, status)
+		}
+		if status == StatusBacklog && !epic.Completed.IsZero() {
+			t.Errorf("Get: %s carries completed %v beside a degraded status", id, epic.Completed)
+		}
+	}
+}
+
+func TestEpicNeverTerminalWithAnUnusableChildFile(t *testing.T) {
+	// The two shapes yaml.v3 reports as the same TypeError a mistyped local field
+	// produces, and that leniency would therefore have waved through. Each would
+	// leave the epic reading done over the live child the file actually holds —
+	// the doubled key by decoding nothing at all, the sequence parent by decoding
+	// everything except the link to the epic. Neither is visible on the ticket,
+	// so both count as unreadable and the epic degrades instead.
+	cases := []struct {
+		name    string
+		planted string
+	}{
+		{
+			// What a hand-resolved merge conflict leaves in the synced store.
+			name: "duplicate key",
+			planted: "---\nid: live-3333\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\n" +
+				"type: feature\npriority: 2\nparent: epic-1111\nstatus: open\n---\n# Merge-conflicted child\n",
+		},
+		{
+			name: "parent as a sequence",
+			planted: "---\nid: live-3333\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\n" +
+				"type: feature\npriority: 2\nparent: [epic-1111]\n---\n# Child with a lost parent\n",
+		},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		s := NewProjectFileStore(dir, "proj")
+		if err := s.Create(mkEpic("epic-1111", StatusBacklog, "")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Create(mkWithParent("done-2222", StatusDone, "epic-1111")); err != nil {
+			t.Fatal(err)
+		}
+		if epic, _ := s.Get("epic-1111"); epic.Status != StatusDone {
+			t.Fatalf("%s: epic = %q before the planted file, want %q", c.name, epic.Status, StatusDone)
+		}
+
+		if err := os.WriteFile(filepath.Join(dir, "live-3333.md"), []byte(c.planted), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		warnings := captureWarnings(t)
+
+		all, err := s.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tk := range all {
+			if tk.ID == "" {
+				t.Errorf("%s: List holds a blank ticket read from the planted file: %+v", c.name, tk)
+			}
+			if tk.ID == "epic-1111" && tk.Status != StatusBacklog {
+				t.Errorf("%s: List: epic = %q, want %q — a file it could not read may be a child", c.name, tk.Status, StatusBacklog)
+			}
+		}
+		if epic, _ := s.Get("epic-1111"); epic.Status != StatusBacklog {
+			t.Errorf("%s: Get: epic = %q, want %q", c.name, epic.Status, StatusBacklog)
+		}
+		if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "live-3333.md") {
+			t.Errorf("%s: warnings = %v, want the planted file named once", c.name, *warnings)
+		}
+	}
+}
+
+func TestEpicFileWithALostTypeIsNotSilentlyStale(t *testing.T) {
+	// An epic's own type is load-bearing in a way its other fields are not:
+	// `type: [epic]` is a tolerated TypeError that leaves the ticket typeless, so
+	// the derivation passes over it entirely and the file's stored status — here
+	// a done a previous write baked in — renders unchanged over a live child,
+	// with the demotion never consulted. Refusing the file is what puts it back
+	// under the rule: it becomes a skip, so nothing shows a stale done and every
+	// epic in the project degrades.
+	dir := t.TempDir()
+	s := NewProjectFileStore(dir, "proj")
+	if err := s.Create(mkWithParent("child-2222", StatusOpen, "")); err != nil {
+		t.Fatal(err)
+	}
+	planted := "---\nid: epic-1111\nstatus: done\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\n" +
+		"type: [epic]\npriority: 2\n---\n# Epic with a lost type\n"
+	if err := os.WriteFile(filepath.Join(dir, "epic-1111.md"), []byte(planted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warnings := captureWarnings(t)
+
+	all, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range all {
+		if tk.ID == "" {
+			t.Errorf("List holds a blank ticket read from the planted file: %+v", tk)
+		}
+		if tk.ID == "epic-1111" {
+			t.Errorf("List holds the planted epic as %+v; a file that lost its type is not readable", tk)
+		}
+	}
+	if len(all) != 1 || all[0].ID != "child-2222" {
+		t.Errorf("List = %d tickets, want only the child that parses", len(all))
+	}
+	if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "epic-1111.md") {
+		t.Errorf("warnings = %v, want the planted file named once", *warnings)
+	}
+}
+
+func TestAuditReportsUnreadableFile(t *testing.T) {
+	// The audit reads through the same listing, so without this it would call a
+	// store clean that it never read in full — and it would compare against a
+	// derived status no reader is shown.
+	dir := t.TempDir()
+	s := NewProjectFileStore(dir, "proj")
+	writeLegacy(t, s, mkEpic("epic-1111", StatusDone, ""))
+	writeLegacy(t, s, mkWithParent("child-2222", StatusDone, "epic-1111"))
+	plantUnreadable(t, dir, "broken-9999.md")
+	captureWarnings(t)
+
+	report, err := Audit(s)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if len(report.SkippedFiles) != 1 {
+		t.Fatalf("skipped files = %+v, want the one file the audit could not read", report.SkippedFiles)
+	}
+	skip := report.SkippedFiles[0]
+	if skip.File != "broken-9999.md" || skip.Project != "proj" || skip.Error == "" {
+		t.Errorf("skip = %+v, want the project, the file and a reason", skip)
+	}
+	// The epic stores done and its parsed children are all done, so without the
+	// degradation there would be no drift to report at all.
+	if len(report.EpicStatus) != 1 {
+		t.Fatalf("epic status = %+v, want the epic reported against the degraded value", report.EpicStatus)
+	}
+	if got := report.EpicStatus[0]; got.ID != "epic-1111" || got.Derived != StatusBacklog || got.Stored != StatusDone {
+		t.Errorf("drift = %+v, want epic-1111 stored done reading backlog", got)
+	}
+}
+
 // ─── Manual status ─────────────────────────────────────────────────────────
 
 func TestEpicManualStatusRejectedOnUpdate(t *testing.T) {

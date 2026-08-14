@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/EnderRealm/ticket/v7/internal/project"
 	"github.com/EnderRealm/ticket/v7/pkg/ticket"
@@ -68,6 +69,13 @@ func runAudit(cmd *cobra.Command, args []string) error {
 			}
 		}
 		audit.Skipped = skipped
+		var skippedFiles []ticket.FileSkip
+		for _, f := range audit.SkippedFiles {
+			if f.Project == proj {
+				skippedFiles = append(skippedFiles, f)
+			}
+		}
+		audit.SkippedFiles = skippedFiles
 	}
 
 	if jsonOutput {
@@ -94,13 +102,35 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\n%d ticket(s) violate the one-level epic hierarchy — clear or repoint each parent\n", len(audit.Violations))
 	}
 	printEpicStatusDrift(audit.EpicStatus)
-	// A project the audit could not read is named rather than dropped: without
-	// it, "No parent violations." would speak for a store never fully read.
-	// It covers both sections, which are read in the same per-project pass.
-	if len(audit.Skipped) > 0 {
-		fmt.Printf("\nwarning: %d project(s) could not be read, so this report is incomplete:\n", len(audit.Skipped))
+	// A project or a file the audit could not read is named rather than dropped:
+	// without it, "No parent violations." would speak for a store never fully
+	// read. It covers both sections, which are read in the same per-project pass.
+	if len(audit.Skipped) > 0 || len(audit.SkippedFiles) > 0 {
+		// Only the half that has something to report is named: a run that skipped
+		// one project and no file has nothing to say about files.
+		var what []string
+		if len(audit.Skipped) > 0 {
+			what = append(what, fmt.Sprintf("%d project(s)", len(audit.Skipped)))
+		}
+		if len(audit.SkippedFiles) > 0 {
+			what = append(what, fmt.Sprintf("%d file(s)", len(audit.SkippedFiles)))
+		}
+		fmt.Printf("\nwarning: %s could not be read, so this report is incomplete:\n", strings.Join(what, " and "))
+		// Every line in this block is an entry, and both the filename and the
+		// reason came off a store another machine writes into — the reason is
+		// flattened to one line where the skip is built, and the filename is
+		// quoted here so control bytes in it cannot reach the terminal raw.
 		for _, s := range audit.Skipped {
-			fmt.Printf("  %s: %s\n", s.Project, s.Error)
+			fmt.Printf("  project %s: %s\n", s.Project, s.Error)
+		}
+		for _, f := range audit.SkippedFiles {
+			fmt.Printf("  project %s, file %q: %s\n", f.Project, f.File, f.Error)
+		}
+		if len(audit.SkippedFiles) > 0 {
+			// An unreadable file is a ticket nothing can place, so no epic in its
+			// project can claim every child finished. Said here because the epic
+			// section above reports the degraded values without explaining them.
+			fmt.Println("An unreadable file could be any epic's child, so no epic in its project reads done or closed until the file is fixed or removed.")
 		}
 	}
 	return nil

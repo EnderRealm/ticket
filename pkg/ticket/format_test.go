@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,149 @@ func TestParse_MissingFrontmatter(t *testing.T) {
 	_, err := Parse(strings.NewReader("# Just a heading\nSome text\n"))
 	if err == nil {
 		t.Error("expected error for missing frontmatter")
+	}
+}
+
+// TestParse_MistypedFieldCostsOnlyThatField covers the values a ticket file can
+// carry that tk would never have written — the central store is a git repo other
+// machines push into, and every typed field is a way for one bad scalar to have
+// cost the whole ticket. A ticket absent from a listing is absent from its
+// epic's derivation, so leniency here is what keeps an epic honest.
+func TestParse_MistypedFieldCostsOnlyThatField(t *testing.T) {
+	const frontmatter = `---
+id: t-abc1
+status: open
+abandoned: %s
+deps: [t-dep1]
+links: []
+created: %s
+type: feature
+priority: %s
+parent: t-0f08
+---
+# Sample ticket
+`
+	cases := []struct {
+		name      string
+		abandoned string
+		created   string
+		priority  string
+		want      Ticket
+	}{
+		{
+			name: "every field well typed", abandoned: "true", created: "2026-02-22T00:57:39Z", priority: "1",
+			want: Ticket{Abandoned: true, Created: time.Date(2026, 2, 22, 0, 57, 39, 0, time.UTC), Priority: 1},
+		},
+		{
+			name: "bad bool", abandoned: "maybe", created: "2026-02-22T00:57:39Z", priority: "1",
+			want: Ticket{Created: time.Date(2026, 2, 22, 0, 57, 39, 0, time.UTC), Priority: 1},
+		},
+		{
+			name: "bad int", abandoned: "true", created: "2026-02-22T00:57:39Z", priority: "high",
+			want: Ticket{Abandoned: true, Created: time.Date(2026, 2, 22, 0, 57, 39, 0, time.UTC)},
+		},
+		{
+			name: "bad date", abandoned: "true", created: "soon", priority: "1",
+			want: Ticket{Abandoned: true, Priority: 1},
+		},
+		{
+			name: "all three at once", abandoned: "maybe", created: "soon", priority: "high",
+			want: Ticket{},
+		},
+	}
+	for _, c := range cases {
+		tk, err := Parse(strings.NewReader(fmt.Sprintf(frontmatter, c.abandoned, c.created, c.priority)))
+		if err != nil {
+			t.Errorf("%s: Parse: %v", c.name, err)
+			continue
+		}
+		if tk.Abandoned != c.want.Abandoned || tk.Priority != c.want.Priority || !tk.Created.Equal(c.want.Created) {
+			t.Errorf("%s: abandoned=%v priority=%d created=%v, want %v/%d/%v",
+				c.name, tk.Abandoned, tk.Priority, tk.Created, c.want.Abandoned, c.want.Priority, c.want.Created)
+		}
+		// The fields around the mistyped one are what the ticket is: an epic
+		// derives from a child's status, and every view keys on the ID.
+		if tk.ID != "t-abc1" || tk.Status != StatusOpen || tk.Type != TypeFeature || tk.Parent != "t-0f08" {
+			t.Errorf("%s: a mistyped field cost an unrelated one: %+v", c.name, tk)
+		}
+		if tk.Title != "Sample ticket" || len(tk.Deps) != 1 || tk.Deps[0] != "t-dep1" {
+			t.Errorf("%s: title = %q, deps = %v", c.name, tk.Title, tk.Deps)
+		}
+	}
+}
+
+func TestParse_UnusableFrontmatterStillFails(t *testing.T) {
+	// Leniency stops where the decode produced no ticket. A duplicate key is the
+	// case that has to be named: yaml.v3 reports it as a TypeError like a
+	// per-field mismatch, but finds it in the uniqueKeys scan before decoding
+	// anything, so tolerating it would yield a blank ticket rather than an error
+	// — no skip recorded, no warning, and nothing to tell an epic its children
+	// were read short. A hand-resolved merge conflict in the synced store is
+	// exactly how a doubled key arrives.
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"broken syntax", "---\nid: t-abc1\n  status: open\n---\n# Broken\n"},
+		{"unclosed frontmatter", "---\nid: t-abc1\nstatus: open\n# Never closed\n"},
+		{"duplicate status", "---\nid: t-abc1\nstatus: open\ntype: feature\npriority: 2\nstatus: done\n---\n# Doubled\n"},
+		{"duplicate id", "---\nid: t-abc1\nid: t-abc2\nstatus: open\ntype: feature\n---\n# Doubled\n"},
+		{"mistyped id", "---\nid: [t-abc1]\nstatus: open\ntype: feature\n---\n# No usable ID\n"},
+		// A relational field that failed to decode is other tickets' business:
+		// the parent silently vanishes from its epic's children, and the deps
+		// silently stop blocking. Neither shows on the ticket, so neither is
+		// tolerable the way a lost priority is.
+		{"parent as a sequence", "---\nid: t-abc1\nstatus: open\ntype: feature\nparent: [epic-1111]\n---\n# Lost parent\n"},
+		{"parent as a mapping", "---\nid: t-abc1\nstatus: open\ntype: feature\nparent: {a: b}\n---\n# Lost parent\n"},
+		{"deps as a scalar", "---\nid: t-abc1\nstatus: open\ntype: feature\ndeps: notalist\n---\n# Lost deps\n"},
+		// A typeless epic is passed over by the derivation and renders the stale
+		// status its file stores, which is the demotion bypassed rather than
+		// applied.
+		{"type as a sequence", "---\nid: t-abc1\nstatus: done\ntype: [epic]\n---\n# Lost type\n"},
+		// A complex top-level key: the struct pass tolerates it and carries on,
+		// while the raw pass errors — so the load-bearing check cannot run. An
+		// unvetted tolerance falls back to strict, or the parent below would be
+		// dropped silently.
+		{"complex key hiding a lost parent", "---\nid: t-abc1\nstatus: open\ntype: feature\n? {a: b}\n: c\nparent: [epic-1111]\n---\n# Unvettable\n"},
+	}
+	for _, c := range cases {
+		tk, err := Parse(strings.NewReader(c.input))
+		if err == nil {
+			t.Errorf("%s: expected an error, got a ticket %+v", c.name, tk)
+		}
+	}
+}
+
+func TestParse_EmptyLoadBearingFieldsStillParse(t *testing.T) {
+	// The load-bearing check must not catch a writer saying "none". Each of these
+	// is a legitimately empty parent, dep list or type, paired with a mistyped
+	// local field so the tolerated-TypeError path is the one under test. An empty
+	// type is Validate's business on the way in, not the parser's.
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"parent empty string", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\nparent: ''\ndeps: []\n---\n# Fine\n"},
+		{"parent null", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\nparent:\ndeps: []\n---\n# Fine\n"},
+		{"parent absent", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\ndeps: []\n---\n# Fine\n"},
+		{"deps empty", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\nparent: epic-1111\ndeps: []\n---\n# Fine\n"},
+		{"deps absent", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\nparent: epic-1111\n---\n# Fine\n"},
+		{"type empty string", "---\nid: t-abc1\nstatus: open\ntype: ''\nabandoned: maybe\ndeps: []\n---\n# Fine\n"},
+		{"type absent", "---\nid: t-abc1\nstatus: open\nabandoned: maybe\ndeps: []\n---\n# Fine\n"},
+		{"all populated", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\nparent: epic-1111\ndeps: [d-1]\n---\n# Fine\n"},
+	}
+	for _, c := range cases {
+		tk, err := Parse(strings.NewReader(c.input))
+		if err != nil {
+			t.Errorf("%s: Parse: %v", c.name, err)
+			continue
+		}
+		if tk.ID != "t-abc1" || tk.Status != StatusOpen {
+			t.Errorf("%s: parsed %+v, want the ticket intact", c.name, tk)
+		}
+		if tk.Abandoned {
+			t.Errorf("%s: the mistyped local field was not dropped", c.name)
+		}
 	}
 }
 

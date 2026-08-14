@@ -3,6 +3,7 @@ package ticket
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -41,14 +42,64 @@ func Parse(r io.Reader) (*Ticket, error) {
 		return nil, err
 	}
 
+	// A type mismatch on a typed field is not fatal, as long as what it cost stays
+	// inside this one ticket. yaml.v3 collects such mismatches into a TypeError and
+	// decodes every other field regardless, so `abandoned: maybe` or
+	// `priority: high` costs that one field rather than the whole ticket — which is
+	// what the store needs, because a ticket that fails to parse is a ticket absent
+	// from every listing and absent from its epic's derivation. The central store
+	// is a git repo other machines push into, so a value tk would never have
+	// written can arrive at any time; losing a local field to it is recoverable and
+	// losing the ticket is not. Everything else — broken YAML, frontmatter that
+	// never closes — still fails: there is no partial reading of a document the
+	// parser could not structure.
+	//
+	// That split is the whole rule, and the line is where a lost field stops being
+	// this ticket's own business. Two ways a tolerated TypeError would cross it:
+	//
+	//   - The ID is what says the decode produced a ticket at all. A TypeError is
+	//     not exclusively the per-field kind: yaml.v3 reports a repeated top-level
+	//     key as one too, and finds it in the uniqueKeys scan of the mapping before
+	//     decoding any field, so nothing decodes — the struct comes back entirely
+	//     zero and the raw-map pass below fails the same check. A hand-resolved
+	//     merge conflict in the synced store is exactly how a doubled `status:`
+	//     arrives, and tolerating it would yield a blank ticket.
+	//   - A load-bearing field — `parent`, `deps`, `type` — is other tickets'
+	//     business, or the derivation's. `parent: [epic-1111]` decodes to no parent
+	//     at all, which silently removes the ticket from its epic's children and
+	//     lets the epic read done over it; `deps: notalist` silently empties the
+	//     dependencies, which shows the ticket as unblocked in `tk ready` and the
+	//     frontier; `type: [epic]` on an epic's own file leaves it typeless, so
+	//     deriveEpics passes over it and it renders the stale status its file
+	//     stores — often a done a previous write baked in — with the demotion
+	//     bypassed entirely. All three are the failure this leniency exists to
+	//     remove, reintroduced through the door it opened, and none is visible
+	//     anywhere: the file parses.
+	//
+	// Either way the file is refused, which makes it a reported skip and degrades
+	// the epics around it, instead of a ticket quietly missing a field nothing can
+	// see. The load-bearing check needs the raw map to tell a value that failed to
+	// decode from one that was legitimately empty, so it runs with the second pass
+	// and the original error is held until then — and if that pass cannot decode
+	// either, the tolerance is taken back rather than granted unvetted. A struct
+	// decode that succeeded outright is unaffected: the second pass has always been
+	// best-effort for the fields only it reads.
 	var t Ticket
-	if err := yaml.Unmarshal(front, &t); err != nil {
-		return nil, fmt.Errorf("parsing frontmatter: %w", err)
+	var typeErr *yaml.TypeError
+	structErr := yaml.Unmarshal(front, &t)
+	if structErr != nil {
+		if !errors.As(structErr, &typeErr) || t.ID == "" {
+			return nil, fmt.Errorf("parsing frontmatter: %w", structErr)
+		}
 	}
 
 	// Second pass: capture unknown keys into Extra, and handle legacy fields.
 	var raw map[string]interface{}
-	if err := yaml.Unmarshal(front, &raw); err == nil {
+	rawErr := yaml.Unmarshal(front, &raw)
+	if structErr != nil && (rawErr != nil || lostLoadBearing(&t, raw)) {
+		return nil, fmt.Errorf("parsing frontmatter: %w", structErr)
+	}
+	if rawErr == nil {
 		t.Extra = map[string]string{}
 		for k, v := range raw {
 			if !reservedKeys[k] && !legacyKeys[k] {
@@ -56,7 +107,10 @@ func Parse(r io.Reader) (*Ticket, error) {
 			}
 		}
 
-		// Updated and Completed use yaml:"-" and are parsed manually here.
+		// The dates use yaml:"-" and are parsed manually here.
+		if v, ok := raw["created"]; ok {
+			t.Created = parseTimeValue(v)
+		}
 		if v, ok := raw["updated"]; ok {
 			t.Updated = parseTimeValue(v)
 		}
@@ -104,6 +158,50 @@ func Parse(r io.Reader) (*Ticket, error) {
 
 	parseBody(&t, body)
 	return &t, nil
+}
+
+// lostLoadBearing reports whether a tolerated type error cost a field that
+// something outside this ticket depends on: the parent an epic gathers its
+// children by, the deps that decide whether the ticket is ready to pick up, or
+// the type that decides whether the ticket is an epic and therefore derives a
+// status at all. The frontmatter carried the key, the decode produced nothing
+// for it, and the raw value is not itself empty — so the value was there and was
+// dropped, rather than never having been written. `parent:`, `parent: ""`,
+// `deps: []` and `type: ""` are all a writer saying "none": readable here, and
+// judged by Validate on the way in like any other missing value.
+//
+// Local fields are deliberately not checked. An unreadable priority or a
+// mistyped abandon flag is wrong only about the ticket it is on, and that is
+// visible on the ticket; a lost parent, dep or type is wrong about a ticket
+// somewhere else, and nothing about the ticket shows it.
+func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
+	if v, ok := raw["parent"]; ok && t.Parent == "" && !emptyYAMLValue(v) {
+		return true
+	}
+	if v, ok := raw["deps"]; ok && len(t.Deps) == 0 && !emptyYAMLValue(v) {
+		return true
+	}
+	if v, ok := raw["type"]; ok && t.Type == "" && !emptyYAMLValue(v) {
+		return true
+	}
+	return false
+}
+
+// emptyYAMLValue reports whether a frontmatter value carries nothing — the
+// forms a writer uses to say a field has no value. Anything else is content the
+// decode was meant to produce something from.
+func emptyYAMLValue(v interface{}) bool {
+	switch val := v.(type) {
+	case nil:
+		return true
+	case string:
+		return val == ""
+	case []interface{}:
+		return len(val) == 0
+	case map[string]interface{}:
+		return len(val) == 0
+	}
+	return false
 }
 
 // legacyKeys are YAML keys from the old pipeline model that should be

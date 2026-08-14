@@ -176,6 +176,49 @@ func TestAuditEpicStatusJSONAndProjectFilter(t *testing.T) {
 	}
 }
 
+func TestAuditWarnsAboutUnreadableFile(t *testing.T) {
+	// A file the store could not read is a ticket the audit never saw, so the
+	// report must not read clean — and since that ticket could be any epic's
+	// child, the epic section reports the degraded value and says why.
+	stores := setupFrontierStore(t, "alpha", "beta")
+	auditEpic(t, stores["alpha"], "au-epic-0001", ticket.StatusDone)
+	auditTicket(t, stores["alpha"], "au-child-0002", ticket.TypeFeature, "au-epic-0001")
+	broken := filepath.Join(stores["alpha"].Dir, "au-broken-0003.md")
+	if err := os.WriteFile(broken, []byte("---\nid: x\n  status: open\n---\n# Broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureAudit(t)
+	if !contains(out, "au-broken-0003.md") || !contains(out, "incomplete") {
+		t.Errorf("audit should name the unreadable file and call the report incomplete:\n%s", out)
+	}
+	if !contains(out, "could be any epic's child") {
+		t.Errorf("audit should say why no epic reads done or closed:\n%s", out)
+	}
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var result ticket.AuditReport
+	jsonOut := captureAudit(t, "project", "alpha")
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
+	}
+	if len(result.SkippedFiles) != 1 || result.SkippedFiles[0].File != "au-broken-0003.md" || result.SkippedFiles[0].Project != "alpha" {
+		t.Errorf("json skipped_files = %+v, want the alpha file reported", result.SkippedFiles)
+	}
+
+	// Scoped to the project that read in full, there is nothing to report.
+	result = ticket.AuditReport{}
+	jsonOut = captureAudit(t, "project", "beta")
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
+	}
+	if len(result.SkippedFiles) != 0 {
+		t.Errorf("--project=beta reported %+v, want no skipped files", result.SkippedFiles)
+	}
+}
+
 func TestAuditWarnsAboutUnreadableProject(t *testing.T) {
 	// "No parent violations." must never speak for a store the audit could not
 	// read in full, in either output mode.

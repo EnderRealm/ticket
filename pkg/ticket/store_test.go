@@ -200,6 +200,84 @@ func TestFileStore_List(t *testing.T) {
 	}
 }
 
+// plantUnreadable writes a file into a store directory that no parse can
+// structure — the class Parse still refuses once a mistyped field is tolerated.
+func plantUnreadable(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("---\nid: x\n  status: open\n---\n# Broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// captureWarnings redirects the library's warning sink for the test's duration.
+func captureWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var warnings []string
+	orig := Warnf
+	Warnf = func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	t.Cleanup(func() { Warnf = orig })
+	return &warnings
+}
+
+func TestOneLineFlattensAndDisarmsAReason(t *testing.T) {
+	// A skip's reason quotes a file another machine wrote — yaml.v3's TypeError
+	// is multi-line and echoes the offending scalar back — and it is printed into
+	// a warning block where every line is an entry, on a terminal that acts on
+	// escapes.
+	got := oneLine(fmt.Errorf("yaml: unmarshal errors:\n  line 2: cannot unmarshal !!str `\x1b[2K\x07evil\n  line 9: spoofed` into bool"))
+	if strings.ContainsAny(got, "\n\r\x1b\x07") {
+		t.Errorf("oneLine = %q, want no newlines and no control bytes", got)
+	}
+	if !strings.Contains(got, "cannot unmarshal") || !strings.Contains(got, "evil") {
+		t.Errorf("oneLine = %q, want the reason still legible", got)
+	}
+}
+
+func TestFileStore_ListReportsAndWarnsAboutUnreadableFiles(t *testing.T) {
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	if err := store.Create(sampleTicket("t-ls01")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	plantUnreadable(t, dir, "broken-9999.md")
+
+	tickets, skips, err := store.listStored()
+	if err != nil {
+		t.Fatalf("listStored: %v", err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "t-ls01" {
+		t.Errorf("listStored returned %d tickets, want the one that parses", len(tickets))
+	}
+	if len(skips) != 1 || skips[0].File != "broken-9999.md" || skips[0].Error == "" {
+		t.Fatalf("skips = %+v, want the unreadable file named with a reason", skips)
+	}
+
+	warnings := captureWarnings(t)
+	if _, err := store.List(); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("List emitted %d warnings, want 1: %v", len(*warnings), *warnings)
+	}
+	if !strings.Contains((*warnings)[0], "proj/broken-9999.md") || !strings.Contains((*warnings)[0], "not shown") {
+		t.Errorf("warning = %q, want it to name the project, the file, and that the ticket is not shown", (*warnings)[0])
+	}
+}
+
+func TestFileStore_ListWarnsNothingWithoutSkips(t *testing.T) {
+	store, _ := testStore(t)
+	if err := store.Create(sampleTicket("t-ls01")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	warnings := captureWarnings(t)
+	if _, err := store.List(); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(*warnings) != 0 {
+		t.Errorf("a store that read in full warned: %v", *warnings)
+	}
+}
+
 func TestFileStore_ListEmptyDir(t *testing.T) {
 	store := NewFileStore(filepath.Join(t.TempDir(), "nonexistent"))
 	tickets, err := store.List()
