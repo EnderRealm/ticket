@@ -22,7 +22,8 @@ Usage: tk <command> [args]
 
 Viewing:
   show <id> [--metadata]     Display ticket details
-  ls|list [filters]          List tickets (default: workflow grouped)
+  ls|list [filters]          List tickets (default: workflow grouped, done
+                             and closed hidden; --all shows them)
   frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
   audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read
@@ -115,6 +116,9 @@ Journal:
 
 Filter flags for ls:
   --status=X         backlog | ready | open | done | closed
+  --all              Include done and closed, which the default hides.
+                     --status shows one status at a time, so this is the
+                     only view of the whole board.
   -t, --type=X       bug | feature | epic
   -P, --priority=X   0 (critical) through 4 (backlog)
   -T, --tag=X        Filter by tag

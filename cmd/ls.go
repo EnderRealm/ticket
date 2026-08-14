@@ -19,6 +19,7 @@ var lsCmd = &cobra.Command{
 func init() {
 	addFilterFlags(lsCmd)
 	lsCmd.Flags().String("status", "", "filter by status")
+	lsCmd.Flags().Bool("all", false, "include done and closed tickets (hidden by default; ignored with --status)")
 	lsCmd.Flags().String("parent", "", "filter by parent ticket ID")
 	lsCmd.Flags().String("field", "", "filter by extra field (key=value, substring match)")
 	lsCmd.Flags().String("group-by", "", "group by: workflow | type | priority")
@@ -51,13 +52,15 @@ func runLs(cmd *cobra.Command, args []string) error {
 	}
 
 	statusFilter, _ := cmd.Flags().GetString("status")
+	all, _ := cmd.Flags().GetBool("all")
 	if statusFilter != "" {
 		opts.Status = ticket.Status(statusFilter)
-	} else {
-		// No explicit status: exclude closed (non-closed default).
+	} else if !all {
+		// No explicit status: show live work only, so finished tickets do not
+		// bury the rows a reader scans for.
 		var filtered []*ticket.Ticket
 		for _, t := range tickets {
-			if t.Status != ticket.StatusClosed {
+			if t.Status != ticket.StatusDone && t.Status != ticket.StatusClosed {
 				filtered = append(filtered, t)
 			}
 		}

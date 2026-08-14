@@ -241,7 +241,8 @@ FILTER1=$(tk create "Filter Test Alpha" -t feature -p 1 --tags "frontend" | extr
 FILTER2=$(tk create "Filter Test Beta" -t bug -p 2 --tags "backend" | extract_id)
 tk edit "$FILTER2" --status done > /dev/null
 
-# Default `tk ls` hides backlog + done; move FILTER1 to open so it shows there.
+# Default `tk ls` hides done + closed; FILTER1 moves to open so the filter
+# assertions below have a live row.
 tk edit "$FILTER1" --status open > /dev/null
 assert_contains "tk ls" "$FILTER1" "ls shows open tickets by default"
 assert_not_contains "tk ls" "$FILTER2" "ls default hides done tickets"

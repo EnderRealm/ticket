@@ -36,13 +36,64 @@ func TestLsDefaultStatusSet(t *testing.T) {
 
 	out := captureLs(t)
 
-	for _, s := range []ticket.Status{ticket.StatusBacklog, ticket.StatusReady, ticket.StatusOpen, ticket.StatusDone} {
+	for _, s := range []ticket.Status{ticket.StatusBacklog, ticket.StatusReady, ticket.StatusOpen} {
 		if !contains(out, "ls-"+string(s)) {
 			t.Errorf("default ls output missing %s ticket:\n%s", s, out)
 		}
 	}
-	if contains(out, "ls-"+string(ticket.StatusClosed)) {
-		t.Errorf("default ls output should exclude closed ticket:\n%s", out)
+	for _, s := range []ticket.Status{ticket.StatusDone, ticket.StatusClosed} {
+		if contains(out, "ls-"+string(s)) {
+			t.Errorf("default ls output should exclude %s ticket:\n%s", s, out)
+		}
+	}
+
+	// --all is the only listing of the whole board: --status shows one at a time.
+	f := lsCmd.Flags()
+	if err := f.Set("all", "true"); err != nil {
+		t.Fatalf("set all: %v", err)
+	}
+	defer func() { _ = f.Set("all", "false") }()
+
+	out = captureLs(t)
+
+	for _, s := range statuses {
+		if !contains(out, "ls-"+string(s)) {
+			t.Errorf("ls --all output missing %s ticket:\n%s", s, out)
+		}
+	}
+}
+
+func TestLsStatusFilterReachesTerminalTickets(t *testing.T) {
+	store := centralStore(t, "ls-terminal")
+
+	for _, s := range []ticket.Status{ticket.StatusOpen, ticket.StatusDone, ticket.StatusClosed} {
+		tk := &ticket.Ticket{
+			ID:      "ls-term-" + string(s),
+			Status:  s,
+			Type:    ticket.TypeFeature,
+			Created: time.Now(),
+			Title:   "Item " + string(s),
+			Body:    "\n",
+		}
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", s, err)
+		}
+	}
+
+	f := lsCmd.Flags()
+	defer func() { _ = f.Set("status", "") }()
+
+	for _, s := range []ticket.Status{ticket.StatusDone, ticket.StatusClosed} {
+		if err := f.Set("status", string(s)); err != nil {
+			t.Fatalf("set status: %v", err)
+		}
+		out := captureLs(t)
+		if !contains(out, "ls-term-"+string(s)) {
+			t.Errorf("--status %s output missing its ticket:\n%s", s, out)
+		}
+		if contains(out, "ls-term-"+string(ticket.StatusOpen)) {
+			t.Errorf("--status %s output should exclude the open ticket:\n%s", s, out)
+		}
 	}
 }
 

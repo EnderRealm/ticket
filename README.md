@@ -151,7 +151,8 @@ Run `tk help` for the full command reference. Key commands:
 ```
 Viewing:
   show <id> [--metadata]     Display ticket details
-  ls|list [filters]          List tickets (default: workflow grouped)
+  ls|list [filters]          List tickets (default: workflow grouped, done
+                             and closed hidden; --all shows them)
   frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
   audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read
@@ -340,6 +341,7 @@ A refusal is reported as `refused`, never as a failure, and counted separately i
 
 ```
 --status X        Filter by status (backlog, ready, open, done, closed)
+--all             Include done and closed, which the default hides
 -t, --type X      bug | feature | epic
 -P, --priority X  0 (critical) through 4 (backlog)
 -T, --tag X       Filter by tag
@@ -348,6 +350,8 @@ A refusal is reported as `refused`, never as a failure, and counted separately i
 --group-by X      Group by: workflow | type | priority
 --flat            Flat list (no grouping)
 ```
+
+A default `tk ls` lists live work only — `done` and `closed` are hidden, so finished tickets do not bury the rows you are scanning for. Reach them with `--status done` / `--status closed`, or with `--all`, which shows the whole board in one listing (`--status` only ever shows one status at a time). Since an epic reads the status its children imply, a finished epic drops out of the default listing along with its children.
 
 ### Extra Fields
 
