@@ -143,6 +143,21 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 				switch {
 				case err != nil:
 					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
+				case t.ID != ticketID:
+					// Get falls back to substring matching on the store's
+					// filenames, so a bracketed token that is not an ID at all
+					// ("Fixes: [auth]") resolves whenever exactly one filename
+					// contains it. Interactive surfaces keep that fallback — a
+					// human is there to see what it matched — but this write is
+					// unattended and its input is commit-message text, which in a
+					// repo taking outside contributions the store owner does not
+					// control. Only an exact name closes a ticket here. String
+					// equality is the exactness test because the watcher's store
+					// is project-scoped and returns bare IDs, and ResolveRef has
+					// already flattened a ref namespaced to this project; a
+					// namespacing store (MultiStore returns "project/id") would
+					// need the ref normalised first.
+					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s skipped: the ref does not name a ticket exactly (it resolved to %s)", ticketID, t.ID))
 				case t.Type == ticket.TypeEpic:
 					// An epic's status is derived from its children, so writing
 					// one here would change nothing while appending a note and

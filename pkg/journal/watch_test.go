@@ -432,6 +432,67 @@ func TestWatchCycle_ForeignNamespacedRef(t *testing.T) {
 	}
 }
 
+// TestWatchCycle_PartialRefDoesNotClose holds a ref that is only a substring of
+// a ticket's ID to the warning path: the store's lookup falls back to substring
+// matching, which would let any bracketed word in a commit subject close an
+// unrelated ticket.
+func TestWatchCycle_PartialRefDoesNotClose(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "partial-test")
+
+	tk := &ticket.Ticket{
+		ID:       ticket.GenerateID("Partial ref ticket"),
+		Title:    "Partial ref ticket",
+		Type:     ticket.TypeFeature,
+		Status:   ticket.StatusOpen,
+		Priority: 2,
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+	fragment := strings.Split(tk.ID, "-")[0]
+
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+fragment+"] Landed something")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("partial-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 0 {
+		t.Errorf("Closed = %d, want 0 — the ref does not name the ticket exactly", result.Closed)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], fragment) {
+		t.Fatalf("warnings = %v, want the unresolved ref %q named", result.Warnings, fragment)
+	}
+
+	// The commit is still journalled, under the fragment it named: the entry
+	// records what the commit said, and only the close needs an exact ref.
+	if result.Appended != 1 {
+		t.Errorf("Appended = %d, want 1 — the commit is journalled either way", result.Appended)
+	}
+	entries, err := ReadEntries("partial-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Ticket != fragment || entries[0].Action != "close" {
+		t.Errorf("entries = %+v, want one keyed %q with action close", entries, fragment)
+	}
+
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusOpen {
+		t.Errorf("ticket status = %q, want open", updated.Status)
+	}
+	if len(updated.Notes) != 0 {
+		t.Errorf("notes = %v, want none — nothing was closed", updated.Notes)
+	}
+}
+
 func TestWatchCycle_AutoCloseSkipsEpic(t *testing.T) {
 	// An epic is closed by its children, not by a commit. Writing one would be
 	// inert while still appending a note and counting a close that never
