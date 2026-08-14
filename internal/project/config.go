@@ -428,7 +428,17 @@ func CentralStoreRoot() (string, error) {
 }
 
 // CentralProjectDir returns <centralRoot>/tickets/<projectName>.
+//
+// The name is checked before it is joined, not by each caller: filepath.Join
+// cleans traversal segments rather than failing, so a name carrying "/" or ".."
+// resolves a store outside the central root — and names reach here from config
+// map keys, which the shared config replicates from other machines. This is the
+// single bound; a caller that already knows the name is valid inherits it
+// harmlessly.
 func CentralProjectDir(projectName string) (string, error) {
+	if !ValidName(projectName) {
+		return "", fmt.Errorf("invalid project name %q", projectName)
+	}
 	root, err := CentralStoreRoot()
 	if err != nil {
 		return "", err

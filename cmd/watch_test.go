@@ -124,6 +124,87 @@ func TestWatchStoreForUnregisteredProjectIsANilInterface(t *testing.T) {
 	}
 }
 
+// The journal loop joins a config map key into the central store path, and the
+// shared config replicates from other machines, so a key like "../../elsewhere"
+// would resolve the store an auto-close writes into outside the central tickets
+// root. The escaped directory is seeded with the ticket the commit closes, so a
+// loop without the bound rewrites a file no project owns; the valid project
+// closed in the same cycle proves the loop ran at all rather than stopping on
+// the bad key.
+func TestWatchCycleRefusesATraversingProjectKey(t *testing.T) {
+	home := setupTestHome(t)
+	centralRoot := filepath.Join(home, "central")
+
+	escapeRepo := filepath.Join(home, "wt-escape")
+	validRepo := filepath.Join(home, "wt-valid")
+	for _, dir := range []string{escapeRepo, validRepo} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		runGit(t, dir, "init")
+		runGit(t, dir, "config", "user.email", "test@test.com")
+		runGit(t, dir, "config", "user.name", "test")
+	}
+
+	escapeName := "../../elsewhere"
+	escapedDir := filepath.Join(centralRoot, "tickets", escapeName)
+	escaped := ticket.NewFileStore(escapedDir)
+	mkCentral(t, escaped, "esc-0001", ticket.TypeFeature, ticket.StatusOpen, "")
+	escapedFile := filepath.Join(escapedDir, "esc-0001.md")
+	before, err := os.ReadFile(escapedFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	valid := ticket.NewProjectFileStore(filepath.Join(centralRoot, "tickets", "wt-valid"), "wt-valid")
+	mkCentral(t, valid, "wt-valid-0001", ticket.TypeFeature, ticket.StatusOpen, "")
+
+	cfg := project.Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]project.ProjectConfig{
+			escapeName: {Path: escapeRepo, Store: "central", AutoLink: true, AutoClose: true},
+			"wt-valid": {Path: validRepo, Store: "central", AutoLink: true, AutoClose: true},
+		},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	commitClosing(t, escapeRepo, "esc-0001")
+	commitClosing(t, validRepo, "wt-valid-0001")
+
+	watchOnce = true
+	watchInterval = time.Second
+	t.Cleanup(func() { watchOnce = false })
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if err := runWatchRun(watchRunCmd, nil); err != nil {
+		t.Fatalf("runWatchRun: %v", err)
+	}
+
+	closed, err := valid.Get("wt-valid-0001")
+	if err != nil {
+		t.Fatalf("Get valid ticket: %v", err)
+	}
+	if closed.Status != ticket.StatusDone {
+		t.Fatalf("valid ticket status = %q, want %q — the cycle wrote nothing at all", closed.Status, ticket.StatusDone)
+	}
+
+	after, err := os.ReadFile(escapedFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("the watcher wrote outside the central tickets root, into %s:\n%s", escapedFile, string(after))
+	}
+	if out := logs.String(); !contains(out, "invalid project name") {
+		t.Errorf("the refused project was skipped with no report:\n%s", out)
+	}
+}
+
 // TestWatchRunMigratesJournalDefaultsAndJournals is the wiring `tk watch run`
 // depends on: a project registered with both flags false — what `tk init` wrote
 // for every project on the machine — is flipped on and journalled by the same

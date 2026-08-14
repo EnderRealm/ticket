@@ -246,6 +246,25 @@ func TestCentralProjectDir(t *testing.T) {
 	}
 }
 
+// filepath.Join cleans traversal segments instead of failing, so a name that is
+// not a single path element has to be refused here — this is the one place the
+// name is joined into the store root, and its callers pass config map keys.
+func TestCentralProjectDirRejectsInvalidNames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	cfg := Config{CentralRoot: centralRoot, Projects: map[string]ProjectConfig{}}
+	Save(cfg)
+
+	for _, name := range []string{"", ".", "..", "../escape", "a/b", "../../elsewhere"} {
+		dir, err := CentralProjectDir(name)
+		if err == nil {
+			t.Errorf("CentralProjectDir(%q) = %q, want an error", name, dir)
+		}
+	}
+}
+
 func TestSharedConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
