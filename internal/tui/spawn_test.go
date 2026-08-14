@@ -131,6 +131,51 @@ func TestBuildSpawnCommandDefaultQuotesPathWithSpaces(t *testing.T) {
 	}
 }
 
+func TestBuildSpawnCommandRefusesDirWithQuotingCharacters(t *testing.T) {
+	// {dir} lands inside the default template's innermost quoting, so a single
+	// quote closes it and the rest parses as shell. The path is never repaired —
+	// a rewritten path names a different directory — so it refuses instead.
+	bad := []string{
+		`/Users/me/it's`,
+		"/Users/me/`id`",
+		"/Users/me/$(id)",
+		`/Users/me/say "hi"`,
+		`/Users/me/back\slash`,
+		"/Users/me/bang!",
+		"/Users/me/bell\x07",
+		"/Users/me/\u202egpj.exe", // bidi override: Cf, like the id gate refuses
+	}
+	for _, dir := range bad {
+		cmd, err := buildSpawnCommand("", dir, "proj/tk-x", "proj", "Title")
+		if err == nil {
+			t.Errorf("buildSpawnCommand accepted dir %q: %s", dir, cmd)
+		}
+		if cmd != "" {
+			t.Errorf("buildSpawnCommand(%q) returned a command alongside its error: %s", dir, cmd)
+		}
+	}
+}
+
+func TestBuildSpawnCommandKeepsPathWithSpacesVerbatim(t *testing.T) {
+	// Spaces are the common case on macOS: the default template quotes them, and
+	// the refusal must not touch them or alter the path in any way.
+	dir := "/Users/x/My Projects/repo"
+	cmd := mustBuildSpawnCommand(t, "", dir, "proj/tk-x", "proj", "Title")
+	if !strings.Contains(cmd, dir) {
+		t.Errorf("dir %q must reach the command verbatim, got: %s", dir, cmd)
+	}
+}
+
+func TestBuildSpawnCommandRefusesProjectWithQuotingCharacters(t *testing.T) {
+	// A project name is bounded by project.ValidName, which rules on path
+	// joining and not on shell syntax, so a basename-derived name can carry a
+	// quote into the same `sh -c` string.
+	cmd, err := buildSpawnCommand("", "/some/dir", "proj/tk-x", "it's", "Title")
+	if err == nil {
+		t.Errorf("buildSpawnCommand accepted a project name with a quote: %s", cmd)
+	}
+}
+
 func TestValidSpawnID(t *testing.T) {
 	ok := []string{"tk-ui-set-a6d2", "ticket/tk-ui-set-a6d2", "ghostwheel/g-101.2", "a/b", "7-up-a6d2", "g_101/x_y"}
 	// Anything GenerateID emits must pass: slugifyTitle keeps every Unicode
@@ -233,6 +278,56 @@ func TestSpawnWorkRefusalNamesID(t *testing.T) {
 	}
 	if !strings.Contains(string(status), "refusing to spawn") || !strings.Contains(string(status), id) {
 		t.Errorf("refusal must name the offending ID, got %q", string(status))
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatalf("injected command executed: %s exists", sentinel)
+	}
+}
+
+// TestSpawnRefusalPreventsInjectedDir is the {dir} half of the gate, built like
+// the {id} half above: the negative control proves the injection reaches the
+// shell ungated, so the gated assertion below measures the refusal rather than a
+// template that no longer interpolates the value.
+func TestSpawnRefusalPreventsInjectedDir(t *testing.T) {
+	dir := t.TempDir()
+	template := strings.Replace(defaultSpawnTemplate, "osascript", "true", 1)
+	inject := func(sentinel string) string { return dir + "'; touch " + sentinel + "; echo '" }
+
+	ungated := filepath.Join(dir, "PWNED-UNGATED")
+	raw := strings.NewReplacer(
+		"{dir}", inject(ungated),
+		"{id}", "proj/tk-x",
+		"{wtitle}", spawnWindowTitle("proj", "proj/tk-x", "Title"),
+	).Replace(template)
+	exec.Command("sh", "-c", raw).Run()
+	if _, err := os.Stat(ungated); err != nil {
+		t.Fatalf("negative control did not fire (%v): the injection no longer reaches the shell, so the gate assertion below proves nothing", err)
+	}
+
+	gated := filepath.Join(dir, "PWNED-GATED")
+	cmd, err := buildSpawnCommand(template, inject(gated), "proj/tk-x", "proj", "Title")
+	if err == nil {
+		exec.Command("sh", "-c", cmd).Run()
+		t.Errorf("buildSpawnCommand accepted an injected dir: %s", cmd)
+	}
+	if _, err := os.Stat(gated); err == nil {
+		t.Fatalf("injected command executed: %s exists", gated)
+	}
+}
+
+func TestSpawnWorkRefusalNamesDir(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "PWNED")
+	workDir := dir + "'; touch " + sentinel + "; echo '"
+	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", strings.Replace(defaultSpawnTemplate, "osascript", "true", 1), workDir, false)
+
+	msg := a.spawnWork(&ticket.Ticket{ID: "proj/tk-ui-set-a6d2", Title: "Title"})()
+	status, ok := msg.(statusMsg)
+	if !ok {
+		t.Fatalf("spawnWork returned %T, want statusMsg", msg)
+	}
+	if !strings.Contains(string(status), "refusing to spawn") || !strings.Contains(string(status), "working directory") {
+		t.Errorf("refusal must name the working directory as the reason, got %q", string(status))
 	}
 	if _, err := os.Stat(sentinel); err == nil {
 		t.Fatalf("injected command executed: %s exists", sentinel)

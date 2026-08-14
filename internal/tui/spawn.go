@@ -51,8 +51,10 @@ import (
 //
 // Limitation: a project path containing a literal single quote can't be
 // escaped inside the `osascript -e '...'` wrapper (that layer is itself
-// single-quoted), so such paths need a custom spawn_command. Spaces — the
-// common case on macOS — work.
+// single-quoted), so buildSpawnCommand refuses such a {dir} rather than
+// emitting a command whose quoting it closes. The refusal sits at the shell
+// boundary, so a custom spawn_command does not lift it — such a path has to be
+// renamed. Spaces — the common case on macOS — work.
 const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w to (create window with default profile)' -e 'tell current session of w to set name to "{wtitle}"' -e 'tell current session of w to write text "cd '"'"'{dir}'"'"' && printf \"\\033]0;%s\\007\" \"{wtitle}\" && export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 && claude \"/work {id}\""' -e 'end tell'`
 
 // buildSpawnCommand substitutes the placeholders into the template (or the
@@ -62,23 +64,30 @@ const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w 
 // "PROJECT -- ID4 -- TITLE" window name).
 //
 // {id} and {title} come from the central store, a git repo other machines push
-// to, so both are untrusted here. {project} and {dir} stay raw (the single-quote
-// limitation on {dir} above still applies): {project} comes from the merged
-// config, whose local half is the machine owner's own file or — under
-// TK_STORE_ROOT — the override root's, and {dir} is either that config's
-// recorded path for the project or, when it records none, the repo the store was
-// resolved from — `--repo` if given, else the working directory. Nothing
-// git-synced reaches either, since mergeConfigs takes `path` from the local half
-// alone. Whether {dir} should be sanitized regardless is open:
-// ticket/spawn-command-interpolates-5425. The template itself is not merged:
-// project.SpawnCommand reads it from ~/.ticket/config.yaml alone, because it is
-// the string handed to `sh -c`.
+// to, so both are untrusted here. {project} and {dir} do not arrive that way —
+// mergeConfigs takes `path` from the local half alone, so {dir} is the machine
+// owner's own recorded path for the project (the override root's config under
+// TK_STORE_ROOT) or, when it records none, the repo the store was resolved from:
+// `--repo` if given, else the working directory. Provenance is not the bound it
+// was read as, though. Neither value's character set is checked anywhere
+// upstream: project.ValidName rules on path joining, refusing a separator and
+// the dot segments and nothing else, and a name it passes may come from a git
+// remote or a directory basename rather than from a config the owner wrote. So
+// both are refused here on the characters {title} is sanitized of, since {dir}
+// lands inside the default template's innermost quoting ('"'"'), where one
+// single quote closes the layer and the rest parses as shell. Neither is ever
+// rewritten to fit: replacing a character in a path changes which directory `cd`
+// reaches, so the value passes verbatim or not at all. The template itself is
+// not merged: project.SpawnCommand reads it from ~/.ticket/config.yaml alone,
+// because it is the string handed to `sh -c`.
 //
 // {title} is sanitized rather than refused because titles are free text —
 // refusing to spawn over an apostrophe would be absurd — while an id has a
-// generated shape, so an id outside it returns an error and no command.
-// The refusal lives here, at the shell boundary, rather than in the caller: a
-// second spawn path must not be able to reach the interpolation without it.
+// generated shape and a path or project name carrying a quote is as odd as an id
+// doing so, so all three return an error and no command when they fall outside
+// what interpolates safely. The refusals live here, at the shell boundary,
+// rather than in the caller: a second spawn path must not be able to reach the
+// interpolation without them.
 //
 // Sanitizing removes what would break a quoting layer, not everything that is
 // shell syntax: `;`, `&`, `|` and `>` survive in a title, so a template must
@@ -95,6 +104,12 @@ func buildSpawnCommand(template, dir, id, project, title string) (string, error)
 		// footerView renders as exactly one reserved row. The shape rule lives
 		// in the README rather than here, where it would wrap the frame.
 		return "", fmt.Errorf("ticket ID %q is not a plain ID; see spawn_command in the README", id)
+	}
+	if !validSpawnLiteral(dir) {
+		return "", fmt.Errorf("working directory %q carries shell quoting characters; see spawn_command in the README", dir)
+	}
+	if !validSpawnLiteral(project) {
+		return "", fmt.Errorf("project name %q carries shell quoting characters; see spawn_command in the README", project)
 	}
 	if strings.TrimSpace(template) == "" {
 		template = defaultSpawnTemplate
@@ -160,6 +175,35 @@ func validSpawnID(id string) bool {
 			if i == 0 || (r != '.' && r != '-' && r != '_') {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+// validSpawnLiteral reports whether a value can be interpolated into a spawn
+// template verbatim. It refuses exactly what sanitizeSpawnText replaces — the
+// characters that close a quoting layer ('"\), the two the interactive shell
+// behind `write text` expands inside double quotes ($ and backtick), the `!`
+// its history expansion consumes before parsing, and the control and Cf runes
+// that repaint or misrender the operator's terminal — for the same reasons,
+// against values that must not be altered instead.
+//
+// It gates {dir} and {project}, where sanitizing is the wrong repair: a path
+// with a character replaced names a different directory, or none, so `cd` would
+// land somewhere the operator did not choose while the spawn reported success.
+// Spaces and ordinary Unicode pass, since a macOS path with spaces is the common
+// case and every metacharacter that matters is ASCII punctuation. The two are
+// gated together because they were exempted together and reach the same `sh -c`
+// string through the same interpolation; a project name carrying one of these is
+// as odd as a path carrying one, so neither is worth a rule of its own.
+func validSpawnLiteral(s string) bool {
+	for _, r := range s {
+		switch r {
+		case '\'', '"', '\\', '$', '`', '!':
+			return false
+		}
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
 		}
 	}
 	return true
