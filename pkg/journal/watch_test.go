@@ -586,6 +586,40 @@ func TestWatchCycle_AutoCloseSkipsUnserializableBranch(t *testing.T) {
 	}
 }
 
+// TestWatchCycle_TraversingProjectName covers the config map key the watch loops
+// iterate: an entry keyed with a traversing name reaches JournalPath, and the
+// cycle creates the journal's parent directory before it checks the repo, so an
+// unbounded join would build a state tree outside the state root every tick.
+func TestWatchCycle_TraversingProjectName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Where the join would have landed: the two ".." segments eat "state" and
+	// ".ticket", so the cleaned path lands directly under HOME, beside .ticket.
+	escaped := filepath.Join(home, ".ticket", "state", "../../elsewhere")
+
+	cfg := project.ProjectConfig{Path: t.TempDir(), AutoLink: true}
+	_, err := RunWatchCycle("../../elsewhere", cfg, nil)
+	if err == nil {
+		t.Fatal("RunWatchCycle accepted a traversing project name")
+	}
+	if !strings.Contains(err.Error(), "invalid project name") {
+		t.Errorf("error = %v, want it to name the invalid project", err)
+	}
+
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Errorf("%s exists: the cycle wrote outside the state root", escaped)
+	}
+	stateRoot := filepath.Join(home, ".ticket", "state")
+	entries, err := os.ReadDir(stateRoot)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 {
+		t.Errorf("%s has %d entries, want none", stateRoot, len(entries))
+	}
+}
+
 // runTestWatchCycle is a helper that runs a watch cycle against a specific
 // journal path rather than using the project-name-based path resolution.
 func runTestWatchCycle(t *testing.T, repoDir, jPath string, cfg project.ProjectConfig, store ticket.Store) (WatchCycleResult, error) {

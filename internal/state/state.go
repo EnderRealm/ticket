@@ -8,6 +8,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -20,7 +21,20 @@ func Dir(proj string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ticket", "state", proj), nil
+	return projDir(filepath.Join(home, ".ticket", "state"), proj)
+}
+
+// projDir joins proj under a state root after checking the name, the way
+// project.CentralProjectDir bounds the store-path join: filepath.Join cleans
+// traversal segments rather than failing, so a name carrying "/" or ".."
+// resolves state files outside the root — and names reach here from config map
+// keys, which the shared config replicates from other machines. Every state-path
+// helper resolves through this, so the bound is not copied at call sites.
+func projDir(stateRoot, proj string) (string, error) {
+	if !project.ValidName(proj) {
+		return "", fmt.Errorf("invalid project name %q", proj)
+	}
+	return filepath.Join(stateRoot, proj), nil
 }
 
 // MutationLogPath returns the project's mutations.jsonl — a sibling of the
@@ -56,7 +70,11 @@ func overridablePath(proj, file string) (string, error) {
 		return "", err
 	}
 	if ok {
-		return filepath.Join(root, "state", proj, file), nil
+		dir, err := projDir(filepath.Join(root, "state"), proj)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, file), nil
 	}
 	dir, err := Dir(proj)
 	if err != nil {
