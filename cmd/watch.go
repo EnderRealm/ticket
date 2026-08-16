@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
-	"github.com/EnderRealm/ticket/v7/pkg/journal"
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/pkg/journal"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	"github.com/spf13/cobra"
 )
 

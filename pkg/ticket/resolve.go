@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 // CentralStoreForRepo resolves a repo directory to the project store it owns in

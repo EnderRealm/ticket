@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
-	"github.com/EnderRealm/ticket/v7/internal/state"
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/state"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // fakeLoom puts an executable `loom` on PATH ahead of anything else, so the

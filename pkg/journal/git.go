@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // GitCommit represents a parsed git log entry.

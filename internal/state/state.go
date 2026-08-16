@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 // Dir returns ~/.ticket/state/<project>/.

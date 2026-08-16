@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 func TestShowLocalizesTimestamps(t *testing.T) {

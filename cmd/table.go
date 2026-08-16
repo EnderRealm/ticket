@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // ANSI escape codes for terminal color output.

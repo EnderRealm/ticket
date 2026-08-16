@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // parentStore configures a central-store project holding one feature and one

@@ -1,4 +1,4 @@
-module github.com/EnderRealm/ticket/v7
+module github.com/EnderRealm/ticket/v8
 
 go 1.25.6
 

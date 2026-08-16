@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 // TestMain points the user cache directory at a temp tree, so the per-ticket

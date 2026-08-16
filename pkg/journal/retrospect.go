@@ -16,8 +16,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/EnderRealm/ticket/v7/internal/state"
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/internal/state"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // loomBinary is the knowledge miner the watch cycle hands a closed ticket to.

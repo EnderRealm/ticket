@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 // traversingNames are the names project.ValidName rejects: they either escape

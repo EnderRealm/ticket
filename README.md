@@ -40,7 +40,7 @@ go build -o tk .
 Release builds inject the version via ldflags:
 
 ```bash
-go build -ldflags "-X github.com/EnderRealm/ticket/v7/cmd.Version=7.6.1" -o tk .
+go build -ldflags "-X github.com/EnderRealm/ticket/v8/cmd.Version=8.0.0" -o tk .
 ```
 
 Dev builds (`go build` with no ldflags) automatically show the git commit and dirty state via `runtime/debug.ReadBuildInfo`:

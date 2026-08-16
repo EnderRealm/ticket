@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
-	"github.com/EnderRealm/ticket/v7/internal/tui"
+	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )

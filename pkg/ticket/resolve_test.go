@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 // centralPair registers two repos as central-store projects and returns their

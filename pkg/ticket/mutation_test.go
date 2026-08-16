@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
-	"github.com/EnderRealm/ticket/v7/internal/state"
+	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/state"
 )
 
 // mutationSandbox points HOME at a temp tree — os.UserHomeDir honours it, so

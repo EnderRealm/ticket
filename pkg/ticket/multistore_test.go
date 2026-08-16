@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 func testMultiStore(t *testing.T, projects ...string) (*MultiStore, string) {

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/internal/project"
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {

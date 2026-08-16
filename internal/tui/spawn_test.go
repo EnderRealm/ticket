@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/EnderRealm/ticket/v7/pkg/ticket"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // mustBuildSpawnCommand builds the spawn command for an id the ID gate is

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/EnderRealm/ticket/v7/internal/state"
+	"github.com/EnderRealm/ticket/v8/internal/state"
 )
 
 // MutationOp names the kind of change one mutation log line records.

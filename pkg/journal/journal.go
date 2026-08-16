@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/EnderRealm/ticket/v7/internal/state"
+	"github.com/EnderRealm/ticket/v8/internal/state"
 )
 
 // StatePath returns ~/.ticket/state/<project>/.

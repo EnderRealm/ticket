@@ -78,7 +78,7 @@ When committing notable changes (new commands, flags, bug fixes, behavior change
 There is no version constant to bump in source. `cmd/root.go` declares `var Version = "dev"`, and the real value is injected at build time via ldflags from the git tag:
 
 ```
--X github.com/EnderRealm/ticket/v7/cmd.Version={{.Version}}
+-X github.com/EnderRealm/ticket/v8/cmd.Version={{.Version}}
 ```
 
 GoReleaser sets `{{.Version}}` from the tag being built (`v7.6.0` → `7.6.0`). So **the git tag is the single source of truth for the version** — tagging is what releases. A plain `go build` with no tag reports `dev (<short-sha>[, dirty])` via `debug.ReadBuildInfo`.
