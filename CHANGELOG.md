@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- The journal loops in `tk watch run` and `tk serve` quote project names in every per-project log line, so control characters from shared-config project keys cannot forge log entries or inject terminal escapes when `tk watch logs` displays the file.
+
 ## [8.0.0] - 2026-08-16
 
 ### Added

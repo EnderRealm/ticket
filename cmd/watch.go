@@ -365,7 +365,7 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 
 			store, err := watchStoreFor(cfg, name)
 			if err != nil {
-				log.Printf("%s: resolve store: %v", name, err)
+				log.Printf("%q: resolve store: %v", name, err)
 				continue
 			}
 
@@ -374,17 +374,17 @@ func runWatchRun(cmd *cobra.Command, args []string) error {
 			// git work, so a project whose repo is missing still fires runs and
 			// still has warnings to report on a cycle that ends in an error.
 			if result.RetrospectFired > 0 {
-				log.Printf("%s: retrospect: fired %d", name, result.RetrospectFired)
+				log.Printf("%q: retrospect: fired %d", name, result.RetrospectFired)
 			}
 			for _, w := range result.Warnings {
-				log.Printf("%s: %s", name, w)
+				log.Printf("%q: %s", name, w)
 			}
 			if err != nil {
-				log.Printf("%s: %v", name, err)
+				log.Printf("%q: %v", name, err)
 				continue
 			}
 			if result.Appended > 0 || result.Closed > 0 {
-				log.Printf("%s: appended %d, closed %d", name, result.Appended, result.Closed)
+				log.Printf("%q: appended %d, closed %d", name, result.Appended, result.Closed)
 			}
 		}
 	}

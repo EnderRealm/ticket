@@ -205,6 +205,46 @@ func TestWatchCycleRefusesATraversingProjectKey(t *testing.T) {
 	}
 }
 
+func TestWatchCycleQuotesProjectNamesInLogs(t *testing.T) {
+	home := setupTestHome(t)
+	name := "ordinary\nFORGED\x1b[31m"
+	cfg := project.Config{
+		CentralRoot: filepath.Join(home, "central"),
+		Projects: map[string]project.ProjectConfig{
+			name: {
+				Path:      filepath.Join(home, "missing"),
+				Store:     "central",
+				AutoLink:  true,
+				AutoClose: true,
+			},
+		},
+		JournalDefaultsMigrated: true,
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	watchOnce = true
+	watchInterval = time.Second
+	t.Cleanup(func() { watchOnce = false })
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if err := runWatchRun(watchRunCmd, nil); err != nil {
+		t.Fatalf("runWatchRun: %v", err)
+	}
+
+	out := logs.String()
+	if contains(out, "\nFORGED") || contains(out, "\x1b") {
+		t.Fatalf("project name injected control bytes into the log:\n%q", out)
+	}
+	if want := `"ordinary\nFORGED\x1b[31m"`; !contains(out, want) {
+		t.Errorf("log missing quoted project name %q:\n%s", want, out)
+	}
+}
+
 // TestWatchRunMigratesJournalDefaultsAndJournals is the wiring `tk watch run`
 // depends on: a project registered with both flags false — what `tk init` wrote
 // for every project on the machine — is flipped on and journalled by the same

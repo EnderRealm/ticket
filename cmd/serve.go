@@ -156,7 +156,7 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 				}
 				store, err := watchStoreFor(cfg, name)
 				if err != nil {
-					log.Printf("watch: %s: resolve store: %v", name, err)
+					log.Printf("watch: %q: resolve store: %v", name, err)
 					continue
 				}
 				result, err := journal.RunWatchCycle(name, entry, store)
@@ -164,17 +164,17 @@ func watchLoop(ctx context.Context, interval time.Duration) {
 				// git work, so a project whose repo is missing still fires runs and
 				// still has warnings to report on a cycle that ends in an error.
 				if result.RetrospectFired > 0 {
-					log.Printf("watch: %s: retrospect: fired %d", name, result.RetrospectFired)
+					log.Printf("watch: %q: retrospect: fired %d", name, result.RetrospectFired)
 				}
 				for _, w := range result.Warnings {
-					log.Printf("watch: %s: %s", name, w)
+					log.Printf("watch: %q: %s", name, w)
 				}
 				if err != nil {
-					log.Printf("watch: %s: %v", name, err)
+					log.Printf("watch: %q: %v", name, err)
 					continue
 				}
 				if result.Appended > 0 || result.Closed > 0 {
-					log.Printf("watch: %s: appended %d, closed %d", name, result.Appended, result.Closed)
+					log.Printf("watch: %q: appended %d, closed %d", name, result.Appended, result.Closed)
 				}
 			}
 		}
