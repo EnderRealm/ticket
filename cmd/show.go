@@ -51,7 +51,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(data))
+		fmt.Print(sanitizeRenderedDocument(string(data)))
 		return nil
 	}
 
@@ -95,7 +95,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		}
 	}
 
-	fmt.Print(output)
+	fmt.Print(sanitizeRenderedDocument(output))
 
 	// Outputs: what the ticket produced, for downstream handoff.
 	if len(t.Outputs) > 0 {
@@ -106,7 +106,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		sort.Strings(keys)
 		fmt.Print("\n## Outputs\n\n")
 		for _, k := range keys {
-			fmt.Printf("- %s: %s\n", k, t.Outputs[k])
+			fmt.Printf("- %s: %s\n", ticket.SanitizeControl(k), ticket.SanitizeControl(t.Outputs[k]))
 		}
 	}
 
@@ -119,7 +119,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		sort.Strings(keys)
 		fmt.Print("\n## Dep Cargo\n\n")
 		for _, k := range keys {
-			fmt.Printf("- %s: %s\n", k, t.DepCargo[k])
+			fmt.Printf("- %s: %s\n", ticket.SanitizeControl(k), ticket.SanitizeControl(t.DepCargo[k]))
 		}
 	}
 
@@ -135,9 +135,9 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Blockers\n\n")
 		for _, id := range blockers {
 			if dep, ok := lookup(id); ok {
-				fmt.Printf("- %s [%s] %s\n", id, dep.Status, dep.Title)
+				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), dep.Status, ticket.SanitizeControl(dep.Title))
 			} else {
-				fmt.Printf("- %s [unknown]\n", id)
+				fmt.Printf("- %s [unknown]\n", ticket.SanitizeControl(id))
 			}
 		}
 	}
@@ -162,7 +162,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Blocking\n\n")
 		for _, id := range blocking {
 			if tk, ok := lookup(id); ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), tk.Status, ticket.SanitizeControl(tk.Title))
 			}
 		}
 	}
@@ -178,7 +178,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Children\n\n")
 		for _, id := range children {
 			if tk, ok := lookup(id); ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), tk.Status, ticket.SanitizeControl(tk.Title))
 			}
 		}
 	}
@@ -188,14 +188,25 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Print("\n## Linked\n\n")
 		for _, id := range t.Links {
 			if tk, ok := lookup(id); ok {
-				fmt.Printf("- %s [%s] %s\n", id, tk.Status, tk.Title)
+				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), tk.Status, ticket.SanitizeControl(tk.Title))
 			} else {
-				fmt.Printf("- %s [unknown]\n", id)
+				fmt.Printf("- %s [unknown]\n", ticket.SanitizeControl(id))
 			}
 		}
 	}
 
 	return nil
+}
+
+// sanitizeRenderedDocument covers the whole stored document, not only titles:
+// body text is equally untrusted. It preserves renderer-owned line breaks and
+// leaves the Ticket untouched so JSON paths still carry the stored bytes.
+func sanitizeRenderedDocument(rendered string) string {
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		lines[i] = ticket.SanitizeControl(lines[i])
+	}
+	return strings.Join(lines, "\n")
 }
 
 // localizeTimestamps rewrites the created/updated/completed frontmatter values

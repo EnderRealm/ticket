@@ -36,6 +36,27 @@ func TestRenderRowContainsIDSuffixAndTitle(t *testing.T) {
 	}
 }
 
+func TestRenderRowSanitizesTitleControlCharacters(t *testing.T) {
+	tk := &ticket.Ticket{
+		ID:     "test-abcd",
+		Title:  "Déjà 日本語 \x1b[2Jclear \u202erepaint",
+		Status: ticket.StatusOpen,
+		Type:   ticket.TypeFeature,
+	}
+	item := ticket.InboxItem{Ticket: tk, Action: ticket.ActionWork}
+	m := dashboardModel{width: 80, height: 10}
+	line := m.renderRow(row{item: item}, false)
+
+	if strings.ContainsRune(line, '\u202e') || strings.Contains(line, "\x1b[2J") {
+		t.Errorf("row contains title controls:\n%q", line)
+	}
+	for _, want := range []string{"Déjà", "日本語", "�[2Jclear", "�repaint"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("row missing %q:\n%q", want, line)
+		}
+	}
+}
+
 func TestDashboardEmptyNoPanic(t *testing.T) {
 	m := dashboardModel{width: 80, height: 10}
 	output := m.view()

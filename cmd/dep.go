@@ -103,12 +103,12 @@ func runDepTree(cmd *cobra.Command, args []string) error {
 		if status == "" {
 			status = "?"
 		}
-		line := fmt.Sprintf("%s%s [%s] %s", indent, n.ID, status, n.Title)
+		line := fmt.Sprintf("%s%s [%s] %s", indent, ticket.SanitizeControl(n.ID), status, ticket.SanitizeControl(n.Title))
 		// The root has no incoming edge; every other node has one, and an
 		// unannotated edge is called out as a grooming candidate.
 		if n.Depth > 0 {
 			if n.Cargo != "" {
-				line += "  ← carries: " + n.Cargo
+				line += "  ← carries: " + ticket.SanitizeControl(n.Cargo)
 			} else {
 				line += "  ← no cargo"
 			}

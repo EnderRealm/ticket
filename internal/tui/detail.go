@@ -316,8 +316,8 @@ func (m detailModel) render() []string {
 	var lines []string
 
 	// Frontmatter fields.
-	lines = append(lines, m.field("Title", t.Title))
-	lines = append(lines, m.field("ID", t.ID))
+	lines = append(lines, m.field("Title", ticket.SanitizeControl(t.Title)))
+	lines = append(lines, m.field("ID", ticket.SanitizeControl(t.ID)))
 	if t.Status != "" {
 		lines = append(lines, m.field("Status", StatusBadge(t.Status)))
 	}
@@ -325,19 +325,19 @@ func (m detailModel) render() []string {
 	lines = append(lines, m.field("Priority", PriorityBadge(t.Priority)))
 
 	if t.Parent != "" {
-		lines = append(lines, m.field("Parent", t.Parent))
+		lines = append(lines, m.field("Parent", ticket.SanitizeControl(t.Parent)))
 	}
 	if len(t.Deps) > 0 {
-		lines = append(lines, m.field("Deps", strings.Join(t.Deps, ", ")))
+		lines = append(lines, m.field("Deps", ticket.SanitizeControl(strings.Join(t.Deps, ", "))))
 	}
 	if len(t.Links) > 0 {
-		lines = append(lines, m.field("Links", strings.Join(t.Links, ", ")))
+		lines = append(lines, m.field("Links", ticket.SanitizeControl(strings.Join(t.Links, ", "))))
 	}
 	if len(t.Tags) > 0 {
-		lines = append(lines, m.field("Tags", strings.Join(t.Tags, ", ")))
+		lines = append(lines, m.field("Tags", ticket.SanitizeControl(strings.Join(t.Tags, ", "))))
 	}
 	if t.ExternalRef != "" {
-		lines = append(lines, m.field("External Ref", t.ExternalRef))
+		lines = append(lines, m.field("External Ref", ticket.SanitizeControl(t.ExternalRef)))
 	}
 	lines = append(lines, m.field("Created", t.Created.Local().Format("2006-01-02 15:04")))
 
@@ -348,7 +348,7 @@ func (m detailModel) render() []string {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			lines = append(lines, m.field(k, t.Extra[k]))
+			lines = append(lines, m.field(ticket.SanitizeControl(k), ticket.SanitizeControl(t.Extra[k])))
 		}
 	}
 
@@ -363,6 +363,7 @@ func (m detailModel) render() []string {
 	body := t.Body
 	if body != "" {
 		for _, line := range strings.Split(body, "\n") {
+			line = ticket.SanitizeControl(line)
 			if strings.HasPrefix(line, "## ") {
 				lines = append(lines, pad+sectionStyle.Render(line))
 			} else {
@@ -380,7 +381,7 @@ func (m detailModel) render() []string {
 		for _, n := range t.Notes {
 			lines = append(lines, pad+timestampStyle.Render(n.Timestamp.Local().Format("2006-01-02 15:04:05")))
 			for _, wl := range wrapText(n.Text, avail) {
-				lines = append(lines, pad+wl.text)
+				lines = append(lines, pad+ticket.SanitizeControl(wl.text))
 			}
 			lines = append(lines, "")
 		}

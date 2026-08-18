@@ -235,7 +235,7 @@ func (tw *tableWriter) printHeader() {
 func (tw *tableWriter) printRow(t *ticket.Ticket) {
 	var parts []string
 	for i, col := range tw.columns {
-		val := col.value(t)
+		val := ticket.SanitizeControl(col.value(t))
 		display := val
 
 		switch col.header {

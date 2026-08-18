@@ -988,7 +988,7 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 	}
 
 	a.overlay = overlayNone
-	status := fmt.Sprintf("Created %s: %s", t.ID, t.Title)
+	status := fmt.Sprintf("Created %s: %s", ticket.SanitizeControl(t.ID), ticket.SanitizeControl(t.Title))
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },

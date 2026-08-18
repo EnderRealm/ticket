@@ -109,6 +109,15 @@ func TestFrontierJSON(t *testing.T) {
 	frontierTicket(t, stores["alpha"], "fr-open", ticket.StatusOpen)
 	frontierTicket(t, stores["alpha"], "fr-free", ticket.StatusReady)
 	frontierTicket(t, stores["alpha"], "fr-blocked", ticket.StatusReady, "fr-open")
+	hostileTitle := "Déjà 日本語 \x1b[2Jclear \u202erepaint"
+	free, err := stores["alpha"].Get("fr-free")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	free.Title = hostileTitle
+	if err := stores["alpha"].Update(free); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
 
 	jsonOutput = true
 	defer func() { jsonOutput = false }()
@@ -127,6 +136,9 @@ func TestFrontierJSON(t *testing.T) {
 	}
 	if result[0].Status != string(ticket.StatusReady) {
 		t.Errorf("status = %q, want ready", result[0].Status)
+	}
+	if result[0].Title != hostileTitle {
+		t.Errorf("title = %q, want stored bytes %q", result[0].Title, hostileTitle)
 	}
 }
 

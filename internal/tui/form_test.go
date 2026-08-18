@@ -55,6 +55,27 @@ func TestWrapText(t *testing.T) {
 	}
 }
 
+func TestEditFormSanitizesStoredTextOnlyWhileRendering(t *testing.T) {
+	title := "Déjà 日本語 \x1b[2Jclear \u202erepaint"
+	tk := &ticket.Ticket{
+		ID:       "test-abcd",
+		Title:    title,
+		Body:     "Description \x1b[31mred\x1b[0m\n",
+		Status:   ticket.StatusOpen,
+		Type:     ticket.TypeFeature,
+		Priority: 2,
+	}
+	m := newEditFormModel(tk, 100, 30)
+	out := m.view()
+
+	if strings.ContainsRune(out, '\u202e') || strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x1b[31m") {
+		t.Errorf("form contains stored control sequences:\n%q", out)
+	}
+	if m.fields[fieldTitle] != title {
+		t.Errorf("rendering changed editable title to %q, want %q", m.fields[fieldTitle], title)
+	}
+}
+
 func TestWrapTextStartOffsets(t *testing.T) {
 	wrapped := wrapText("hello world foo", 7)
 	// "hello" starts at 0, "world" starts at 6, "foo" starts at 12

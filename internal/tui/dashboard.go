@@ -680,17 +680,19 @@ func (m dashboardModel) view() string {
 // renderCell renders one row cell with the column's visual style, padded to the
 // column width (TITLE is flexible). bg/selBg carry the selection highlight.
 func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style, bg *lipgloss.Style, selected bool) string {
+	// Stored values are sanitized before Lipgloss adds its own terminal controls;
+	// sanitizing the completed view would remove the TUI's styling as well.
 	switch c.name {
 	case "PRI":
 		return padRightBg(priorityBadge(t.Priority, selected), c.width, bg)
 	case "TYPE":
 		return padRightBg(typeBadge(t.Type, selected), c.width, bg)
 	case "STATUS":
-		return padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(string(t.Status)), c.width, bg)
+		return padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(ticket.SanitizeControl(string(t.Status))), c.width, bg)
 	case "ID", "EPIC":
-		return padRightBg(selBg.Foreground(colorGray).Render(c.render(t, now)), c.width, bg)
+		return padRightBg(selBg.Foreground(colorGray).Render(ticket.SanitizeControl(c.render(t, now))), c.width, bg)
 	case "TITLE":
-		return selBg.Foreground(colorWhite).Render(c.render(t, now))
+		return selBg.Foreground(colorWhite).Render(ticket.SanitizeControl(c.render(t, now)))
 	default:
 		// Time columns: subtle gray text, brightened when selected so it stays
 		// legible against the selection background (colorSubtle ≈ colorSurface).
@@ -698,7 +700,7 @@ func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style,
 		if selected {
 			fg = colorGray
 		}
-		return padRightBg(selBg.Foreground(fg).Render(c.render(t, now)), c.width, bg)
+		return padRightBg(selBg.Foreground(fg).Render(ticket.SanitizeControl(c.render(t, now))), c.width, bg)
 	}
 }
 

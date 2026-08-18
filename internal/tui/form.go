@@ -463,9 +463,9 @@ func (m formModel) view() string {
 							afterStart = col + 1
 						}
 						after := string(lineRunes[afterStart:])
-						lines = append(lines, prefix+formActiveStyle.Render(before)+formTextCursorStyle.Render(cursorChar)+formActiveStyle.Render(after))
+						lines = append(lines, prefix+formActiveStyle.Render(ticket.SanitizeControl(before))+formTextCursorStyle.Render(ticket.SanitizeControl(cursorChar))+formActiveStyle.Render(ticket.SanitizeControl(after)))
 					} else {
-						lines = append(lines, prefix+formActiveStyle.Render(wl.text))
+						lines = append(lines, prefix+formActiveStyle.Render(ticket.SanitizeControl(wl.text)))
 					}
 				}
 			} else {
@@ -474,7 +474,7 @@ func (m formModel) view() string {
 					if j == 0 {
 						prefix = cursor + label + " "
 					}
-					lines = append(lines, prefix+wl.text)
+					lines = append(lines, prefix+ticket.SanitizeControl(wl.text))
 				}
 			}
 		}

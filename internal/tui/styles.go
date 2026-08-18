@@ -254,7 +254,7 @@ func typeBadge(t ticket.TicketType, selected bool) string {
 	if !ok {
 		c = colorWhite
 	}
-	label := fmt.Sprintf("%-5s", strings.ToUpper(shortType(t)))
+	label := fmt.Sprintf("%-5s", strings.ToUpper(ticket.SanitizeControl(shortType(t))))
 	bg := colorBadgeBg
 	if selected {
 		bg = colorSurface
@@ -272,7 +272,7 @@ func StatusBadge(s ticket.Status) string {
 	if !ok {
 		c = colorWhite
 	}
-	return lipgloss.NewStyle().Foreground(c).Render(string(s))
+	return lipgloss.NewStyle().Foreground(c).Render(ticket.SanitizeControl(string(s)))
 }
 
 // IDSuffix returns just the 4-character hex suffix of a ticket ID.

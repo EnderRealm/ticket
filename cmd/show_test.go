@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,51 @@ import (
 
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
+
+func TestShowSanitizesStoredContentWithoutChangingJSON(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewFileStore(dir)
+	hostileTitle := "Déjà 日本語 \x1b[31mred\x1b[0m \u202erepaint"
+	tk := &ticket.Ticket{
+		ID:      "ts-safe-0001",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   hostileTitle,
+		Body:    "Description \x1b[2Jclear \u2066hidden\u2069\n",
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	out := captureShow(t, store, tk.ID, false)
+	for _, r := range []rune{'\x1b', '\u202e', '\u2066', '\u2069'} {
+		if strings.ContainsRune(out, r) {
+			t.Errorf("human output contains control or format character %U:\n%q", r, out)
+		}
+	}
+	for _, want := range []string{"Déjà", "日本語", "Description", "�[31mred�[0m", "�[2Jclear"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("human output missing %q:\n%q", want, out)
+		}
+	}
+
+	stored, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	data, err := json.Marshal(toTicketJSON(stored))
+	if err != nil {
+		t.Fatalf("Marshal JSON: %v", err)
+	}
+	var decoded ticketJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal JSON: %v", err)
+	}
+	if decoded.Title != hostileTitle {
+		t.Errorf("JSON title = %q, want stored bytes %q", decoded.Title, hostileTitle)
+	}
+}
 
 func TestShowLocalizesTimestamps(t *testing.T) {
 	origLocal := time.Local

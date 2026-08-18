@@ -3,11 +3,37 @@ package cmd
 import (
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
+
+func TestLsSanitizesTitleControlCharacters(t *testing.T) {
+	store := centralStore(t, "ls-sanitize")
+	tk := &ticket.Ticket{
+		ID:      "ls-safe-0001",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Déjà 日本語 \x1b[2Jclear \u202erepaint",
+		Body:    "\n",
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	out := captureLs(t)
+	if strings.ContainsRune(out, '\u202e') || strings.Contains(out, "\x1b[2J") {
+		t.Errorf("ls output contains title controls:\n%q", out)
+	}
+	for _, want := range []string{"Déjà", "日本語", "�[2Jclear", "�repaint"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ls output missing %q:\n%q", want, out)
+		}
+	}
+}
 
 func TestLsDefaultStatusSet(t *testing.T) {
 	store := centralStore(t, "ls-status")
