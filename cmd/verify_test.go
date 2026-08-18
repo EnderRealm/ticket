@@ -233,3 +233,23 @@ func TestVerifyNoCriteria(t *testing.T) {
 		t.Error("verify on a ticket with no acceptance criteria should error")
 	}
 }
+
+func TestVerifyWorkDirAcceptsConfiguredProjectName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	want := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: t.TempDir(),
+		Projects: map[string]project.ProjectConfig{
+			"vf-name": {Path: want, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	repoFlag = "vf-name"
+	defer func() { repoFlag = "" }()
+
+	if got := verifyWorkDir(); got != want {
+		t.Errorf("verifyWorkDir = %q, want configured repo path %q", got, want)
+	}
+}

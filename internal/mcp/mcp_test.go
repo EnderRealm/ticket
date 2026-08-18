@@ -124,6 +124,53 @@ func TestCreateWithRepoResolvesCentralProject(t *testing.T) {
 	}
 }
 
+func TestCreateWithRepoAcceptsConfiguredProjectName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	working := t.TempDir()
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(working); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldDir)
+
+	repoDir := t.TempDir()
+	projectDir := filepath.Join(root, "tickets", "beta")
+	pathRepo := filepath.Join(working, "beta")
+	pathProjectDir := filepath.Join(root, "tickets", "path-project")
+	for _, dir := range []string{projectDir, pathRepo, pathProjectDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta":         {Path: repoDir, Store: "central"},
+			"path-project": {Path: pathRepo, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	session := testServer(t)
+	id := createTicketID(t, session, map[string]any{
+		"title": "Central project name override",
+		"type":  "feature",
+		"repo":  "beta",
+	})
+
+	if _, err := os.Stat(filepath.Join(projectDir, id+".md")); err != nil {
+		t.Errorf("ticket %s did not land in the named central project dir %s: %v", id, projectDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(pathProjectDir, id+".md")); !os.IsNotExist(err) {
+		t.Errorf("ticket %s followed the colliding filesystem path into %s: %v", id, pathProjectDir, err)
+	}
+}
+
 func TestSearchRanksByRelevance(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
@@ -1429,32 +1476,56 @@ func TestCreateTicketRemoteRepoNotFound(t *testing.T) {
 	// A repo owning no central project, sandboxed HOME included so the
 	// resolution cannot match one of the machine's own.
 	t.Setenv("HOME", t.TempDir())
-	if err := project.Save(project.Config{CentralRoot: t.TempDir()}); err != nil {
+	root := t.TempDir()
+	working := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"known": {Path: working, Store: "central"},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	noStoreDir := t.TempDir()
-
-	session := testServer(t)
-	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "ticket_create",
-		Arguments: map[string]any{
-			"title": "Should fail",
-			"type":  "feature",
-			"repo":  noStoreDir,
-		},
-	})
+	oldDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.IsError {
-		t.Error("expected an error for a repo owning no central project")
+	if err := os.Chdir(working); err != nil {
+		t.Fatal(err)
 	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	// The CLI's own wording: one state, one error, whichever surface hits it.
-	for _, want := range []string{"no ticket store found", noStoreDir, "tk init"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("error message = %q, want substring %q", text, want)
-		}
+	defer os.Chdir(oldDir)
+	noStoreDir := t.TempDir()
+
+	session := testServer(t)
+	for _, repo := range []string{noStoreDir, "missing-project"} {
+		t.Run(repo, func(t *testing.T) {
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+				Name: "ticket_create",
+				Arguments: map[string]any{
+					"title": "Should fail",
+					"type":  "feature",
+					"repo":  repo,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.IsError {
+				t.Errorf("expected an error for unknown repo value %q", repo)
+			}
+			text := result.Content[0].(*mcp.TextContent).Text
+			wants := []string{repo}
+			if repo == noStoreDir {
+				wants = append(wants, "no ticket store found", "tk init")
+			} else {
+				wants = append(wants, "neither a registered project name nor a directory")
+			}
+			for _, want := range wants {
+				if !strings.Contains(text, want) {
+					t.Errorf("error message = %q, want substring %q", text, want)
+				}
+			}
+		})
 	}
 }
 

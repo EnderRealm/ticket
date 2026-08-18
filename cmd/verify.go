@@ -118,12 +118,18 @@ func runVerify(cmd *cobra.Command, args []string) error {
 // directory isn't a checkout of, which would run commands in the wrong repo.
 func verifyWorkDir() string {
 	dir := mustGetwd()
+	cfg, err := project.Load()
 	if repoFlag != "" {
-		if abs, err := filepath.Abs(repoFlag); err == nil {
+		repo := repoFlag
+		if err == nil {
+			if path, ok := project.ConfiguredRepoPath(cfg, repo); ok {
+				repo = path
+			}
+		}
+		if abs, err := filepath.Abs(repo); err == nil {
 			dir = abs
 		}
 	}
-	cfg, err := project.Load()
 	if err != nil {
 		return dir
 	}

@@ -42,6 +42,17 @@ func ResolveName(cfg Config, cwd string, explicit string) (name string, source s
 	return "", "none"
 }
 
+// ConfiguredRepoPath resolves an exact project name to the repository path
+// registered for it on this machine. Callers keep path handling as their
+// fallback, so a name wins when it also names a relative filesystem path.
+func ConfiguredRepoPath(cfg Config, name string) (string, bool) {
+	p, ok := cfg.Projects[name]
+	if !ok || p.Path == "" || !CentralRegistered(cfg, name) {
+		return "", false
+	}
+	return p.Path, true
+}
+
 // DetectProjectPath returns git top-level directory if available; otherwise cwd.
 func DetectProjectPath(cwd string) string {
 	if root, ok := gitRoot(cwd); ok {

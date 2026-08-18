@@ -159,7 +159,7 @@ Statuses: backlog, ready, open, done, closed
   write of an epic leaves the same shape behind.
 
 Global flags:
-  --repo <path>    Operate on a different repo
+  --repo <name|path>  Operate on a different registered project or repo
   --json           Output in JSON format
 
 Environment:
@@ -242,7 +242,7 @@ var gateExempt = map[string]bool{
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
-	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "path to repo root (resolves to that repo's project in the central store)")
+	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "registered project name or path to repo root")
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		fmt.Println(helpText)
 	})
@@ -359,16 +359,35 @@ func resolveTicketsDir() (string, string, bool, error) {
 }
 
 // repoDir is the repo tk operates on: --repo when given, else the working
-// directory. Absolute, because it is both what the store resolves from and the
-// directory `tk ui` spawns a work session in when the project's config records
-// no path of its own.
+// directory. A configured project name resolves before the filesystem fallback
+// so a same-named relative path cannot select a different project. The result
+// is absolute because it is both what the store resolves from and the directory
+// `tk ui` spawns a work session in when the project's config records no path.
 func repoDir() (string, error) {
 	if repoFlag == "" {
 		return mustGetwd(), nil
 	}
-	abs, err := filepath.Abs(repoFlag)
+	repo := repoFlag
+	cfg, err := project.Load()
+	if err != nil {
+		return "", fmt.Errorf("load ticket config: %w", err)
+	}
+	path, configured := project.ConfiguredRepoPath(cfg, repo)
+	if configured {
+		repo = path
+	}
+	abs, err := filepath.Abs(repo)
 	if err != nil {
 		return "", fmt.Errorf("invalid --repo path: %w", err)
+	}
+	if !configured {
+		info, err := os.Stat(abs)
+		if err != nil {
+			return "", fmt.Errorf("--repo %q is neither a registered project name nor a directory: %w", repoFlag, err)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("--repo %q is neither a registered project name nor a directory", repoFlag)
+		}
 	}
 	return abs, nil
 }

@@ -127,6 +127,78 @@ func TestTicketStoreCentralProject(t *testing.T) {
 	}
 }
 
+func TestResolveTicketsDirAcceptsConfiguredProjectName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	working := t.TempDir()
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(working); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldDir)
+
+	namedRepo := t.TempDir()
+	pathRepo := filepath.Join(working, "cs-name")
+	if err := os.MkdirAll(pathRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"cs-name": {Path: namedRepo, Store: "central"},
+			"cs-path": {Path: pathRepo, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := ticket.NewProjectFileStore(filepath.Join(root, "tickets", "cs-name"), "cs-name")
+
+	dir, name, unregistered, err := resolveFor(t, "cs-name")
+	if err != nil {
+		t.Fatalf("resolve configured project name: %v", err)
+	}
+	if dir != store.Dir || name != store.Project {
+		t.Errorf("resolution = (%q, %q), want (%q, %q)", dir, name, store.Dir, store.Project)
+	}
+	if unregistered {
+		t.Error("configured central project resolved as unregistered")
+	}
+}
+
+func TestResolveTicketsDirRejectsUnknownProjectName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: t.TempDir(),
+		Projects: map[string]project.ProjectConfig{
+			"cs-known": {Path: repo, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldDir)
+
+	_, _, _, err = resolveFor(t, "cs-missing")
+	if err == nil {
+		t.Fatal("unknown project name resolved, want an error")
+	}
+	for _, want := range []string{"neither a registered project name nor a directory", "cs-missing"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
 // resolveFor runs the CLI's own store resolution against a repo path, the way
 // `tk --repo <path>` does — the resolution every command below it gets its store
 // from.

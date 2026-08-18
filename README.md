@@ -94,11 +94,13 @@ Shared project registry (store type, auto_link, auto_close, etc.) is stored in `
 
 `verify_allow` lists the programs `tk verify` may run — see [Verifiable Acceptance Criteria](#verifiable-acceptance-criteria). It is read from this local file only; a `verify_allow` in the shared config is ignored.
 
-`--repo` flag overrides project resolution for a single command.
+`--repo` accepts a registered project name or a repository path and overrides
+project resolution for a single command. Project names resolve through the
+configured path first, before the value is treated as a filesystem path.
 
 ### Where tickets live
 
-Every command resolves one way: the repo — `--repo` when given, else the working directory — to the project that repo owns in `<central_root>/tickets/<project>/`. There is no second kind of store. A repo that owns no project is an error naming it rather than a store minted on the spot, since a directory nothing else reads would orphan whatever landed there; `tk init` registers the project.
+Every command resolves one way: the repo — the configured path for a project name passed to `--repo`, a path passed to `--repo`, or else the working directory — to the project that repo owns in `<central_root>/tickets/<project>/`. There is no second kind of store. A repo that owns no project is an error naming it rather than a store minted on the spot, since a directory nothing else reads would orphan whatever landed there; `tk init` registers the project.
 
 tk no longer reads a `.tickets/` directory inside a repo. Nothing deletes or rewrites one — if a repo still has it, the error names that directory, and `tk init` copies the tickets into the central store and leaves the original in place as a backup.
 
