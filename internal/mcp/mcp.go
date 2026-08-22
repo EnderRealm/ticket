@@ -128,6 +128,13 @@ type ticketJSON struct {
 	// stderr — which is the server's log here, so a warning about where a write
 	// went has to ride on the response the caller reads.
 	UnregisteredWarning string `json:"unregistered_warning,omitempty"`
+	// EmptyAcceptanceWarning says the ticket was created with a description but
+	// no acceptance criteria. Set by ticket_create alone — every other tool
+	// leaves it empty. /capture and /work both gate on a why-plus-success
+	// contract, so a ticket in this state is one neither will accept, and
+	// nothing else reports it; a warning rather than a refusal, so stub-first
+	// flows still create.
+	EmptyAcceptanceWarning string `json:"empty_acceptance_warning,omitempty"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -179,7 +186,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 	// Extract body sections.
 	body := t.Body
 	if body != "" {
-		j.Description, j.Design, j.Acceptance, j.TestResults = parseSections(body)
+		j.Description, j.Design, j.Acceptance, j.TestResults = ticket.BodySections(body)
 	}
 
 	for _, n := range t.Notes {
@@ -197,40 +204,6 @@ func nonNil(s []string) []string {
 		return []string{}
 	}
 	return s
-}
-
-func parseSections(body string) (desc, design, acceptance, testResults string) {
-	lines := strings.Split(body, "\n")
-	var current *string
-	var buf []string
-
-	flush := func() {
-		if current != nil {
-			*current = strings.TrimSpace(strings.Join(buf, "\n"))
-		}
-		buf = nil
-	}
-
-	desc = ""
-	current = &desc
-
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "## Design"):
-			flush()
-			current = &design
-		case strings.HasPrefix(line, "## Acceptance"):
-			flush()
-			current = &acceptance
-		case strings.HasPrefix(line, "## Test Results"):
-			flush()
-			current = &testResults
-		default:
-			buf = append(buf, line)
-		}
-	}
-	flush()
-	return
 }
 
 // sourceDefault attributes a write by a client that declared no name in the
@@ -291,6 +264,21 @@ func errResult(format string, a ...any) (*mcp.CallToolResult, error) {
 		},
 		IsError: true,
 	}, nil
+}
+
+// envelopeFragmentResult refuses a free-text argument whose value ran past its
+// own parameter and swallowed the rest of the tool call — the arguments after
+// it were never populated, so storing this one would leave a ticket missing the
+// fields the caller believed it sent. Returns nil when the value is clean.
+func envelopeFragmentResult(field, value string) *mcp.CallToolResult {
+	tail, ok := ticket.EnvelopeFragment(value)
+	if !ok {
+		return nil
+	}
+	r, _ := errResult("%s ends in a tool-call envelope fragment: %q. "+
+		"The %s text ran past its own parameter and absorbed the remainder of the call, so every argument after it is missing. "+
+		"Resend the call with %s closed by its own matching tag.", field, tail, field, field)
+	return r
 }
 
 // --- Tool registrations ---
@@ -554,11 +542,20 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it.",
+		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		if args.Title == "" {
 			r, _ := errResult("title is required")
 			return r, nil, nil
+		}
+		for _, f := range []struct{ name, value string }{
+			{"description", args.Description},
+			{"design", args.Design},
+			{"acceptance", args.Acceptance},
+		} {
+			if r := envelopeFragmentResult(f.name, f.value); r != nil {
+				return r, nil, nil
+			}
 		}
 
 		source := sourceFor(req, args.Source)
@@ -684,6 +681,15 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 
 		j := toJSON(t)
 		j.UnregisteredWarning = unregisteredWarning
+		// Epics are exempt on the same grounds tk audit exempts them: a container
+		// holds children that each carry their own contract.
+		// Compared trimmed, because the audit classifies the same ticket off
+		// BodySections' trimmed output: an acceptance of " " is stored as none,
+		// so it has to warn here too or the two surfaces disagree.
+		if t.Type != ticket.TypeEpic && strings.TrimSpace(args.Description) != "" && strings.TrimSpace(args.Acceptance) == "" {
+			j.EmptyAcceptanceWarning = fmt.Sprintf("ticket %s has a description but no acceptance criteria: nothing states what done means, and the workflow gates on that contract. "+
+				"Add it with ticket_edit on %s and an `acceptance` argument.", t.ID, t.ID)
+		}
 		r, err := jsonResult(j)
 		return r, nil, err
 	})
@@ -711,8 +717,19 @@ type editArgs struct {
 func registerEdit(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
-		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`.",
+		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. A body field that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
+		for _, f := range []struct{ name, value string }{
+			{"description", args.Description},
+			{"design", args.Design},
+			{"acceptance", args.Acceptance},
+			{"test_results", args.TestResults},
+		} {
+			if r := envelopeFragmentResult(f.name, f.value); r != nil {
+				return r, nil, nil
+			}
+		}
+
 		t, err := store.Get(args.ID)
 		if err != nil {
 			r, _ := errResult("ticket not found: %v", err)

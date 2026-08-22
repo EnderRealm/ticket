@@ -482,6 +482,51 @@ func UpdateSection(body, heading, content string) string {
 	return body + "\n" + marker + "\n\n" + content + "\n"
 }
 
+// BodySections splits a ticket body into the free-text sections the structural
+// headings delimit. The counterpart to UpdateSection, which writes them: the
+// MCP response fields are read out with it, and so is the audit that inspects
+// stored content, so both see the same split.
+//
+// The headings match on prefix, so `## Acceptance Notes` written by hand reads
+// as the acceptance section — intentional, and the same looseness UpdateSection
+// writes through, which is why a section written by one is found by the other.
+// structuralSections above is a separate list serving a different job (it
+// bounds a section being replaced, and includes `## Notes`); the two are not
+// derived from one another.
+func BodySections(body string) (desc, design, acceptance, testResults string) {
+	lines := strings.Split(body, "\n")
+	var current *string
+	var buf []string
+
+	flush := func() {
+		if current != nil {
+			*current = strings.TrimSpace(strings.Join(buf, "\n"))
+		}
+		buf = nil
+	}
+
+	desc = ""
+	current = &desc
+
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "## Design"):
+			flush()
+			current = &design
+		case strings.HasPrefix(line, "## Acceptance"):
+			flush()
+			current = &acceptance
+		case strings.HasPrefix(line, "## Test Results"):
+			flush()
+			current = &testResults
+		default:
+			buf = append(buf, line)
+		}
+	}
+	flush()
+	return
+}
+
 // parseTimeValue extracts a time.Time from a YAML-decoded frontmatter value,
 // which may already be a time.Time or an RFC3339 string. Returns the zero time
 // if the value cannot be parsed.

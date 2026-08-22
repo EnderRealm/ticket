@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- `ticket_create` refuses a `description`, `design` or `acceptance` value that ends in a tool-call envelope fragment, and `ticket_edit` refuses one in those three or in `test_results`. A caller that closes one of those parameters with the wrong tag leaves the tool-call parser consuming to the end of the call, so the arguments after it — the acceptance criteria, most often — are absorbed into the value it was still filling; the create then succeeds, echoes a plausible-looking description, and the ticket lands with no contract at all. The error names the field and quotes the offending tail so the call can be resent in one step. Rejection rather than sanitizing: stripping the markup would leave the same uncontracted ticket, minus the evidence. The check is anchored at the tail of the value rather than searching for the tokens anywhere in it, since a ticket may legitimately discuss this markup and the corruption always leaves the envelope's terminator at the end.
+- `ticket_create` returns an `empty_acceptance_warning` when a description arrives with no acceptance criteria beside it. A warning and not a refusal, so stub-first flows still create; the workflow layer keeps the hard gate.
+- `tk audit` reports tickets already in the store carrying either shape — a body section ending in an envelope fragment, or a description with no acceptance criteria, epics aside — as a `content` section in both text and JSON output, scoped by `--project` like the rest of the report.
+
 ### Fixed
 - The journal loops in `tk watch run` and `tk serve` quote project names in every per-project log line, so control characters from shared-config project keys cannot forge log entries or inject terminal escapes when `tk watch logs` displays the file.
 

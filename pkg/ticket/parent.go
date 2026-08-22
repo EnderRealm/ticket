@@ -117,6 +117,25 @@ type ParentViolation struct {
 	Detail string              `json:"detail"`
 }
 
+// ContentIssueKind classifies what an audit found wrong with a ticket's stored
+// free text.
+type ContentIssueKind string
+
+const (
+	ContentEnvelopeFragment ContentIssueKind = "envelope-fragment"
+	ContentEmptyAcceptance  ContentIssueKind = "empty-acceptance"
+)
+
+// ContentIssue is one ticket whose stored body says something is missing:
+// either a section that absorbed part of the tool call that wrote it, or a
+// description with no acceptance criteria beside it.
+type ContentIssue struct {
+	ID     string           `json:"id"`
+	Kind   ContentIssueKind `json:"kind"`
+	Field  string           `json:"field,omitempty"`  // which body section, for envelope-fragment
+	Detail string           `json:"detail,omitempty"` // the offending tail, for envelope-fragment
+}
+
 // ProjectSkip is a project the audit could not read, and why. The reason is
 // flattened to one line by oneLine, like a FileSkip's.
 type ProjectSkip struct {
@@ -125,8 +144,9 @@ type ProjectSkip struct {
 }
 
 // AuditReport is what Audit found: the parent violations, the epics whose
-// stored status no longer matches the one they derive, the projects it could
-// not read, and the individual files it could not read. Both kinds of skip are
+// stored status no longer matches the one they derive, the tickets whose stored
+// body is missing content it was meant to carry, the projects it could not
+// read, and the individual files it could not read. Both kinds of skip are
 // part of the result rather than swallowed — a report that silently covered
 // less than the whole store would call a store clean that a write can still
 // trip on, which is the wrong way to fail. A single unreadable file is the same
@@ -135,15 +155,19 @@ type ProjectSkip struct {
 type AuditReport struct {
 	Violations   []ParentViolation `json:"violations"`
 	EpicStatus   []EpicStatusDrift `json:"epic_status"`
+	Content      []ContentIssue    `json:"content"`
 	Skipped      []ProjectSkip     `json:"skipped,omitempty"`
 	SkippedFiles []FileSkip        `json:"skipped_files,omitempty"`
 }
 
 // Audit reports every ticket whose parent breaks the one-level hierarchy, so a
-// store predating the rule can be cleaned before a write trips on it, and every
+// store predating the rule can be cleaned before a write trips on it, every
 // epic reading a different status than its file stores, so a store predating
-// derived epic statuses can be reconciled. Strictly read-only: nothing is
-// repaired or rewritten.
+// derived epic statuses can be reconciled, and every ticket whose stored body
+// is missing content — a section that absorbed part of the tool call that wrote
+// it, or a description with no acceptance criteria — so the ones already
+// written are findable now that the write path refuses them. Strictly
+// read-only: nothing is repaired or rewritten.
 //
 // A MultiStore is audited project by project, against the same per-project
 // FileStore the write path validates against. Resolving through MultiStore.Get
@@ -181,13 +205,17 @@ func Audit(store Store) (AuditReport, error) {
 			d.ID = FormatNamespacedID(proj, d.ID)
 			report.EpicStatus = append(report.EpicStatus, d)
 		}
+		for _, c := range projReport.Content {
+			c.ID = FormatNamespacedID(proj, c.ID)
+			report.Content = append(report.Content, c)
+		}
 		report.SkippedFiles = append(report.SkippedFiles, projReport.SkippedFiles...)
 	}
 	return report, nil
 }
 
-// auditStore runs both audits over one project's tickets. The unreadable files
-// are stamped with the project here, where the store that produced them is in
+// auditStore runs the three audits over one project's tickets. The unreadable
+// files are stamped with the project here, where the store that produced them is in
 // hand — the ID namespacing above cannot reach them, since a file that did not
 // parse has no ID to namespace.
 func auditStore(store Store) (AuditReport, error) {
@@ -199,10 +227,54 @@ func auditStore(store Store) (AuditReport, error) {
 	if err != nil {
 		return AuditReport{}, err
 	}
+	content, err := auditStoreContent(store)
+	if err != nil {
+		return AuditReport{}, err
+	}
 	for i := range skipped {
 		skipped[i].Project = storeProject(store)
 	}
-	return AuditReport{Violations: violations, EpicStatus: drift, SkippedFiles: skipped}, nil
+	return AuditReport{Violations: violations, EpicStatus: drift, Content: content, SkippedFiles: skipped}, nil
+}
+
+// auditStoreContent reports the tickets in one store whose stored body is
+// missing content, in the two shapes an MCP write can leave behind: a section
+// that ends in a tool-call envelope fragment, which means the text after it was
+// absorbed rather than stored, and a description with no acceptance criteria,
+// which is a ticket neither /capture nor /work will accept. The check that
+// refuses both now runs at the MCP boundary; this is what finds the ones
+// already written. Read-only, like the rest of the audit.
+//
+// Read through listStored, like the epic-status audit: only stored body text is
+// inspected, so no derived status is needed, and List would warn a second time
+// about every file the same pass already reported as skipped. The skips are
+// dropped here for that reason — the epic-status audit carries them, and a file
+// that did not parse has no body to check.
+func auditStoreContent(store Store) ([]ContentIssue, error) {
+	tickets, _, err := listStored(store)
+	if err != nil {
+		return nil, err
+	}
+	var issues []ContentIssue
+	for _, t := range tickets {
+		desc, design, acceptance, testResults := BodySections(t.Body)
+		for _, f := range []struct{ field, value string }{
+			{"description", desc},
+			{"design", design},
+			{"acceptance", acceptance},
+			{"test_results", testResults},
+		} {
+			if tail, ok := EnvelopeFragment(f.value); ok {
+				issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEnvelopeFragment, Field: f.field, Detail: tail})
+			}
+		}
+		// An epic is a container: its children carry the contract, so it has no
+		// criteria to be missing.
+		if t.Type != TypeEpic && desc != "" && acceptance == "" {
+			issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEmptyAcceptance})
+		}
+	}
+	return issues, nil
 }
 
 // auditStoreParents runs the checks ResolveParent runs over one store's

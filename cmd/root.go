@@ -26,7 +26,7 @@ Viewing:
                              and closed hidden; --all shows them)
   frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
-  audit [--project=NAME]     Report invalid parents, and epics whose stored status is not read
+  audit [--project=NAME]     Report invalid parents, epics whose stored status is not read, and tickets missing body content
   verify <id>                Run the ticket's acceptance-criteria verify commands
 
   A criterion declares its check on an indented continuation line:

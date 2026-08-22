@@ -3179,3 +3179,179 @@ func TestEditPromotesToEpicWithAStatus(t *testing.T) {
 		t.Error("the refused edit promoted the ticket anyway")
 	}
 }
+
+// closeTag and openTag build tool-call envelope markup from its pieces, the
+// same way pkg/ticket does — a terminator spelled out verbatim in this file
+// would corrupt the tool call of any agent that quotes it, which is the failure
+// under test.
+func closeTag(name string) string { return "</" + name + ">" }
+
+func openTag(name, attrs string) string { return "<" + name + " " + attrs + ">" }
+
+// corruptedDescription is what a create call leaves behind when the caller
+// closes the description parameter with the wrong tag: the acceptance argument
+// and the call terminator end up inside the description's value.
+func corruptedDescription() string {
+	return "The real description text.\n" + closeTag("antml:description") + "\n" +
+		openTag("antml:parameter", `name="acceptance"`) + "\n- The criteria that never arrived\n" +
+		closeTag("antml:parameter") + "\n" + closeTag("antml:invoke")
+}
+
+func TestCreateRejectsEnvelopeFragment(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	for _, field := range []string{"description", "design", "acceptance"} {
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "ticket_create",
+			Arguments: map[string]any{"title": "Envelope " + field, field: corruptedDescription()},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Fatalf("ticket_create stored a %s carrying an envelope fragment: %v", field, result.Content)
+		}
+		text := result.Content[0].(*mcp.TextContent).Text
+		if !strings.Contains(text, field) {
+			t.Errorf("error does not name the field %q: %s", field, text)
+		}
+		if !strings.Contains(text, closeTag("antml:invoke")) {
+			t.Errorf("error does not show the offending tail: %s", text)
+		}
+	}
+
+	// Nothing was written: a refused create leaves no half-formed ticket.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	if len(listIDs(resp)) != 0 {
+		t.Errorf("refused creates left tickets in the store: %v", resp)
+	}
+}
+
+func TestEditRejectsEnvelopeFragment(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+	id := createTicketID(t, session, map[string]any{
+		"title":       "Edit envelope test",
+		"description": "The original description",
+		"acceptance":  "The original criteria",
+	})
+
+	for _, field := range []string{"description", "design", "acceptance", "test_results"} {
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "ticket_edit",
+			Arguments: map[string]any{"id": id, field: corruptedDescription()},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Fatalf("ticket_edit stored a %s carrying an envelope fragment: %v", field, result.Content)
+		}
+		text := result.Content[0].(*mcp.TextContent).Text
+		if !strings.Contains(text, field) || !strings.Contains(text, closeTag("antml:invoke")) {
+			t.Errorf("error should name %q and show the tail: %s", field, text)
+		}
+	}
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown)
+	if shown["description"] != "The original description" {
+		t.Errorf("a refused edit changed the description: %q", shown["description"])
+	}
+}
+
+// A ticket that discusses envelope markup is ordinary content and must still be
+// creatable — the check is anchored at the tail for exactly this reason. The
+// description here is the one from the ticket that asked for the check, tags
+// and all.
+func TestCreateAcceptsADescriptionThatDiscussesEnvelopes(t *testing.T) {
+	session := testServer(t)
+	description := "ROOT CAUSE IS NOT IN TK. Stating that first so nobody hunts a parsing defect that does not exist.\n\n" +
+		"Observed three times in one session, across two different agents: a `ticket_create` call carrying both " +
+		"`description` and `acceptance` produced a ticket whose `acceptance_criteria` was empty and whose description " +
+		"ended with literal text of this shape: the real description text, then " + closeTag("antml:description") +
+		", then " + openTag("antml:parameter", `name="acceptance"`) + " with the intended criteria, then " +
+		closeTag("antml:parameter") + ", then " + closeTag("antml:invoke") + ".\n\n" +
+		"The cause is client-side. The calling agent closed the `description` parameter with a wrong closing tag, so " +
+		"the tool-call parser kept consuming and the entire remainder of the envelope was absorbed into the " +
+		"`description` string value. tk stored precisely what it was handed.\n\n" +
+		"Two independent signals were available and neither was used: a description whose tail is an unmistakable " +
+		"truncated tool-call envelope, and a create call that set a description but left acceptance empty."
+
+	id := createTicketID(t, session, map[string]any{
+		"title":       "ticket_create silently accepts a malformed tool-call envelope",
+		"description": description,
+		"acceptance":  "The check rejects a fragment and this ticket still creates",
+	})
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown)
+	if shown["description"] != description {
+		t.Errorf("description round-tripped as %q", shown["description"])
+	}
+}
+
+func TestCreateWarnsOnEmptyAcceptance(t *testing.T) {
+	session := testServer(t)
+
+	tests := []struct {
+		name string
+		args map[string]any
+		warn bool
+	}{
+		{"description without acceptance", map[string]any{"title": "No criteria", "description": "Why it matters"}, true},
+		{"description with acceptance", map[string]any{"title": "Both", "description": "Why it matters", "acceptance": "What done means"}, false},
+		{"neither", map[string]any{"title": "Stub"}, false},
+		{"epic with a description", map[string]any{"title": "Container", "type": "epic", "description": "Why it matters"}, false},
+		{"whitespace-only acceptance", map[string]any{"title": "Blank criteria", "description": "Why it matters", "acceptance": "   "}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "ticket_create",
+				Arguments: tt.args,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError {
+				t.Fatalf("ticket_create error: %v", result.Content)
+			}
+			var created map[string]any
+			json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &created)
+			warning, _ := created["empty_acceptance_warning"].(string)
+			if tt.warn && warning == "" {
+				t.Errorf("create with a description and no acceptance carried no warning: %v", created)
+			}
+			if !tt.warn && warning != "" {
+				t.Errorf("unexpected warning %q", warning)
+			}
+			if tt.warn && !strings.Contains(warning, created["id"].(string)) {
+				t.Errorf("warning does not name the ticket: %q", warning)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -247,5 +248,134 @@ func TestAuditWarnsAboutUnreadableProject(t *testing.T) {
 	}
 	if len(result.Skipped) != 1 || result.Skipped[0].Project != "beta" {
 		t.Errorf("json skipped = %v, want beta reported as unreadable", result.Skipped)
+	}
+}
+
+// auditBodyTicket writes a ticket carrying a body, for the content audit.
+func auditBodyTicket(t *testing.T, store *ticket.FileStore, id, body string) {
+	t.Helper()
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: id, Status: ticket.StatusOpen, Type: ticket.TypeFeature,
+		Created: time.Now(), Title: "Item " + id, Body: body,
+	})
+}
+
+func TestAuditReportsMissingBodyContent(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha", "beta")
+	store := stores["alpha"]
+	// Built from its pieces: a terminator spelled out here would corrupt the
+	// tool call of any agent that quotes this file.
+	terminator := "</" + "antml:invoke" + ">"
+	auditBodyTicket(t, store, "au-frag-0001", "\nThe real description text.\n"+terminator+"\n")
+	auditBodyTicket(t, store, "au-empty-0002", "\nA description and nothing else.\n")
+	auditBodyTicket(t, store, "au-whole-0003", "\nA description.\n\n## Acceptance Criteria\n\nWhat done means.\n")
+	// An epic holds children rather than criteria, so a description alone is
+	// not a missing contract.
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: "au-epic-0004", Status: ticket.StatusBacklog, Type: ticket.TypeEpic,
+		Created: time.Now(), Title: "Epic au-epic-0004", Body: "\nA description and nothing else.\n",
+	})
+
+	out := captureAudit(t)
+
+	if !contains(out, "au-frag-0001") || !contains(out, string(ticket.ContentEnvelopeFragment)) {
+		t.Errorf("audit should report the ticket whose description absorbed part of a tool call:\n%s", out)
+	}
+	if !contains(out, "au-empty-0002") || !contains(out, string(ticket.ContentEmptyAcceptance)) {
+		t.Errorf("audit should report the ticket with a description and no acceptance criteria:\n%s", out)
+	}
+	if contains(out, "au-whole-0003") {
+		t.Errorf("audit should not report a ticket carrying both halves of the contract:\n%s", out)
+	}
+	if contains(out, "au-epic-0004") {
+		t.Errorf("audit should not report an epic as missing acceptance criteria:\n%s", out)
+	}
+	// The fragment ticket is reported twice on purpose: the absorbed text is one
+	// fact, and the acceptance criteria it swallowed still being absent is the
+	// other — repairing the markup alone would leave the ticket uncontracted.
+	if !contains(out, "1 section(s)") || !contains(out, "2 ticket(s) carry a description") {
+		t.Errorf("audit should count each class separately:\n%s", out)
+	}
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var result ticket.AuditReport
+	jsonOut := captureAudit(t, "project", "alpha")
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
+	}
+	got := map[ticket.ContentIssue]bool{}
+	for _, c := range result.Content {
+		got[c] = true
+	}
+	for _, want := range []ticket.ContentIssue{
+		{ID: "alpha/au-frag-0001", Kind: ticket.ContentEnvelopeFragment, Field: "description", Detail: "The real description text.\n" + terminator},
+		{ID: "alpha/au-frag-0001", Kind: ticket.ContentEmptyAcceptance},
+		{ID: "alpha/au-empty-0002", Kind: ticket.ContentEmptyAcceptance},
+	} {
+		if !got[want] {
+			t.Errorf("json content is missing %+v: %+v", want, result.Content)
+		}
+	}
+	if len(result.Content) != 3 {
+		t.Errorf("json content = %+v, want exactly the three issues", result.Content)
+	}
+
+	// A clean project emits the key as an empty array rather than dropping it:
+	// a consumer cannot otherwise tell "nothing to report" from a build that
+	// does not report content at all.
+	jsonOut = captureAudit(t, "project", "beta")
+	if !contains(jsonOut, `"content": []`) {
+		t.Errorf("a clean project should still emit content as an empty array:\n%s", jsonOut)
+	}
+}
+
+// captureContentIssues renders one content section and returns what it printed.
+func captureContentIssues(t *testing.T, issues []ticket.ContentIssue) string {
+	t.Helper()
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printContentIssues(issues)
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// A ticket ID carries its project namespace, and a project name is a store
+// directory name or a shared-config key another machine wrote, bounded against
+// path separators and nothing else.
+func TestContentIssueIDsAreSanitized(t *testing.T) {
+	out := captureContentIssues(t, []ticket.ContentIssue{
+		{ID: "al\x1b[2Kpha/au-frag-0001", Kind: ticket.ContentEnvelopeFragment, Field: "description", Detail: "text"},
+		{ID: "alpha/au-empty-0002", Kind: ticket.ContentEmptyAcceptance},
+	})
+	if contains(out, "\x1b") {
+		t.Errorf("an escape sequence in an ID reached the output raw: %q", out)
+	}
+	if !contains(out, "alpha/au-empty-0002") {
+		t.Errorf("an ordinary ID should print unchanged:\n%s", out)
+	}
+}
+
+func TestAuditCapsTheEmptyAcceptanceListing(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	for i := 0; i < contentEmptyListLimit+3; i++ {
+		auditBodyTicket(t, stores["alpha"], fmt.Sprintf("au-stub-%04d", i), "\nA description and nothing else.\n")
+	}
+
+	out := captureAudit(t)
+
+	// A backlog stub is the ordinary state, so the section reports the count and
+	// names only the first few rather than burying the sections above it.
+	if !contains(out, "... and 3 more") {
+		t.Errorf("audit should cap the empty-acceptance listing:\n%s", out)
+	}
+	if !contains(out, fmt.Sprintf("%d ticket(s) carry a description", contentEmptyListLimit+3)) {
+		t.Errorf("audit should still count every empty-acceptance ticket:\n%s", out)
 	}
 }

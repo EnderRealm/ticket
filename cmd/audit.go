@@ -13,12 +13,14 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Report tickets whose parent breaks the one-level epic hierarchy, and epics whose stored status is no longer read",
+	Short: "Report invalid parents, epics whose stored status is no longer read, and tickets missing body content",
 	Long: "Report tickets whose parent breaks the one-level epic hierarchy: a parent that is not an epic, " +
 		"a parent that does not resolve, a parent in another project, an epic that has a parent, or a parent cycle. " +
 		"Each parent is resolved within the project that owns the ticket, so the report matches what a write would accept. " +
 		"Also report every epic whose stored status differs from the status it now derives from its children, since " +
-		"stored statuses were left in place and are no longer read. Read-only — nothing is rewritten.",
+		"stored statuses were left in place and are no longer read, and every ticket whose stored body is missing content: " +
+		"a section ending in a tool-call envelope fragment, or a description with no acceptance criteria. " +
+		"Read-only — nothing is rewritten.",
 	Args: cobra.NoArgs,
 	RunE: runAudit,
 }
@@ -62,6 +64,13 @@ func runAudit(cmd *cobra.Command, args []string) error {
 			}
 		}
 		audit.EpicStatus = drift
+		var content []ticket.ContentIssue
+		for _, c := range audit.Content {
+			if p, _ := ticket.ParseNamespacedID(c.ID); p == proj {
+				content = append(content, c)
+			}
+		}
+		audit.Content = content
 		var skipped []ticket.ProjectSkip
 		for _, s := range audit.Skipped {
 			if s.Project == proj {
@@ -85,6 +94,9 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		if audit.EpicStatus == nil {
 			audit.EpicStatus = []ticket.EpicStatusDrift{}
 		}
+		if audit.Content == nil {
+			audit.Content = []ticket.ContentIssue{}
+		}
 		data, err := json.MarshalIndent(audit, "", "  ")
 		if err != nil {
 			return err
@@ -102,9 +114,11 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\n%d ticket(s) violate the one-level epic hierarchy — clear or repoint each parent\n", len(audit.Violations))
 	}
 	printEpicStatusDrift(audit.EpicStatus)
+	printContentIssues(audit.Content)
 	// A project or a file the audit could not read is named rather than dropped:
 	// without it, "No parent violations." would speak for a store never fully
-	// read. It covers both sections, which are read in the same per-project pass.
+	// read. It covers every section, all of which are read in the same
+	// per-project pass.
 	if len(audit.Skipped) > 0 || len(audit.SkippedFiles) > 0 {
 		// Only the half that has something to report is named: a run that skipped
 		// one project and no file has nothing to say about files.
@@ -163,6 +177,57 @@ func printEpicStatusDrift(drift []ticket.EpicStatusDrift) {
 		fmt.Printf("%d epic(s) of those store `closed` with no abandon flag: either a hand-close from before statuses were derived, or a write that carried a derived `closed` into the file — the file cannot say which. "+
 			"A stored value is evidence of a decision only on a file older than derived statuses; run `tk edit <id> --status closed` on each of those that should stay abandoned, and do it before editing the epic, since the next write of the epic replaces the stored value with the derived one. "+
 			"On a file written since, the stored `closed` is an artifact — closing the epic would close a child nobody asked to close\n", storedClosed)
+	}
+}
+
+// contentEmptyListLimit bounds how many empty-acceptance tickets are named
+// before the rest are summarised as a count.
+const contentEmptyListLimit = 10
+
+// printContentIssues reports the tickets whose stored body is missing content
+// it was meant to carry. Both classes are silent everywhere else: the ticket
+// lists and renders, and only reading its text shows that the contract is not
+// there.
+func printContentIssues(issues []ticket.ContentIssue) {
+	if len(issues) == 0 {
+		fmt.Println("\nNo ticket is missing body content.")
+		return
+	}
+	fmt.Println()
+	fragments, empty := 0, 0
+	// An ID carries its project namespace, and a project name is a store
+	// directory name or a shared-config key another machine wrote — bounded
+	// against path separators and nothing else — so it goes through the same
+	// rule every other untrusted string tk prints to an operator does. The
+	// parent-violation and epic-drift loops above still print theirs raw; they
+	// are left as they are on purpose, for a separate change.
+	for _, c := range issues {
+		if c.Kind == ticket.ContentEnvelopeFragment {
+			fragments++
+			// The field is ours; the tail came off the store, so it is quoted
+			// the way storedStatus quotes an unrecognised status.
+			fmt.Printf("%s  %s  %s: %q\n", ticket.SanitizeControl(c.ID), c.Kind, c.Field, c.Detail)
+			continue
+		}
+		empty++
+		// Every fragment is listed — they are rare and each names a ticket to
+		// repair — but a description with no criteria is the ordinary state of a
+		// backlog stub, so listing them all would bury the sections above on a
+		// healthy store. The count below is what the report is actually for.
+		if empty <= contentEmptyListLimit {
+			fmt.Printf("%s  %s\n", ticket.SanitizeControl(c.ID), c.Kind)
+		}
+	}
+	if empty > contentEmptyListLimit {
+		fmt.Printf("... and %d more with a description and no acceptance criteria\n", empty-contentEmptyListLimit)
+	}
+	fmt.Println()
+	if fragments > 0 {
+		fmt.Printf("%d section(s) absorbed part of the tool call that wrote them — the text that followed was never stored, so the real content is likely missing; rewrite each from the source\n", fragments)
+	}
+	if empty > 0 {
+		fmt.Printf("%d ticket(s) carry a description with no acceptance criteria — nothing states what done means. "+
+			"The count is a census and includes finished tickets and backlog stubs; the open and ready ones are the actionable half, since /capture and /work both gate on that contract\n", empty)
 	}
 }
 
