@@ -436,6 +436,8 @@ tk sync
 
 If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is blocked and a `.tk-sync-blocked` marker is written. Resolve the conflict manually, then sync resumes on the next cycle.
 
+A store root nested inside a repo tk does not own is the exception: there the rebase would stash that repo owner's whole uncommitted worktree and rebase their current branch, so tk refuses it and blocks with a marker naming the repository instead. The refusal is on the rebase alone — commits and pushes are never gated by the nested topology, so the store keeps publishing on every cycle where the enclosing branch is not behind its upstream. Once it *is* behind, the cycle stops at the marker: nothing of the store's is committed or pushed until the divergence is reconciled by hand in the enclosing repository, and the cycle after that clears the marker and resumes.
+
 ### Commit Journal
 
 `tk watch` — and the same loop inside `tk serve` — reads each registered project's git history and appends one line per commit that names a ticket to `~/.ticket/state/<project>/commits.jsonl`. A commit names a ticket with a bracket ref in its message: `[<id>]` links the commit to the ticket, and `Closes:` or `Fixes:` before the ref also marks the ticket `done`. Both the bare `[slug-hash]` and the namespaced `[project/slug-hash]` form the central store hands agents are matched; a ref naming the project being journalled is recorded under its bare ID, and one naming another project is left for that project to resolve.

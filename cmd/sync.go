@@ -125,16 +125,13 @@ func syncLoop(ctx context.Context, storeRoot string, interval time.Duration) {
 // Only the index-touching commands are scoped: staging, the staged-changes
 // checks, the commit and the reset that follows a refusal all carry
 // centralStorePaths, making sync and init identical consumers of it, so sync
-// cannot commit or unstage anything outside the store. The remote half is not
-// scoped and cannot be — `git push` and `git pull --rebase --autostash` act on
-// the repository's current branch and whole worktree, and `-C` only sets the
-// working directory. So for a nested store whose push is rejected, sync
-// stashes the enclosing repo owner's entire uncommitted worktree, rebases
-// their branch onto its upstream and pops the stash. A pop conflict outside
-// centralStorePaths is deliberately invisible to sync's guards, which are
-// scoped to the store's paths so that a conflict sync neither created nor can
-// resolve does not stop the store's own syncing. That unscoped remote half is
-// left as it stands here and tracked as ticket/tk-sync-runs-51d4.
+// cannot commit or unstage anything outside the store. The remote half cannot
+// be scoped — `git push` and `git pull --rebase --autostash` act on the
+// repository's current branch and whole worktree, and `-C` only sets the
+// working directory. Push is kept for a nested store regardless: it publishes
+// commits already on the owner's branch to the owner's own upstream and
+// rewrites neither. The rebase pull is refused there instead, at the single
+// choke point both callers go through — see pullRebaseAutostash.
 func syncCentralStore(storeRoot string) string {
 	// Check sync-blocked marker
 	if blocked := readSyncBlocked(storeRoot); blocked != "" {
@@ -205,7 +202,7 @@ func syncCentralStore(storeRoot string) string {
 			return msg
 		}
 		if out, err := exec.Command("git", "-C", storeRoot, "add", "--", path).CombinedOutput(); err != nil {
-			msg := fmt.Sprintf("sync blocked: git add %s failed: %v (%s)", path, err, strings.TrimSpace(string(out)))
+			msg := fmt.Sprintf("sync blocked: git add %s failed: %v (%s)", path, err, ticket.SanitizeControl(strings.TrimSpace(string(out))))
 			writeSyncBlocked(storeRoot, msg)
 			return msg
 		}
@@ -242,7 +239,7 @@ func syncCentralStore(storeRoot string) string {
 	msg := "tk: sync tickets"
 	commitArgs := append([]string{"-C", storeRoot, "commit", "-m", msg, "--"}, changed...)
 	if out, err := exec.Command("git", commitArgs...).CombinedOutput(); err != nil {
-		return fmt.Sprintf("git commit failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		return fmt.Sprintf("git commit failed: %v (%s)", err, ticket.SanitizeControl(strings.TrimSpace(string(out))))
 	}
 
 	// Check for remote
@@ -257,20 +254,23 @@ func syncCentralStore(storeRoot string) string {
 	}
 
 	// Push
-	if out, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput(); err == nil {
+	pushOut, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput()
+	if err == nil {
 		clearSyncBlocked(storeRoot)
 		return ""
-	} else {
-		_ = out
 	}
 
-	// Push failed — pull --rebase --autostash and retry.
-	if msg := pullRebaseAutostash(storeRoot); msg != "" {
+	// Push failed — pull --rebase --autostash and retry, handing down the push's
+	// own output. The retry runs on any push failure, not only a rejection, and
+	// the pull fixes none of the others — a branch with no upstream configured
+	// lands here too — so that output is the only account of why the push
+	// failed, and it is composed into the message and the marker there.
+	if msg := pullRebaseAutostash(storeRoot, string(pushOut)); msg != "" {
 		return msg
 	}
 
 	if out, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput(); err != nil {
-		return fmt.Sprintf("git push failed after rebase (%s)", strings.TrimSpace(string(out)))
+		return fmt.Sprintf("git push failed after rebase (%s)", ticket.SanitizeControl(strings.TrimSpace(string(out))))
 	}
 
 	clearSyncBlocked(storeRoot)
@@ -368,7 +368,8 @@ func hasConflictMarker(content []byte) bool {
 }
 
 // pullIfBehind fetches origin and rebases local commits onto upstream when
-// behind. Returns a warning (and writes the sync-blocked marker) on failure,
+// behind. Returns a warning (and writes the sync-blocked marker) on failure or
+// when the rebase pull is gated for a nested store — see pullRebaseAutostash —
 // or empty string on success / no remote / no upstream / already up to date.
 func pullIfBehind(storeRoot string) string {
 	remotes, err := gitRemoteNames(storeRoot)
@@ -382,17 +383,16 @@ func pullIfBehind(storeRoot string) string {
 	}
 
 	if out, err := exec.Command("git", "-C", storeRoot, "fetch").CombinedOutput(); err != nil {
-		msg := fmt.Sprintf("sync blocked: git fetch failed (%s)", strings.TrimSpace(string(out)))
+		msg := fmt.Sprintf("sync blocked: git fetch failed (%s)", ticket.SanitizeControl(strings.TrimSpace(string(out))))
 		writeSyncBlocked(storeRoot, msg)
 		return msg
 	}
 
-	behindOut, err := exec.Command("git", "-C", storeRoot, "rev-list", "--count", "HEAD..@{u}").Output()
-	if err != nil || strings.TrimSpace(string(behindOut)) == "0" {
+	if !behindUpstream(storeRoot) {
 		return ""
 	}
 
-	return pullRebaseAutostash(storeRoot)
+	return pullRebaseAutostash(storeRoot, "")
 }
 
 // pullRebaseAutostash runs the rebase pull both the pre-flight pull and the
@@ -401,25 +401,190 @@ func pullIfBehind(storeRoot string) string {
 // one sync did not start discards the repo owner's in-progress rebase and every
 // commit they made during it, so an unresolvable state counts as pre-existing.
 //
-// This is the unscoped half of sync — `pull --rebase --autostash` acts on the
-// repository's current branch and whole worktree, and `-C` only sets the working
-// directory, so for a nested store it stashes, rebases and pops the enclosing
-// repo owner's work. Deliberately out of scope here; tracked as
-// ticket/tk-sync-runs-51d4.
-func pullRebaseAutostash(storeRoot string) string {
-	rebasing := rebaseInProgress(storeRoot)
-	out, err := exec.Command("git", "-C", storeRoot, "pull", "--rebase", "--autostash").CombinedOutput()
-	if err == nil {
-		return ""
+// The pull is refused outright when the store root is not the repository's own
+// toplevel. `pull --rebase --autostash` acts on the repository's current branch
+// and whole worktree, and `-C` only sets the working directory, so for a store
+// nested inside a repo tk does not own it stashes that owner's entire
+// uncommitted worktree, rebases their current branch onto its upstream and pops
+// the stash — on `tk serve`'s unattended five-second loop. That is the only
+// genuinely destructive remote operation sync has, and refusing it costs only
+// the diverged case: push keeps publishing the store's commits whenever the
+// branch is not behind. Continuing with a warning was rejected, since it still
+// rewrites someone else's branch unattended; so was refusing the whole remote
+// half, which leaves the nested topology init's bootstrapCentralStoreGit
+// deliberately supports half-functional.
+//
+// pushOut is the failed push's raw output when the retry path calls this, and
+// empty for the pre-flight pull. It is appended to whatever refusal or failure
+// comes out, so one blocked cycle has one message and one marker write.
+//
+// The pull's own output and the failed push's are both filtered before they
+// reach the message, per writeSyncBlocked. Filtered here rather than at the
+// call sites, which cannot then forget.
+func pullRebaseAutostash(storeRoot, pushOut string) string {
+	msg := nestedRebaseRefusal(storeRoot)
+	if msg == "" {
+		rebasing := rebaseInProgress(storeRoot)
+		out, err := exec.Command("git", "-C", storeRoot, "pull", "--rebase", "--autostash").CombinedOutput()
+		if err == nil {
+			logForeignUnmergedPaths(storeRoot)
+			return ""
+		}
+		aborted := ""
+		if !rebasing {
+			exec.Command("git", "-C", storeRoot, "rebase", "--abort").Run()
+			aborted = "; aborted rebase"
+		}
+		msg = fmt.Sprintf("sync blocked: git pull --rebase --autostash failed%s (%s)", aborted, ticket.SanitizeControl(strings.TrimSpace(string(out))))
 	}
-	aborted := ""
-	if !rebasing {
-		exec.Command("git", "-C", storeRoot, "rebase", "--abort").Run()
-		aborted = "; aborted rebase"
+	if cause := strings.TrimSpace(pushOut); cause != "" {
+		msg = fmt.Sprintf("%s (git push failed: %s)", msg, ticket.SanitizeControl(cause))
 	}
-	msg := fmt.Sprintf("sync blocked: git pull --rebase --autostash failed%s (%s)", aborted, strings.TrimSpace(string(out)))
 	writeSyncBlocked(storeRoot, msg)
 	return msg
+}
+
+// syncBlockedRefusePrefix leads every marker the nested-store rebase gate
+// writes, and is what syncBlockResolved identifies its own marker by. Not
+// full-text equality: the retry path appends the failed push's output to the
+// same message, and either half's wording can be edited, both of which would
+// switch the hold off with nothing at the call site to show it.
+const syncBlockedRefusePrefix = "sync blocked: refusing to rebase and autostash "
+
+// nestedRebaseRefusal returns the blocked message when the store root is not
+// the toplevel of the repository it sits in, or "" when the rebase pull may
+// run. `git rev-parse --show-toplevel` resolves symlinks and the store root as
+// tk computes it may not be, so both sides are canonicalized before comparing —
+// otherwise every store under a symlinked home or temp dir reads as nested.
+//
+// An unanswerable comparison counts as nested: refusing to rebase a repository
+// we cannot identify is the safe side, the same unknown-is-not-none split
+// repoStateInProgress makes.
+func nestedRebaseRefusal(storeRoot string) string {
+	unresolved := syncBlockedRefusePrefix + "a repository tk may not own: cannot resolve the repository containing the store"
+	top, err := findGitRoot(storeRoot)
+	if err != nil {
+		return unresolved
+	}
+	resolvedTop, topErr := filepath.EvalSymlinks(top)
+	resolvedStore, storeErr := filepath.EvalSymlinks(storeRoot)
+	if topErr != nil || storeErr != nil {
+		return unresolved
+	}
+	if resolvedTop == resolvedStore {
+		return ""
+	}
+	msg := fmt.Sprintf("%s%s, the repository the store is nested inside and tk does not own", syncBlockedRefusePrefix, ticket.SanitizeControl(top))
+	// The instruction to reconcile is only true when there is something to
+	// reconcile. The post-push-failure retry reaches this for any failed push,
+	// a branch with no upstream among them, and a marker sending someone to
+	// resolve a divergence that does not exist is worse than one that states
+	// the refusal alone — the caller carries the push's own error alongside it.
+	if behindUpstream(storeRoot) {
+		msg += "; reconcile the divergence there by hand (git pull --rebase) and sync resumes"
+	}
+	return msg
+}
+
+// logForeignUnmergedPaths reports unmerged paths anywhere in the repository
+// that fall outside centralStorePaths. `pull --rebase --autostash` exits 0 even
+// when the autostash pop conflicts, and the blocking guard is scoped to the
+// store's own paths on purpose, so a pop this sync just caused in the repo
+// owner's files would otherwise leave no trace anywhere. A log line — it reaches
+// the serve log and the CLI's stderr — is the whole signal: the store's own
+// syncing carries on, and paths inside centralStorePaths stay
+// checkUnmergedPaths' job rather than being reported twice.
+//
+// The line states what is observed and not what caused it: an unmerged path the
+// owner left behind — a stash pop of their own, which leaves no MERGE_HEAD and
+// so passes the pre-flight state guard — is indistinguishable here from one
+// this pull just made, and telling them apart would need a snapshot taken
+// before the pull for a signal that only reports.
+func logForeignUnmergedPaths(storeRoot string) {
+	// `ls-files -u` with no pathspec lists only what is under the working
+	// directory, so `:/` re-roots the pathspec at the repo toplevel. Defensive
+	// rather than load-bearing today: this runs only after nestedRebaseRefusal
+	// returned "", which means the store root is the toplevel and the two
+	// spellings list the same thing. It costs nothing and keeps the scan honest
+	// if the gate above it is ever narrowed.
+	//
+	// The two encoding flags travel together the way checkStagedConflictMarkers
+	// pins them, and here the path feeds a comparison rather than only a message:
+	// a name that arrives C-quoted fails the `tickets/` prefix test, so a conflict
+	// inside the store gets reported as being outside it. `core.quotePath`
+	// defaults to true, which quotes and octal-escapes any non-ASCII name — and
+	// slugifyTitle keeps Unicode letters, so tk writes such names itself; turning
+	// it off still leaves a name holding a control character quoted, which git
+	// permits and this store sees, since ticket files arrive over git from other
+	// machines. `-z` is what removes the quoting entirely, delimiting with NUL
+	// instead, and hands the name over raw for both the comparison and
+	// SanitizeControl below.
+	out, err := exec.Command("git", "-C", storeRoot, "-c", "core.quotePath=false", "ls-files", "-u", "-z", "--", ":/").Output()
+	if err != nil {
+		// Fail open: this scan only reports, and the store's own paths are
+		// blocked on by checkUnmergedPaths whether or not it runs. Blocking a
+		// sync on an advisory scan would trade a missing log line for a store
+		// that stops syncing.
+		return
+	}
+	seen := map[string]struct{}{}
+	var names []string
+	for _, rec := range strings.Split(string(out), "\x00") {
+		// Format: <mode> <sha> <stage>\t<path>, one record per stage.
+		i := strings.IndexByte(rec, '\t')
+		if i < 0 {
+			continue
+		}
+		path := rec[i+1:]
+		if _, dup := seen[path]; dup || insideCentralStorePaths(path) {
+			continue
+		}
+		seen[path] = struct{}{}
+		// Same forging risk the other guards sanitize against: a path arrives
+		// over git from another machine and can otherwise inject whole lines
+		// into the serve log.
+		names = append(names, ticket.SanitizeControl(path))
+	}
+	if len(names) == 0 {
+		return
+	}
+	if len(names) > maxForeignUnmergedPaths {
+		names = append(names[:maxForeignUnmergedPaths], fmt.Sprintf("+%d more", len(names)-maxForeignUnmergedPaths))
+	}
+	log.Printf("sync: unmerged paths outside the store after git pull --rebase --autostash (%s); resolve them in the enclosing repository — the store keeps syncing", strings.Join(names, ", "))
+}
+
+// maxForeignUnmergedPaths bounds the names one log line carries. The scan is
+// repo-wide, unlike the store-scoped checkUnmergedPaths, so a conflict spanning
+// a large tree would otherwise put every name in a single record; the tail
+// keeps the count honest.
+const maxForeignUnmergedPaths = 10
+
+// insideCentralStorePaths reports whether a store-root-relative path is one of
+// the tk-managed paths. The directory entry in centralStorePaths carries a
+// trailing slash and matches by prefix; a file entry matches exactly.
+func insideCentralStorePaths(path string) bool {
+	for _, p := range centralStorePaths {
+		if strings.HasSuffix(p, "/") {
+			if strings.HasPrefix(path, p) {
+				return true
+			}
+		} else if path == p {
+			return true
+		}
+	}
+	return false
+}
+
+// behindUpstream reports whether the current branch has commits to pull. An
+// unanswerable count reads as not behind: the pull it gates is the operation
+// that would find out anyway, and no rebase runs on a guess.
+func behindUpstream(storeRoot string) bool {
+	out, err := exec.Command("git", "-C", storeRoot, "rev-list", "--count", "HEAD..@{u}").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != "0"
 }
 
 // repoStateInProgress names the git operation underway in the repository that
@@ -525,6 +690,17 @@ func readSyncBlocked(storeRoot string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// writeSyncBlocked records why a cycle stopped, in a file `tk status` prints
+// back on every later run and `tk serve` copies into its log.
+//
+// Every git output a caller interpolates into msg — fetch, add, pull, push —
+// has been through ticket.SanitizeControl first, as have the paths the guards
+// name. That output carries the remote's own transport and hook text and the
+// names of files that arrived over git from other machines, so raw control
+// characters would forge status and serve-log lines and drive the terminal long
+// after the cycle that wrote them. Each is filtered where the message is built,
+// which is also where the same text is returned as the cycle's warning, so the
+// two cannot disagree.
 func writeSyncBlocked(storeRoot, msg string) {
 	os.WriteFile(filepath.Join(storeRoot, syncBlockedFile), []byte(msg+"\n"), 0o644)
 }
@@ -543,5 +719,23 @@ func syncBlockResolved(storeRoot string) bool {
 	}
 	// Also unresolved when the working tree still has unmerged paths (e.g.
 	// after an autostash pop conflict, where no rebase dir exists).
-	return checkUnmergedPaths(storeRoot) == ""
+	if checkUnmergedPaths(storeRoot) != "" {
+		return false
+	}
+	// The marker the nested-store gate wrote stands while the divergence it
+	// refuses to rebase away is still there. Without this it is cleared at the
+	// top of every cycle and rewritten by the gate moments later, leaving
+	// `tk status` reporting ok in the window between. It cannot wedge: the pair
+	// tested here is what the gate itself keys on, and once the owner reconciles
+	// their branch contains its upstream, so the remote-tracking ref the last
+	// fetch left behind already reports not behind.
+	//
+	// Scoped to that marker by its fixed lead, and only while the gate would
+	// still refuse: a marker written for any other cause falls through and is
+	// replaced next cycle with whatever reason still applies, so fixing the
+	// cause a marker names always changes what the user is told.
+	if strings.HasPrefix(readSyncBlocked(storeRoot), syncBlockedRefusePrefix) && nestedRebaseRefusal(storeRoot) != "" {
+		return !behindUpstream(storeRoot)
+	}
+	return true
 }

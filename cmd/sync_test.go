@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +22,11 @@ func setupGitRepo(t *testing.T) string {
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@test.com")
 	runGit(t, dir, "config", "user.name", "test")
+	// These fixtures inherit the developer's global config, and a global
+	// `push.autoSetupRemote = true` sets an upstream for a branch a test
+	// deliberately left without one, so the push it expects to fail succeeds.
+	runGit(t, dir, "config", "push.autoSetupRemote", "false")
+	runGit(t, dir, "config", "push.default", "simple")
 	// Initial commit so HEAD exists
 	os.WriteFile(filepath.Join(dir, ".gitkeep"), []byte(""), 0o644)
 	runGit(t, dir, "add", "-A")
@@ -205,9 +213,9 @@ func TestSyncNestedStoreCommitsAndPushesOnlyStorePaths(t *testing.T) {
 		t.Fatalf("syncCentralStore returned warning: %s", warning)
 	}
 
-	log, _ := execCommand("git", "-C", parent, "log", "--oneline", "-1")
-	if !contains(log, "tk: sync tickets") {
-		t.Fatalf("HEAD = %q, want sync commit", log)
+	logOut, _ := execCommand("git", "-C", parent, "log", "--oneline", "-1")
+	if !contains(logOut, "tk: sync tickets") {
+		t.Fatalf("HEAD = %q, want sync commit", logOut)
 	}
 
 	// The commit carries the store's paths and nothing else.
@@ -251,6 +259,412 @@ func TestSyncNestedStoreCommitsAndPushesOnlyStorePaths(t *testing.T) {
 	blob, _ := execCommand("git", "-C", bare, "show", "HEAD:tracked.txt")
 	if trimNL(blob) != "v1" {
 		t.Errorf("bare repo tracked.txt = %q, want the unmodified v1", blob)
+	}
+}
+
+// pushFromOtherClone writes name in a second clone of bare and pushes it,
+// leaving every other repo on that remote behind its upstream — the routine
+// case where another machine synced first and the local push is rejected.
+func pushFromOtherClone(t *testing.T, bare, name, content string) {
+	t.Helper()
+	other := t.TempDir()
+	runGit(t, other, "clone", bare, ".")
+	runGit(t, other, "config", "user.email", "other@test.com")
+	runGit(t, other, "config", "user.name", "other")
+	os.WriteFile(filepath.Join(other, name), []byte(content), 0o644)
+	runGit(t, other, "add", "-A")
+	runGit(t, other, "commit", "-m", "from other")
+	runGit(t, other, "push")
+}
+
+// assertEnclosingRepoUntouched checks the enclosing repo is exactly as
+// nestedStore left it: same branch, same HEAD, and the work in flight still
+// staged, modified and untracked with its contents intact.
+func assertEnclosingRepoUntouched(t *testing.T, parent, branch, head string) {
+	t.Helper()
+	if now, _ := execCommand("git", "-C", parent, "rev-parse", "--abbrev-ref", "HEAD"); now != branch {
+		t.Errorf("enclosing repo branch = %q, want %q", now, branch)
+	}
+	if now, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD"); now != head {
+		t.Errorf("enclosing repo HEAD = %q, want the unrebased %q", now, head)
+	}
+	if stash, _ := execCommand("git", "-C", parent, "stash", "list"); stash != "" {
+		t.Errorf("sync stashed the enclosing repo's worktree: %q", stash)
+	}
+	staged, _ := execCommand("git", "-C", parent, "diff", "--cached", "--name-only")
+	if !contains(staged, "staged.txt") {
+		t.Errorf("staged.txt no longer staged, index = %q", staged)
+	}
+	if blob, _ := execCommand("git", "-C", parent, "show", ":staged.txt"); trimNL(blob) != "staged" {
+		t.Errorf("staged staged.txt = %q, want %q", blob, "staged")
+	}
+	if data, err := os.ReadFile(filepath.Join(parent, "tracked.txt")); err != nil || string(data) != "v2\n" {
+		t.Errorf("tracked.txt = %q (%v), want the uncommitted v2", string(data), err)
+	}
+	if data, err := os.ReadFile(filepath.Join(parent, "untracked.txt")); err != nil || string(data) != "untracked\n" {
+		t.Errorf("untracked.txt = %q (%v), want it left alone", string(data), err)
+	}
+}
+
+func TestSyncNestedStoreRefusesRebaseWhenPushWouldBeRejected(t *testing.T) {
+	parent, storeRoot, bare := nestedStore(t)
+	pushFromOtherClone(t, bare, "from-other.txt", "from other\n")
+
+	// A ticket to publish, so the cycle wants the remote. Ungated, this is the
+	// routine nested case: the push is rejected and `pull --rebase --autostash`
+	// then stashes the enclosing repo owner's whole worktree and rebases their
+	// branch, unattended on tk serve's loop. Gated, the pre-flight pull refuses
+	// before the push is attempted at all; the rejection retry goes through the
+	// same choke point, covered directly below.
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "nested.md"), []byte("---\ntitle: Nested\n---\n"), 0o644)
+
+	branch, _ := execCommand("git", "-C", parent, "rev-parse", "--abbrev-ref", "HEAD")
+	head, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD")
+
+	warning := syncCentralStore(storeRoot)
+	if !contains(warning, "sync blocked") || !contains(warning, "refusing to rebase") {
+		t.Fatalf("expected the nested-store rebase refusal, got %q", warning)
+	}
+	if !contains(warning, "reconcile the divergence") {
+		t.Errorf("warning does not say what to do about it: %q", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); blocked != warning {
+		t.Errorf("marker = %q, want the warning %q", blocked, warning)
+	}
+
+	assertEnclosingRepoUntouched(t, parent, branch, head)
+	if _, err := os.Stat(filepath.Join(parent, "from-other.txt")); err == nil {
+		t.Error("sync rebased the enclosing repo onto its upstream")
+	}
+}
+
+func TestSyncNestedStoreGatesPreflightPull(t *testing.T) {
+	parent, storeRoot, bare := nestedStore(t)
+	pushFromOtherClone(t, bare, "from-other.txt", "from other\n")
+
+	// Nothing of the store's to push: the pre-flight pull is the only thing
+	// reaching for the remote, and it is gated on the same terms.
+	branch, _ := execCommand("git", "-C", parent, "rev-parse", "--abbrev-ref", "HEAD")
+	head, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD")
+
+	warning := syncCentralStore(storeRoot)
+	if !contains(warning, "sync blocked") || !contains(warning, "refusing to rebase") {
+		t.Fatalf("expected the nested-store rebase refusal, got %q", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); blocked == "" {
+		t.Error("expected .tk-sync-blocked marker in the store root")
+	}
+
+	assertEnclosingRepoUntouched(t, parent, branch, head)
+
+	// And the marker stands while the divergence does, rather than being
+	// cleared at the top of the next cycle and rewritten moments later.
+	if syncBlockResolved(storeRoot) {
+		t.Error("blocked marker reported resolved while the repo is still behind")
+	}
+	if warning := syncCentralStore(storeRoot); !contains(warning, "refusing to rebase") {
+		t.Errorf("second cycle = %q, want the refusal again", warning)
+	}
+
+	// A marker from the retry path is the same refusal with the failed push's
+	// output appended, so the hold cannot be keyed on the whole message.
+	writeSyncBlocked(storeRoot, readSyncBlocked(storeRoot)+" (git push failed: rejected)")
+	if syncBlockResolved(storeRoot) {
+		t.Error("a retry-path marker was not held while the repo is still behind")
+	}
+
+	// The hold covers only the marker this gate wrote. One left by any other
+	// cause — a fetch failure, a gitignored store, a staged conflict marker —
+	// still clears once that cause is gone, so the user who fixed it is told the
+	// reason that actually applies now rather than the stale one forever.
+	writeSyncBlocked(storeRoot, "sync blocked: git fetch failed (some earlier cause)")
+	if !syncBlockResolved(storeRoot) {
+		t.Error("an unrelated blocked marker was held by the nested-store gate")
+	}
+	if warning := syncCentralStore(storeRoot); !contains(warning, "refusing to rebase") {
+		t.Errorf("third cycle = %q, want the stale marker replaced by the current reason", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); !contains(blocked, "refusing to rebase") {
+		t.Errorf("marker = %q, want it replaced by the current reason", blocked)
+	}
+}
+
+func TestPullRebaseAutostashRefusesNestedStore(t *testing.T) {
+	parent, storeRoot, bare := nestedStore(t)
+	pushFromOtherClone(t, bare, "from-other.txt", "from other\n")
+	runGit(t, parent, "fetch")
+
+	branch, _ := execCommand("git", "-C", parent, "rev-parse", "--abbrev-ref", "HEAD")
+	head, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD")
+
+	// The post-push-failure retry calls this directly, so the gate lives here
+	// rather than at either call site. The push output it hands down is written
+	// by the remote and its hooks, and lands in a marker `tk status` prints on
+	// every later run, so it is filtered here too.
+	msg := pullRebaseAutostash(storeRoot, "fatal: rejected\nsync status:   ok\n")
+	if !contains(msg, "refusing to rebase") {
+		t.Fatalf("pullRebaseAutostash = %q, want the nested-store refusal", msg)
+	}
+	if !contains(msg, "git push failed") {
+		t.Errorf("message drops why the push failed: %q", msg)
+	}
+	if strings.ContainsAny(msg, "\n\r") {
+		t.Errorf("push output reaches the message with its line breaks intact: %q", msg)
+	}
+	if blocked := readSyncBlocked(storeRoot); strings.ContainsAny(blocked, "\n\r") {
+		t.Errorf("marker carries the push output's line breaks: %q", blocked)
+	}
+	assertEnclosingRepoUntouched(t, parent, branch, head)
+}
+
+func TestPullIfBehindSanitizesFetchFailure(t *testing.T) {
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--bare")
+
+	// The remote is taken away under the store, so the fetch fails with the
+	// multi-line transport output git puts on stderr — which lands in the marker
+	// `tk status` prints back on every later run.
+	dir := setupGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", bare)
+	runGit(t, dir, "push", "-u", "origin", "HEAD")
+	if err := os.Rename(bare, bare+".gone"); err != nil {
+		t.Fatalf("rename bare remote: %v", err)
+	}
+
+	msg := pullIfBehind(dir)
+	if !contains(msg, "git fetch failed") {
+		t.Fatalf("expected the fetch failure, got %q", msg)
+	}
+	if strings.ContainsAny(msg, "\n\r") {
+		t.Errorf("fetch output reaches the message with its line breaks intact: %q", msg)
+	}
+	if blocked := readSyncBlocked(dir); strings.ContainsAny(blocked, "\n\r") {
+		t.Errorf("marker carries the fetch output's line breaks: %q", blocked)
+	}
+}
+
+func TestPullRebaseAutostashSanitizesPullFailure(t *testing.T) {
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--bare")
+
+	// The store is its own toplevel, so the gate lets the pull run; the remote
+	// is then taken away under it, and git fails with the multi-line transport
+	// output that lands in the marker `tk status` prints back on every run.
+	dir := setupGitRepo(t)
+	runGit(t, dir, "remote", "add", "origin", bare)
+	runGit(t, dir, "push", "-u", "origin", "HEAD")
+	if err := os.Rename(bare, bare+".gone"); err != nil {
+		t.Fatalf("rename bare remote: %v", err)
+	}
+
+	msg := pullRebaseAutostash(dir, "")
+	if !contains(msg, "sync blocked") || !contains(msg, "pull --rebase --autostash failed") {
+		t.Fatalf("expected the pull failure, got %q", msg)
+	}
+	if strings.ContainsAny(msg, "\n\r") {
+		t.Errorf("pull output reaches the message with its line breaks intact: %q", msg)
+	}
+	if blocked := readSyncBlocked(dir); strings.ContainsAny(blocked, "\n\r") {
+		t.Errorf("marker carries the pull output's line breaks: %q", blocked)
+	}
+}
+
+func TestSyncNestedStoreRefusalWithoutUpstreamCarriesPushError(t *testing.T) {
+	parent, storeRoot, _ := nestedStore(t)
+
+	// A remote but no upstream branch: the pre-flight pull skips, the push runs
+	// and fails for a reason no rebase can fix, and the retry reaches the gate
+	// anyway. The refusal stands — tk does not rebase a repo it does not own
+	// whatever the push said — but there is no divergence to reconcile.
+	runGit(t, parent, "branch", "--unset-upstream")
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "nested.md"), []byte("---\ntitle: Nested\n---\n"), 0o644)
+
+	branch, _ := execCommand("git", "-C", parent, "rev-parse", "--abbrev-ref", "HEAD")
+	head, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD")
+
+	warning := syncCentralStore(storeRoot)
+	if !contains(warning, "refusing to rebase") {
+		t.Fatalf("expected the nested-store rebase refusal, got %q", warning)
+	}
+	if contains(warning, "reconcile the divergence") {
+		t.Errorf("warning sends the user to reconcile a divergence that does not exist: %q", warning)
+	}
+	if !contains(warning, "no upstream") {
+		t.Errorf("warning does not carry why the push actually failed: %q", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); blocked != warning {
+		t.Errorf("marker = %q, want the same account as the warning %q", blocked, warning)
+	}
+
+	// The store's own commit is the only thing added to the enclosing branch,
+	// and its work in flight is untouched.
+	if now, _ := execCommand("git", "-C", parent, "rev-parse", "--abbrev-ref", "HEAD"); now != branch {
+		t.Errorf("enclosing repo branch = %q, want %q", now, branch)
+	}
+	if base, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD~1"); base != head {
+		t.Errorf("HEAD~1 = %q, want the unrebased %q", base, head)
+	}
+	if stash, _ := execCommand("git", "-C", parent, "stash", "list"); stash != "" {
+		t.Errorf("sync stashed the enclosing repo's worktree: %q", stash)
+	}
+	if data, _ := os.ReadFile(filepath.Join(parent, "tracked.txt")); string(data) != "v2\n" {
+		t.Errorf("tracked.txt = %q, want the uncommitted v2", string(data))
+	}
+}
+
+func TestSyncLogsAutostashPopConflictOutsideStore(t *testing.T) {
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--bare")
+
+	// The store root is the repo's own toplevel — the only shape the rebase
+	// pull still runs in.
+	storeRoot := setupGitRepo(t)
+	os.MkdirAll(filepath.Join(storeRoot, "tickets", "proj"), 0o755)
+	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\nl2\nl3\n"), 0o644)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "seed.md"), []byte("---\ntitle: Seed\n---\n"), 0o644)
+	runGit(t, storeRoot, "add", "-A")
+	runGit(t, storeRoot, "commit", "-m", "seed")
+	runGit(t, storeRoot, "remote", "add", "origin", bare)
+	runGit(t, storeRoot, "push", "-u", "origin", "HEAD")
+
+	// Another machine rewrites the same lines of notes.md that are modified
+	// here uncommitted, so sync's own autostash pop conflicts — and
+	// `pull --rebase --autostash` still exits 0.
+	pushFromOtherClone(t, bare, "notes.md", "l1\nfrom other\nl3\n")
+	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\nlocal\nl3\n"), 0o644)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "new.md"), []byte("---\ntitle: New\n---\n"), 0o644)
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	warning := syncCentralStore(storeRoot)
+
+	if unmerged, _ := execCommand("git", "-C", storeRoot, "ls-files", "-u"); !contains(unmerged, "notes.md") {
+		t.Fatalf("expected the autostash pop to have conflicted, ls-files -u = %q", unmerged)
+	}
+	// The conflict is outside centralStorePaths, so the store keeps syncing.
+	if warning != "" {
+		t.Errorf("store sync blocked on a conflict outside its own paths: %s", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); blocked != "" {
+		t.Errorf("blocked marker written for a conflict outside the store's paths: %q", blocked)
+	}
+	// But the repo's owner gets a line naming what sync left conflicted.
+	if !contains(logs.String(), "notes.md") {
+		t.Errorf("no log line naming the conflicted path, log = %q", logs.String())
+	}
+}
+
+func TestInsideCentralStorePaths(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"tickets/proj/ticket-7cd2.md", true},
+		{"tickets/", true},
+		{"config.yaml", true},
+		// Near misses: the directory entry matches by prefix and the file entry
+		// exactly, so neither of these is the store's.
+		{"ticketsX/y.md", false},
+		{"config.yaml.bak", false},
+		{"notes.md", false},
+		{"../outside.txt", false},
+	} {
+		if got := insideCentralStorePaths(tc.path); got != tc.want {
+			t.Errorf("insideCentralStorePaths(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestLogForeignUnmergedPathsExcludesStorePaths(t *testing.T) {
+	dir := setupGitRepo(t)
+
+	// Three unmerged entries, the shape an autostash pop leaves: two in the
+	// store's own paths under names that exercise both ways git can hand a path
+	// back encoded — a non-ASCII one, which slugifyTitle produces so tk writes
+	// them itself, and one holding control characters, which git permits and a
+	// ticket file arriving over git from another machine can carry — and one
+	// outside them. Synthesized through the index the way
+	// TestSyncRefusesUnmergedPaths does, NUL-delimited so the second name
+	// survives the feed.
+	unicodeName := "tickets/proj/ticket-über-7cd2.md"
+	controlName := "tickets/proj/ticket-\nsync status:   ok\n-7cd2.md"
+	os.MkdirAll(filepath.Join(dir, "tickets", "proj"), 0o755)
+	os.WriteFile(filepath.Join(dir, "blob-a"), []byte("ours\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "blob-b"), []byte("theirs\n"), 0o644)
+	oursSHA, _ := execCommand("git", "-C", dir, "hash-object", "-w", "blob-a")
+	theirsSHA, _ := execCommand("git", "-C", dir, "hash-object", "-w", "blob-b")
+
+	idx := ""
+	for _, p := range []string{unicodeName, controlName, "notes.md"} {
+		idx += "100644 " + trimNL(oursSHA) + " 2\t" + p + "\x00"
+		idx += "100644 " + trimNL(theirsSHA) + " 3\t" + p + "\x00"
+	}
+	cmd := exec.Command("git", "-C", dir, "update-index", "-z", "--index-info")
+	cmd.Stdin = strings.NewReader(idx)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v (%s)", err, string(out))
+	}
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	logForeignUnmergedPaths(dir)
+
+	if !contains(logs.String(), "notes.md") {
+		t.Errorf("log does not name the conflicted path outside the store: %q", logs.String())
+	}
+	if contains(logs.String(), "left unmerged paths") {
+		t.Errorf("log claims the pull caused what it only observed: %q", logs.String())
+	}
+	// Both store paths must be excluded, and each needs one of the two flags to
+	// arrive unencoded: under git's default core.quotePath the non-ASCII name
+	// comes back as `"tickets/proj/ticket-\303\274ber-7cd2.md"`, and without `-z`
+	// the control-character name is C-quoted the same way whatever core.quotePath
+	// says. Either quoted form starts with `"` and fails the prefix test, so the
+	// path is reported as being outside the store — where checkUnmergedPaths is
+	// already blocking on it.
+	if contains(logs.String(), "tickets/") {
+		t.Errorf("log reports a path inside the store: %q", logs.String())
+	}
+}
+
+func TestLogForeignUnmergedPathsCapsList(t *testing.T) {
+	dir := setupGitRepo(t)
+
+	os.WriteFile(filepath.Join(dir, "blob-a"), []byte("ours\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "blob-b"), []byte("theirs\n"), 0o644)
+	oursSHA, _ := execCommand("git", "-C", dir, "hash-object", "-w", "blob-a")
+	theirsSHA, _ := execCommand("git", "-C", dir, "hash-object", "-w", "blob-b")
+
+	idx := ""
+	for i := 1; i <= maxForeignUnmergedPaths+2; i++ {
+		p := fmt.Sprintf("outside-%02d.md", i)
+		idx += "100644 " + trimNL(oursSHA) + " 2\t" + p + "\x00"
+		idx += "100644 " + trimNL(theirsSHA) + " 3\t" + p + "\x00"
+	}
+	cmd := exec.Command("git", "-C", dir, "update-index", "-z", "--index-info")
+	cmd.Stdin = strings.NewReader(idx)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v (%s)", err, string(out))
+	}
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	logForeignUnmergedPaths(dir)
+
+	if !contains(logs.String(), "outside-01.md") {
+		t.Errorf("log drops the first conflicted path: %q", logs.String())
+	}
+	if contains(logs.String(), "outside-12.md") {
+		t.Errorf("log carries every path rather than a bounded list: %q", logs.String())
+	}
+	if !contains(logs.String(), "+2 more") {
+		t.Errorf("log does not report how many paths it left out: %q", logs.String())
 	}
 }
 
@@ -368,9 +782,9 @@ func TestSyncRefusesWhileEnclosingRepoMidRebase(t *testing.T) {
 	if head, _ := execCommand("git", "-C", parent, "rev-parse", "HEAD"); trimNL(head) != trimNL(ownerHead) {
 		t.Errorf("HEAD = %q, want the owner's in-rebase commit %q", trimNL(head), trimNL(ownerHead))
 	}
-	log, _ := execCommand("git", "-C", parent, "log", "--oneline", "-1")
-	if contains(log, "tk: sync tickets") {
-		t.Errorf("sync committed onto the rebase's detached HEAD: %q", log)
+	logOut, _ := execCommand("git", "-C", parent, "log", "--oneline", "-1")
+	if contains(logOut, "tk: sync tickets") {
+		t.Errorf("sync committed onto the rebase's detached HEAD: %q", logOut)
 	}
 	if blocked := readSyncBlocked(storeRoot); blocked == "" {
 		t.Error("expected .tk-sync-blocked marker in the store root")
@@ -581,6 +995,14 @@ func TestSyncWarnsWhenStoreIsGitignored(t *testing.T) {
 	// `tk status` reports ok forever while every cycle fails.
 	if blocked := readSyncBlocked(storeRoot); blocked == "" {
 		t.Error("expected .tk-sync-blocked marker after the add failure")
+	}
+	// git's ignored-path output runs to several lines and names paths from the
+	// repository, so it is filtered like every other output reaching the marker.
+	if strings.ContainsAny(warning, "\n\r") {
+		t.Errorf("git's multi-line add output reaches the warning intact: %q", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); strings.ContainsAny(blocked, "\n\r") {
+		t.Errorf("marker carries the add output's line breaks: %q", blocked)
 	}
 }
 
