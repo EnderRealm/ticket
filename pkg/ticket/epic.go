@@ -205,7 +205,8 @@ func childrenByBareParent(tickets []*Ticket, project string) map[string][]*Ticke
 // The bool reports that the store held a file the listing could not read. Such
 // a file names no parent this can match, so it is absent from the children
 // returned; it is reported instead, because it may be a child of this very epic
-// and the derivation has to know it is working from a partial set.
+// and the derivation has to know it is working from a partial set. Only that
+// kind of skip counts — see hasUnreadable.
 func epicChildren(store Store, epicID string) ([]*Ticket, bool, error) {
 	tickets, skips, err := listStored(store)
 	if err != nil {
@@ -223,7 +224,7 @@ func epicChildren(store Store, epicID string) ([]*Ticket, bool, error) {
 			children = append(children, t)
 		}
 	}
-	return children, len(skips) > 0, nil
+	return children, hasUnreadable(skips), nil
 }
 
 // resolveAbandonIntent records on t the abandon intent the writer expressed and
@@ -403,9 +404,10 @@ type EpicStatusDrift struct {
 // epic status, and derived with the same function every reader gets its value
 // from — degradation included, or the audit would compare against a status no
 // reader is shown and report drift that is not there while missing drift that
-// is. The files the listing could not read come back with the drift: they are
-// what makes the derived values degraded, and a report that named neither would
-// call a store clean it never read in full.
+// is. Every file the listing skipped comes back with the drift — the ones that
+// degrade the derived values (hasUnreadable) and the ones that only go
+// unreported otherwise — since a report naming neither would call a store clean
+// it never read in full.
 //
 // Strictly read-only, like the rest of the audit.
 func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, []FileSkip, error) {
@@ -414,6 +416,7 @@ func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, []FileSkip, error) {
 		return nil, nil, err
 	}
 	children := childrenByBareParent(tickets, storeProject(store))
+	incomplete := hasUnreadable(skips)
 
 	var drift []EpicStatusDrift
 	for _, t := range tickets {
@@ -421,7 +424,7 @@ func auditStoreEpicStatus(store Store) ([]EpicStatusDrift, []FileSkip, error) {
 			continue
 		}
 		_, bare := ParseNamespacedID(t.ID)
-		derived := derivedEpicStatus(t.Abandoned, children[bare], len(skips) > 0)
+		derived := derivedEpicStatus(t.Abandoned, children[bare], incomplete)
 		if derived == t.Status {
 			continue
 		}

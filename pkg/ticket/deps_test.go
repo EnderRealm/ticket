@@ -668,6 +668,51 @@ func TestAddRemoveLink(t *testing.T) {
 	}
 }
 
+// A dep whose only namesake in the directory is a file naming another project
+// stays blocking. Read as this project's ticket that file would answer the bare
+// dep, and reading done it would clear a blocker nothing else satisfies — the
+// dependant would list as ready with the real blocker missing from the graph.
+func TestForeignNamespacedFileAnswersNoDepHere(t *testing.T) {
+	dir := t.TempDir()
+	s := NewProjectFileStore(dir, "proj")
+	if err := s.Create(mk("fd-subject-0001", StatusReady, "fd-target-0002")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	alien := mk("other/fd-target-0002", StatusDone)
+	alien.Title = "Another project's namesake"
+	plantTicketFile(t, dir, "fd-target-0002.md", alien)
+
+	captureWarnings(t)
+	tickets, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "fd-subject-0001" {
+		t.Fatalf("List = %v, want the subject alone", ids2(tickets))
+	}
+	if !BlockedFunc(s, tickets)(tickets[0]) {
+		t.Error("subject reads unblocked: the dep resolved to a file naming another project")
+	}
+	if blocking := BlockingDeps(s, tickets[0]); len(blocking) != 1 || blocking[0] != "fd-target-0002" {
+		t.Errorf("BlockingDeps = %v, want [fd-target-0002]", blocking)
+	}
+
+	ready, err := ReadyTickets(s)
+	if err != nil {
+		t.Fatalf("ReadyTickets: %v", err)
+	}
+	if len(ready) != 0 {
+		t.Errorf("ReadyTickets = %v, want nothing offered while the dep is unsatisfied", ids2(ready))
+	}
+	blocked, err := BlockedTickets(s)
+	if err != nil {
+		t.Fatalf("BlockedTickets: %v", err)
+	}
+	if len(blocked) != 1 || blocked[0].ID != "fd-subject-0001" {
+		t.Errorf("BlockedTickets = %v, want [fd-subject-0001]", ids2(blocked))
+	}
+}
+
 func ids2(tickets []*Ticket) []string {
 	out := make([]string, len(tickets))
 	for i, t := range tickets {

@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -27,25 +28,107 @@ type storedReader interface {
 }
 
 // storedLister is a store that can list tickets exactly as their files hold
-// them, alongside the files in it that could not be read as tickets at all.
+// them, alongside the files in it that were not read as tickets at all.
 type storedLister interface {
 	listStored() ([]*Ticket, []FileSkip, error)
 }
 
-// FileSkip is one file in a store that could not be read as a ticket, and why.
-// A skip is carried out of the read rather than swallowed: the file is a ticket
-// somebody wrote, so a listing that drops it silently is a listing that
-// under-reports the store — and since the dropped ticket could be any epic's
-// child, an epic's derived status cannot be trusted while one exists.
+// FileSkipKind says why a file in a store was not read as one of its tickets.
+type FileSkipKind string
+
+const (
+	// FileSkipUnreadable is a file the listing could not turn into one of this
+	// project's tickets: one no parse could structure, or one whose stored ID
+	// is this project's namespace with nothing usable after it (readFile). The
+	// ticket it holds could be any epic's child, so an epic's derived status
+	// cannot be trusted while one stands.
+	FileSkipUnreadable FileSkipKind = "unreadable"
+	// FileSkipForeignNamespace is a file that read fine but whose stored ID
+	// names a project other than the directory holding it — a ticket this
+	// project cannot place, and no child of any epic here.
+	FileSkipForeignNamespace FileSkipKind = "foreign-namespace"
+)
+
+// FileSkip is one file in a store that was not read as one of its tickets, and
+// why. A skip is carried out of the read rather than swallowed: the file is a
+// ticket somebody wrote, so a listing that drops it silently is a listing that
+// under-reports the store.
 //
 // File is the base filename, not the path: the path names a temp directory in a
 // test and the operator's central store otherwise, and the project is carried
 // beside it. Project is stamped by the audit, which knows which store the
 // listing came from; a listing on its own leaves it empty.
 type FileSkip struct {
-	Project string `json:"project,omitempty"`
-	File    string `json:"file"`
-	Error   string `json:"error"`
+	Project string       `json:"project,omitempty"`
+	File    string       `json:"file"`
+	Kind    FileSkipKind `json:"kind"`
+	Error   string       `json:"error"`
+}
+
+// DegradesEpicStatus reports whether a file skipped for this reason leaves the
+// epics in its project derived from a partial set of children. Only an
+// unreadable file does: it could be any epic's child, so a derivation that
+// cannot see it is partial. A file naming another project is no child of any
+// epic here (see readFile), and degrading on it would stop every epic in the
+// project reading done over a file that was never theirs. A kind this build
+// does not know says nothing about a child either, so it does not degrade one:
+// the claim is made only where it is known to hold. Every reader that has to
+// say whether a listing was partial — the derivation and the audit's report
+// alike — asks here, so the two cannot answer differently.
+func (k FileSkipKind) DegradesEpicStatus() bool {
+	return k == FileSkipUnreadable
+}
+
+// hasUnreadable reports whether any skip degrades the epic derivations in its
+// project, which is the flag deriveEpics and derivedEpicStatus take.
+func hasUnreadable(skips []FileSkip) bool {
+	for _, s := range skips {
+		if s.Kind.DegradesEpicStatus() {
+			return true
+		}
+	}
+	return false
+}
+
+// ForeignNamespaceError is a ticket file whose stored ID names a project other
+// than the one whose directory holds it, which is not read as that project's
+// ticket at all. Carries all three so a caller can say which file names what;
+// checked with errors.As, since it travels wrapped.
+type ForeignNamespaceError struct {
+	ID      string // the ID as the file stores it
+	Named   string // the project that ID names
+	Project string // the project the directory is, empty for a store with no namespace
+}
+
+// Error names the stored ID and both projects. The ID and the project it names
+// came off a file another machine wrote, so both are quoted the way ticketFile
+// quotes a rejected ID and storedStatus quotes an unrecognised status: this
+// text reaches a terminal, and %q escapes the control bytes such a file can
+// carry.
+func (e *ForeignNamespaceError) Error() string {
+	held := fmt.Sprintf("project %q", e.Project)
+	if e.Project == "" {
+		held = "a store with no project namespace"
+	}
+	return fmt.Sprintf("stored id %q names project %q but the file sits in %s, so it is not read as this project's ticket", e.ID, e.Named, held)
+}
+
+// UnusableIDError is a ticket file whose stored ID carries its own project's
+// namespace and nothing usable after it — a remainder that is empty, or that
+// carries further path separators. The file says it is this project's ticket
+// and gives no ID to read it under, so it yields no ticket at all; unlike a
+// file naming another project it may still be a local epic's child, which is
+// why it is skipped as FileSkipUnreadable. Checked with errors.As, since it
+// travels wrapped.
+type UnusableIDError struct {
+	ID string // the ID as the file stores it
+}
+
+// Error names the stored ID, quoted for the reason ForeignNamespaceError's is,
+// and states the rule it broke through the hint the write path rejects an ID
+// with.
+func (e *UnusableIDError) Error() string {
+	return fmt.Sprintf("stored id %q names this project, but what follows the namespace %s", e.ID, bareNameHint)
 }
 
 // oneLine flattens an error's text to a single line and drops the control runes
@@ -388,7 +471,8 @@ func (s *FileStore) Delete(id string) error {
 // — this is the choke point every consumer reads through, so no display site
 // derives its own.
 //
-// A file that could not be read is warned about here and nowhere else. This is
+// A file the listing did not take as one of this project's tickets is warned
+// about here and nowhere else, in the wording its kind calls for. This is
 // the display choke point, so one CLI command produces one warning per skipped
 // file; warning from listStored instead would repeat it once per internal read
 // — a single `tk ls` derives every epic in the store off the same listing.
@@ -407,9 +491,17 @@ func (s *FileStore) List() ([]*Ticket, error) {
 		}
 		// Quoted: a filename arrives over a git remote like the file's contents,
 		// and this goes straight to a terminal.
+		if !skip.Kind.DegradesEpicStatus() {
+			// Read fine and placed nowhere, so neither half of the unreadable
+			// wording applies: the epics here are not degraded by it. Keyed off
+			// the derivation's own predicate rather than a kind, so the wording
+			// and the degradation cannot disagree about a kind added later.
+			Warnf("warning: %q is not shown as a ticket here (%s)\n", name, skip.Error)
+			continue
+		}
 		Warnf("warning: %q could not be read (%s), so its ticket is not shown and no epic here reads done or closed\n", name, skip.Error)
 	}
-	deriveEpics(tickets, s.Project, len(skips) > 0)
+	deriveEpics(tickets, s.Project, hasUnreadable(skips))
 	return tickets, nil
 }
 
@@ -423,6 +515,11 @@ func (s *FileStore) List() ([]*Ticket, error) {
 // one corrupt file must not take a store offline — but it is reported back, so
 // every caller can say what it did not see. Parse tolerates a mistyped field
 // (format.go), so what reaches here is a file with no readable structure at all.
+// A file whose stored ID names another project is skipped for the reason
+// readFile gives, and carries the kind that says so: the two are reported the
+// same way and degrade an epic's status differently. Every other refusal
+// readFile makes — an ID namespaced to this project with nothing usable after
+// it included — is a file that yielded no ticket, which is the default here.
 func (s *FileStore) listStored() ([]*Ticket, []FileSkip, error) {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
@@ -440,7 +537,12 @@ func (s *FileStore) listStored() ([]*Ticket, []FileSkip, error) {
 		}
 		t, err := s.readFile(filepath.Join(s.Dir, e.Name()))
 		if err != nil {
-			skips = append(skips, FileSkip{File: e.Name(), Error: oneLine(err)})
+			kind := FileSkipUnreadable
+			var foreign *ForeignNamespaceError
+			if errors.As(err, &foreign) {
+				kind = FileSkipForeignNamespace
+			}
+			skips = append(skips, FileSkip{File: e.Name(), Kind: kind, Error: oneLine(err)})
 			continue
 		}
 		tickets = append(tickets, t)
@@ -548,6 +650,39 @@ func (s *FileStore) readFile(path string) (*Ticket, error) {
 	t, err := Parse(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
+	}
+	// The directory is authoritative for a ticket's namespace. Resolve,
+	// ticketFile and the whole write path key off it, while a stored prefix is
+	// data that arrived from another machine over git — every file tk writes
+	// holds a bare ID, since MultiStore strips the namespace before delegating.
+	//
+	// A prefix that agrees is redundant, and stripping it here restores the
+	// invariant every reader downstream assumes — that a FileStore yields bare
+	// IDs — which MultiStore.List would otherwise re-prefix into proj/proj/id.
+	// A prefix that disagrees names a file this project cannot place, so no
+	// reader guesses at it: read as a ticket here it would answer a bare
+	// reference in this project, and silently clear a real blocker whenever it
+	// read done. Refused rather than dropped without a word — `tk audit` reports
+	// it. A store with no project of its own rejects every namespaced ID in
+	// Resolve already, so a prefix there is foreign too.
+	//
+	// What the strip leaves has to be a ticket ID, by the rule ticketFile
+	// applies on write: ParseNamespacedID splits on the first separator only, so
+	// `proj/a/b` and `proj/` would otherwise be stripped to `a/b` and to nothing
+	// at all, breaking the very invariant above — and `a/b` indexes under the
+	// bare half `b`, which puts a planted file back in the way of a real
+	// reference to `b`. That file claims to be this project's ticket rather than
+	// another's, so it may be a local epic's child: it is refused as a file that
+	// yielded no ticket (FileSkipUnreadable), not as another project's.
+	if proj, bare := ParseNamespacedID(t.ID); proj != "" {
+		switch {
+		case proj != s.Project:
+			return nil, &ForeignNamespaceError{ID: t.ID, Named: proj, Project: s.Project}
+		case bare == "" || bare != filepath.Base(bare):
+			return nil, &UnusableIDError{ID: t.ID}
+		default:
+			t.ID = bare
+		}
 	}
 	// The file's version, not the returned struct's: Get and List derive an
 	// epic's status, so what they hand back already differs from what is stored

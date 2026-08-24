@@ -220,6 +220,61 @@ func TestAuditWarnsAboutUnreadableFile(t *testing.T) {
 	}
 }
 
+func TestAuditReportsAFileNamingAnotherProject(t *testing.T) {
+	// The audit reads such a file in full — it is a ticket the project holding
+	// it cannot place, not one nothing could read — so it is reported on its own
+	// terms and the report stays complete. It is also no epic's child here,
+	// which is why the epic beside it still reads done.
+	stores := setupFrontierStore(t, "alpha", "beta")
+	auditEpic(t, stores["alpha"], "au-epic-0001", ticket.StatusDone)
+	writeLegacyTicket(t, stores["alpha"], &ticket.Ticket{
+		ID: "au-child-0002", Status: ticket.StatusDone, Type: ticket.TypeFeature,
+		Parent: "au-epic-0001", Created: time.Now(), Title: "Item au-child-0002", Body: "\n",
+	})
+	alien := &ticket.Ticket{
+		ID: "beta/au-alien-0003", Status: ticket.StatusDone, Type: ticket.TypeFeature,
+		Parent: "au-epic-0001", Created: time.Now(), Title: "Another project's ticket", Body: "\n",
+	}
+	data, err := ticket.Serialize(alien)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stores["alpha"].Dir, "au-alien-0003.md"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureAudit(t)
+	if !contains(out, "au-alien-0003.md") || !contains(out, "naming another project") {
+		t.Errorf("audit should report the file as naming another project:\n%s", out)
+	}
+	// A project name is a directory name in the synced store, so it is quoted
+	// like the filename beside it rather than reaching the terminal raw.
+	if !contains(out, `project "alpha", file "au-alien-0003.md"`) {
+		t.Errorf("audit should quote the project name it prints:\n%s", out)
+	}
+	if contains(out, "incomplete") || contains(out, "could be any epic's child") {
+		t.Errorf("a file the audit read in full must not make the report incomplete:\n%s", out)
+	}
+	if !contains(out, "No epic reads a different status than its file stores.") {
+		t.Errorf("the epic's own children are all done, so nothing about the planted file should degrade it:\n%s", out)
+	}
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var result ticket.AuditReport
+	jsonOut := captureAudit(t, "project", "alpha")
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
+	}
+	if len(result.SkippedFiles) != 1 || result.SkippedFiles[0].File != "au-alien-0003.md" {
+		t.Fatalf("json skipped_files = %+v, want the planted file reported", result.SkippedFiles)
+	}
+	if result.SkippedFiles[0].Kind != ticket.FileSkipForeignNamespace {
+		t.Errorf("kind = %q, want %q", result.SkippedFiles[0].Kind, ticket.FileSkipForeignNamespace)
+	}
+}
+
 func TestAuditWarnsAboutUnreadableProject(t *testing.T) {
 	// "No parent violations." must never speak for a store the audit could not
 	// read in full, in either output mode.

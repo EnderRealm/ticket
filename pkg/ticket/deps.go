@@ -255,11 +255,26 @@ func depLookup(store Store, tickets []*Ticket) func(string) (*Ticket, error) {
 // namespaced set matches only where one project holds it, the way MultiStore
 // resolves a bare ID; anything else misses and is left to the caller's
 // fallback, which is the store's own resolution.
+//
+// An ID two listed tickets both claim resolves to neither, the same way a bare
+// half two of them share does.
 func ticketsByID(tickets []*Ticket, project string) func(string) (*Ticket, bool) {
 	byID := make(map[string]*Ticket, len(tickets))
 	byBare := make(map[string]*Ticket, len(tickets))
+	// One guard per key. A store holds whatever files arrived over its git
+	// remote, and a stored prefix naming the project reads as its bare
+	// remainder (readFile), so two files can claim one ID: `x.md` holding
+	// `id: x` beside `zz.md` holding `id: proj/x`. Answered with whichever was
+	// listed last, a reference to x would resolve by directory order — and an
+	// impostor reading done beside a live ticket would clear a blocker without
+	// a word. Both keys report not-found instead and leave the reference to the
+	// caller's fallback, which resolves against the store itself.
+	claimed := map[string]bool{}
 	ambiguous := map[string]bool{}
 	for _, t := range tickets {
+		if _, seen := byID[t.ID]; seen {
+			claimed[t.ID] = true
+		}
 		byID[t.ID] = t
 		_, bare := ParseNamespacedID(t.ID)
 		if _, seen := byBare[bare]; seen {
@@ -269,6 +284,9 @@ func ticketsByID(tickets []*Ticket, project string) func(string) (*Ticket, bool)
 		byBare[bare] = t
 	}
 	return func(id string) (*Ticket, bool) {
+		if claimed[id] {
+			return nil, false
+		}
 		if t, ok := byID[id]; ok {
 			return t, true
 		}
@@ -295,10 +313,11 @@ func ticketsByID(tickets []*Ticket, project string) func(string) (*Ticket, bool)
 }
 
 // IndexByID returns a lookup over the given listing. It matches an exact ID
-// first, then the bare half of a namespaced one, and reports not-found for a
-// bare half two listed tickets share and for a reference whose namespace names
-// a project other than the store's — so an ambiguous or foreign reference stays
-// unresolved rather than being answered with a guess. Callers outside this
+// first, then the bare half of a namespaced one, and reports not-found for an
+// ID two listed tickets both claim, for a bare half two of them share, and for
+// a reference whose namespace names a project other than the store's — so an
+// ambiguous or foreign reference stays unresolved rather than being answered
+// with a guess. Callers outside this
 // package need those rules stated here, since the function carrying them is
 // unexported.
 //

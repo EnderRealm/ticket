@@ -13,13 +13,15 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Report invalid parents, epics whose stored status is no longer read, and tickets missing body content",
+	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, and files whose id names another project",
 	Long: "Report tickets whose parent breaks the one-level epic hierarchy: a parent that is not an epic, " +
 		"a parent that does not resolve, a parent in another project, an epic that has a parent, or a parent cycle. " +
 		"Each parent is resolved within the project that owns the ticket, so the report matches what a write would accept. " +
 		"Also report every epic whose stored status differs from the status it now derives from its children, since " +
 		"stored statuses were left in place and are no longer read, and every ticket whose stored body is missing content: " +
 		"a section ending in a tool-call envelope fragment, or a description with no acceptance criteria. " +
+		"Also report every file whose stored id names a project other than the directory holding it: the directory decides a ticket's " +
+		"project, so such a file is read as no project's ticket and appears in no listing until it is moved or its id is fixed. " +
 		"Read-only — nothing is rewritten.",
 	Args: cobra.NoArgs,
 	RunE: runAudit,
@@ -115,37 +117,67 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	}
 	printEpicStatusDrift(audit.EpicStatus)
 	printContentIssues(audit.Content)
+	// Skipped files split by whether they left the store read in part, through
+	// the same predicate the derivation degrades on — keyed off the kind's own
+	// answer rather than a second test here, so the report and the epic statuses
+	// it prints cannot disagree about which files made it partial. Only an
+	// unreadable file does; a file naming another project was read in full and
+	// is reported below because no listing in the project holding it shows it.
+	var unreadable, foreign []ticket.FileSkip
+	for _, f := range audit.SkippedFiles {
+		if f.Kind.DegradesEpicStatus() {
+			unreadable = append(unreadable, f)
+			continue
+		}
+		foreign = append(foreign, f)
+	}
 	// A project or a file the audit could not read is named rather than dropped:
 	// without it, "No parent violations." would speak for a store never fully
 	// read. It covers every section, all of which are read in the same
 	// per-project pass.
-	if len(audit.Skipped) > 0 || len(audit.SkippedFiles) > 0 {
+	if len(audit.Skipped) > 0 || len(unreadable) > 0 {
 		// Only the half that has something to report is named: a run that skipped
 		// one project and no file has nothing to say about files.
 		var what []string
 		if len(audit.Skipped) > 0 {
 			what = append(what, fmt.Sprintf("%d project(s)", len(audit.Skipped)))
 		}
-		if len(audit.SkippedFiles) > 0 {
-			what = append(what, fmt.Sprintf("%d file(s)", len(audit.SkippedFiles)))
+		if len(unreadable) > 0 {
+			what = append(what, fmt.Sprintf("%d file(s)", len(unreadable)))
 		}
 		fmt.Printf("\nwarning: %s could not be read, so this report is incomplete:\n", strings.Join(what, " and "))
-		// Every line in this block is an entry, and both the filename and the
-		// reason came off a store another machine writes into — the reason is
-		// flattened to one line where the skip is built, and the filename is
-		// quoted here so control bytes in it cannot reach the terminal raw.
+		// Every line in this block is an entry, and the project name, the
+		// filename and the reason all came off a store another machine writes
+		// into — the reason is flattened to one line where the skip is built, and
+		// the other two are quoted here so control bytes in them cannot reach the
+		// terminal raw. A project name is a directory name in the synced store,
+		// bounded against path separators and nothing else, so it needs the quote
+		// as much as the filename does.
 		for _, s := range audit.Skipped {
-			fmt.Printf("  project %s: %s\n", s.Project, s.Error)
+			fmt.Printf("  project %q: %s\n", s.Project, s.Error)
 		}
-		for _, f := range audit.SkippedFiles {
-			fmt.Printf("  project %s, file %q: %s\n", f.Project, f.File, f.Error)
+		for _, f := range unreadable {
+			fmt.Printf("  project %q, file %q: %s\n", f.Project, f.File, f.Error)
 		}
-		if len(audit.SkippedFiles) > 0 {
+		if len(unreadable) > 0 {
 			// An unreadable file is a ticket nothing can place, so no epic in its
 			// project can claim every child finished. Said here because the epic
 			// section above reports the degraded values without explaining them.
 			fmt.Println("An unreadable file could be any epic's child, so no epic in its project reads done or closed until the file is fixed or removed.")
 		}
+	}
+	if len(foreign) > 0 {
+		// The directory decides a ticket's project, so a file disagreeing with
+		// the one holding it is read as nobody's ticket: it answers no reference
+		// there and appears in no listing. Reported here because that is the only
+		// place it is visible at all — and stated as a repair, since the ticket
+		// itself is intact.
+		fmt.Printf("\nwarning: %d file(s) store an id naming another project, so they are not read as tickets where they sit:\n", len(foreign))
+		// Project and filename quoted for the reason the block above states.
+		for _, f := range foreign {
+			fmt.Printf("  project %q, file %q: %s\n", f.Project, f.File, f.Error)
+		}
+		fmt.Println("The audit read each of these in full, so the report above is complete without them. Move the file to the project its id names, or fix the id field — until then it is in no listing, resolves for no reference, and counts as no epic's child, so an epic that was counting it can now read done.")
 	}
 	return nil
 }

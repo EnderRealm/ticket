@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -205,6 +206,21 @@ func TestFileStore_List(t *testing.T) {
 func plantUnreadable(t *testing.T, dir, name string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("---\nid: x\n  status: open\n---\n# Broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// plantTicketFile writes a ticket into a store directory under a filename of
+// the caller's choosing, bypassing the write path — which refuses an ID that is
+// not its own filename, and would strip a namespace before storing one. It is
+// the shape a file synced from another machine can hold.
+func plantTicketFile(t *testing.T, dir, name string, tk *Ticket) {
+	t.Helper()
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize %s: %v", tk.ID, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -711,5 +727,196 @@ func TestStampCreatedPreservedAcrossUpdate(t *testing.T) {
 	after, _ := store.Get("create-0001")
 	if !after.Created.Equal(created.Created) {
 		t.Errorf("Created changed: was %v, now %v", created.Created, after.Created)
+	}
+}
+
+func TestFileStore_FileNamingAnotherProjectIsNotReadAsATicket(t *testing.T) {
+	// Ticket files arrive over git, so a project directory can hold one whose
+	// id names another project. The directory decides which project a ticket
+	// belongs to, so such a file is this project's ticket in no reading of it.
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	if err := store.Create(sampleTicket("fn-own-0001")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	foreign := sampleTicket("other/fn-alien-0002")
+	foreign.Status = StatusDone
+	plantTicketFile(t, dir, "fn-alien-0002.md", foreign)
+
+	tickets, skips, err := store.listStored()
+	if err != nil {
+		t.Fatalf("listStored: %v", err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "fn-own-0001" {
+		t.Errorf("listStored returned %v, want this project's ticket alone", ids2(tickets))
+	}
+	if len(skips) != 1 || skips[0].File != "fn-alien-0002.md" || skips[0].Kind != FileSkipForeignNamespace {
+		t.Fatalf("skips = %+v, want the planted file skipped as %s", skips, FileSkipForeignNamespace)
+	}
+	for _, want := range []string{`"other/fn-alien-0002"`, `"other"`, `"proj"`} {
+		if !strings.Contains(skips[0].Error, want) {
+			t.Errorf("skip reason = %q, want it to name %s", skips[0].Error, want)
+		}
+	}
+
+	// Refused by Get as well as the listing: depLookup falls through to the
+	// store, so a check only in the listing would still let the file answer a
+	// bare dep here.
+	var mismatch *ForeignNamespaceError
+	if _, err := store.Get("fn-alien-0002"); !errors.As(err, &mismatch) {
+		t.Fatalf("Get = %v, want a ForeignNamespaceError", err)
+	}
+	if mismatch.ID != "other/fn-alien-0002" || mismatch.Named != "other" || mismatch.Project != "proj" {
+		t.Errorf("error = %+v, want the stored id and both projects", mismatch)
+	}
+
+	warnings := captureWarnings(t)
+	listed, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "fn-own-0001" {
+		t.Errorf("List returned %v, want this project's ticket alone", ids2(listed))
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("List emitted %d warnings, want 1: %v", len(*warnings), *warnings)
+	}
+	if !strings.Contains((*warnings)[0], "proj/fn-alien-0002.md") || !strings.Contains((*warnings)[0], "not shown as a ticket here") {
+		t.Errorf("warning = %q, want it to name the file and say it is not shown as a ticket here", (*warnings)[0])
+	}
+	if strings.Contains((*warnings)[0], "could not be read") {
+		t.Errorf("warning = %q, want the wording of the file that read fine", (*warnings)[0])
+	}
+}
+
+func TestFileStore_OwnProjectPrefixReadsAsTheBareID(t *testing.T) {
+	// A prefix agreeing with the directory is redundant: every reader
+	// downstream matches bare IDs, and MultiStore adds the namespace back.
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := NewProjectFileStore(dir, "proj")
+	plantTicketFile(t, dir, "np-0001.md", sampleTicket("proj/np-0001"))
+
+	warnings := captureWarnings(t)
+	tickets, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "np-0001" {
+		t.Fatalf("List returned %v, want the bare ID", ids2(tickets))
+	}
+	if len(*warnings) != 0 {
+		t.Errorf("a store holding only its own tickets warned: %v", *warnings)
+	}
+	got, err := store.Get("np-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ID != "np-0001" {
+		t.Errorf("Get ID = %q, want the bare ID", got.ID)
+	}
+
+	all, err := NewMultiStore(root).List()
+	if err != nil {
+		t.Fatalf("MultiStore.List: %v", err)
+	}
+	if len(all) != 1 || all[0].ID != "proj/np-0001" {
+		t.Errorf("MultiStore.List returned %v, want the namespace added once", ids2(all))
+	}
+}
+
+func TestEpicsDegradeOnAnUnreadableFileAndNotOnAForeignOne(t *testing.T) {
+	// An unreadable file could be any epic's child, so a derivation that cannot
+	// see it is partial. A file naming another project is no child of any epic
+	// here, so degrading on it would stop every epic in the project reading
+	// done over a file that was never theirs.
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	for _, tk := range []*Ticket{
+		mkEpic("fe-epic-0001", StatusBacklog, ""),
+		mkWithParent("fe-child-0002", StatusDone, "fe-epic-0001"),
+	} {
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", tk.ID, err)
+		}
+	}
+	plantTicketFile(t, dir, "fe-alien-0003.md", sampleTicket("other/fe-alien-0003"))
+
+	captureWarnings(t)
+	epic, err := store.Get("fe-epic-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if epic.Status != StatusDone {
+		t.Errorf("epic reads %s, want %s — a file naming another project is no child of it", epic.Status, StatusDone)
+	}
+
+	plantUnreadable(t, dir, "fe-broken-0004.md")
+	epic, err = store.Get("fe-epic-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if epic.Status != StatusBacklog {
+		t.Errorf("epic reads %s beside an unreadable file, want %s", epic.Status, StatusBacklog)
+	}
+}
+
+func TestFileStore_NamespaceWithNoTicketIDAfterItYieldsNoTicket(t *testing.T) {
+	// ParseNamespacedID splits on the first separator only, so stripping a
+	// prefix naming this project can leave something that is not a ticket ID at
+	// all: "proj/a/b" would list as "a/b", which indexes under the bare half "b"
+	// and answers a real reference to b. Such a file claims to be this project's
+	// ticket, so it may be a local epic's child and degrades the derivation the
+	// way an unparseable file does.
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	for _, tk := range []*Ticket{
+		mkEpic("un-epic-0001", StatusBacklog, ""),
+		mkWithParent("un-child-0002", StatusDone, "un-epic-0001"),
+	} {
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", tk.ID, err)
+		}
+	}
+	plantTicketFile(t, dir, "un-nested-0003.md", sampleTicket("proj/a/b"))
+	plantTicketFile(t, dir, "un-bare-0004.md", sampleTicket("proj/"))
+
+	tickets, skips, err := store.listStored()
+	if err != nil {
+		t.Fatalf("listStored: %v", err)
+	}
+	if len(tickets) != 2 {
+		t.Errorf("listStored returned %v, want the epic and its child alone", ids2(tickets))
+	}
+	if len(skips) != 2 {
+		t.Fatalf("skips = %+v, want both planted files skipped", skips)
+	}
+	for _, skip := range skips {
+		if skip.Kind != FileSkipUnreadable {
+			t.Errorf("skip %+v carries kind %q, want %q — the file claims this project's own namespace", skip, skip.Kind, FileSkipUnreadable)
+		}
+	}
+	reasons := skips[0].Error + " " + skips[1].Error
+	if !strings.Contains(reasons, `"proj/a/b"`) || !strings.Contains(reasons, `"proj/"`) {
+		t.Errorf("skips = %+v, want each reason to name the stored id", skips)
+	}
+
+	var unusable *UnusableIDError
+	if _, err := store.Get("un-nested-0003"); !errors.As(err, &unusable) {
+		t.Fatalf("Get = %v, want an UnusableIDError", err)
+	}
+	if unusable.ID != "proj/a/b" {
+		t.Errorf("error = %+v, want the stored id", unusable)
+	}
+
+	epic, err := store.Get("un-epic-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if epic.Status != StatusBacklog {
+		t.Errorf("epic reads %s, want %s — a file claiming this project's namespace could be its child", epic.Status, StatusBacklog)
 	}
 }

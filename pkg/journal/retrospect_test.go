@@ -470,7 +470,10 @@ func TestWatchCycle_RetrospectSkipsHostileTicketIDs(t *testing.T) {
 
 	// Written as files rather than through Create: the store refuses an ID that
 	// is not its own file name, and these are what a malicious or corrupt sync
-	// delivers regardless.
+	// delivers regardless. The first never reaches the guard below any more —
+	// its slash makes the ID name a project other than the directory's, and the
+	// store no longer reads such a file as one of this project's tickets — so
+	// two of the three are what the guard itself has to catch.
 	for i, id := range []string{"../escape-0001", "-flagged-0002", ".."} {
 		body := fmt.Sprintf("---\nid: %s\nstatus: done\ntype: feature\npriority: 2\n---\n# Hostile %d\n", id, i)
 		if err := os.WriteFile(filepath.Join(storeDir, fmt.Sprintf("hostile-%d.md", i)), []byte(body), 0o644); err != nil {
@@ -492,8 +495,8 @@ func TestWatchCycle_RetrospectSkipsHostileTicketIDs(t *testing.T) {
 			skipped++
 		}
 	}
-	if skipped != 3 {
-		t.Errorf("warnings = %v, want every hostile ID named", result.Warnings)
+	if skipped != 2 {
+		t.Errorf("warnings = %v, want every hostile ID the listing still yields named", result.Warnings)
 	}
 	got := loomInvocations(t, argv, 1)
 	want := "retrospect retro-hostile/" + clean.ID

@@ -346,15 +346,16 @@ func TestShowLeavesAmbiguousReferenceUnknown(t *testing.T) {
 	store := ticket.NewProjectFileStore(dir, "proj")
 
 	createShowTicket(t, store, "sa-target-0001", ticket.StatusOpen)
-	// A second ticket sharing the bare half, which only a file the store did not
-	// write can hold — its ID is namespaced, so it is not this project's
-	// sa-target-0001 and matching the bare half would be a guess between the two.
+	// A second file claiming the same ID, which only a file the store did not
+	// write can hold — its ID carries this project's namespace, which reads as
+	// the bare ID, so two files in the directory answer to sa-target-0001 and
+	// matching it would be a guess between the two.
 	other := &ticket.Ticket{
-		ID:      "other/sa-target-0001",
+		ID:      "proj/sa-target-0001",
 		Status:  ticket.StatusDone,
 		Type:    ticket.TypeFeature,
 		Created: time.Now(),
-		Title:   "Foreign namesake",
+		Title:   "Same-id namesake",
 		Body:    "\n",
 	}
 	data, err := ticket.Serialize(other)
@@ -381,6 +382,158 @@ func TestShowLeavesAmbiguousReferenceUnknown(t *testing.T) {
 	out := captureShow(t, store, "sa-subject-0003", false)
 	if !contains(out, "- proj/sa-target-0001 [unknown]") {
 		t.Errorf("ambiguous reference did not stay unknown:\n%s", out)
+	}
+}
+
+func TestShowLeavesAReferenceToANestedStoredIDUnknown(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	// A file whose stored id carries this project's namespace and then a second
+	// separator. Stripped to "a/sn-nested-0001" it would index under the bare
+	// half and answer this subject's dep, and reading done it would take the
+	// blocker out of the section — the same failure a namesake from another
+	// project caused, one level down.
+	nested := &ticket.Ticket{
+		ID:      "proj/a/sn-nested-0001",
+		Status:  ticket.StatusDone,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Nested-id impostor",
+		Body:    "\n",
+	}
+	data, err := ticket.Serialize(nested)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sn-nested-0001.md"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	subject := &ticket.Ticket{
+		ID:      "sn-subject-0002",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Subject",
+		Deps:    []string{"sn-nested-0001"},
+		Body:    "\n",
+	}
+	if err := store.Create(subject); err != nil {
+		t.Fatalf("Create subject: %v", err)
+	}
+
+	out := captureShow(t, store, "sn-subject-0002", false)
+	idx := strings.Index(out, "## Blockers")
+	if idx < 0 {
+		t.Fatalf("show output missing Blockers section — a done impostor cleared a real blocker:\n%s", out)
+	}
+	if !contains(out[idx:], "- sn-nested-0001 [unknown]") {
+		t.Errorf("a bare reference resolved to a file whose stored id is not a ticket ID here:\n%s", out[idx:])
+	}
+	if contains(out, "Nested-id impostor") {
+		t.Errorf("show answered the dep with the planted file:\n%s", out)
+	}
+}
+
+func TestShowLeavesADuplicatedIDUnknown(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	createShowTicket(t, store, "sd-target-0001", ticket.StatusOpen)
+	// A second file claiming the same ticket, under a filename that sorts after
+	// the real one so the listing reads it last. Its stored id carries this
+	// project's namespace, which reads as the bare id, so both files answer to
+	// sd-target-0001 — and it reads done, which is what would take the real
+	// blocker out of the section rather than leaving it unresolved.
+	impostor := &ticket.Ticket{
+		ID:      "proj/sd-target-0001",
+		Status:  ticket.StatusDone,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Same-id impostor",
+		Body:    "\n",
+	}
+	data, err := ticket.Serialize(impostor)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zz-sd-target-0001.md"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	subject := &ticket.Ticket{
+		ID:      "sd-subject-0002",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Subject",
+		Deps:    []string{"sd-target-0001"},
+		Body:    "\n",
+	}
+	if err := store.Create(subject); err != nil {
+		t.Fatalf("Create subject: %v", err)
+	}
+
+	out := captureShow(t, store, "sd-subject-0002", false)
+	idx := strings.Index(out, "## Blockers")
+	if idx < 0 {
+		t.Fatalf("show output missing Blockers section — a done impostor cleared a real blocker:\n%s", out)
+	}
+	if !contains(out[idx:], "- sd-target-0001 [unknown]") {
+		t.Errorf("a bare reference two files claim did not stay unknown:\n%s", out[idx:])
+	}
+	if contains(out, "Same-id impostor") {
+		t.Errorf("show answered the dep with the file listed last:\n%s", out)
+	}
+}
+
+func TestShowLeavesAForeignNamespacedNamesakeUnknown(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+
+	// A file this project's directory holds that declares itself another
+	// project's ticket, reading done. Answered with, it would take the blocker
+	// out of the section entirely rather than leaving it unknown.
+	alien := &ticket.Ticket{
+		ID:      "other/sn-target-0001",
+		Status:  ticket.StatusDone,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Another project's namesake",
+		Body:    "\n",
+	}
+	data, err := ticket.Serialize(alien)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sn-target-0001.md"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	subject := &ticket.Ticket{
+		ID:      "sn-subject-0002",
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Subject",
+		Deps:    []string{"sn-target-0001"},
+		Body:    "\n",
+	}
+	if err := store.Create(subject); err != nil {
+		t.Fatalf("Create subject: %v", err)
+	}
+
+	out := captureShow(t, store, "sn-subject-0002", false)
+	idx := strings.Index(out, "## Blockers")
+	if idx < 0 {
+		t.Fatalf("show output missing Blockers section — a done namesake cleared a real blocker:\n%s", out)
+	}
+	if !contains(out[idx:], "- sn-target-0001 [unknown]") {
+		t.Errorf("Blockers section did not leave the dep unknown:\n%s", out[idx:])
+	}
+	if contains(out, "Another project's namesake") {
+		t.Errorf("show answered the dep with another project's ticket:\n%s", out)
 	}
 }
 

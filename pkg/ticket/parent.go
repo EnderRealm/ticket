@@ -146,12 +146,16 @@ type ProjectSkip struct {
 // AuditReport is what Audit found: the parent violations, the epics whose
 // stored status no longer matches the one they derive, the tickets whose stored
 // body is missing content it was meant to carry, the projects it could not
-// read, and the individual files it could not read. Both kinds of skip are
-// part of the result rather than swallowed — a report that silently covered
-// less than the whole store would call a store clean that a write can still
-// trip on, which is the wrong way to fail. A single unreadable file is the same
-// failure at a finer grain, and it is the one the epic-status section cannot
-// work around: the missing ticket may be any epic's child.
+// read, and the individual files no listing in their project yields — the ones
+// it could not read and the ones whose stored ID names another project, told
+// apart by FileSkipKind. Every skip is part of the result rather than swallowed
+// — a report that silently covered less than the whole store would call a store
+// clean that a write can still trip on, which is the wrong way to fail. A
+// single unreadable file is the same failure at a finer grain, and it is the
+// one the epic-status section cannot work around: the missing ticket may be any
+// epic's child. A file naming another project is a ticket the project holding
+// it cannot place rather than one nothing could read, so it is reported without
+// making the report partial (FileSkipKind.DegradesEpicStatus).
 type AuditReport struct {
 	Violations   []ParentViolation `json:"violations"`
 	EpicStatus   []EpicStatusDrift `json:"epic_status"`
@@ -214,10 +218,13 @@ func Audit(store Store) (AuditReport, error) {
 	return report, nil
 }
 
-// auditStore runs the three audits over one project's tickets. The unreadable
-// files are stamped with the project here, where the store that produced them is in
-// hand — the ID namespacing above cannot reach them, since a file that did not
-// parse has no ID to namespace.
+// auditStore runs the three audits over one project's tickets. The skipped
+// files are stamped with the project here, where the store that produced them
+// is in hand — the ID namespacing above cannot reach them: a file that did not
+// parse has no ID to namespace, and one whose stored ID names another project
+// has an ID that must not be relabelled with the project it was found in, which
+// is the whole reason it is a skip. The stamp is the directory it sat in, which
+// is what an operator needs to go and look.
 func auditStore(store Store) (AuditReport, error) {
 	violations, err := auditStoreParents(store)
 	if err != nil {
