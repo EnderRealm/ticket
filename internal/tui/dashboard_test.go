@@ -8,6 +8,7 @@ import (
 
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestDashboardHeaderContainsPRIAndTITLE(t *testing.T) {
@@ -54,6 +55,74 @@ func TestRenderRowSanitizesTitleControlCharacters(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Errorf("row missing %q:\n%q", want, line)
 		}
+	}
+}
+
+func TestRenderRowShowsParkedQuestionOnInbox(t *testing.T) {
+	tk := &ticket.Ticket{
+		ID:     "test-abcd",
+		Title:  "Parked run",
+		Status: ticket.StatusOpen,
+		Type:   ticket.TypeFeature,
+		Extra:  map[string]string{ticket.QuestionField: "Which store wins?"},
+	}
+	m := dashboardModel{width: 120, height: 10, activeTab: tabInbox}
+	line := m.renderRow(row{item: ticket.NextAction(tk)}, false)
+	if !strings.Contains(line, "Which store wins?") {
+		t.Errorf("blocked row should show the question, got:\n%s", line)
+	}
+
+	// A question too long for the row is clipped rather than wrapping the line,
+	// which would defeat the selection padding.
+	tk.Extra = map[string]string{ticket.QuestionField: strings.Repeat("which store wins ", 10)}
+	narrow := dashboardModel{width: 100, height: 10, activeTab: tabInbox}
+	line = narrow.renderRow(row{item: ticket.NextAction(tk)}, false)
+	if w := lipgloss.Width(line); w > narrow.width {
+		t.Errorf("row width = %d, want at most %d, got:\n%s", w, narrow.width, line)
+	}
+	if !strings.Contains(line, "…") {
+		t.Errorf("clipped question should end in an ellipsis, got:\n%s", line)
+	}
+
+	// The columns don't shrink with the row, so the widths worth testing are
+	// the ones measured from what they already take.
+	plain := *tk
+	plain.Extra = nil
+	cols := lipgloss.Width(m.renderRow(row{item: ticket.NextAction(&plain)}, false))
+
+	// Double-width runes put the rune count below the display width, so a clip
+	// measured in runes would overrun the row — or slice past the end of the
+	// label and panic.
+	for _, q := range []string{strings.Repeat("哪个存储胜出", 20), "哪个存储胜出"} {
+		tk.Extra = map[string]string{ticket.QuestionField: q}
+		for _, room := range []int{6, 9, 13, 20, 41} {
+			wide := dashboardModel{width: cols + room, height: 10, activeTab: tabInbox}
+			line = wide.renderRow(row{item: ticket.NextAction(tk)}, false)
+			if w := lipgloss.Width(line); w > wide.width {
+				t.Errorf("wide-rune row width = %d, want at most %d, got:\n%s", w, wide.width, line)
+			}
+		}
+	}
+
+	// At a width holding the flag but no question text, the flag still shows —
+	// without it a parked row reads as an ordinary open one.
+	tk.Extra = map[string]string{ticket.QuestionField: "Which store wins?"}
+	cramped := dashboardModel{width: cols + 5, height: 10, activeTab: tabInbox}
+	line = cramped.renderRow(row{item: ticket.NextAction(tk)}, false)
+	if w := lipgloss.Width(line); w > cramped.width {
+		t.Errorf("cramped row width = %d, want at most %d, got:\n%s", w, cramped.width, line)
+	}
+	if !strings.Contains(line, "⚑") {
+		t.Errorf("cramped row should keep the blocked flag, got:\n%s", line)
+	}
+	if strings.Contains(line, "Which") {
+		t.Errorf("cramped row has no room for question text, got:\n%s", line)
+	}
+
+	tk.Extra = nil
+	line = m.renderRow(row{item: ticket.NextAction(tk)}, false)
+	if strings.Contains(line, "⚑") {
+		t.Errorf("unparked row should carry no blocked flag, got:\n%s", line)
 	}
 }
 

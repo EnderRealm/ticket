@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,11 @@ const (
 	ActionReady   ActionKind = "ready"
 )
 
+// QuestionField is the extra field a runner writes when it parks a run on a
+// question for a human; a ticket carrying one needs an answer before work
+// resumes, whatever its status says.
+const QuestionField = "question"
+
 // InboxItem represents a ticket needing attention, with context about what's needed.
 type InboxItem struct {
 	Ticket *Ticket
@@ -25,6 +31,12 @@ type InboxItem struct {
 // NextAction computes the next action needed for a single ticket.
 func NextAction(t *Ticket) InboxItem {
 	item := InboxItem{Ticket: t, Since: t.Created}
+
+	if q := strings.TrimSpace(t.Extra[QuestionField]); q != "" {
+		item.Action = ActionBlocked
+		item.Detail = q
+		return item
+	}
 
 	switch t.Status {
 	case StatusBacklog, StatusDone, StatusClosed, "":
@@ -44,7 +56,9 @@ func NextAction(t *Ticket) InboxItem {
 	return item
 }
 
-// Inbox returns actionable tickets (ready or open), sorted by priority then age.
+// Inbox returns actionable tickets (ready or open), sorted by priority then
+// age. A parked ticket is blocked rather than work, and is kept: it is the one
+// the human most needs to see.
 func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -57,7 +71,7 @@ func Inbox(store Store) ([]InboxItem, error) {
 			continue
 		}
 		item := NextAction(t)
-		if item.Action == ActionWork {
+		if item.Action == ActionWork || item.Action == ActionBlocked {
 			items = append(items, item)
 		}
 	}
@@ -121,10 +135,14 @@ func Projects(store Store) ([]ProjectSummary, error) {
 			summary.StatusBreakdown[kid.Status]++
 			if kid.Status == StatusDone || kid.Status == StatusClosed {
 				doneCount++
+				// A finished child is no action whatever it carries: a stale
+				// question on it would otherwise leave the epic reading
+				// complete and still holding an outstanding action.
+				continue
 			}
 
 			action := NextAction(kid)
-			if action.Action == ActionWork {
+			if action.Action == ActionWork || action.Action == ActionBlocked {
 				summary.NextActions = append(summary.NextActions, action)
 			}
 		}

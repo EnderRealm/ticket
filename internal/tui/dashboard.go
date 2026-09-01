@@ -9,6 +9,7 @@ import (
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type sortDir int
@@ -736,6 +737,30 @@ func (m dashboardModel) renderRow(r row, selected bool) string {
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
 		label := fmt.Sprintf("  (%d children)", len(m.epicChildren(t)))
 		line += selBg.Foreground(colorSubtle).Render(label)
+	}
+	// On the inbox tab, a parked ticket carries the question it is blocked on —
+	// the row's status column still reads open, so the flag is what marks it.
+	if m.activeTab == tabInbox && r.item.Action == ticket.ActionBlocked {
+		const flag = "  ⚑ "
+		label := flag + ticket.SanitizeControl(r.item.Detail)
+		// A question long enough to overrun the row wraps the line and defeats
+		// the selection padding below, so clip it by display width — a question
+		// is free text and a rune count is not its width — to what the row has
+		// left. Width 0 means the size isn't known yet — leave the label alone.
+		if room := m.width - lipgloss.Width(line); m.width > 0 && lipgloss.Width(label) > room {
+			// The flag is all that marks a parked row apart from an ordinary
+			// open one, so keep it when it fits and drop only the question.
+			if room < lipgloss.Width(flag) {
+				label = ""
+			} else if room < lipgloss.Width(flag)+2 {
+				label = flag
+			} else {
+				label = ansi.Truncate(label, room, "…")
+			}
+		}
+		if label != "" {
+			line += selBg.Foreground(colorWarning).Render(label)
+		}
 	}
 	if group {
 		line += m.epicProgress(t, selBg)

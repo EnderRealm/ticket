@@ -1779,6 +1779,60 @@ func TestEditExtraFields(t *testing.T) {
 	}
 }
 
+func TestInboxSurfacesParkedQuestion(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Parked run", "type": "feature"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	// Park the run the way a runner does: open, with the question it halted on.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":     id,
+			"status": "open",
+			"set":    map[string]any{"question": "Which store wins?"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("edit error: %v", result.Content)
+	}
+
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_inbox",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("inbox error: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var items []map[string]any
+	json.Unmarshal([]byte(text), &items)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 inbox item, got %d: %s", len(items), text)
+	}
+	if items[0]["action"] != "blocked" {
+		t.Errorf("action = %v, want blocked", items[0]["action"])
+	}
+	if items[0]["detail"] != "Which store wins?" {
+		t.Errorf("detail = %v, want the question", items[0]["detail"])
+	}
+}
+
 func TestEditExtraFieldLeadingIndicatorRefused(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

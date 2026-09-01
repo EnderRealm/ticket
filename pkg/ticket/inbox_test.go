@@ -46,6 +46,70 @@ func TestNextAction_Backlog(t *testing.T) {
 	}
 }
 
+func TestNextAction_Parked(t *testing.T) {
+	// A parked run's question outranks the status: both an open and a ready
+	// ticket carrying one need a human before work resumes.
+	for _, status := range []Status{StatusOpen, StatusReady} {
+		tk := &Ticket{
+			ID: "t-1", Status: status, Type: TypeFeature, Priority: 1,
+			Created: time.Now(), Extra: map[string]string{QuestionField: "Which store wins?"},
+		}
+		item := NextAction(tk)
+		if item.Action != ActionBlocked {
+			t.Errorf("NextAction(%s + question) = %s, want blocked", status, item.Action)
+		}
+		if item.Detail != "Which store wins?" {
+			t.Errorf("NextAction(%s + question) detail = %q, want the question", status, item.Detail)
+		}
+	}
+}
+
+func TestNextAction_EmptyQuestionUnchanged(t *testing.T) {
+	// An empty value counts as absent — an extra field is not a park by itself.
+	// Whitespace is empty too: parking on a blank question blocks the ticket
+	// with nothing for the human to answer.
+	for _, q := range []string{"", "   ", "\t\n"} {
+		tk := &Ticket{
+			ID: "t-1", Status: StatusOpen, Type: TypeFeature, Priority: 1,
+			Created: time.Now(), Extra: map[string]string{QuestionField: q, "env": "prod"},
+		}
+		item := NextAction(tk)
+		if item.Action != ActionWork {
+			t.Errorf("NextAction(open, question %q) = %s, want work", q, item.Action)
+		}
+		if item.Detail != "in progress" {
+			t.Errorf("NextAction(open, question %q) detail = %q, want %q", q, item.Detail, "in progress")
+		}
+	}
+}
+
+func TestInbox_KeepsParkedTicket(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+
+	tk := &Ticket{
+		ID: "t-parked", Status: StatusOpen, Type: TypeFeature, Priority: 1,
+		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Parked", Body: "\n",
+		Extra: map[string]string{QuestionField: "Which store wins?"},
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := Inbox(store)
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("Inbox returned %d items, want 1", len(items))
+	}
+	if items[0].Action != ActionBlocked {
+		t.Errorf("inbox item action = %s, want blocked", items[0].Action)
+	}
+	if items[0].Detail != "Which store wins?" {
+		t.Errorf("inbox item detail = %q, want the question", items[0].Detail)
+	}
+}
+
 func TestInbox_ExcludesBacklog(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
@@ -161,6 +225,65 @@ func TestProjects(t *testing.T) {
 	}
 	if p.StatusBreakdown[StatusDone] != 1 {
 		t.Errorf("StatusBreakdown[done] = %d, want 1", p.StatusBreakdown[StatusDone])
+	}
+}
+
+func TestProjects_KeepsParkedChildInNextActions(t *testing.T) {
+	// A parked child is blocked rather than work; dropping it would hide the
+	// one action the epic most needs from the human.
+	store := NewFileStore(t.TempDir())
+
+	epic := &Ticket{
+		ID: "t-epic", Status: StatusBacklog, Type: TypeEpic, Priority: 0,
+		Deps: []string{}, Links: []string{}, Created: time.Now(), Title: "Epic", Body: "\n",
+	}
+	child := &Ticket{
+		ID: "t-c1", Status: StatusOpen, Type: TypeFeature, Priority: 1,
+		Parent: "t-epic", Deps: []string{}, Links: []string{}, Created: time.Now(),
+		Title: "Parked child", Body: "\n",
+		Extra: map[string]string{QuestionField: "Which store wins?"},
+	}
+	// A question left behind on a finished child is stale: it still counts as
+	// done and must not read as an action the epic is waiting on.
+	finished := &Ticket{
+		ID: "t-c2", Status: StatusDone, Type: TypeFeature, Priority: 1,
+		Parent: "t-epic", Deps: []string{}, Links: []string{}, Created: time.Now(),
+		Title: "Finished child", Body: "\n",
+		Extra: map[string]string{QuestionField: "Which store won?"},
+	}
+
+	for _, tk := range []*Ticket{epic, child, finished} {
+		if err := store.Create(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projects, err := Projects(store)
+	if err != nil {
+		t.Fatalf("Projects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("Projects returned %d, want 1", len(projects))
+	}
+
+	p := projects[0]
+	if len(p.NextActions) != 1 {
+		t.Fatalf("NextActions returned %d, want 1", len(p.NextActions))
+	}
+	if p.NextActions[0].Ticket.ID != "t-c1" {
+		t.Errorf("NextActions[0] ticket = %s, want t-c1", p.NextActions[0].Ticket.ID)
+	}
+	if p.NextActions[0].Action != ActionBlocked {
+		t.Errorf("NextActions[0] action = %s, want blocked", p.NextActions[0].Action)
+	}
+	if p.NextActions[0].Detail != "Which store wins?" {
+		t.Errorf("NextActions[0] detail = %q, want the question", p.NextActions[0].Detail)
+	}
+	if p.StatusBreakdown[StatusDone] != 1 {
+		t.Errorf("StatusBreakdown[done] = %d, want 1", p.StatusBreakdown[StatusDone])
+	}
+	if p.CompletionPct != 50 {
+		t.Errorf("CompletionPct = %v, want 50", p.CompletionPct)
 	}
 }
 
