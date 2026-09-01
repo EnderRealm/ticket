@@ -184,6 +184,35 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
 	if v, ok := raw["type"]; ok && t.Type == "" && !emptyYAMLValue(v) {
 		return true
 	}
+	// The verdict ledger breaks the "local fields are not checked" rule above for
+	// a different reason than parent, deps and type do. It is append-only, so a
+	// tolerated decode loss would be replayed by the ticket's next write-back as
+	// the deletion or the rewriting of the rows it held — through a path that
+	// never meant to touch them, and past the append-only check in updateLocked,
+	// which compares the damaged prior against the damaged next and finds them
+	// equal. Refusing the file keeps the record.
+	//
+	// The loss is partial as often as it is total, so all three shapes are
+	// refused: yaml.v3 records a type error per element and decodes the rest, so
+	// a malformed element drops out of the slice while its neighbours survive —
+	// caught by the element count — and an element with one unreadable field
+	// yields a row missing that field, caught by the emptiness of a field
+	// ValidateVerdictRow requires, which is what makes an empty one on this path
+	// decode damage rather than something a writer wrote. Every field of a
+	// VerdictRow is required on write, so the scan below covers all of them.
+	if v, ok := raw["verdicts"]; ok && !emptyYAMLValue(v) {
+		if len(t.Verdicts) == 0 {
+			return true
+		}
+		if rows, ok := v.([]interface{}); ok && len(rows) != len(t.Verdicts) {
+			return true
+		}
+		for _, r := range t.Verdicts {
+			if r.Ticket == "" || r.SHA == "" || r.Class == "" || r.Role == "" || r.Evidence == "" || r.By == "" || r.At == "" {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -267,6 +296,14 @@ func Serialize(t *Ticket) ([]byte, error) {
 	}
 	if len(t.DepCargo) > 0 {
 		if err := writeMapBlock(&buf, "dep-cargo", t.DepCargo); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.Verdicts) > 0 {
+		// An evidence pointer or an identity is free-form text that needs quoting
+		// when it carries punctuation. yaml.v3 preserves struct field order, so
+		// the output is deterministic.
+		if err := writeYAMLBlock(&buf, "verdicts", t.Verdicts); err != nil {
 			return nil, err
 		}
 	}
@@ -546,15 +583,15 @@ func writeField(buf *bytes.Buffer, key, value string) {
 	buf.WriteString(key + ": " + value + "\n")
 }
 
-// writeMapBlock emits a nested map under key, encoding it through yaml.v3 so
-// values are quoted when they need it. Unlike writeField, this is safe for
-// free-form prose containing colons, hashes or quotes. yaml.v3 sorts map keys,
-// so the output is deterministic.
-func writeMapBlock(buf *bytes.Buffer, key string, m map[string]string) error {
+// writeYAMLBlock emits a nested block under key, encoding the value through
+// yaml.v3 so scalars are quoted when they need it. Unlike writeField, this is
+// safe for free-form prose containing colons, hashes or quotes. Whether the
+// output is deterministic depends on what is encoded, so each caller states it.
+func writeYAMLBlock(buf *bytes.Buffer, key string, v any) error {
 	var block bytes.Buffer
 	enc := yaml.NewEncoder(&block)
 	enc.SetIndent(2)
-	if err := enc.Encode(m); err != nil {
+	if err := enc.Encode(v); err != nil {
 		return err
 	}
 	if err := enc.Close(); err != nil {
@@ -565,6 +602,12 @@ func writeMapBlock(buf *bytes.Buffer, key string, m map[string]string) error {
 		buf.WriteString("  " + line + "\n")
 	}
 	return nil
+}
+
+// writeMapBlock emits a nested map under key. yaml.v3 sorts map keys, so the
+// output is deterministic.
+func writeMapBlock(buf *bytes.Buffer, key string, m map[string]string) error {
+	return writeYAMLBlock(buf, key, m)
 }
 
 func writeFlowArray(buf *bytes.Buffer, key string, items []string) {

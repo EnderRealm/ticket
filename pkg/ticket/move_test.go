@@ -204,6 +204,48 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 	}
 }
 
+func TestMoveLeavesVerdictsBehind(t *testing.T) {
+	src := &FileStore{Dir: t.TempDir(), Project: "srcproj"}
+	dst := &FileStore{Dir: t.TempDir(), Project: "dstproj"}
+
+	original := &Ticket{
+		ID:       "verd-move-0001",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Title:    "Verdict move",
+		Deps:     []string{},
+		Links:    []string{},
+	}
+	if err := src.Create(original); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, _, err := RecordVerdict(src, original.ID, shaA, VerdictTestVerified, VerdictRoleWorker, "go test ./...", "worker-1"); err != nil {
+		t.Fatalf("RecordVerdict: %v", err)
+	}
+
+	results, err := MoveTicket(src, dst, original.ID, false)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+
+	moved, err := dst.Get(results[0].NewID)
+	if err != nil {
+		t.Fatalf("Get moved: %v", err)
+	}
+	if len(moved.Verdicts) != 0 {
+		t.Errorf("moved verdicts = %+v, want none: the rows judged the source repo's commits", moved.Verdicts)
+	}
+
+	orig, err := src.Get(original.ID)
+	if err != nil {
+		t.Fatalf("Get source: %v", err)
+	}
+	if len(orig.Verdicts) != 1 || orig.Verdicts[0].SHA != shaA {
+		t.Errorf("source verdicts = %+v, want the recorded row kept", orig.Verdicts)
+	}
+}
+
 func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. A recursive move must

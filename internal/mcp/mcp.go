@@ -39,6 +39,8 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerInbox(server, store, defaultProject)
 	registerSearch(server, store, defaultProject)
 	registerVerify(server, store, defaultProject)
+	registerVerdictRecord(server, store)
+	registerVerdictCurrent(server, store)
 	registerStoreInfo(server, centralRoot)
 
 	return server
@@ -117,7 +119,11 @@ type ticketJSON struct {
 	Notes       []noteJSON        `json:"notes,omitempty"`
 	Outputs     map[string]string `json:"outputs,omitempty"`
 	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
-	Extra       map[string]string `json:"-"`
+	// The ticket's verdict ledger, in record order. Whether a row is current is
+	// not answered here — that needs the head to judge against, which
+	// ticket_verdict_current takes.
+	Verdicts []ticket.VerdictRow `json:"verdicts,omitempty"`
+	Extra    map[string]string   `json:"-"`
 	// ClosedChildren names the children an edit that abandoned an epic closed
 	// along with it. Set by ticket_edit alone — every other tool leaves it
 	// empty, and it is omitted from the response then.
@@ -179,6 +185,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		Title:       t.Title,
 		Outputs:     t.Outputs,
 		DepCargo:    t.DepCargo,
+		Verdicts:    t.Verdicts,
 	}
 
 	j.Extra = t.Extra

@@ -397,6 +397,25 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 	if t.version != "" && versionOf(current) != t.version {
 		return fmt.Errorf("update %s: %w. Re-read it and apply the change again", t.ID, ErrConflict)
 	}
+	// The verdict ledger is append-only, and every surface's write reaches this
+	// one choke point, so no call site carries a rule of its own. Keyed on the
+	// file's current bytes rather than on the CAS, so it holds for the
+	// version-less unconditional write too. A prior that does not parse is
+	// skipped, the same tolerance logUpdate applies: there is nothing to compare
+	// against.
+	if prior, err := Parse(bytes.NewReader(current)); err == nil {
+		if !verdictsAppendOnly(prior.Verdicts, t.Verdicts) {
+			return fmt.Errorf("update %s: verdict rows are append-only — a correction is a new row, and this write would drop or rewrite recorded rows", t.ID)
+		}
+		// Only the rows this write adds are judged. Validating the whole slice
+		// would make a ticket that synced in an invalid row permanently
+		// unwritable, since append-only requires every write to preserve it.
+		for _, row := range t.Verdicts[len(prior.Verdicts):] {
+			if err := ValidateVerdictRow(row); err != nil {
+				return fmt.Errorf("update %s: %w", t.ID, err)
+			}
+		}
+	}
 	if err := s.writeTicket(t); err != nil {
 		return err
 	}

@@ -121,6 +121,10 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		newTicket.Links = nil
 		newTicket.DepCargo = nil // the shallow copy aliases the source map
 		newTicket.version = ""   // the copy is a new file, not the source's
+		// The rows judged commits of the source project's repo, against the ID the
+		// ticket had there, so they say nothing about the copy landing in this one
+		// and do not travel with it. The closed source ticket keeps the record.
+		newTicket.Verdicts = nil
 		newTicket.Notes = copyNotes(t.Notes)
 		newTicket.Parent = ""
 

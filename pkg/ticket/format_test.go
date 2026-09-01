@@ -1070,6 +1070,58 @@ func TestDepCargo_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestVerdicts_RoundTrip(t *testing.T) {
+	tk := &Ticket{
+		ID:       "t-verd1",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Verdict round trip",
+		// Already in canonical body form, so serialize→parse→serialize compares
+		// the frontmatter rather than body normalization.
+		Body: "Description.\n",
+		Verdicts: []VerdictRow{{
+			Ticket: "t-verd1",
+			SHA:    shaA,
+			Class:  VerdictTestVerified,
+			Role:   VerdictRoleVerifier,
+			// Punctuation the unquoted writeField path could not serialize.
+			Evidence: `see: "run #12" at https://ci/x`,
+			By:       "verifier-1",
+			At:       "2026-08-31T00:00:00Z",
+		}},
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s := string(data)
+
+	parsed, err := parseBytes(data)
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v", err)
+	}
+	if len(parsed.Verdicts) != 1 || parsed.Verdicts[0] != tk.Verdicts[0] {
+		t.Fatalf("Verdicts = %+v, want %+v", parsed.Verdicts, tk.Verdicts)
+	}
+	// The block must not leak into extra fields.
+	if len(parsed.Extra) != 0 {
+		t.Errorf("Extra = %v, want empty", parsed.Extra)
+	}
+
+	again, err := Serialize(parsed)
+	if err != nil {
+		t.Fatalf("Serialize after Parse: %v", err)
+	}
+	if string(again) != s {
+		t.Errorf("serialize is not stable:\n%q\nwant\n%q", string(again), s)
+	}
+}
+
 func TestDepCargo_BareDepsUnchanged(t *testing.T) {
 	// A ticket predating dep cargo must parse and serialize without the block.
 	input := `---
