@@ -56,8 +56,9 @@ const (
 //
 // File is the base filename, not the path: the path names a temp directory in a
 // test and the operator's central store otherwise, and the project is carried
-// beside it. Project is stamped by the audit, which knows which store the
-// listing came from; a listing on its own leaves it empty.
+// beside it. Project is stamped by the readers that know which store the skip
+// came from — the audit and ListWithSkips; listStored on its own leaves it
+// empty.
 type FileSkip struct {
 	Project string       `json:"project,omitempty"`
 	File    string       `json:"file"`
@@ -153,6 +154,37 @@ func oneLine(err error) string {
 		}
 		return r
 	}, joined)
+}
+
+// UnreadableTicketError is a single-ticket read that resolved to a file which
+// yielded no ticket: bytes that would not parse, or a stored ID this project
+// cannot use. Every other failure of such a read means no such file, and the
+// two call for opposite repairs — one is a file to fix, the other a ticket to
+// create — so a caller is told which rather than left to guess. It matters most
+// where the listing's stderr warning does not reach, which is every MCP client.
+// Checked with errors.As, since it travels wrapped through MultiStore. A file
+// naming another project is not one of these: it was read in full, and
+// ForeignNamespaceError already says so.
+type UnreadableTicketError struct {
+	File string // base filename, as FileSkip carries it
+	Err  error
+}
+
+// Error names the file and the reason. The filename came off a file another
+// machine wrote and arrived over a git remote, so it is quoted the way
+// ForeignNamespaceError quotes a stored ID: this text reaches a terminal.
+func (e *UnreadableTicketError) Error() string {
+	return fmt.Sprintf("ticket file %q exists but cannot be read as a ticket: %v", e.File, e.Err)
+}
+
+func (e *UnreadableTicketError) Unwrap() error { return e.Err }
+
+// SkipLister is a store that can list its tickets alongside the files in it
+// that were not read as tickets at all. Optional: a caller that has to say a
+// listing was partial asks for it and falls back to Store.List, which can only
+// answer that nothing was skipped.
+type SkipLister interface {
+	ListWithSkips() ([]*Ticket, []FileSkip, error)
 }
 
 // projectStore is a store whose tickets all live under one project namespace.
@@ -334,12 +366,26 @@ func (s *FileStore) Get(id string) (*Ticket, error) {
 // an epic's status. Deriving one reads every ticket in the store, so callers
 // that need only stored fields — a parent's type, the next link in a parent
 // chain — read through here rather than making an unrelated lookup quadratic.
+//
+// A file that resolved and yielded no ticket comes back as an
+// UnreadableTicketError rather than as the bare parse failure, so a caller
+// cannot mistake it for a ticket that is not there. The classification follows
+// listStored's: a file naming another project was read in full and reports
+// itself, and every other refusal is a file that yielded nothing.
 func (s *FileStore) getStored(id string) (*Ticket, error) {
 	path, err := s.Resolve(id)
 	if err != nil {
 		return nil, err
 	}
-	return s.readFile(path)
+	t, err := s.readFile(path)
+	if err != nil {
+		var foreign *ForeignNamespaceError
+		if errors.As(err, &foreign) {
+			return nil, err
+		}
+		return nil, &UnreadableTicketError{File: filepath.Base(path), Err: err}
+	}
+	return t, nil
 }
 
 // Update writes a ticket back to disk in canonical format. Every field is
@@ -496,7 +542,7 @@ func (s *FileStore) Delete(id string) error {
 // file; warning from listStored instead would repeat it once per internal read
 // — a single `tk ls` derives every epic in the store off the same listing.
 func (s *FileStore) List() ([]*Ticket, error) {
-	tickets, skips, err := s.listStored()
+	tickets, skips, err := s.ListWithSkips()
 	if err != nil {
 		return nil, err
 	}
@@ -520,8 +566,28 @@ func (s *FileStore) List() ([]*Ticket, error) {
 		}
 		Warnf("warning: %q could not be read (%s), so its ticket is not shown and no epic here reads done or closed\n", name, skip.Error)
 	}
-	deriveEpics(tickets, s.Project, hasUnreadable(skips))
 	return tickets, nil
+}
+
+// ListWithSkips is List with the skipped files handed to the caller instead of
+// warned about. A caller whose stderr nobody reads — the MCP server's is
+// discarded at both ends — can otherwise not tell a short result set from a
+// complete one, and a skip that degrades the derivation reaches tickets it can
+// see: every epic in the project comes back derived from a partial set of
+// children. The warnings stay List's alone, so one CLI command still produces
+// one warning per skipped file.
+func (s *FileStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
+	tickets, skips, err := s.listStored()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Stamped here for the reason auditStore stamps its own: a File is a base
+	// filename, which names nothing without the project whose directory held it.
+	for i := range skips {
+		skips[i].Project = s.Project
+	}
+	deriveEpics(tickets, s.Project, hasUnreadable(skips))
+	return tickets, skips, nil
 }
 
 // listStored reads all tickets from the directory exactly as their files hold

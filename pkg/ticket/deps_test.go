@@ -238,6 +238,32 @@ func TestFrontierTickets_DepFlipsToDone(t *testing.T) {
 	}
 }
 
+func TestFrontierTicketsWithSkips(t *testing.T) {
+	// A frontier is exactly the answer a file nobody could read shortens, so the
+	// caller is told which file — without a warning, since the callers that need
+	// this are the ones whose stderr goes nowhere.
+	s := depStore(t,
+		mk("t-nodeps", StatusReady),
+		mk("t-open", StatusOpen),
+	)
+	plantUnreadable(t, s.Dir, "broken-9999.md")
+
+	warnings := captureWarnings(t)
+	frontier, skips, err := FrontierTicketsWithSkips(s)
+	if err != nil {
+		t.Fatalf("FrontierTicketsWithSkips: %v", err)
+	}
+	if len(frontier) != 1 || frontier[0].ID != "t-nodeps" {
+		t.Errorf("frontier = %v, want [t-nodeps]", ids2(frontier))
+	}
+	if len(skips) != 1 || skips[0].File != "broken-9999.md" {
+		t.Fatalf("skips = %+v, want the unreadable file reported", skips)
+	}
+	if len(*warnings) != 0 {
+		t.Errorf("FrontierTicketsWithSkips warned %v, want the skips on the return alone", *warnings)
+	}
+}
+
 func TestBlockedTickets(t *testing.T) {
 	s := depStore(t,
 		mk("t-1", StatusReady),

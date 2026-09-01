@@ -4,6 +4,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -310,6 +311,7 @@ type listResultJSON struct {
 	Offset               int                 `json:"offset"`
 	Limit                int                 `json:"limit"`
 	UnregisteredProjects []string            `json:"unregistered_projects,omitempty"`
+	SkippedFiles         []fileSkipJSON      `json:"skipped_files,omitempty"`
 }
 
 // unregisteredProjects names the projects among these tickets that are not
@@ -352,12 +354,53 @@ func resolveProject(explicit, defaultProject string) string {
 	return defaultProject
 }
 
+// fileSkipJSON is a skipped file as a tool reports it, with whether it left the
+// epics in its project derived from a partial set of children. The flag is
+// computed from the kind rather than stored, so it cannot disagree with what
+// the derivation actually did.
+type fileSkipJSON struct {
+	ticket.FileSkip
+	EpicStatusDegraded bool `json:"epic_status_degraded,omitempty"`
+}
+
+// listWithSkips lists a store's tickets and the files it did not read as
+// tickets. The store's own warning goes to stderr, which is discarded at both
+// ends of the MCP transport, so a skip only reaches an agent by riding on the
+// response. A store that cannot report skips answers with none.
+func listWithSkips(store ticket.Store) ([]*ticket.Ticket, []ticket.FileSkip, error) {
+	if l, ok := store.(ticket.SkipLister); ok {
+		return l.ListWithSkips()
+	}
+	tickets, err := store.List()
+	return tickets, nil, err
+}
+
+// skippedFilesJSON renders the skips a response carries, scoped to the project
+// the response itself is scoped to: a file skipped in a project the caller
+// filtered out says nothing about the tickets it can see. Returns nil when
+// there is nothing to report, so a healthy store's response carries no field.
+func skippedFilesJSON(skips []ticket.FileSkip, project string) []fileSkipJSON {
+	var out []fileSkipJSON
+	for _, s := range skips {
+		if project != "" && s.Project != project {
+			continue
+		}
+		out = append(out, fileSkipJSON{FileSkip: s, EpicStatusDegraded: s.Kind.DegradesEpicStatus()})
+	}
+	return out
+}
+
+// skippedFilesDoc documents the skip fields in the tool descriptions that carry
+// them, so the three cannot describe the same field differently.
+const skippedFilesDoc = " `skipped_files` names every file in the projects read that was not read as a ticket, with the reason. " +
+	"An entry with `epic_status_degraded` could not be read at all, and it could be any epic's child — so while it stands, no epic in that project reads done or closed, whatever its children say."
+
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate. `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it.",
+		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate. `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
-		tickets, err := store.List()
+		tickets, skips, err := listWithSkips(store)
 		if err != nil {
 			r, _ := errResult("failed to list tickets: %v", err)
 			return r, nil, nil
@@ -398,8 +441,9 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		}
 
 		tickets = ticket.Filter(tickets, opts)
-		if proj := resolveProject(args.Project, defaultProject); proj != "" {
-			tickets = filterByProject(tickets, proj)
+		effectiveProject := resolveProject(args.Project, defaultProject)
+		if effectiveProject != "" {
+			tickets = filterByProject(tickets, effectiveProject)
 		}
 		ticket.SortByStatusPriorityID(tickets)
 
@@ -438,6 +482,10 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 			Offset:               offset,
 			Limit:                limit,
 			UnregisteredProjects: unregistered,
+			// Reported over the whole store's skips, not the page: the file was
+			// never a row here — it is why a row may be missing — so paging it
+			// away would hide it exactly when the caller reads a short page.
+			SkippedFiles: skippedFilesJSON(skips, effectiveProject),
 		})
 		return r, nil, err
 	})
@@ -479,10 +527,18 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
+			// A file that resolved and yielded no ticket is a repair, not a
+			// missing ticket: reported as "not found" a caller would create the
+			// ticket a second time and leave the corrupt file where it is.
+			var unreadable *ticket.UnreadableTicketError
+			if errors.As(err, &unreadable) {
+				r, _ := errResult("ticket unreadable: %v", err)
+				return r, nil, nil
+			}
 			r, _ := errResult("ticket not found: %v", err)
 			return r, nil, nil
 		}
@@ -1060,12 +1116,20 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 	})
 }
 
+// frontierResultJSON wraps the frontier so the response can also say which
+// files the listing it was computed from did not read. A bare array had nowhere
+// to put that, and a frontier is exactly the answer a skipped file shortens.
+type frontierResultJSON struct {
+	Tickets      []ticketSummaryJSON `json:"tickets"`
+	SkippedFiles []fileSkipJSON      `json:"skipped_files,omitempty"`
+}
+
 func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_frontier",
-		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed. The parallel-safe set to start next.",
+		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed. The parallel-safe set to start next. Returns an object with `tickets`." + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
-		frontier, err := ticket.FrontierTickets(store)
+		frontier, skips, err := ticket.FrontierTicketsWithSkips(store)
 		if err != nil {
 			r, _ := errResult("failed to get frontier tickets: %v", err)
 			return r, nil, nil
@@ -1076,8 +1140,9 @@ func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject str
 			opts.Tag = args.Tag
 		}
 		frontier = ticket.Filter(frontier, opts)
-		if proj := resolveProject(args.Project, defaultProject); proj != "" {
-			frontier = filterByProject(frontier, proj)
+		effectiveProject := resolveProject(args.Project, defaultProject)
+		if effectiveProject != "" {
+			frontier = filterByProject(frontier, effectiveProject)
 		}
 		ticket.SortByPriorityID(frontier)
 
@@ -1086,7 +1151,10 @@ func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject str
 			result = append(result, toSummaryJSON(t))
 		}
 
-		r, err := jsonResult(result)
+		r, err := jsonResult(frontierResultJSON{
+			Tickets:      result,
+			SkippedFiles: skippedFilesJSON(skips, effectiveProject),
+		})
 		return r, nil, err
 	})
 }
@@ -1201,23 +1269,25 @@ func (s searchMatchJSON) MarshalJSON() ([]byte, error) {
 }
 
 type searchResultJSON struct {
-	Matches []searchMatchJSON `json:"matches"`
-	Total   int               `json:"total"`
+	Matches      []searchMatchJSON `json:"matches"`
+	Total        int               `json:"total"`
+	SkippedFiles []fileSkipJSON    `json:"skipped_files,omitempty"`
 }
 
 func registerSearch(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_search",
-		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first, each with the match_field and a context snippet around the matched term.",
+		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first, each with the match_field and a context snippet around the matched term." + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args searchArgs) (*mcp.CallToolResult, any, error) {
-		tickets, err := store.List()
+		tickets, skips, err := listWithSkips(store)
 		if err != nil {
 			r, _ := errResult("failed to list tickets: %v", err)
 			return r, nil, nil
 		}
 
-		if proj := resolveProject(args.Project, defaultProject); proj != "" {
-			tickets = filterByProject(tickets, proj)
+		effectiveProject := resolveProject(args.Project, defaultProject)
+		if effectiveProject != "" {
+			tickets = filterByProject(tickets, effectiveProject)
 		}
 
 		results := ticket.Search(tickets, args.Query)
@@ -1245,8 +1315,9 @@ func registerSearch(server *mcp.Server, store ticket.Store, defaultProject strin
 		}
 
 		r, err := jsonResult(searchResultJSON{
-			Matches: items,
-			Total:   total,
+			Matches:      items,
+			Total:        total,
+			SkippedFiles: skippedFilesJSON(skips, effectiveProject),
 		})
 		return r, nil, err
 	})

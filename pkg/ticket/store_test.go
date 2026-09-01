@@ -280,6 +280,63 @@ func TestFileStore_ListReportsAndWarnsAboutUnreadableFiles(t *testing.T) {
 	}
 }
 
+func TestFileStore_ListWithSkipsReportsWithoutWarning(t *testing.T) {
+	// The skips a caller cannot get from List: the MCP server's stderr is
+	// discarded, so the only way a skip reaches an agent is on the return.
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	if err := store.Create(sampleTicket("t-ls01")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	plantUnreadable(t, dir, "broken-9999.md")
+
+	warnings := captureWarnings(t)
+	tickets, skips, err := store.ListWithSkips()
+	if err != nil {
+		t.Fatalf("ListWithSkips: %v", err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "t-ls01" {
+		t.Errorf("ListWithSkips returned %v, want the ticket that parses", ids2(tickets))
+	}
+	if len(skips) != 1 || skips[0].File != "broken-9999.md" || skips[0].Error == "" {
+		t.Fatalf("skips = %+v, want the unreadable file named with a reason", skips)
+	}
+	if skips[0].Project != "proj" || !skips[0].Kind.DegradesEpicStatus() {
+		t.Errorf("skip = %+v, want it stamped with its project and degrading the epics there", skips[0])
+	}
+	// Warnings stay List's, so one CLI command still produces one per file.
+	if len(*warnings) != 0 {
+		t.Errorf("ListWithSkips warned %v, want the skips carried on the return alone", *warnings)
+	}
+}
+
+func TestFileStore_GetNamesAnUnreadableFile(t *testing.T) {
+	// A file that resolved and yielded no ticket is a repair; a ticket that is
+	// not there is a create. Reported as the same error they are indistinguishable.
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	plantUnreadable(t, dir, "broken-9999.md")
+	plantTicketFile(t, dir, "alien-0002.md", sampleTicket("other/alien-0002"))
+
+	var unreadable *UnreadableTicketError
+	_, err := store.Get("broken-9999")
+	if !errors.As(err, &unreadable) {
+		t.Fatalf("Get on a corrupt file = %v, want an *UnreadableTicketError", err)
+	}
+	if unreadable.File != "broken-9999.md" {
+		t.Errorf("File = %q, want the file to go and repair", unreadable.File)
+	}
+	if _, err := store.Get("missing-0000"); errors.As(err, &unreadable) {
+		t.Errorf("a ticket that is not there reported as unreadable: %v", err)
+	}
+	// A file naming another project was read in full and says so itself.
+	_, err = store.Get("alien-0002")
+	var foreign *ForeignNamespaceError
+	if !errors.As(err, &foreign) || errors.As(err, &unreadable) {
+		t.Errorf("Get on a file naming another project = %v, want a *ForeignNamespaceError", err)
+	}
+}
+
 func TestFileStore_ListWarnsNothingWithoutSkips(t *testing.T) {
 	store, _ := testStore(t)
 	if err := store.Create(sampleTicket("t-ls01")); err != nil {

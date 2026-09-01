@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,6 +82,37 @@ func (m *MultiStore) List() ([]*Ticket, error) {
 		}
 	}
 	return all, nil
+}
+
+// ListWithSkips is List with each read project's skipped files carried out
+// beside the tickets, for a caller that has to say the listing was partial. The
+// per-project stores stamp their own project onto every skip, so a base
+// filename identifies a file here. A project whose listing fails is skipped
+// whole, as in List — this reports the files inside the projects it read.
+func (m *MultiStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
+	projects, err := m.projects()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var all []*Ticket
+	var skips []FileSkip
+	for _, proj := range projects {
+		store, err := m.storeFor(proj)
+		if err != nil {
+			continue
+		}
+		tickets, projSkips, err := store.ListWithSkips()
+		if err != nil {
+			continue
+		}
+		for _, t := range tickets {
+			t.ID = FormatNamespacedID(proj, t.ID)
+			all = append(all, t)
+		}
+		skips = append(skips, projSkips...)
+	}
+	return all, skips, nil
 }
 
 // Create writes a new ticket. The ticket ID must be namespaced ("project/id")
@@ -262,6 +294,13 @@ func (m *MultiStore) resolveAcrossProjects(bareID string, getter func(*FileStore
 		ticket  *Ticket
 	}
 	var matches []match
+	// The first file that resolved and yielded no ticket, kept for the no-match
+	// branch alone: a bare ID whose only candidate is a corrupt file must not
+	// report as absent, or the caller creates the ticket again instead of
+	// repairing the file. A project that answered the lookup settles it
+	// regardless, so this is consulted nowhere else.
+	var unreadable *UnreadableTicketError
+	unreadableProject := ""
 
 	for _, proj := range projects {
 		store, err := m.storeFor(proj)
@@ -270,6 +309,10 @@ func (m *MultiStore) resolveAcrossProjects(bareID string, getter func(*FileStore
 		}
 		t, err := getter(store, bareID)
 		if err != nil {
+			var candidate *UnreadableTicketError
+			if unreadable == nil && errors.As(err, &candidate) {
+				unreadable, unreadableProject = candidate, proj
+			}
 			continue
 		}
 		matches = append(matches, match{project: proj, ticket: t})
@@ -277,6 +320,9 @@ func (m *MultiStore) resolveAcrossProjects(bareID string, getter func(*FileStore
 
 	switch len(matches) {
 	case 0:
+		if unreadable != nil {
+			return nil, fmt.Errorf("project %s: %w", unreadableProject, unreadable)
+		}
 		return nil, fmt.Errorf("ticket %s not found in any project", bareID)
 	case 1:
 		t := matches[0].ticket

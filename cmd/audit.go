@@ -13,13 +13,15 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, and files whose id names another project",
+	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, files that cannot be read as tickets, and files whose id names another project",
 	Long: "Report tickets whose parent breaks the one-level epic hierarchy: a parent that is not an epic, " +
 		"a parent that does not resolve, a parent in another project, an epic that has a parent, or a parent cycle. " +
 		"Each parent is resolved within the project that owns the ticket, so the report matches what a write would accept. " +
 		"Also report every epic whose stored status differs from the status it now derives from its children, since " +
 		"stored statuses were left in place and are no longer read, and every ticket whose stored body is missing content: " +
 		"a section ending in a tool-call envelope fragment, or a description with no acceptance criteria. " +
+		"Also report every file that could not be read as a ticket at all, which exits non-zero: it is a ticket no listing yields, and " +
+		"it could be any epic's child, so no epic in its project reads done or closed while it stands. " +
 		"Also report every file whose stored id names a project other than the directory holding it: the directory decides a ticket's " +
 		"project, so such a file is read as no project's ticket and appears in no listing until it is moved or its id is fixed. " +
 		"Read-only — nothing is rewritten.",
@@ -89,6 +91,21 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		audit.SkippedFiles = skippedFiles
 	}
 
+	// Skipped files split by whether they left the store read in part, through
+	// the same predicate the derivation degrades on — keyed off the kind's own
+	// answer rather than a second test here, so the report and the epic statuses
+	// it prints cannot disagree about which files made it partial. Only an
+	// unreadable file does; a file naming another project was read in full and
+	// is reported below because no listing in the project holding it shows it.
+	var unreadable, foreign []ticket.FileSkip
+	for _, f := range audit.SkippedFiles {
+		if f.Kind.DegradesEpicStatus() {
+			unreadable = append(unreadable, f)
+			continue
+		}
+		foreign = append(foreign, f)
+	}
+
 	if jsonOutput {
 		if audit.Violations == nil {
 			audit.Violations = []ticket.ParentViolation{}
@@ -104,7 +121,9 @@ func runAudit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println(string(data))
-		return nil
+		// The count line below would not be JSON, so the exit code is all this
+		// mode carries — the files themselves are already in skipped_files.
+		return unreadableExit(cmd, unreadable)
 	}
 
 	if len(audit.Violations) == 0 {
@@ -117,20 +136,6 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	}
 	printEpicStatusDrift(audit.EpicStatus)
 	printContentIssues(audit.Content)
-	// Skipped files split by whether they left the store read in part, through
-	// the same predicate the derivation degrades on — keyed off the kind's own
-	// answer rather than a second test here, so the report and the epic statuses
-	// it prints cannot disagree about which files made it partial. Only an
-	// unreadable file does; a file naming another project was read in full and
-	// is reported below because no listing in the project holding it shows it.
-	var unreadable, foreign []ticket.FileSkip
-	for _, f := range audit.SkippedFiles {
-		if f.Kind.DegradesEpicStatus() {
-			unreadable = append(unreadable, f)
-			continue
-		}
-		foreign = append(foreign, f)
-	}
 	// A project or a file the audit could not read is named rather than dropped:
 	// without it, "No parent violations." would speak for a store never fully
 	// read. It covers every section, all of which are read in the same
@@ -164,6 +169,9 @@ func runAudit(cmd *cobra.Command, args []string) error {
 			// project can claim every child finished. Said here because the epic
 			// section above reports the degraded values without explaining them.
 			fmt.Println("An unreadable file could be any epic's child, so no epic in its project reads done or closed until the file is fixed or removed.")
+			// Counted in the shape the other findings are counted in: it is a
+			// violation class of its own, not a caveat on the sections above.
+			fmt.Printf("\n%d file(s) could not be read as tickets — repair or remove each file\n", len(unreadable))
 		}
 	}
 	if len(foreign) > 0 {
@@ -179,7 +187,22 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println("The audit read each of these in full, so the report above is complete without them. Move the file to the project its id names, or fix the id field — until then it is in no listing, resolves for no reference, and counts as no epic's child, so an epic that was counting it can now read done.")
 	}
-	return nil
+	return unreadableExit(cmd, unreadable)
+}
+
+// unreadableExit is the error a run that found unreadable files ends with, so
+// the command exits non-zero. A file no listing yields is a finding, and a
+// scripted caller reads the exit code rather than the report — a zero there
+// says the store is clean, which is the one thing an unreadable file rules out.
+// Only this class exits non-zero: a file naming another project, and every
+// other section, keep the exit code they had. Usage is silenced because the
+// command ran correctly; what is wrong is the store.
+func unreadableExit(cmd *cobra.Command, unreadable []ticket.FileSkip) error {
+	if len(unreadable) == 0 {
+		return nil
+	}
+	cmd.SilenceUsage = true
+	return fmt.Errorf("audit: %d unreadable ticket file(s)", len(unreadable))
 }
 
 // printEpicStatusDrift reports the epics reading a different status than their

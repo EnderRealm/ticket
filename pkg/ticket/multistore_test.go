@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,47 @@ func TestMultiStoreList(t *testing.T) {
 	}
 	if !ids["beta/b-ticket-2222"] {
 		t.Error("missing beta/b-ticket-2222")
+	}
+}
+
+func TestMultiStoreListWithSkips(t *testing.T) {
+	// A skip carries a base filename, so it names nothing without the project
+	// whose directory held it — and the tickets beside it still list.
+	ms, dir := testMultiStore(t, "alpha", "beta")
+	if err := ms.Create(sampleTicket("alpha/a-ticket-1111")); err != nil {
+		t.Fatal(err)
+	}
+	plantUnreadable(t, filepath.Join(dir, "beta"), "b-broken-2222.md")
+
+	tickets, skips, err := ms.ListWithSkips()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "alpha/a-ticket-1111" {
+		t.Errorf("ListWithSkips returned %v, want the readable ticket namespaced", ids2(tickets))
+	}
+	if len(skips) != 1 || skips[0].File != "b-broken-2222.md" || skips[0].Project != "beta" {
+		t.Fatalf("skips = %+v, want the beta file reported under its own project", skips)
+	}
+}
+
+func TestMultiStoreGetBareIDNamesAnUnreadableFile(t *testing.T) {
+	// The only candidate for the ID is a file that will not parse. Answered
+	// "not found in any project", the caller would create the ticket again and
+	// leave the file where it is.
+	ms, dir := testMultiStore(t, "proj")
+	plantUnreadable(t, filepath.Join(dir, "proj"), "broken-9999.md")
+
+	_, err := ms.Get("broken-9999")
+	var unreadable *UnreadableTicketError
+	if !errors.As(err, &unreadable) {
+		t.Fatalf("Get = %v, want an *UnreadableTicketError", err)
+	}
+	if !strings.Contains(err.Error(), "proj") || !strings.Contains(err.Error(), "broken-9999.md") {
+		t.Errorf("error = %q, want it to name the project and the file", err)
+	}
+	if _, err := ms.Get("missing-0000"); errors.As(err, &unreadable) {
+		t.Errorf("a ticket in no project reported as unreadable: %v", err)
 	}
 }
 

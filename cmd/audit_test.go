@@ -46,6 +46,17 @@ func auditEpic(t *testing.T, store *ticket.FileStore, id string, status ticket.S
 
 func captureAudit(t *testing.T, args ...string) string {
 	t.Helper()
+	out, err := captureAuditErr(t, args...)
+	if err != nil {
+		t.Fatalf("runAudit: %v", err)
+	}
+	return out
+}
+
+// captureAuditErr runs the audit and returns its output and the error it exits
+// with, for the classes that are meant to make the command fail.
+func captureAuditErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	if err := auditCmd.Flags().Set("project", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +75,8 @@ func captureAudit(t *testing.T, args ...string) string {
 	w.Close()
 	os.Stdout = oldStdout
 
-	if err != nil {
-		t.Fatalf("runAudit: %v", err)
-	}
-
 	out, _ := io.ReadAll(r)
-	return string(out)
+	return string(out), err
 }
 
 func TestAuditReportsViolations(t *testing.T) {
@@ -189,19 +196,30 @@ func TestAuditWarnsAboutUnreadableFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := captureAudit(t)
+	out, err := captureAuditErr(t)
 	if !contains(out, "au-broken-0003.md") || !contains(out, "incomplete") {
 		t.Errorf("audit should name the unreadable file and call the report incomplete:\n%s", out)
 	}
 	if !contains(out, "could be any epic's child") {
 		t.Errorf("audit should say why no epic reads done or closed:\n%s", out)
 	}
+	// A finding of its own, counted like the other classes and exited on: a
+	// scripted audit reads the exit code, where a zero would call the store clean.
+	if !contains(out, "1 file(s) could not be read as tickets") {
+		t.Errorf("audit should count the unreadable files as a finding:\n%s", out)
+	}
+	if err == nil {
+		t.Errorf("audit found an unreadable file and exited 0:\n%s", out)
+	}
 
 	jsonOutput = true
 	defer func() { jsonOutput = false }()
 
 	var result ticket.AuditReport
-	jsonOut := captureAudit(t, "project", "alpha")
+	jsonOut, err := captureAuditErr(t, "project", "alpha")
+	if err == nil {
+		t.Errorf("audit --json found an unreadable file and exited 0:\n%s", jsonOut)
+	}
 	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
 		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
 	}
@@ -243,7 +261,12 @@ func TestAuditReportsAFileNamingAnotherProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := captureAudit(t)
+	out, auditErr := captureAuditErr(t)
+	if auditErr != nil {
+		// Only the unreadable class exits non-zero: this file was read in full,
+		// so the report is complete and the run succeeded.
+		t.Errorf("audit exited non-zero over a file it read in full: %v\n%s", auditErr, out)
+	}
 	if !contains(out, "au-alien-0003.md") || !contains(out, "naming another project") {
 		t.Errorf("audit should report the file as naming another project:\n%s", out)
 	}

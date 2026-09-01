@@ -34,6 +34,15 @@ func TestMain(m *testing.M) {
 
 func testServer(t *testing.T) *mcp.ClientSession {
 	t.Helper()
+	session, _ := testServerDir(t)
+	return session
+}
+
+// testServerDir is testServer with the store directory handed back, for a test
+// that has to plant a file the tools themselves cannot write — one that does
+// not parse — beside the tickets they do.
+func testServerDir(t *testing.T) (*mcp.ClientSession, string) {
+	t.Helper()
 	dir := t.TempDir()
 	store := ticket.NewFileStore(dir)
 	server := ticketmcp.NewServer(store, "", "")
@@ -49,7 +58,7 @@ func testServer(t *testing.T) *mcp.ClientSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return session
+	return session, dir
 }
 
 func TestCreateTicket(t *testing.T) {
@@ -354,8 +363,11 @@ func frontierIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) 
 	if result.IsError {
 		t.Fatalf("ticket_frontier error: %v", result.Content)
 	}
-	var tickets []map[string]any
-	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	var payload struct {
+		Tickets []map[string]any `json:"tickets"`
+	}
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &payload)
+	tickets := payload.Tickets
 	ids := make([]string, len(tickets))
 	for i, tk := range tickets {
 		ids[i], _ = tk["id"].(string)

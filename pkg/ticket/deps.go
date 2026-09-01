@@ -432,13 +432,39 @@ func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 }
 
 // FrontierTickets returns the schedulable set: tickets with status ready
-// whose dependencies are all terminal (done/closed).
+// whose dependencies are all terminal (done/closed). Listed through Store.List,
+// so a CLI caller gets the store's warning about any file it skipped.
 func FrontierTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
 	}
+	return frontierOf(store, tickets), nil
+}
 
+// FrontierTicketsWithSkips is FrontierTickets with the files the listing did
+// not read reported alongside, for a caller that has to say the frontier was
+// computed over a store read in part. It lists through SkipLister and never
+// warns: the callers that need the skips are the ones whose stderr goes
+// nowhere. A store that cannot report them answers with none.
+func FrontierTicketsWithSkips(store Store) ([]*Ticket, []FileSkip, error) {
+	var tickets []*Ticket
+	var skips []FileSkip
+	var err error
+	if l, ok := store.(SkipLister); ok {
+		tickets, skips, err = l.ListWithSkips()
+	} else {
+		tickets, err = store.List()
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return frontierOf(store, tickets), skips, nil
+}
+
+// frontierOf filters a listing down to the schedulable set. Shared by both
+// entry points so the two cannot disagree about what the frontier is.
+func frontierOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var frontier []*Ticket
 	for _, t := range tickets {
@@ -446,7 +472,7 @@ func FrontierTickets(store Store) ([]*Ticket, error) {
 			frontier = append(frontier, t)
 		}
 	}
-	return frontier, nil
+	return frontier
 }
 
 // BlockedTickets returns all non-terminal, non-backlog tickets with unresolved deps.
