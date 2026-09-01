@@ -208,7 +208,9 @@ func ValidateExtraKey(key string) error {
 // ValidateExtraValue checks that value is safe for unquoted YAML serialization.
 // Values allow printable ASCII: letters, digits, spaces, and common punctuation.
 // YAML indicator characters (% ! & * @ ` : # [ ] { } | > ' ") and control
-// characters are rejected to prevent parse failures in writeField output.
+// characters are rejected to prevent parse failures in writeField output, as is
+// a value opening with `,` or with a bare or space-separated `-` or `?` — yaml
+// reads those as sequence or mapping-key markers rather than text.
 func ValidateExtraValue(value string) error {
 	return validateValueChars("extra field value", value)
 }
@@ -290,6 +292,15 @@ func validateValueChars(kind, value string) error {
 		case ':', '#', '[', ']', '{', '}', '%', '!', '&', '*', '@', '`', '|', '>', '\'', '"':
 			return fmt.Errorf("%s contains invalid character %q", kind, string(c))
 		}
+	}
+	// `-` and `?` only act as indicators when they open the scalar and stand
+	// alone; `,` always does. yaml skips the space after `key:`, so leading
+	// spaces do not shield the shape. Tabs are already out via the loop above,
+	// leaving space as the only separator.
+	trimmed := strings.TrimLeft(value, " ")
+	if strings.HasPrefix(trimmed, ",") || trimmed == "-" || trimmed == "?" ||
+		strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "? ") {
+		return fmt.Errorf("%s %q starts with YAML indicator %q", kind, value, string(trimmed[0]))
 	}
 	return nil
 }

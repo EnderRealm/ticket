@@ -1779,6 +1779,54 @@ func TestEditExtraFields(t *testing.T) {
 	}
 }
 
+func TestEditExtraFieldLeadingIndicatorRefused(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	result, _ := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_create",
+		Arguments: map[string]any{"title": "Indicator edit test", "type": "feature"},
+	})
+	text := result.Content[0].(*mcp.TextContent).Text
+	var created map[string]any
+	json.Unmarshal([]byte(text), &created)
+	id := created["id"].(string)
+
+	// The value would serialize as an unquoted `question: - foo`, which Parse
+	// then refuses — the write has to be refused instead.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":  id,
+			"set": map[string]any{"question": "- foo"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected a refusal for a value opening a YAML sequence entry, got %v", result.Content)
+	}
+
+	// The ticket file must still be readable.
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("show error after refused edit: %v", result.Content)
+	}
+	text = result.Content[0].(*mcp.TextContent).Text
+	var shown map[string]any
+	json.Unmarshal([]byte(text), &shown)
+	if _, exists := shown["question"]; exists {
+		t.Errorf("question should not be set, got %v", shown["question"])
+	}
+}
+
 func TestShowExtraFields(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

@@ -1234,6 +1234,67 @@ func TestExtra_InvalidCharsRejected(t *testing.T) {
 	}
 }
 
+func TestExtra_LeadingIndicatorRejected(t *testing.T) {
+	// writeField emits `key: value` unquoted, and yaml refuses a plain scalar
+	// that opens a sequence entry, a mapping key or a flow separator.
+	badValues := []string{"- foo", "-", "? foo", "?", ", foo", ",foo", " - foo", "- "}
+	for _, val := range badValues {
+		if err := ValidateExtraValue(val); err == nil {
+			t.Errorf("ValidateExtraValue(%q) should return error", val)
+		}
+		if err := ValidateOutputValue(val); err == nil {
+			t.Errorf("ValidateOutputValue(%q) should return error", val)
+		}
+	}
+
+	// Only the opening indicator shape is a problem; attached or mid-string
+	// occurrences serialize fine.
+	for _, val := range leadingIndicatorGoodValues {
+		if err := ValidateExtraValue(val); err != nil {
+			t.Errorf("ValidateExtraValue(%q) = %v", val, err)
+		}
+		if err := ValidateOutputValue(val); err != nil {
+			t.Errorf("ValidateOutputValue(%q) = %v", val, err)
+		}
+	}
+}
+
+// Shapes near the rejected ones that must keep round-tripping.
+var leadingIndicatorGoodValues = []string{"-foo", "?foo", "-- foo", "a, b", "x - y", "end?"}
+
+func TestExtra_LeadingIndicatorGoodValuesRoundTrip(t *testing.T) {
+	for _, val := range leadingIndicatorGoodValues {
+		tk := &Ticket{
+			ID:       "t-indicator",
+			Status:   StatusReady,
+			Type:     TypeFeature,
+			Priority: 2,
+			Deps:     []string{},
+			Links:    []string{},
+			Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			Title:    "Indicator round trip",
+			Body:     "\nDescription.\n",
+			Extra:    map[string]string{"question": val},
+			Outputs:  map[string]string{"artifact": val},
+		}
+
+		data, err := Serialize(tk)
+		if err != nil {
+			t.Fatalf("Serialize(%q): %v", val, err)
+		}
+		tk2, err := Parse(strings.NewReader(string(data)))
+		if err != nil {
+			t.Fatalf("Parse after Serialize(%q): %v\n%s", val, err, data)
+		}
+		if tk2.Extra["question"] != val {
+			t.Errorf("Extra[question] = %q, want %q", tk2.Extra["question"], val)
+		}
+		if tk2.Outputs["artifact"] != val {
+			t.Errorf("Outputs[artifact] = %q, want %q", tk2.Outputs["artifact"], val)
+		}
+	}
+}
+
 func TestUpdateSection_ReplacesExisting(t *testing.T) {
 	body := "\nOriginal description.\n\n## Acceptance Criteria\n\nOld criteria\n"
 	updated := UpdateSection(body, "Acceptance Criteria", "New criteria")
