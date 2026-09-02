@@ -605,7 +605,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		if args.Title == "" {
 			r, _ := errResult("title is required")
@@ -624,6 +624,10 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		source := sourceFor(req, args.Source)
 		targetStore := ticket.WithSource(store, source)
 		unregisteredWarning := ""
+		// The project the repo argument resolved to, empty when no repo was
+		// given. It stands in for args.Project on that path: the repo names the
+		// project itself, so nothing else gets to decide the namespace.
+		repoProject := ""
 		if args.Repo != "" {
 			repo := args.Repo
 			cfg, err := project.Load()
@@ -668,6 +672,14 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 				// create into it puts a ticket where nothing else will.
 				unregisteredWarning = ticket.UnregisteredWarning(dst)
 			}
+			// Only an explicitly passed project conflicts: the CWD-derived
+			// defaultProject is not a request for a destination, and a server
+			// started in one repo is exactly the case repo exists to escape.
+			if args.Project != "" && args.Project != dst.Project {
+				r, _ := errResult("repo %q resolves to project %q but project %q was also given — pass one or the other", args.Repo, dst.Project, args.Project)
+				return r, nil, nil
+			}
+			repoProject = dst.Project
 			targetStore = ticket.WithSource(dst, source)
 		}
 
@@ -733,13 +745,32 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		}
 		t.Body = body.String()
 
-		if proj := resolveProject(args.Project, defaultProject); proj != "" {
-			t.ID = ticket.FormatNamespacedID(proj, t.ID)
+		// Not on the repo path: that one writes through a project FileStore,
+		// which takes bare IDs and refuses one carrying a separator, so it
+		// namespaces on the way out instead.
+		if repoProject == "" {
+			if proj := resolveProject(args.Project, defaultProject); proj != "" {
+				t.ID = ticket.FormatNamespacedID(proj, t.ID)
+			}
 		}
 
 		if err := targetStore.Create(t); err != nil {
+			if repoProject != "" {
+				// A project FileStore names a bare ID and not the project that
+				// refused it, so the failure is framed the way
+				// MultiStore.Create frames its own — a cross-repo create names
+				// the same destination whichever argument chose it.
+				err = fmt.Errorf("project %s: %w", repoProject, err)
+			}
 			r, _ := errResult("failed to create ticket: %v", err)
 			return r, nil, nil
+		}
+		// The ID went in bare, and only now is it settled: a hash collision
+		// makes Create regenerate it, and the one it kept is the one to prefix.
+		// Everything downstream — the JSON, and the empty_acceptance_warning
+		// naming an ID for ticket_edit — reads t.ID.
+		if repoProject != "" {
+			t.ID = ticket.FormatNamespacedID(repoProject, t.ID)
 		}
 
 		j := toJSON(t)

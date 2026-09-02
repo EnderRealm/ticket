@@ -128,7 +128,11 @@ func TestCreateWithRepoResolvesCentralProject(t *testing.T) {
 		"repo":  repoDir,
 	})
 
-	if _, err := os.Stat(filepath.Join(projectDir, id+".md")); err != nil {
+	proj, bare := ticket.ParseNamespacedID(id)
+	if proj != "beta" {
+		t.Errorf("id %q is not namespaced under the resolved project beta", id)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, bare+".md")); err != nil {
 		t.Errorf("ticket %s did not land in the central project dir %s: %v", id, projectDir, err)
 	}
 }
@@ -172,11 +176,116 @@ func TestCreateWithRepoAcceptsConfiguredProjectName(t *testing.T) {
 		"repo":  "beta",
 	})
 
-	if _, err := os.Stat(filepath.Join(projectDir, id+".md")); err != nil {
+	_, bare := ticket.ParseNamespacedID(id)
+	if _, err := os.Stat(filepath.Join(projectDir, bare+".md")); err != nil {
 		t.Errorf("ticket %s did not land in the named central project dir %s: %v", id, projectDir, err)
 	}
-	if _, err := os.Stat(filepath.Join(pathProjectDir, id+".md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(pathProjectDir, bare+".md")); !os.IsNotExist(err) {
 		t.Errorf("ticket %s followed the colliding filesystem path into %s: %v", id, pathProjectDir, err)
+	}
+}
+
+func TestCreateWithRepoOnCentralStoreUsesRepoProject(t *testing.T) {
+	// The shape `tk serve` runs in and the existing repo tests miss: a
+	// MultiStore behind a CWD-derived default project. The repo argument names
+	// a different project, and the store it resolves to takes bare IDs, so the
+	// default's namespace must not reach the write.
+	t.Setenv("HOME", t.TempDir())
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	repoDir := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta": {Path: repoDir, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	id := createTicketID(t, session, map[string]any{
+		"title": "Cross repo create",
+		"type":  "feature",
+		"repo":  repoDir,
+	})
+
+	proj, bare := ticket.ParseNamespacedID(id)
+	if proj != "beta" {
+		t.Fatalf("id %q is not namespaced under the repo's project beta", id)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tickets", "beta", bare+".md")); err != nil {
+		t.Errorf("ticket %s did not land in the repo's central project dir: %v", id, err)
+	}
+
+	viaProject := createTicketID(t, session, map[string]any{
+		"title":   "Cross repo create by project",
+		"type":    "feature",
+		"project": "beta",
+	})
+	if p, _ := ticket.ParseNamespacedID(viaProject); p != proj {
+		t.Errorf("repo create returned namespace %q, the same call with project returned %q", proj, p)
+	}
+
+	// A project that agrees with the repo's is not a conflict: only a
+	// disagreement is refused, so this one has to write like repo alone.
+	agreeing := createTicketID(t, session, map[string]any{
+		"title":   "Cross repo create with agreeing project",
+		"type":    "feature",
+		"repo":    repoDir,
+		"project": "beta",
+	})
+	if p, _ := ticket.ParseNamespacedID(agreeing); p != proj {
+		t.Errorf("repo with an agreeing project returned namespace %q, want %q", p, proj)
+	}
+}
+
+func TestCreateWithRepoRejectsConflictingProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	repoDir := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta": {Path: repoDir, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ticket_create",
+		Arguments: map[string]any{
+			"title":   "Conflicting destination",
+			"type":    "feature",
+			"repo":    repoDir,
+			"project": "alpha",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected an error for repo and project naming different projects, got %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	// Named rather than matched loosely: a create that reached the store fails
+	// with a message carrying both names too, and that is the state the guard
+	// exists to catch before the write.
+	if !strings.Contains(text, "pass one or the other") || !strings.Contains(text, "beta") || !strings.Contains(text, "alpha") {
+		t.Errorf("error %q is not the conflict guard naming both projects", text)
+	}
+	// The refusal has to land before the write: without the guard the call
+	// would succeed and put the ticket in the repo's project with the explicit
+	// project ignored, which the error assertions alone would not see.
+	for _, proj := range []string{"beta", "alpha"} {
+		entries, err := os.ReadDir(filepath.Join(root, "tickets", proj))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".md") {
+				t.Errorf("refused create still wrote %s into project %s", e.Name(), proj)
+			}
+		}
 	}
 }
 
@@ -580,7 +689,7 @@ func TestFrontierPicksUpFlippedDep(t *testing.T) {
 }
 
 func TestFrontierScopedToExplicitProject(t *testing.T) {
-	session := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	session, _ := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	ctx := context.Background()
 
 	for _, proj := range []string{"alpha", "beta"} {
@@ -1759,7 +1868,8 @@ func TestCreateTicketRemoteRepoWarnsUnregisteredProject(t *testing.T) {
 		}
 	}
 	id, _ := resp["id"].(string)
-	if _, err := os.Stat(filepath.Join(strayDir, id+".md")); err != nil {
+	_, bare := ticket.ParseNamespacedID(id)
+	if _, err := os.Stat(filepath.Join(strayDir, bare+".md")); err != nil {
 		t.Errorf("ticket %s did not land in the unregistered project dir %s: %v", id, strayDir, err)
 	}
 }
@@ -2354,33 +2464,13 @@ func TestEditExtraReservedKey(t *testing.T) {
 
 func testCentralServer(t *testing.T, projects ...string) (*mcp.ClientSession, string) {
 	t.Helper()
-	root := t.TempDir()
-	ticketsDir := filepath.Join(root, "tickets")
-	if err := os.MkdirAll(ticketsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range projects {
-		if err := os.MkdirAll(filepath.Join(ticketsDir, p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store := ticket.NewMultiStore(ticketsDir)
-	server := ticketmcp.NewServer(store, "", root)
-
-	st, ct := mcp.NewInMemoryTransports()
-	ctx := context.Background()
-	go server.Run(ctx, st)
-
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
-	session, err := client.Connect(ctx, ct, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { session.Close() })
-	return session, root
+	return testCentralServerWithDefault(t, "", projects...)
 }
 
-func testCentralServerWithDefault(t *testing.T, defaultProject string, projects ...string) *mcp.ClientSession {
+// testCentralServerWithDefault is testCentralServer with the CWD-derived
+// default project `tk serve` passes when it starts inside a registered repo.
+// The root comes back too, for a test that has to look at where a write landed.
+func testCentralServerWithDefault(t *testing.T, defaultProject string, projects ...string) (*mcp.ClientSession, string) {
 	t.Helper()
 	root := t.TempDir()
 	ticketsDir := filepath.Join(root, "tickets")
@@ -2405,7 +2495,7 @@ func testCentralServerWithDefault(t *testing.T, defaultProject string, projects 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return session
+	return session, root
 }
 
 // createTicketID calls ticket_create and returns the new ticket's ID.
@@ -2449,7 +2539,7 @@ func makeBlocked(t *testing.T, session *mcp.ClientSession, project string) strin
 }
 
 func TestBlockedScopedToDefaultProject(t *testing.T) {
-	session := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	session, _ := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	ctx := context.Background()
 
 	alphaBlocked := makeBlocked(t, session, "alpha")
@@ -2477,7 +2567,7 @@ func TestBlockedScopedToDefaultProject(t *testing.T) {
 }
 
 func TestBlockedScopedToExplicitProject(t *testing.T) {
-	session := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	session, _ := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	ctx := context.Background()
 
 	makeBlocked(t, session, "alpha")
