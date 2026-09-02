@@ -270,31 +270,94 @@ func TestSearchNoMatch(t *testing.T) {
 	}
 }
 
-func TestReadyExcludesBacklog(t *testing.T) {
-	session := testServer(t)
-	ctx := context.Background()
-
-	// Create a backlog ticket.
-	session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "ticket_create",
-		Arguments: map[string]any{
-			"title": "Backlog idea",
-			"type":  "feature",
-		},
-	})
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+// readyIDs calls ticket_ready and returns the IDs it reports, in order.
+func readyIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) []string {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "ticket_ready",
-		Arguments: map[string]any{},
+		Arguments: args,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := result.Content[0].(*mcp.TextContent).Text
-	var tickets []any
-	json.Unmarshal([]byte(text), &tickets)
-	if len(tickets) != 0 {
-		t.Errorf("ticket_ready should exclude backlog, got %d tickets", len(tickets))
+	if result.IsError {
+		t.Fatalf("ticket_ready error: %v", result.Content)
+	}
+	var tickets []map[string]any
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	ids := make([]string, len(tickets))
+	for i, tk := range tickets {
+		ids[i], _ = tk["id"].(string)
+	}
+	return ids
+}
+
+// A store nobody grooms holds nothing but backlog; excluding it answered the
+// "what can I pick up" tool with an empty list.
+func TestReadyIncludesActionableBacklog(t *testing.T) {
+	session := testServer(t)
+
+	first := createTicketID(t, session, map[string]any{"title": "Backlog idea", "type": "feature", "priority": 1})
+	second := createTicketID(t, session, map[string]any{"title": "Another backlog idea", "type": "feature", "priority": 2})
+
+	ids := readyIDs(t, session, map[string]any{})
+	want := []string{first, second}
+	if len(ids) != len(want) {
+		t.Fatalf("ready = %v, want %v", ids, want)
+	}
+	for i, id := range want {
+		if ids[i] != id {
+			t.Errorf("ready = %v, want %v", ids, want)
+			break
+		}
+	}
+}
+
+func TestReadyOrdersOpenThenReadyThenBacklog(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	inProgress := createTicketID(t, session, map[string]any{"title": "In progress", "type": "feature"})
+	groomed := createTicketID(t, session, map[string]any{"title": "Groomed", "type": "feature"})
+	// Priority 0 backlog still sorts behind ready: status leads, priority then
+	// ID order inside a status group.
+	urgentBacklog := createTicketID(t, session, map[string]any{"title": "Urgent backlog", "type": "feature", "priority": 0})
+	backlog := createTicketID(t, session, map[string]any{"title": "Plain backlog", "type": "feature"})
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": inProgress, "status": "open"},
+	})
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": groomed, "status": "ready"},
+	})
+
+	ids := readyIDs(t, session, map[string]any{})
+	want := []string{inProgress, groomed, urgentBacklog, backlog}
+	if len(ids) != len(want) {
+		t.Fatalf("ready = %v, want %v", ids, want)
+	}
+	for i, id := range want {
+		if ids[i] != id {
+			t.Fatalf("ready = %v, want %v", ids, want)
+		}
+	}
+}
+
+func TestReadyExcludesBlockedBacklog(t *testing.T) {
+	session := testServer(t)
+
+	blocker := createTicketID(t, session, map[string]any{"title": "Blocker", "type": "feature"})
+	blocked := createTicketID(t, session, map[string]any{"title": "Blocked backlog", "type": "feature"})
+	session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_dep",
+		Arguments: map[string]any{"id": blocked, "dep_id": blocker, "action": "add"},
+	})
+
+	ids := readyIDs(t, session, map[string]any{})
+	if len(ids) != 1 || ids[0] != blocker {
+		t.Errorf("ready = %v, want [%s]: a backlog ticket with an unresolved dep stays out", ids, blocker)
 	}
 }
 
@@ -350,8 +413,8 @@ func TestReadyReturnsSummaryShape(t *testing.T) {
 	}
 }
 
-// frontierIDs calls ticket_frontier and returns the IDs it reports.
-func frontierIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) []string {
+// frontierTickets calls ticket_frontier and returns the tickets it reports.
+func frontierTickets(t *testing.T, session *mcp.ClientSession, args map[string]any) []map[string]any {
 	t.Helper()
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "ticket_frontier",
@@ -367,7 +430,13 @@ func frontierIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) 
 		Tickets []map[string]any `json:"tickets"`
 	}
 	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &payload)
-	tickets := payload.Tickets
+	return payload.Tickets
+}
+
+// frontierIDs calls ticket_frontier and returns the IDs it reports.
+func frontierIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) []string {
+	t.Helper()
+	tickets := frontierTickets(t, session, args)
 	ids := make([]string, len(tickets))
 	for i, tk := range tickets {
 		ids[i], _ = tk["id"].(string)
@@ -401,14 +470,20 @@ func TestFrontierExcludesBlockedAndNonReady(t *testing.T) {
 		Arguments: map[string]any{"id": inProgress, "status": "open"},
 	})
 
-	ids := frontierIDs(t, session, map[string]any{})
+	// The frontier is the groomed set alone, so it stays distinguishable from
+	// ticket_ready, which also hands out open and backlog tickets.
+	frontier := frontierTickets(t, session, map[string]any{})
 	want := map[string]bool{unblocked: true, blocker: true}
-	if len(ids) != len(want) {
-		t.Fatalf("frontier = %v, want %v", ids, want)
+	if len(frontier) != len(want) {
+		t.Fatalf("frontier = %v, want %v", frontier, want)
 	}
-	for _, id := range ids {
+	for _, tk := range frontier {
+		id, _ := tk["id"].(string)
 		if !want[id] {
-			t.Errorf("frontier contains unexpected ticket %s: %v", id, ids)
+			t.Errorf("frontier contains unexpected ticket %s: %v", id, frontier)
+		}
+		if tk["status"] != "ready" {
+			t.Errorf("frontier ticket %s has status %v, want ready", id, tk["status"])
 		}
 	}
 }

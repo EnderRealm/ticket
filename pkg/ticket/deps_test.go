@@ -147,14 +147,44 @@ func TestIsReady_DoneNotReady(t *testing.T) {
 	}
 }
 
-func TestIsReady_BacklogNotReady(t *testing.T) {
+// Backlog is actionable: it is what an ungroomed store hands out.
+func TestIsReady_BacklogReady(t *testing.T) {
 	s := depStore(t, mk("t-1", StatusBacklog))
 	tk, _ := s.Get("t-1")
+	if !IsReady(s, tk) {
+		t.Error("backlog ticket with no deps should be ready")
+	}
+	if !IsReadyOpen(s, tk) {
+		t.Error("backlog ticket with no deps should be ready (open mode)")
+	}
+}
+
+func TestIsReady_BacklogWithUnresolvedDep(t *testing.T) {
+	s := depStore(t,
+		mk("t-1", StatusBacklog, "t-dep"),
+		mk("t-dep", StatusOpen),
+	)
+	tk, _ := s.Get("t-1")
 	if IsReady(s, tk) {
-		t.Error("backlog ticket should not be ready")
+		t.Error("backlog ticket with an unresolved dep should not be ready")
 	}
 	if IsReadyOpen(s, tk) {
-		t.Error("backlog ticket should not be ready (open mode)")
+		t.Error("backlog ticket with an unresolved dep should not be ready (open mode)")
+	}
+}
+
+func TestIsReady_BacklogUnderTerminalParent(t *testing.T) {
+	// Same shape as TestIsReady_ParentGating: only a store predating the
+	// one-level rule holds a terminal parent over a live child.
+	s := depStore(t, mk("t-parent", StatusDone))
+	writeLegacy(t, s, mkWithParent("t-child", StatusBacklog, "t-parent"))
+
+	tk, _ := s.Get("t-child")
+	if IsReady(s, tk) {
+		t.Error("backlog child of a terminal parent should not be ready")
+	}
+	if !IsReadyOpen(s, tk) {
+		t.Error("IsReadyOpen should bypass parent gating for a backlog ticket")
 	}
 }
 

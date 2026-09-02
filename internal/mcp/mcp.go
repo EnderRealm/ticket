@@ -1088,7 +1088,7 @@ type readyArgs struct {
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that are ready to work on (all deps resolved, parent in_progress).",
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved and no terminal parent epic. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		ready, err := ticket.ReadyTickets(store)
 		if err != nil {
@@ -1104,7 +1104,7 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 		if proj := resolveProject(args.Project, defaultProject); proj != "" {
 			ready = filterByProject(ready, proj)
 		}
-		ticket.SortByPriorityID(ready)
+		ticket.SortByStatusPriorityID(ready)
 
 		result := []ticketSummaryJSON{}
 		for _, t := range ready {

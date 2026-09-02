@@ -339,8 +339,11 @@ func storeProject(store Store) string {
 	return ""
 }
 
-// IsReady returns true if the ticket is actionable: not terminal,
-// not backlog, all deps done, and parent chain is active.
+// IsReady returns true if the ticket is actionable: not terminal, all deps
+// done, and parent chain is active. Backlog counts: tickets are picked up
+// straight out of backlog on stores that never groom to ready, and excluding
+// them left the ready listing empty. Callers that need the groomed set alone
+// match Status == StatusReady, as FrontierTickets does.
 func IsReady(store Store, t *Ticket) bool {
 	return isReady(t, store.Get, func(child *Ticket) (*Ticket, error) {
 		return store.Get(child.Parent)
@@ -350,7 +353,7 @@ func IsReady(store Store, t *Ticket) bool {
 // isReady is IsReady with the dep and parent lookups supplied, so a caller
 // looping over a list it already read can answer both from that list.
 func isReady(t *Ticket, depOf func(string) (*Ticket, error), parentOf func(*Ticket) (*Ticket, error)) bool {
-	if isTerminal(t) || t.Status == StatusBacklog {
+	if isTerminal(t) {
 		return false
 	}
 	if isBlocked(t, depOf) {
@@ -367,7 +370,7 @@ func IsReadyOpen(store Store, t *Ticket) bool {
 
 // isReadyOpen is IsReadyOpen with the dep lookup supplied.
 func isReadyOpen(t *Ticket, depOf func(string) (*Ticket, error)) bool {
-	if isTerminal(t) || t.Status == StatusBacklog {
+	if isTerminal(t) {
 		return false
 	}
 	return !isBlocked(t, depOf)
@@ -395,12 +398,15 @@ func parentChainActive(parentOf func(*Ticket) (*Ticket, error), t *Ticket) bool 
 	return true
 }
 
-// ReadyTickets returns all tickets that pass the IsReady check.
+// ReadyTickets returns all tickets that pass the IsReady check, so backlog
+// tickets whose deps are done and whose parent is active are included. Callers
+// that distinguish groomed from ungroomed sort by status.
 func ReadyTickets(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, false)
 }
 
-// ReadyTicketsOpen returns all unblocked tickets, bypassing parent gating.
+// ReadyTicketsOpen returns all unblocked non-terminal tickets, bypassing
+// parent gating.
 func ReadyTicketsOpen(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, true)
 }
