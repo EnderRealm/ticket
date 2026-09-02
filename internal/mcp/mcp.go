@@ -1088,13 +1088,23 @@ type readyArgs struct {
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved and no terminal parent epic. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it.",
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved and no terminal parent epic. Epics are never listed — an epic is a container, not a work item. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		ready, err := ticket.ReadyTickets(store)
 		if err != nil {
 			r, _ := errResult("failed to get ready tickets: %v", err)
 			return r, nil, nil
 		}
+
+		// An epic is a container, not a work item: it is never picked up
+		// directly, whatever status it derives from its children.
+		var work []*ticket.Ticket
+		for _, t := range ready {
+			if t.Type != ticket.TypeEpic {
+				work = append(work, t)
+			}
+		}
+		ready = work
 
 		opts := ticket.DefaultListOptions()
 		if args.Tag != "" {

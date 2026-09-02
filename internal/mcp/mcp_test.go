@@ -361,6 +361,63 @@ func TestReadyExcludesBlockedBacklog(t *testing.T) {
 	}
 }
 
+// An epic derives backlog when it is childless or its children are all
+// non-open, which is most epics on an ungroomed store — the shape ticket_ready
+// started handing out once backlog tickets were listed.
+func TestReadyExcludesBacklogEpic(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	childless := createTicketID(t, session, map[string]any{"title": "Childless epic", "type": "epic"})
+	groomedEpic := createTicketID(t, session, map[string]any{"title": "Groomed epic", "type": "epic"})
+	backlogChild := createTicketID(t, session, map[string]any{"title": "Backlog child", "type": "feature", "parent": groomedEpic})
+	readyChild := createTicketID(t, session, map[string]any{"title": "Ready child", "type": "feature", "parent": groomedEpic})
+	feature := createTicketID(t, session, map[string]any{"title": "Standalone feature", "type": "feature"})
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": readyChild, "status": "ready"},
+	})
+
+	ids := readyIDs(t, session, map[string]any{})
+	want := map[string]bool{backlogChild: true, readyChild: true, feature: true}
+	if len(ids) != len(want) {
+		t.Fatalf("ready = %v, want %v", ids, want)
+	}
+	for _, id := range ids {
+		if !want[id] {
+			t.Errorf("ready = %v, contains unexpected %s: an epic is not picked up directly", ids, id)
+		}
+	}
+	for _, epic := range []string{childless, groomedEpic} {
+		for _, id := range ids {
+			if id == epic {
+				t.Errorf("ready = %v, contains epic %s", ids, epic)
+			}
+		}
+	}
+}
+
+// The open-deriving epic leaked before backlog tickets were listed at all; it
+// closes with the same filter.
+func TestReadyExcludesOpenEpic(t *testing.T) {
+	session := testServer(t)
+	ctx := context.Background()
+
+	epic := createTicketID(t, session, map[string]any{"title": "Active epic", "type": "epic"})
+	child := createTicketID(t, session, map[string]any{"title": "Open child", "type": "feature", "parent": epic})
+
+	session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": child, "status": "open"},
+	})
+
+	ids := readyIDs(t, session, map[string]any{})
+	if len(ids) != 1 || ids[0] != child {
+		t.Errorf("ready = %v, want [%s]: the epic stays out, its open child does not", ids, child)
+	}
+}
+
 func TestReadyReturnsSummaryShape(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()
