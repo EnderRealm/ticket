@@ -238,6 +238,60 @@ func TestCreateWithRepoOnCentralStoreUsesRepoProject(t *testing.T) {
 	}
 }
 
+func TestCreateWithRepoRefusesASymlinkedProjectDir(t *testing.T) {
+	// The central store is a git repo and git tracks symlinks, so a project
+	// directory can arrive as one from another committer. MultiStore.Create
+	// refuses to write through it — the ticket would land outside the store,
+	// unlistable — and the repo argument, which resolves straight to a
+	// FileStore, has to give the same answer as the same call by project.
+	t.Setenv("HOME", t.TempDir())
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "tickets", "beta")); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta": {Path: repoDir, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"repo", map[string]any{"title": "Through the link by repo", "type": "feature", "repo": repoDir}},
+		{"project", map[string]any{"title": "Through the link by project", "type": "feature", "project": "beta"}},
+	} {
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "ticket_create",
+			Arguments: tc.args,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Errorf("%s: ticket_create wrote through the symlinked project dir, want an error", tc.name)
+			continue
+		}
+		if text := result.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, "refusing to write outside the store") {
+			t.Errorf("%s: error %q does not name the condition", tc.name, text)
+		}
+	}
+
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("%v was written through the symlink into %s", entries, outside)
+	}
+}
+
 func TestCreateWithRepoRejectsConflictingProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")

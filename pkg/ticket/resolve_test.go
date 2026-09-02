@@ -293,3 +293,78 @@ func TestResolveStoreForRepoNamesALegacyTicketsDir(t *testing.T) {
 		t.Errorf("the legacy ticket file was rewritten:\n%s", string(raw))
 	}
 }
+
+func TestResolveStoreForRepoRefusesASymlinkedProjectDir(t *testing.T) {
+	// The central store is a git repo and git tracks symlinks, so a project
+	// directory can arrive as one from another committer. Writing through it
+	// lands the ticket outside the store, where projects() will not list it —
+	// which is why MultiStore.Create refuses, and why the repo argument, which
+	// writes straight to this store, has to refuse identically.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	centralRoot := filepath.Join(home, "central")
+	repo := filepath.Join(home, "linked")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := project.Save(project.Config{
+		CentralRoot: centralRoot,
+		Projects:    map[string]project.ProjectConfig{"linked": {Path: repo, Store: "central"}},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	outside := filepath.Join(home, "outside")
+	if err := os.MkdirAll(filepath.Join(centralRoot, "tickets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(centralRoot, "tickets", "linked")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	store, _, err := ResolveStoreForRepo(repo)
+	if err == nil {
+		t.Fatalf("resolved %q through a symlinked project dir, want an error", store.Dir)
+	}
+	if store != nil {
+		t.Errorf("returned a store (%q) alongside the refusal", store.Dir)
+	}
+	if !strings.Contains(err.Error(), "refusing to write outside the store") {
+		t.Errorf("error %q does not name the condition MultiStore.Create names", err)
+	}
+	if strings.Contains(err.Error(), "tk init") {
+		t.Errorf("error %q sends the user to `tk init`, which does not fix a symlinked project dir", err)
+	}
+}
+
+func TestResolveStoreForRepoResolvesARegisteredProjectWithNoDir(t *testing.T) {
+	// Git tracks no empty directories, so a registered project that has never
+	// held a ticket arrives from a fresh clone without one. That still resolves:
+	// the refusal above is for a directory that exists and is not a directory.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	centralRoot := filepath.Join(home, "central")
+	repo := filepath.Join(home, "fresh")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := project.Save(project.Config{
+		CentralRoot: centralRoot,
+		Projects:    map[string]project.ProjectConfig{"fresh": {Path: repo, Store: "central"}},
+	}); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	store, unregistered, err := ResolveStoreForRepo(repo)
+	if err != nil {
+		t.Fatalf("ResolveStoreForRepo: %v", err)
+	}
+	if want := filepath.Join(centralRoot, "tickets", "fresh"); store.Dir != want {
+		t.Errorf("Dir = %q, want %q", store.Dir, want)
+	}
+	if unregistered {
+		t.Error("resolution reported a registered project as unregistered")
+	}
+}

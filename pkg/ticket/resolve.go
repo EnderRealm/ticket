@@ -10,7 +10,12 @@ import (
 
 // CentralStoreForRepo resolves a repo directory to the project store it owns in
 // the central store: the store, whether that project is unregistered, whether
-// anything resolved at all, and the error a config that cannot be read is.
+// anything resolved at all, and the error a config that cannot be read or a
+// project directory that is not one is. That refusal reaches reads as well as
+// writes, since this is the only resolution: a `tk ls` in a repo whose project
+// directory is a symlink fails rather than listing through it, which is the
+// answer every other surface already gives — MultiStore.projects() skips such
+// an entry, so resolving it would hand back a store nothing else agrees exists.
 // Reads ~/.ticket/config.yaml plus the shared <central_root>/config.yaml,
 // resolves the project name via explicit path mapping, git remote, or directory
 // basename, and returns a FileStore rooted at <central_root>/tickets/<name>.
@@ -30,7 +35,7 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 		// no central project": nothing resolves either way, but a caller that
 		// writes has to name the config rather than send the user to `tk init`,
 		// which will not fix a half-written or unreadable one.
-		return nil, false, false, err
+		return nil, false, false, fmt.Errorf("load ticket config: %w", err)
 	}
 	name, _ := project.ResolveName(cfg, repoDir, "")
 	// ValidName, not merely non-empty: the config-path source of ResolveName
@@ -49,6 +54,21 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 		return nil, false, false, nil
 	}
 	if project.CentralRegistered(cfg, name) {
+		// The same condition MultiStore.Create refuses on, named the same way:
+		// every caller of this resolution writes straight to the returned
+		// FileStore rather than through MultiStore, so without it a repo
+		// argument writes through a symlinked project directory that the
+		// identical write by project name is refused. A missing directory still
+		// resolves — a registered project that has never held a ticket arrives
+		// without one from a fresh clone of the central store.
+		root := filepath.Dir(dir)
+		info, err := os.Lstat(dir)
+		switch {
+		case err == nil && !info.IsDir():
+			return nil, false, false, fmt.Errorf("project %q in %s is not a directory — refusing to write outside the store", name, root)
+		case err != nil && !os.IsNotExist(err):
+			return nil, false, false, fmt.Errorf("project %q in %s: %w", name, root, err)
+		}
 		return NewProjectFileStore(dir, name), false, true, nil
 	}
 	// An unregistered project can still hold tickets centrally — written before
@@ -130,7 +150,9 @@ func UnregisteredWarning(store *FileStore) string {
 // directory in the central store, which is the only store tk resolves. It
 // reports whether that project is unregistered, because writing into one puts a
 // ticket where MultiStore.Create refuses to write and the caller has to say so.
-// A repo that resolves to no project is noStoreError.
+// A repo that resolves to no project is noStoreError; a config that cannot be
+// read, or a project directory that is not one, comes back named by
+// CentralStoreForRepo instead.
 //
 // One known divergence, filed rather than resolved here: the project name falls
 // back to a git remote or the directory basename, so a path that is no
@@ -143,10 +165,11 @@ func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 	}
 	store, unregistered, ok, err := CentralStoreForRepo(abs)
 	if err != nil {
-		// The config that failed to load is what decides where this repo's
-		// tickets are, so it is named rather than reported as the repo having
-		// none: `tk init` does not fix a malformed config.
-		return nil, false, fmt.Errorf("load ticket config: %w", err)
+		// Returned as it came back: the resolution has already named the
+		// condition — an unreadable config, or a project directory that is not
+		// one — and either reads wrong as the repo having no store, which sends
+		// the user to `tk init` and fixes neither.
+		return nil, false, err
 	}
 	if ok {
 		return store, unregistered, nil
