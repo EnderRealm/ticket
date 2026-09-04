@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,17 +32,7 @@ func verifyStore(t *testing.T, id, body string) *ticket.FileStore {
 		t.Fatalf("Save config: %v", err)
 	}
 
-	tk := &ticket.Ticket{
-		ID:      id,
-		Status:  ticket.StatusOpen,
-		Type:    ticket.TypeFeature,
-		Created: time.Now(),
-		Title:   "Verifiable ticket",
-		Body:    body,
-	}
-	if err := store.Create(tk); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	mkVerifyTicket(t, store, id, body)
 	return store
 }
 
@@ -251,5 +243,360 @@ func TestVerifyWorkDirAcceptsConfiguredProjectName(t *testing.T) {
 
 	if got := verifyWorkDir(); got != want {
 		t.Errorf("verifyWorkDir = %q, want configured repo path %q", got, want)
+	}
+}
+
+// setVerifyFlag sets a verify flag through the flag set, so Changed reports
+// true the way a parsed command line would. Set leaves Changed true, so the
+// cleanup restores the default and clears it rather than only resetting the
+// variable.
+func setVerifyFlag(t *testing.T, name, value string) {
+	t.Helper()
+	f := verifyCmd.Flags().Lookup(name)
+	if f == nil {
+		t.Fatalf("no --%s flag", name)
+	}
+	if err := verifyCmd.Flags().Set(name, value); err != nil {
+		t.Fatalf("set --%s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+}
+
+func setCriterion(t *testing.T, n int) {
+	t.Helper()
+	setVerifyFlag(t, "criterion", strconv.Itoa(n))
+}
+
+func TestVerifyDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The marker only exists in --dir, so the check passes there and nowhere else.
+	verifyStore(t, "vf-dir", "Description.\n\n## Acceptance Criteria\n\n- Runs where --dir says.\n  verify: /bin/sh -c 'test -f marker.txt'\n")
+
+	setVerifyFlag(t, "dir", dir)
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	out, err := captureVerify(t, "vf-dir")
+	if err != nil {
+		t.Fatalf("verify in --dir should pass: %v\n%s", err, out)
+	}
+
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, out)
+	}
+	if report.Dir != dir {
+		t.Errorf("report dir = %q, want the --dir value %q rather than the configured project path", report.Dir, dir)
+	}
+	if report.Summary.Pass != 1 {
+		t.Errorf("summary = %+v, want the marker check to pass in --dir", report.Summary)
+	}
+}
+
+func TestVerifyDirRejected(t *testing.T) {
+	tmp := t.TempDir()
+	sentinel := filepath.Join(tmp, "sentinel.txt")
+	regular := filepath.Join(tmp, "regular.txt")
+	if err := os.WriteFile(regular, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := verifyStore(t, "vf-baddir",
+		"Description.\n\n## Acceptance Criteria\n\n- Touches a sentinel.\n  verify: /bin/sh -c 'touch "+sentinel+"'\n")
+
+	// An explicitly empty --dir is refused too, rather than read as "not
+	// passed" and quietly running in the configured tree.
+	for _, dir := range []string{filepath.Join(tmp, "missing"), regular, ""} {
+		setVerifyFlag(t, "dir", dir)
+		if _, err := captureVerify(t, "vf-baddir"); err == nil {
+			t.Errorf("--dir %q should be refused", dir)
+		}
+		if _, err := os.Stat(sentinel); err == nil {
+			t.Fatalf("--dir %q ran the criterion's command", dir)
+		}
+	}
+
+	tk, err := store.Get("vf-baddir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(tk.Body, "## Test Results") {
+		t.Errorf("a refused --dir must record nothing:\n%s", tk.Body)
+	}
+}
+
+func TestVerifyCriterionSelect(t *testing.T) {
+	verifyStore(t, "vf-one", mixedCriteriaBody)
+
+	t.Run("failing criterion", func(t *testing.T) {
+		setCriterion(t, 2)
+
+		out, err := captureVerify(t, "vf-one")
+		if err == nil {
+			t.Error("selecting the failing criterion should return an error")
+		}
+		if !contains(out, "FAIL (exit 3) Failing check.") {
+			t.Errorf("output missing the selected criterion:\n%s", out)
+		}
+		for _, unwanted := range []string{"Passing check.", "Docs updated."} {
+			if contains(out, unwanted) {
+				t.Errorf("output reports %q, which was not selected:\n%s", unwanted, out)
+			}
+		}
+		if !contains(out, "0 pass, 1 fail, 0 refused, 0 unverified") {
+			t.Errorf("summary should count the selected criterion alone:\n%s", out)
+		}
+	})
+
+	t.Run("json report", func(t *testing.T) {
+		setCriterion(t, 2)
+		jsonOutput = true
+		defer func() { jsonOutput = false }()
+
+		out, _ := captureVerify(t, "vf-one")
+		var report ticket.VerifyReport
+		if err := json.Unmarshal([]byte(out), &report); err != nil {
+			t.Fatalf("json parse: %v\noutput: %s", err, out)
+		}
+		if len(report.Results) != 1 {
+			t.Fatalf("got %d results, want only the selected criterion", len(report.Results))
+		}
+	})
+
+	t.Run("recorded results", func(t *testing.T) {
+		setCriterion(t, 2)
+
+		store := TicketStore()
+		captureVerify(t, "vf-one")
+		tk, err := store.Get("vf-one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !contains(tk.Body, "- FAIL (exit 3): Failing check.") {
+			t.Errorf("recorded results missing the selected criterion:\n%s", tk.Body)
+		}
+		if contains(tk.Body, "- PASS (exit 0): Passing check.") {
+			t.Errorf("recorded results carry a criterion that was not run:\n%s", tk.Body)
+		}
+	})
+
+	t.Run("passing criterion", func(t *testing.T) {
+		setCriterion(t, 1)
+
+		out, err := captureVerify(t, "vf-one")
+		if err != nil {
+			t.Errorf("selecting the passing criterion should not error: %v", err)
+		}
+		if !contains(out, "PASS (exit 0) Passing check.") || contains(out, "Failing check.") {
+			t.Errorf("output should report the passing criterion alone:\n%s", out)
+		}
+	})
+}
+
+func TestVerifyCriterionOutOfRange(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	store := verifyStore(t, "vf-range", "Description.\n\n## Acceptance Criteria\n\n"+
+		"- One.\n  verify: /bin/sh -c 'touch "+sentinel+"'\n- Two.\n- Three.\n")
+
+	for _, n := range []int{4, 0} {
+		t.Run(fmt.Sprintf("criterion %d", n), func(t *testing.T) {
+			setCriterion(t, n)
+
+			_, err := captureVerify(t, "vf-range")
+			if err == nil || !contains(err.Error(), "out of range") {
+				t.Errorf("--criterion %d error = %v, want an out of range usage error", n, err)
+			}
+		})
+	}
+
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("an out of range --criterion ran a command")
+	}
+	tk, err := store.Get("vf-range")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(tk.Body, "## Test Results") {
+		t.Errorf("an out of range --criterion must record nothing:\n%s", tk.Body)
+	}
+}
+
+func TestVerifyNoRecord(t *testing.T) {
+	store := verifyStore(t, "vf-norec", mixedCriteriaBody+"\n## Test Results\n\nprevious record\n")
+	path := filepath.Join(store.Dir, "vf-norec.md")
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	verifyNoRecord = true
+	captureVerify(t, "vf-norec")
+	verifyNoRecord = false
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("--no-record rewrote the ticket:\n%s", after)
+	}
+
+	// The same run without the flag must change the file, or the check above
+	// proves nothing about the flag.
+	captureVerify(t, "vf-norec")
+	recorded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(recorded) == string(before) {
+		t.Error("a recording run left the ticket unchanged")
+	}
+}
+
+func TestVerifyExitCodes(t *testing.T) {
+	// /usr/bin/true is a real program outside the fixture's allow-list, so it is
+	// refused rather than failing.
+	verifyStore(t, "vf-exit", "Description.\n\n## Acceptance Criteria\n\n"+
+		"- Passing check.\n  verify: /bin/sh -c 'exit 0'\n"+
+		"- Failing check.\n  verify: /bin/sh -c 'exit 3'\n"+
+		"- Refused check.\n  verify: /usr/bin/true\n"+
+		"- Docs updated.\n")
+
+	if got := exitCode(nil); got != 0 {
+		t.Errorf("exitCode(nil) = %d, want 0", got)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		criterion int
+		want      int
+	}{
+		{"pass", 1, 0},
+		{"fail", 2, 1},
+		{"refused", 3, verifyRefusedExit},
+		{"unverified", 4, verifyRefusedExit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setCriterion(t, tc.criterion)
+
+			_, err := captureVerify(t, "vf-exit")
+			if got := exitCode(err); got != tc.want {
+				t.Errorf("--criterion %d exits %d (err %v), want %d", tc.criterion, got, err, tc.want)
+			}
+		})
+	}
+
+	// A full run keeps today's contract: any failure or refusal exits 1.
+	_, err := captureVerify(t, "vf-exit")
+	if got := exitCode(err); got != 1 {
+		t.Errorf("full run exits %d (err %v), want 1", got, err)
+	}
+}
+
+// TestVerifyAllowUnmovedByFlags pins the allow-list to the machine owner's own
+// config while the flags move the run: --dir does not make the run directory a
+// source of permission, and TK_STORE_ROOT does not relocate the file the list
+// is read from.
+func TestVerifyAllowUnmovedByFlags(t *testing.T) {
+	allowBody := func(sentinel string) string {
+		return "Description.\n\n## Acceptance Criteria\n\n- Touches a sentinel.\n  verify: /bin/sh -c 'touch " + sentinel + "'\n"
+	}
+	// The machine-local list refuses everything; each branch below plants
+	// /bin/sh somewhere a flag reached.
+	narrowHomeAllow := func(t *testing.T) {
+		t.Helper()
+		cfg, err := project.Load()
+		if err != nil {
+			t.Fatalf("Load config: %v", err)
+		}
+		cfg.VerifyAllow = project.VerifyAllowList{}
+		if err := project.Save(cfg); err != nil {
+			t.Fatalf("Save config: %v", err)
+		}
+	}
+	assertRefused := func(t *testing.T, out, sentinel string) {
+		t.Helper()
+		if !contains(out, "0 pass, 0 fail, 1 refused, 0 unverified") {
+			t.Errorf("run was not refused:\n%s", out)
+		}
+		if _, err := os.Stat(sentinel); err == nil {
+			t.Error("the criterion's command ran")
+		}
+	}
+
+	t.Run("config in --dir", func(t *testing.T) {
+		sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+		store := centralStore(t, "vf-allow")
+		narrowHomeAllow(t)
+		mkVerifyTicket(t, store, "vf-ad", allowBody(sentinel))
+
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, ".ticket"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".ticket", "config.yaml"),
+			[]byte("verify_allow:\n  - /bin/sh\nprojects: {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		setVerifyFlag(t, "dir", dir)
+
+		out, err := captureVerify(t, "vf-ad")
+		if err == nil {
+			t.Error("a refused criterion should return an error")
+		}
+		assertRefused(t, out, sentinel)
+	})
+
+	t.Run("config in the store root override", func(t *testing.T) {
+		sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+		centralStore(t, "vf-allow")
+		// Written before the override is set, so it lands in HOME.
+		narrowHomeAllow(t)
+
+		override := t.TempDir()
+		t.Setenv(project.StoreRootEnv, override)
+		if err := project.Save(project.Config{
+			VerifyAllow: project.VerifyAllowList{"/bin/sh"},
+			Projects: map[string]project.ProjectConfig{
+				"vf-allow": {Path: mustGetwd(), Store: "central"},
+			},
+		}); err != nil {
+			t.Fatalf("Save override config: %v", err)
+		}
+
+		dir := filepath.Join(override, "tickets", "vf-allow")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mkVerifyTicket(t, ticket.NewProjectFileStore(dir, "vf-allow"), "vf-ao", allowBody(sentinel))
+
+		out, err := captureVerify(t, "vf-ao")
+		if err == nil {
+			t.Error("a refused criterion should return an error")
+		}
+		assertRefused(t, out, sentinel)
+	})
+}
+
+// mkVerifyTicket seeds a ticket in an already-configured store: verifyStore's
+// own construction, and the fixtures its allow-list would defeat.
+func mkVerifyTicket(t *testing.T, store *ticket.FileStore, id, body string) {
+	t.Helper()
+	if err := store.Create(&ticket.Ticket{
+		ID:      id,
+		Status:  ticket.StatusOpen,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Verifiable ticket",
+		Body:    body,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 }

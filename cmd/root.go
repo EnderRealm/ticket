@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,10 @@ Viewing:
                              body content, files that cannot be read as tickets (exits non-zero), and
                              files whose id names another project
   verify <id>                Run the ticket's acceptance-criteria verify commands
+    --dir <path>             Run the commands in this directory instead of the project's
+    --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
+                             20 refused or unverified
+    --no-record              Skip writing the Test Results section
 
   A criterion declares its check on an indented continuation line:
 
@@ -56,6 +61,12 @@ Viewing:
   Criteria with no command are reported unverified. Results are recorded
   in the ticket's Test Results section; exit is non-zero on any failure
   or refusal.
+  --dir, --criterion and --no-record are CLI-only: the ticket_verify MCP
+  tool still resolves its directory from project config and still records.
+  An MCP caller's arguments are shaped by ticket content, and a sandboxed
+  client with no shell would gain reach it does not otherwise have; a CLI
+  caller already has a shell and can run anything anywhere, so the flags
+  widen nothing for it. None of them widens verify_allow.
 
 Creating & Editing:
   create [title] [options]   Create ticket
@@ -298,10 +309,34 @@ func refuseIsolatedStore(command string) error {
 	return nil
 }
 
+// exitError carries a specific process exit code out of a command. Errors that
+// do not use it exit 1, as every command error did before.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+
+func (e *exitError) Unwrap() error { return e.err }
+
+// exitCode is the process exit code for a command's error: none, the code the
+// error carries, or the generic failure.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exit *exitError
+	if errors.As(err, &exit) {
+		return exit.code
+	}
+	return 1
+}
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `tk verify` takes `--dir <path>`, `--criterion <n>` and `--no-record`, so a harness can re-run one check in a worktree without a wrapper script around the whole ticket. `--dir` replaces the project's configured path as the run directory and is refused before any command executes unless it already exists as a directory; `--criterion` selects one criterion by 1-based position in the order the section declares them, the order `--json` reports, and runs, prints and records that one alone, with anything outside `1..count` a usage error naming the count; `--no-record` skips the write-back entirely. The three are independent and compose. With `--criterion` the exit code grades that criterion: 0 pass, 1 fail, 20 refused or unverified — 20 being weft's anchor-stage convention ("graded and refused, do not relaunch") adopted rather than invented, so one documented integer replaces a per-harness wrapper, and a criterion that never ran never exits 0 since the harness grades on the code. A run without `--criterion` keeps today's exit codes exactly. CLI-only, and deliberately: the `ticket_verify` MCP tool still resolves its directory from project config and still records, because an MCP caller's arguments are shaped by ticket content and a sandboxed client with no shell would gain reach it does not otherwise have, while a CLI caller already has a shell and can run anything in any directory. No flag touches `verify_allow`, which is still read from `~/.ticket/config.yaml` alone.
+
 ## [8.1.0] - 2026-09-02
 
 ### Added

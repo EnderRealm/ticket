@@ -21,7 +21,25 @@ var verifyCmd = &cobra.Command{
 	RunE:  runVerify,
 }
 
+var (
+	verifyDir       string
+	verifyCriterion int
+	verifyNoRecord  bool
+)
+
+// verifyRefusedExit is the exit code a single-criterion run reports for a
+// refused or unverified criterion. The integer is weft's anchor-stage
+// convention (AnchorCommand.gradedRefusalExitCode: "graded and refused, do not
+// relaunch") adopted rather than invented, so one documented code replaces a
+// wrapper script per harness. Neither status may exit 0: a harness grades the
+// run on the exit code, and a criterion that never ran is not one that passed.
+const verifyRefusedExit = 20
+
 func init() {
+	f := verifyCmd.Flags()
+	f.StringVar(&verifyDir, "dir", "", "run the commands in this directory instead of the project's")
+	f.IntVar(&verifyCriterion, "criterion", 0, "run only criterion n (1-based): exit 0 pass, 1 fail, 20 refused or unverified")
+	f.BoolVar(&verifyNoRecord, "no-record", false, "skip writing the Test Results section")
 	rootCmd.AddCommand(verifyCmd)
 }
 
@@ -42,7 +60,31 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s has no acceptance criteria", t.ID)
 	}
 
+	// --criterion selects by position in ParseCriteria order, the order --json
+	// reports, so a harness re-running one check names the index it read there.
+	single := cmd.Flags().Changed("criterion")
+	if single {
+		if verifyCriterion < 1 || verifyCriterion > len(criteria) {
+			return fmt.Errorf("--criterion %d is out of range: %s has %d criteria", verifyCriterion, t.ID, len(criteria))
+		}
+		criteria = criteria[verifyCriterion-1 : verifyCriterion]
+	}
+
 	dir := verifyWorkDir()
+	if cmd.Flags().Changed("dir") {
+		// Checked before anything runs, so a mistyped directory is a usage error
+		// rather than every criterion failing in the wrong tree. Keyed on the flag
+		// being passed, not on a non-empty value: a harness that computed an empty
+		// path must get the refusal, not a silent run in the configured tree.
+		info, statErr := os.Stat(verifyDir)
+		if statErr != nil {
+			return fmt.Errorf("--dir %q: not an existing directory: %w", verifyDir, statErr)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("--dir %q: not an existing directory", verifyDir)
+		}
+		dir = verifyDir
+	}
 	// The allow-list comes from machine-local config only — there is no flag for
 	// it, so nothing in a ticket or the synced store can widen what runs.
 	allow, allowErr := project.VerifyAllow()
@@ -56,12 +98,14 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// discarding the results. Through Mutate, because a verify run is long
 	// enough for the ticket to have been edited meanwhile: the record lands in
 	// the body as it stands now rather than in the copy read before the run.
-	record := ticket.FormatVerifyRecord(results, time.Now().UTC())
-	if _, err := ticket.Mutate(store, t.ID, func(t *ticket.Ticket) error {
-		t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
-		return nil
-	}); err != nil {
-		report.RecordError = err.Error()
+	if !verifyNoRecord {
+		record := ticket.FormatVerifyRecord(results, time.Now().UTC())
+		if _, err := ticket.Mutate(store, t.ID, func(t *ticket.Ticket) error {
+			t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
+			return nil
+		}); err != nil {
+			report.RecordError = err.Error()
+		}
 	}
 
 	if jsonOutput {
@@ -94,6 +138,17 @@ func runVerify(cmd *cobra.Command, args []string) error {
 
 	if report.RecordError != "" && !jsonOutput {
 		fmt.Fprintf(os.Stderr, "warning: failed to record verify results: %s\n", report.RecordError)
+	}
+
+	if single {
+		switch res := results[0]; res.Status {
+		case ticket.VerifyPass:
+			return nil
+		case ticket.VerifyFail:
+			return &exitError{code: 1, err: fmt.Errorf("criterion %d failed (exit %d)", verifyCriterion, res.ExitCode)}
+		default:
+			return &exitError{code: verifyRefusedExit, err: fmt.Errorf("criterion %d %s", verifyCriterion, res.Status)}
+		}
 	}
 
 	// Only the non-zero counts appear, so a refusal with nothing failing does not

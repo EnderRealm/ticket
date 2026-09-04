@@ -161,6 +161,10 @@ Viewing:
                              body content, files that cannot be read as tickets (exits non-zero), and
                              files whose id names another project
   verify <id>                Run the ticket's acceptance-criteria verify commands
+    --dir <path>             Run the commands in this directory instead of the project's
+    --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
+                             20 refused or unverified
+    --no-record              Skip writing the Test Results section
 
 Creating & Editing:
   create [title] [options]   Create ticket
@@ -312,6 +316,24 @@ verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 0 refused, 1 unverified
 ```
 
 `tk verify --json` and the `ticket_verify` MCP tool return the same results structured, including each command's exit code and captured output (capped at 4KB per criterion). The MCP tool executes the commands on the server host and requires the ticket's project to have a configured path.
+
+#### Running one criterion from a harness
+
+Three flags let a harness drive a single check without a wrapper script:
+
+- `--dir <path>` runs the commands in that directory instead of the project's configured path. The path is used as given; it must already exist and be a directory, or the run is a usage error before any command executes.
+- `--criterion <n>` runs and reports only criterion `n`, counted from 1 in the order the criteria appear in the section — the same order `--json` reports them in. An `n` outside `1..count` is a usage error naming the count, and nothing runs. Without `--no-record`, the recorded `## Test Results` section is replaced by that one criterion's result, so a harness running criteria one at a time pairs the two flags.
+- `--no-record` skips the write-back, so the ticket's `## Test Results` section is left exactly as it was.
+
+The three are independent and compose: any combination behaves as each one does alone.
+
+With `--criterion`, the exit code grades that one criterion: `0` it passed, `1` it failed, `20` it was refused or has no `verify:` line. `20` is weft's anchor-stage convention — "graded and refused, do not relaunch" — adopted rather than invented, so one documented integer replaces a wrapper script per harness. An unverified criterion is not a pass: it never ran, so it exits `20` alongside a refusal rather than `0`. Without `--criterion` the exit code is unchanged: `0`, or `1` on any failure or refusal across the whole run. A usage error — a `--dir` that is not an existing directory, a `--criterion` out of range — exits `1` like any other `tk` error, before anything runs.
+
+```bash
+tk verify 5c4 --dir /path/to/worktree --criterion 1 --no-record
+```
+
+The flags are CLI-only, and the `ticket_verify` MCP tool gains none of them: it still resolves its directory from project config and still records. An MCP caller's arguments are shaped by ticket content, and a sandboxed client with no shell of its own would gain reach it does not otherwise have; a CLI caller already has a shell and can run anything in any directory, so the flags widen nothing for it. `verify_allow` is still read from `~/.ticket/config.yaml` alone — no flag widens it, `--dir` does not relocate where it is read from, and `TK_STORE_ROOT` does not move it either.
 
 #### What may run
 
