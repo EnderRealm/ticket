@@ -53,21 +53,17 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 		// all rather than as a distinct error.
 		return nil, false, false, nil
 	}
+	// The root the refusal names, and the directory it stats, is the tickets
+	// root the project directory hangs off — dir is <root>/<name>.
+	root := filepath.Dir(dir)
 	if project.CentralRegistered(cfg, name) {
-		// The same condition MultiStore.Create refuses on, named the same way:
-		// every caller of this resolution writes straight to the returned
-		// FileStore rather than through MultiStore, so without it a repo
-		// argument writes through a symlinked project directory that the
+		// Refused here because every caller of this resolution writes straight
+		// to the returned FileStore rather than through MultiStore, so without
+		// the check a repo argument writes through a project directory that the
 		// identical write by project name is refused. A missing directory still
-		// resolves — a registered project that has never held a ticket arrives
-		// without one from a fresh clone of the central store.
-		root := filepath.Dir(dir)
-		info, err := os.Lstat(dir)
-		switch {
-		case err == nil && !info.IsDir():
-			return nil, false, false, fmt.Errorf("project %q in %s is not a directory — refusing to write outside the store", name, root)
-		case err != nil && !os.IsNotExist(err):
-			return nil, false, false, fmt.Errorf("project %q in %s: %w", name, root, err)
+		// resolves.
+		if _, err := lstatProjectDir(root, name); err != nil {
+			return nil, false, false, err
 		}
 		return NewProjectFileStore(dir, name), false, true, nil
 	}
@@ -77,11 +73,16 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 	// unlisted on disk. Surfacing them is read-only: registering the project is
 	// `tk init`'s job, so the caller warns rather than writing config.
 	//
-	// Lstat, not Stat: this resolution feeds writes as well as reads, so
-	// following a symlink here would land a `tk create` outside the store —
-	// exactly what MultiStore.Create refuses — and the listing walk does not
-	// follow it either.
-	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+	// A directory that exists and is not one refuses here as it does above,
+	// rather than reading as "no store": a write through it is the same
+	// out-of-store hazard whether or not the project is registered, and `tk
+	// init` fixes neither that nor a stat failure. Only a missing directory is
+	// no store.
+	missing, err := lstatProjectDir(root, name)
+	if err != nil {
+		return nil, false, false, err
+	}
+	if missing {
 		return nil, false, false, nil
 	}
 	return NewProjectFileStore(dir, name), true, true, nil

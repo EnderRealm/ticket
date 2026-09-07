@@ -135,17 +135,12 @@ func (m *MultiStore) Create(t *Ticket) error {
 	if err != nil {
 		return err
 	}
-	// Lstat, not Stat: a symlink here — the central store is a git repo and git
-	// tracks symlinks, so one can arrive from another committer — would put the
-	// write at its target, outside the store, and projects() does not follow it
-	// either, so the tickets would be unlistable.
-	info, err := os.Lstat(store.Dir)
-	switch {
-	case err == nil && !info.IsDir():
-		return fmt.Errorf("project %q in %s is not a directory — refusing to write outside the store", proj, m.rootDir)
-	case err != nil && !os.IsNotExist(err):
-		return fmt.Errorf("project %q in %s: %w", proj, m.rootDir, err)
-	case err != nil:
+	missing, err := lstatProjectDir(m.rootDir, proj)
+	if err != nil {
+		return err
+	}
+	if missing {
+		// Registration is the authority the directory only stands in for.
 		cfg, err := project.Load()
 		if err != nil {
 			return fmt.Errorf("load ticket config: %w", err)

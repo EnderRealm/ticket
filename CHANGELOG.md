@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- The "project directory is not a directory" refusal now has a single definition, shared by `MultiStore.Create` and `CentralStoreForRepo`, with a test that compares the two paths' error text for the same root and project rather than matching each against a substring — three hand-maintained copies of the same check is how one of them came to be missing a branch. Behaviour on the registered paths is unchanged, message text included.
+- The unregistered-project branch of the repo resolution now refuses a project directory that exists and is not one — a symlink, a file — with that same error, where it previously reported the repo as having no ticket store. A write through it lands outside the store whether or not the project is registered, and `tk init` fixes neither that nor the stat failure the branch also swallowed; a missing directory still reads as no store, so an unregistered project with a real ticket directory still surfaces with its warning.
+
 ## [8.2.0] - 2026-09-06
 
 ### Added
