@@ -241,8 +241,76 @@ func TestVerifyWorkDirAcceptsConfiguredProjectName(t *testing.T) {
 	repoFlag = "vf-name"
 	defer func() { repoFlag = "" }()
 
-	if got := verifyWorkDir(); got != want {
+	if got, _, _ := verifyWorkDir(); got != want {
 		t.Errorf("verifyWorkDir = %q, want configured repo path %q", got, want)
+	}
+}
+
+// setVerifyTimeout writes verify_timeout onto the project entry a verify
+// fixture already registered, the way a user editing ~/.ticket/config.yaml
+// would.
+func setVerifyTimeout(t *testing.T, value string) {
+	t.Helper()
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	p := cfg.Projects["vf-verify"]
+	p.VerifyTimeout = value
+	cfg.UpsertProject("vf-verify", p)
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+}
+
+const slowCriterionBody = "Description.\n\n## Acceptance Criteria\n\n- Slow check.\n  verify: /bin/sh -c 'sleep 3'\n"
+
+func TestVerifyUsesProjectTimeout(t *testing.T) {
+	verifyStore(t, "vf-slow", slowCriterionBody)
+	setVerifyTimeout(t, "200ms")
+
+	out, err := captureVerify(t, "vf-slow")
+	if err == nil {
+		t.Error("verify with a timed-out criterion should return an error")
+	}
+	// The note names the project's bound, not the default: the record is the
+	// thing a later reader grades the contract on.
+	for _, want := range []string{"FAIL", "timed out after 200ms", "0 pass, 1 fail, 0 refused, 0 unverified"} {
+		if !contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestVerifyTimeoutFollowsProjectNotDir(t *testing.T) {
+	verifyStore(t, "vf-slowdir", slowCriterionBody)
+	setVerifyTimeout(t, "200ms")
+
+	// --dir moves where the command runs; the bound still belongs to the
+	// project the ticket resolved to.
+	setVerifyFlag(t, "dir", t.TempDir())
+
+	out, err := captureVerify(t, "vf-slowdir")
+	if err == nil {
+		t.Error("verify with a timed-out criterion should return an error")
+	}
+	if !contains(out, "timed out after 200ms") {
+		t.Errorf("output missing the project's bound:\n%s", out)
+	}
+}
+
+func TestVerifyRefusesEverythingOnBadProjectTimeout(t *testing.T) {
+	verifyStore(t, "vf-badtimeout", mixedCriteriaBody)
+	setVerifyTimeout(t, "soon")
+
+	out, err := captureVerify(t, "vf-badtimeout")
+	if err == nil {
+		t.Error("verify should error when the project's verify_timeout cannot be read")
+	}
+	for _, want := range []string{"REFUSED Passing check.", "verify_timeout", "soon", "0 pass, 0 fail, 2 refused, 1 unverified"} {
+		if !contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
 

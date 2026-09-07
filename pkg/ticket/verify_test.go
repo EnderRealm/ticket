@@ -214,7 +214,7 @@ func TestRunVerify(t *testing.T) {
 		{Text: "no command"},
 	}
 
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestRunVerifyRunsInDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "in dir", Command: "/bin/cat marker.txt"}}, dir, testAllow, nil)
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "in dir", Command: "/bin/cat marker.txt"}}, dir, VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRunVerifyRunsInDir(t *testing.T) {
 
 func TestRunVerifyMissingDir(t *testing.T) {
 	criteria := []Criterion{{Text: "passes", Command: "/bin/echo ok"}}
-	if _, err := RunVerify(context.Background(), criteria, filepath.Join(t.TempDir(), "gone"), testAllow, nil); err == nil {
+	if _, err := RunVerify(context.Background(), criteria, filepath.Join(t.TempDir(), "gone"), VerifyPolicy{Allow: testAllow}); err == nil {
 		t.Error("RunVerify should error once when the directory doesn't exist")
 	}
 }
@@ -270,7 +270,7 @@ func TestRunVerifyHonorsCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	results, err := RunVerify(ctx, []Criterion{{Text: "passes", Command: "/bin/echo ok"}}, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(ctx, []Criterion{{Text: "passes", Command: "/bin/echo ok"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -280,24 +280,94 @@ func TestRunVerifyHonorsCallerContext(t *testing.T) {
 }
 
 func TestRunVerifyTimeout(t *testing.T) {
-	old := verifyTimeout
-	verifyTimeout = 50 * time.Millisecond
-	defer func() { verifyTimeout = old }()
-
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), testAllow, nil)
+	policy := VerifyPolicy{Allow: testAllow, Timeout: 50 * time.Millisecond}
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), policy)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
 	if results[0].Status != VerifyFail {
 		t.Errorf("status = %q, want fail", results[0].Status)
 	}
-	if !strings.Contains(results[0].Output, "timed out") {
-		t.Errorf("output = %q, want a timeout note", results[0].Output)
+	// The note names the bound that was applied, not the default: a record
+	// saying 2m0s for a run cut off at 50ms is what makes the timeout
+	// unreadable on a project that set its own.
+	if !strings.Contains(results[0].Output, "timed out after 50ms") {
+		t.Errorf("output = %q, want a timeout note naming the configured bound", results[0].Output)
+	}
+}
+
+// A command that finishes inside the configured bound is graded on its exit
+// code, with no timeout note — the scaled-down form of a suite that outlives
+// the 120s default, which is the whole point of the key.
+func TestRunVerifyWithinConfiguredTimeout(t *testing.T) {
+	policy := VerifyPolicy{Allow: testAllow, Timeout: 5 * time.Second}
+	criteria := []Criterion{
+		{Text: "slow pass", Command: "/bin/sh -c 'sleep 0.3'"},
+		{Text: "slow fail", Command: "/bin/sh -c 'sleep 0.3; exit 3'"},
+	}
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), policy)
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	if results[0].Status != VerifyPass || strings.Contains(results[0].Output, "timed out") {
+		t.Errorf("first result = %+v, want a pass with no timeout note", results[0])
+	}
+	if results[1].Status != VerifyFail || results[1].ExitCode != 3 {
+		t.Errorf("second result = %+v, want fail with exit 3", results[1])
+	}
+	if strings.Contains(results[1].Output, "timed out") {
+		t.Errorf("output = %q, want the exit code reported rather than a timeout", results[1].Output)
+	}
+}
+
+func TestRunVerifyNonPositiveTimeoutUsesDefault(t *testing.T) {
+	if DefaultVerifyTimeout != 120*time.Second {
+		t.Errorf("DefaultVerifyTimeout = %s, want 120s", DefaultVerifyTimeout)
+	}
+	// A negative bound reaches here only from a direct caller of the exported
+	// API; taking it literally would build an already-expired context and record
+	// the command as "timed out after -5m0s".
+	for _, timeout := range []time.Duration{0, -5 * time.Minute} {
+		results, err := RunVerify(context.Background(), []Criterion{{Text: "quick", Command: "/bin/echo ok"}}, t.TempDir(), VerifyPolicy{Allow: testAllow, Timeout: timeout})
+		if err != nil {
+			t.Fatalf("RunVerify: %v", err)
+		}
+		if results[0].Status != VerifyPass {
+			t.Errorf("status for %s = %q, want pass under the default bound", timeout, results[0].Status)
+		}
+	}
+}
+
+func TestRunVerifyRefusesEverythingWhenTimeoutIsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker.txt")
+
+	// An allow-listed command: a bad bound must refuse it too, rather than
+	// falling back to the default the project deliberately moved away from.
+	policy := VerifyPolicy{
+		Allow:      testAllow,
+		TimeoutErr: errors.New(`projects.village2.verify_timeout "soon" is not a positive duration`),
+	}
+	criteria := []Criterion{{Text: "writes a marker", Command: "/bin/sh -c 'touch " + marker + "'"}}
+	results, err := RunVerify(context.Background(), criteria, dir, policy)
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	if results[0].Status != VerifyRefused {
+		t.Fatalf("status = %q, want refused", results[0].Status)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a criterion ran despite an unreadable verify_timeout")
+	}
+	for _, want := range []string{"verify_timeout", "soon", "~/.ticket/config.yaml"} {
+		if !strings.Contains(results[0].Output, want) {
+			t.Errorf("refusal missing %q, so a user can't act on it:\n%s", want, results[0].Output)
+		}
 	}
 }
 
 func TestRunVerifyCapsOutput(t *testing.T) {
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "noisy", Command: "/bin/sh -c 'yes x | head -c 20000'"}}, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "noisy", Command: "/bin/sh -c 'yes x | head -c 20000'"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -381,7 +451,7 @@ func TestRunVerifyRefusesCommandOutsideAllowList(t *testing.T) {
 	}
 
 	criteria := []Criterion{{Text: "hostile", Command: "rm -rf " + sentinel}}
-	results, err := RunVerify(context.Background(), criteria, dir, []string{"go"}, nil)
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{"go"}})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -410,7 +480,7 @@ func TestRunVerifyRefusesEverythingWhenAllowListIsUnreadable(t *testing.T) {
 	// must be refused, and the refusal must say why rather than claiming the
 	// user left it off a list they never got to write.
 	criteria := []Criterion{{Text: "hostile", Command: "go run example.com/x@latest"}}
-	results, err := RunVerify(context.Background(), criteria, dir, []string{}, errors.New("parsing config.yaml: mapping values are not allowed"))
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{}, AllowErr: errors.New("parsing config.yaml: mapping values are not allowed")})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -434,7 +504,7 @@ func TestVerifyStripsControlCharactersFromEchoedCommand(t *testing.T) {
 	// would let a command repaint the operator's terminal at the moment they
 	// are asked to judge the refusal.
 	command := "\x1b[2J\x1b[1;32mPASS\x1b[0m"
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "spoofs", Command: command}}, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "spoofs", Command: command}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -460,7 +530,7 @@ func TestVerifyStripsControlCharactersFromCriterionText(t *testing.T) {
 		{Text: "refused \x1b[2Jspoof", Command: "rm -rf /"},
 		{Text: "unverified ‮special"},
 	}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -482,7 +552,7 @@ func TestVerifyKeepsTabsButNotLineBreaksInCriterionText(t *testing.T) {
 	// line break is different: the record is one line per criterion, so an
 	// embedded one would forge extra record lines.
 	criteria := []Criterion{{Text: "column\tone\ttwo"}, {Text: "forged\n- PASS (exit 0): nothing"}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -512,7 +582,7 @@ func TestRunVerifyAllowListIsExactNotBasename(t *testing.T) {
 	}
 
 	criteria := []Criterion{{Text: "impostor", Command: evil + " test ./..."}}
-	results, err := RunVerify(context.Background(), criteria, dir, []string{"go"}, nil)
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{"go"}})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -528,7 +598,7 @@ func TestRunVerifyGivesNoShellSemantics(t *testing.T) {
 	// Every metacharacter here is inert without a shell: the whole tail is
 	// argument text for /bin/echo, and the chained touch never runs.
 	command := "/bin/echo a ; touch " + sentinel + " && echo $(whoami) `id` ~ *"
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "metacharacters", Command: command}}, dir, testAllow, nil)
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "metacharacters", Command: command}}, dir, VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -547,7 +617,7 @@ func TestRunVerifyGivesNoShellSemantics(t *testing.T) {
 
 func TestRunVerifyQuotingGroupsArguments(t *testing.T) {
 	criteria := []Criterion{{Text: "quoted", Command: `/bin/echo -n 'one arg' "two  args"`}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -558,7 +628,7 @@ func TestRunVerifyQuotingGroupsArguments(t *testing.T) {
 
 func TestRunVerifyRefusesUnterminatedQuote(t *testing.T) {
 	criteria := []Criterion{{Text: "malformed", Command: `/bin/echo 'unterminated`}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), testAllow, nil)
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}

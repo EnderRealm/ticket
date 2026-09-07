@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfig(t *testing.T) {
@@ -804,6 +805,132 @@ func TestVerifyAllowSurvivesSave(t *testing.T) {
 	}
 	if len(shared.VerifyAllow) != 0 {
 		t.Errorf("shared config has verify_allow: %q", shared.VerifyAllow)
+	}
+}
+
+func TestVerifyTimeoutIsLocalOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	cfg := Config{
+		CentralRoot: centralRoot,
+		Projects: map[string]ProjectConfig{
+			"proj": {Path: "/local/proj", VerifyTimeout: "5m", Store: "central"},
+		},
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	local, err := loadLocalOnly()
+	if err != nil {
+		t.Fatalf("loadLocalOnly: %v", err)
+	}
+	if local.Projects["proj"].VerifyTimeout != "5m" {
+		t.Errorf("local verify_timeout = %q, want 5m", local.Projects["proj"].VerifyTimeout)
+	}
+
+	// The shared config syncs to every machine, so a bound written there would
+	// be a bound whoever wrote the verify command controls.
+	shared, err := loadFile(filepath.Join(centralRoot, configFileName))
+	if err != nil {
+		t.Fatalf("loadFile shared: %v", err)
+	}
+	if shared.Projects["proj"].VerifyTimeout != "" {
+		t.Errorf("shared config has verify_timeout: %q", shared.Projects["proj"].VerifyTimeout)
+	}
+
+	merged, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := VerifyTimeout(merged, "proj")
+	if err != nil {
+		t.Fatalf("VerifyTimeout: %v", err)
+	}
+	if got != 5*time.Minute {
+		t.Errorf("VerifyTimeout = %s after a round-trip, want 5m", got)
+	}
+}
+
+// A verify_timeout that arrives over the store's remote must not become the
+// bound this machine runs under, even where the project sets none locally.
+func TestVerifyTimeoutInSharedConfigIsIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+
+	configDir := filepath.Join(home, configDirName)
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, configFileName),
+		[]byte("central_root: "+centralRoot+"\nprojects:\n    proj:\n        path: /local/proj\n"), 0o644)
+
+	os.WriteFile(filepath.Join(centralRoot, configFileName), []byte(`projects:
+    proj:
+        store: central
+        verify_timeout: 12h
+`), 0o644)
+
+	merged, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := VerifyTimeout(merged, "proj")
+	if err != nil {
+		t.Fatalf("VerifyTimeout: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("VerifyTimeout = %s, want 0 — a shared verify_timeout is not authoritative", got)
+	}
+}
+
+func TestVerifyTimeoutUnsetIsZero(t *testing.T) {
+	cfg := Config{Projects: map[string]ProjectConfig{"proj": {Path: "/local/proj"}}}
+
+	for _, name := range []string{"proj", "absent"} {
+		got, err := VerifyTimeout(cfg, name)
+		if err != nil {
+			t.Errorf("VerifyTimeout(%q): %v", name, err)
+		}
+		if got != 0 {
+			t.Errorf("VerifyTimeout(%q) = %s, want 0 so the default applies", name, got)
+		}
+	}
+}
+
+func TestVerifyTimeoutParses(t *testing.T) {
+	for value, want := range map[string]time.Duration{"300s": 300 * time.Second, "5m": 5 * time.Minute} {
+		cfg := Config{Projects: map[string]ProjectConfig{"proj": {VerifyTimeout: value}}}
+		got, err := VerifyTimeout(cfg, "proj")
+		if err != nil {
+			t.Errorf("VerifyTimeout(%q): %v", value, err)
+		}
+		if got != want {
+			t.Errorf("VerifyTimeout(%q) = %s, want %s", value, got, want)
+		}
+	}
+}
+
+func TestVerifyTimeoutFailsClosedOnBadValue(t *testing.T) {
+	// Each of these would otherwise read as "no bound set" and silently restore
+	// the 120s default the project moved away from.
+	for _, value := range []string{"abc", "300", "0s", "-5m"} {
+		cfg := Config{Projects: map[string]ProjectConfig{"proj": {VerifyTimeout: value}}}
+		got, err := VerifyTimeout(cfg, "proj")
+		if err == nil {
+			t.Errorf("VerifyTimeout(%q) = %s, want an error rather than a fallback", value, got)
+			continue
+		}
+		for _, want := range []string{"verify_timeout", "proj", value} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error for %q missing %q: %v", value, want, err)
+			}
+		}
 	}
 }
 

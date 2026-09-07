@@ -42,8 +42,8 @@ Viewing:
       verify: go test ./pkg/ticket -run TestFrontier
     - Docs updated.
 
-  Each command runs in the project directory (120s timeout), execed as
-  argv and never through a shell: quotes group arguments, everything else
+  Each command runs in the project directory, execed as argv and never
+  through a shell: quotes group arguments, everything else
   (; | && $() backticks ~) is literal text. A command runs only if its
   program exactly matches an entry in verify_allow in ~/.ticket/config.yaml;
   anything else is refused without running. Only that machine-local file
@@ -58,6 +58,14 @@ Viewing:
   interpreters are absent: swift is not in the default because
   "swift -e <code>" runs arbitrary Swift, so a Swift project adds swift
   to verify_allow itself to get "swift test" back.
+  Each command is bounded by verify_timeout under the project in
+  ~/.ticket/config.yaml, beside its path: a Go duration such as 300s or
+  5m, defaulting to 120s when unset, and a timed-out command's output
+  names the bound that was applied. It is machine-local like
+  verify_allow — the bound is a property of the machine and the suite,
+  not of a ticket that syncs to every machine — and a value that is not
+  a positive duration refuses every verify command in that project
+  rather than falling back to the default.
   Criteria with no command are reported unverified. Results are recorded
   in the ticket's Test Results section; exit is non-zero on any failure
   or refusal.

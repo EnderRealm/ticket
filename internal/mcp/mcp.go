@@ -1371,7 +1371,7 @@ type verifyArgs struct {
 func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the ticket's project repo directory, as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Criteria with no command are reported as unverified.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the ticket's project repo directory, as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Criteria with no command are reported as unverified.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -1385,16 +1385,18 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 
-		dir, err := verifyWorkDir(t.ID, defaultProject)
+		dir, timeout, timeoutErr, err := verifyWorkDir(t.ID, defaultProject)
 		if err != nil {
 			r, _ := errResult("cannot resolve project directory: %v", err)
 			return r, nil, nil
 		}
 
-		// The allow-list comes from machine-local config only — no tool argument
-		// carries it, so a caller cannot widen what runs.
+		// The allow-list and the timeout come from machine-local config only — no
+		// tool argument carries either, so a caller cannot widen what runs or how
+		// long it may run.
 		allow, allowErr := project.VerifyAllow()
-		results, err := ticket.RunVerify(ctx, criteria, dir, allow, allowErr)
+		policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
+		results, err := ticket.RunVerify(ctx, criteria, dir, policy)
 		if err != nil {
 			r, _ := errResult("cannot run verify commands: %v", err)
 			return r, nil, nil
@@ -1423,25 +1425,29 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 }
 
 // verifyWorkDir resolves the repo directory a ticket's verify commands run in
-// from the project config. Verify must never run in an arbitrary directory, so
-// an unresolvable project path is an error.
-func verifyWorkDir(id, defaultProject string) (string, error) {
+// from the project config, along with the project's verify_timeout bound and
+// the error an unusable value is. Verify must never run in an arbitrary
+// directory, so an unresolvable project path is an error; an unusable
+// verify_timeout is not, because it is refused per criterion the way an
+// unreadable allow-list is, naming the key in the recorded output.
+func verifyWorkDir(id, defaultProject string) (dir string, timeout time.Duration, timeoutErr, err error) {
 	proj, _ := ticket.ParseNamespacedID(id)
 	if proj == "" {
 		proj = defaultProject
 	}
 	if proj == "" {
-		return "", fmt.Errorf("ticket ID %q has no project namespace", id)
+		return "", 0, nil, fmt.Errorf("ticket ID %q has no project namespace", id)
 	}
 	cfg, err := project.Load()
 	if err != nil {
-		return "", fmt.Errorf("load config: %w", err)
+		return "", 0, nil, fmt.Errorf("load config: %w", err)
 	}
 	p, ok := cfg.Projects[proj]
 	if !ok || p.Path == "" {
-		return "", fmt.Errorf("project %q has no configured path", proj)
+		return "", 0, nil, fmt.Errorf("project %q has no configured path", proj)
 	}
-	return p.Path, nil
+	timeout, timeoutErr = project.VerifyTimeout(cfg, proj)
+	return p.Path, timeout, timeoutErr, nil
 }
 
 func registerStoreInfo(server *mcp.Server, centralRoot string) {

@@ -3123,6 +3123,80 @@ func TestVerifyRefusesCommandOutsideAllowList(t *testing.T) {
 	}
 }
 
+// setVerifyTimeout writes verify_timeout onto the "alpha" entry verifyServer
+// registered, the way the host user editing ~/.ticket/config.yaml would. The
+// handler loads config per call, so it takes effect on the next ticket_verify.
+func setVerifyTimeout(t *testing.T, value string) {
+	t.Helper()
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Projects["alpha"]
+	p.VerifyTimeout = value
+	cfg.UpsertProject("alpha", p)
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// verifyReport runs ticket_verify on a ticket with the given acceptance
+// section and returns the parsed report.
+func verifyReport(t *testing.T, session *mcp.ClientSession, acceptance string) ticket.VerifyReport {
+	t.Helper()
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Timed ticket",
+		"type":       "feature",
+		"acceptance": acceptance,
+	})
+
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	return report
+}
+
+func TestVerifyUsesProjectTimeout(t *testing.T) {
+	session, _ := verifyServer(t)
+	setVerifyTimeout(t, "200ms")
+
+	report := verifyReport(t, session, "- Slow check.\n  verify: /bin/sh -c 'sleep 3'\n")
+	if report.Results[0].Status != string(ticket.VerifyFail) {
+		t.Errorf("status = %q, want fail", report.Results[0].Status)
+	}
+	// The bound the run applied, not the default: the report is what the caller
+	// grades the contract on.
+	if !strings.Contains(report.Results[0].Output, "timed out after 200ms") {
+		t.Errorf("output should name the project's bound:\n%s", report.Results[0].Output)
+	}
+}
+
+func TestVerifyRefusesEverythingOnBadProjectTimeout(t *testing.T) {
+	session, _ := verifyServer(t)
+	setVerifyTimeout(t, "soon")
+
+	report := verifyReport(t, session, "- One.\n  verify: /bin/echo one\n- Two.\n  verify: /bin/echo two\n")
+	if report.Summary.Refused != 2 || report.OK {
+		t.Errorf("summary = %+v, ok = %v, want both commands refused", report.Summary, report.OK)
+	}
+	for _, want := range []string{"verify_timeout", "soon", "~/.ticket/config.yaml"} {
+		if !strings.Contains(report.Results[0].Output, want) {
+			t.Errorf("refusal missing %q, so a user can't act on it:\n%s", want, report.Results[0].Output)
+		}
+	}
+}
+
 func TestVerifySharedConfigCannotWidenAllowList(t *testing.T) {
 	session, _ := verifyServer(t)
 

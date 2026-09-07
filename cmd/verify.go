@@ -70,7 +70,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		criteria = criteria[verifyCriterion-1 : verifyCriterion]
 	}
 
-	dir := verifyWorkDir()
+	dir, name, cfg := verifyWorkDir()
 	if cmd.Flags().Changed("dir") {
 		// Checked before anything runs, so a mistyped directory is a usage error
 		// rather than every criterion failing in the wrong tree. Keyed on the flag
@@ -85,10 +85,15 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		}
 		dir = verifyDir
 	}
-	// The allow-list comes from machine-local config only — there is no flag for
-	// it, so nothing in a ticket or the synced store can widen what runs.
+	// The allow-list and the timeout both come from machine-local config only —
+	// there is no flag for either, so nothing in a ticket or the synced store can
+	// widen what runs or how long it may run. --dir moves the directory alone:
+	// the bound still belongs to the project the working directory (or --repo)
+	// resolved to.
 	allow, allowErr := project.VerifyAllow()
-	results, err := ticket.RunVerify(cmd.Context(), criteria, dir, allow, allowErr)
+	timeout, timeoutErr := project.VerifyTimeout(cfg, name)
+	policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
+	results, err := ticket.RunVerify(cmd.Context(), criteria, dir, policy)
 	if err != nil {
 		return err
 	}
@@ -171,8 +176,12 @@ func runVerify(cmd *cobra.Command, args []string) error {
 // back to that directory itself. Only a config-sourced project name is trusted
 // — ResolveName's git-remote and dirname inference can name a project the
 // directory isn't a checkout of, which would run commands in the wrong repo.
-func verifyWorkDir() string {
-	dir := mustGetwd()
+//
+// It also returns that project name (empty when none resolved) and the config
+// it loaded, so the caller reads the project's verify_timeout from the same
+// resolution rather than loading config a second time.
+func verifyWorkDir() (dir, name string, cfg project.Config) {
+	dir = mustGetwd()
 	cfg, err := project.Load()
 	if repoFlag != "" {
 		repo := repoFlag
@@ -186,14 +195,14 @@ func verifyWorkDir() string {
 		}
 	}
 	if err != nil {
-		return dir
+		return dir, "", cfg
 	}
 	name, source := project.ResolveName(cfg, dir, "")
 	if source != "config" {
-		return dir
+		return dir, "", cfg
 	}
 	if p, ok := cfg.Projects[name]; ok && p.Path != "" {
-		return p.Path
+		return p.Path, name, cfg
 	}
-	return dir
+	return dir, name, cfg
 }

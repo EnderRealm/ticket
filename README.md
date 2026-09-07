@@ -88,11 +88,14 @@ verify_allow:
 projects:
     myproject:
         path: /Users/you/code/myproject
+        verify_timeout: 5m
 ```
 
 Shared project registry (store type, auto_link, auto_close, etc.) is stored in `<central_root>/config.yaml` and synced via git alongside tickets — see [Commit Journal](#commit-journal) for what the two auto flags decide.
 
 `verify_allow` lists the programs `tk verify` may run — see [Verifiable Acceptance Criteria](#verifiable-acceptance-criteria). It is read from this local file only; a `verify_allow` in the shared config is ignored.
+
+`verify_timeout` bounds each of that project's verify commands, as a Go duration (`300s`, `5m`); unset it defaults to 120s. It is read from this local file only too, and a value that is not a positive duration refuses every verify command in the project rather than falling back to the default.
 
 `--repo` accepts a registered project name or a repository path and overrides
 project resolution for a single command. Project names resolve through the
@@ -299,7 +302,7 @@ Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bul
 
 Every heading beginning `## Acceptance` opens that section, so a hand-written `## Acceptance Notes` block is part of it: its bullets are criteria too, appended after the earlier block's in body order. The section ends at the next `## ` heading of any kind, so bullets under an unrelated heading are not criteria. `tk verify`, `--criterion <n>` and the `acceptance_criteria` field the `ticket_show` MCP tool returns all read that one section, so the criterion index a consumer reads out of `ticket_show` is the one tk runs. That is a read contract only: an acceptance edit (`tk edit --acceptance`, the `ticket_edit` MCP tool's `acceptance`) rewrites the `## Acceptance Criteria` block alone, replacing the body from that heading through the next `## Design`, `## Acceptance Criteria`, `## Test Results` or `## Notes` heading — a later `## Acceptance*` block falls inside that span and is dropped by the write, unless it is a second literal `## Acceptance Criteria` heading, which is itself a boundary and survives as stale text the read then appends. It is safe to read, not preserved across an edit.
 
-`tk verify <id>` runs each declared command in the ticket's project directory (from the project's configured `path`, falling back to the working directory), sequentially, with a 120s timeout per command — a command that overruns is a failure. Criteria with no `verify:` line are reported as `unverified`, not failed.
+`tk verify <id>` runs each declared command in the ticket's project directory (from the project's configured `path`, falling back to the working directory), sequentially, each bounded by the project's `verify_timeout` (120s when unset) — a command that overruns is a failure, and its recorded output names the bound that was applied. Criteria with no `verify:` line are reported as `unverified`, not failed.
 
 ```bash
 tk verify 5c4
@@ -376,6 +379,8 @@ They are in the default, because `go test` is the point of the feature and canno
 `npm`, `pnpm` and `yarn` are left out for the same reason — `npm exec <pkg>`, `pnpm dlx` and `yarn dlx` fetch and run an arbitrary package off the registry as a documented feature. A JS project that adds one back is opting into a verify line being able to run any published package, which may well be an acceptable trade in a repo whose `npm test` already runs whatever `package.json` says. Add it deliberately, not by default.
 
 The list is read from `~/.ticket/config.yaml` alone. `verify_allow` in the shared `<central_root>/config.yaml` is ignored, because that file syncs over the same remote that would carry a hostile command — one push would otherwise plant the command and widen the list that should refuse it. There is no flag, no MCP argument and no ticket field that grants permission: **an agent can run what you have already allowed, and can authorize nothing further.** Only you, editing your own machine's config file, widen the list.
+
+**Timeout.** Each command is bounded by `verify_timeout` under the project in your machine-local `~/.ticket/config.yaml`, beside its `path`: a Go duration such as `300s` or `5m`, defaulting to 120s when the key is absent. It is read from that file alone — a `verify_timeout` in the shared `<central_root>/config.yaml` is ignored, and no flag, MCP argument or ticket field sets it — because the bound is a property of your machine and its suite, while a ticket replicates to every machine that syncs the store. A value that does not parse as a positive duration refuses every verify command in that project, naming the key and the value: a typo fails closed rather than silently restoring the 120s the project moved away from.
 
 A refusal is reported as `refused`, never as a failure, and counted separately in the summary and the recorded results — a criterion that never ran is not a criterion that disagreed. Control characters — C0/C1, DEL and the Unicode format characters, including the bidi overrides — are stripped from both the criterion text and the command before they are printed or recorded, so an escape planted anywhere in a ticket's acceptance criteria cannot repaint the terminal you are reading the verdict on, nor replay on every later `tk show`. Tabs survive, being ordinary in a markdown bullet and harmless on a terminal. The stripping covers the criterion text and its command, and not a command's own output: that is printed as the program emitted it, so coloured test output stays readable.
 

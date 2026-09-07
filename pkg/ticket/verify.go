@@ -52,9 +52,33 @@ const maxVerifyOutput = 4096
 // blocked and the timeout is only advisory.
 const verifyWaitDelay = 5 * time.Second
 
-// verifyTimeout bounds a single criterion command; an overrun is reported as a
-// failure. Package-level so tests can shrink it.
-var verifyTimeout = 120 * time.Second
+// DefaultVerifyTimeout bounds a single criterion command when the project sets
+// no verify_timeout; an overrun is reported as a failure. It is the only place
+// the default is defined — internal/project reports an unset bound as 0 rather
+// than restating the number, because it cannot import this package.
+const DefaultVerifyTimeout = 120 * time.Second
+
+// VerifyPolicy carries the machine-local controls a verify run answers to.
+// Neither control may come from the ticket, the synced store or a caller's
+// argument: both decide what runs as the machine owner, and ticket bodies
+// replicate over the shared store's git remote.
+type VerifyPolicy struct {
+	// Allow is the argv[0] allow-list. A command whose program is not an exact
+	// match is refused without running.
+	Allow []string
+	// AllowErr is the reason that allow-list could not be read, if any: Allow is
+	// then empty, everything is refused, and the refusal names the cause rather
+	// than claiming the user left the program off a list they never got to write.
+	AllowErr error
+	// Timeout is the project's per-command bound; non-positive means
+	// DefaultVerifyTimeout.
+	Timeout time.Duration
+	// TimeoutErr is the reason that bound could not be read. When set, every
+	// command is refused naming it — a bound that does not parse must not
+	// silently restore the default, which is the bound the project changed away
+	// from.
+	TimeoutErr error
+}
 
 // AcceptanceCriteria returns the text of the body's acceptance criteria
 // section: the same section BodySections returns and ticket_show reports as
@@ -92,25 +116,25 @@ func ParseCriteria(section string) []Criterion {
 }
 
 // RunVerify executes each criterion's command in dir, sequentially and in
-// order, each bounded by verifyTimeout and by ctx. Criteria without commands
+// order, each bounded by policy's timeout and by ctx. Criteria without commands
 // yield unverified results. An unusable dir is a single error rather than a
 // failure per criterion.
 //
 // A verify command is attacker-reachable content — ticket bodies are written by
 // agents and replicate across machines over the shared store's git remote — so
 // it is never handed to a shell. It is tokenized without expansion and execed
-// as argv, and runs only if argv[0] exactly matches an entry in allow;
-// everything else is refused without running. allow must come from
+// as argv, and runs only if argv[0] exactly matches an entry in policy.Allow;
+// everything else is refused without running. Policy must come from
 // machine-local config, never from the ticket, the synced store or a caller's
-// argument. allowErr carries the reason that config could not be read, if any:
-// allow is then empty, everything is refused, and the refusal names the cause.
+// argument, and a policy whose controls could not be read refuses everything
+// naming the cause.
 //
 // A criterion's text and command are stripped of control characters; a
 // command's own captured Output is deliberately left raw, so that the coloured
 // output of a test runner survives to the terminal in the readable form the
 // field exists for. That output comes from a program the machine's owner
 // allow-listed, which is a narrower trust than the ticket content around it.
-func RunVerify(ctx context.Context, criteria []Criterion, dir string, allow []string, allowErr error) ([]VerifyResult, error) {
+func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy VerifyPolicy) ([]VerifyResult, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("verify directory: %w", err)
@@ -123,7 +147,7 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, allow []st
 	for _, c := range criteria {
 		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
 		if c.Command != "" {
-			res = runCriterion(ctx, c, dir, allow, allowErr)
+			res = runCriterion(ctx, c, dir, policy)
 		}
 		// A criterion's text and command are both untrusted markdown that every
 		// consumer prints. Sanitizing here, where the result is produced, keeps
@@ -209,6 +233,18 @@ func refusal(command, argv0 string, allowErr error) string {
 		"command: %s", SanitizeControl(command)))
 }
 
+// timeoutRefusal explains that the project's bound could not be read and how to
+// repair it. Same shape as refusal, and the same reason for the ordering: the
+// command is a whole markdown line of untrusted content and must not be able to
+// push the remedy past capOutput's cut.
+func timeoutRefusal(command string, timeoutErr error) string {
+	cause := fmt.Sprintf("refused: the project's verify_timeout could not be read (%v), so no command is permitted and this criterion's command did not run.\n", timeoutErr)
+	remedy := "To permit any command, set verify_timeout under the project in ~/.ticket/config.yaml to a positive Go duration such as 300s or 5m, or remove the key. "
+	return capOutput(cause + remedy + fmt.Sprintf("The verify_timeout is read from "+
+		"machine-local config only — an entry in the shared central-store config, in the ticket, or in a tool argument is ignored.\n"+
+		"command: %s", SanitizeControl(command)))
+}
+
 // SanitizeControl replaces C0 and C1 control characters, DEL, and the Unicode
 // format characters with U+FFFD. It is the shared rule for any untrusted string
 // tk prints to an operator or writes into a line-oriented record. A criterion's
@@ -236,7 +272,7 @@ func SanitizeControl(s string) string {
 	}, s)
 }
 
-func runCriterion(ctx context.Context, c Criterion, dir string, allow []string, allowErr error) VerifyResult {
+func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPolicy) VerifyResult {
 	argv, err := tokenizeCommand(c.Command)
 	if err != nil {
 		return VerifyResult{
@@ -250,11 +286,20 @@ func runCriterion(ctx context.Context, c Criterion, dir string, allow []string, 
 	if len(argv) == 0 {
 		return VerifyResult{Criterion: c, Status: VerifyUnverified}
 	}
-	if !allowedCommand(argv[0], allow) {
-		return VerifyResult{Criterion: c, Status: VerifyRefused, Output: refusal(c.Command, argv[0], allowErr)}
+	// Checked before the allow-list so a command that would be refused either
+	// way names the config defect the user has to repair.
+	if policy.TimeoutErr != nil {
+		return VerifyResult{Criterion: c, Status: VerifyRefused, Output: timeoutRefusal(c.Command, policy.TimeoutErr)}
+	}
+	if !allowedCommand(argv[0], policy.Allow) {
+		return VerifyResult{Criterion: c, Status: VerifyRefused, Output: refusal(c.Command, argv[0], policy.AllowErr)}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	timeout := policy.Timeout
+	if timeout <= 0 {
+		timeout = DefaultVerifyTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -273,7 +318,7 @@ func runCriterion(ctx context.Context, c Criterion, dir string, allow []string, 
 			res.Output += "\n" + err.Error()
 		}
 		if ctx.Err() == context.DeadlineExceeded {
-			res.Output += fmt.Sprintf("\ncommand timed out after %s", verifyTimeout)
+			res.Output += fmt.Sprintf("\ncommand timed out after %s", timeout)
 		}
 	}
 	res.Output = capOutput(res.Output)

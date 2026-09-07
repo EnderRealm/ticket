@@ -103,15 +103,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	registeredAt := time.Now().UTC().Format(time.RFC3339)
 	// A re-run must not clear an opt-in nobody re-stated: UpsertProject replaces
-	// the whole entry, and auto_retrospect is set by hand and never by init, so
-	// carrying it over is the only thing that keeps `tk init` re-runnable for a
-	// project that has it on.
+	// the whole entry, and auto_retrospect and verify_timeout are set by hand and
+	// never by init, so carrying them over is the only thing that keeps `tk init`
+	// re-runnable for a project that has either set. Dropping verify_timeout
+	// would silently restore the 120s bound the project moved away from.
 	autoRetrospect := false
+	verifyTimeout := ""
 	if existing, ok := cfg.Projects[projectName]; ok {
 		if existing.RegisteredAt != "" {
 			registeredAt = existing.RegisteredAt
 		}
 		autoRetrospect = existing.AutoRetrospect
+		verifyTimeout = existing.VerifyTimeout
 	}
 
 	centralDir, err := project.CentralProjectDir(projectName)
@@ -152,6 +155,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// explicit in the shared config, so turning either back off is an edit.
 	cfg.UpsertProject(projectName, project.ProjectConfig{
 		Path:           repoPath,
+		VerifyTimeout:  verifyTimeout,
 		Store:          "central",
 		AutoLink:       true,
 		AutoClose:      true,

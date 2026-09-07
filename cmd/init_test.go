@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
 )
@@ -319,6 +320,65 @@ func TestInitRerunPreservesRegistrationAndOptIns(t *testing.T) {
 	}
 	if again.RegisteredAt != registeredAt {
 		t.Errorf("registered_at = %q, want the original %q", again.RegisteredAt, registeredAt)
+	}
+}
+
+// verify_timeout is a hand-set, machine-local opt-in of the same kind: dropping
+// it on a re-run would silently restore the 120s default the project moved away
+// from, under a bound nobody chose.
+func TestInitRerunPreservesVerifyTimeout(t *testing.T) {
+	home := setupTestHome(t)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	project.Save(project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}})
+
+	projDir := filepath.Join(home, "vtproject")
+	os.MkdirAll(projDir, 0o755)
+	runGit(t, projDir, "init")
+	runGit(t, projDir, "config", "user.email", "test@test.com")
+	runGit(t, projDir, "config", "user.name", "test")
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(projDir)
+	defer os.Chdir(oldDir)
+
+	initCmd.Flags().Set("yes", "true")
+	initCmd.Flags().Set("project", "vtproject")
+	defer func() {
+		initCmd.Flags().Set("yes", "false")
+		initCmd.Flags().Set("project", "")
+	}()
+
+	if err := runInit(initCmd, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Projects["vtproject"]
+	p.VerifyTimeout = "300s"
+	cfg.UpsertProject("vtproject", p)
+	if err := project.Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := runInit(initCmd, nil); err != nil {
+		t.Fatalf("runInit again: %v", err)
+	}
+
+	reloaded, err := project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	timeout, err := project.VerifyTimeout(reloaded, "vtproject")
+	if err != nil {
+		t.Fatalf("VerifyTimeout: %v", err)
+	}
+	if timeout != 300*time.Second {
+		t.Errorf("verify_timeout = %s, want 300s — re-running init cleared it", timeout)
 	}
 }
 

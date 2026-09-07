@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -127,6 +128,13 @@ var defaultVerifyAllow = []string{"go", "make", "cargo", "pytest"}
 // ProjectConfig stores per-project settings.
 type ProjectConfig struct {
 	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+	// VerifyTimeout bounds each of this project's verify commands, as a Go
+	// duration ("300s", "5m"); read it via project.VerifyTimeout. Local-only
+	// like Path, and for a stronger reason: the bound is a property of this
+	// machine and its suite, and the shared config syncs over the same remote
+	// that carries the ticket text a verify command comes from — a bound
+	// settable from there would be settable by whoever wrote the command.
+	VerifyTimeout string `yaml:"verify_timeout,omitempty" json:"verify_timeout,omitempty"`
 	// Store is the registration marker. "central" is the only value tk writes
 	// and the only one that means anything: tk resolves no other kind of store,
 	// so an entry carrying an old `store: local` reads as an unregistered
@@ -155,7 +163,8 @@ type ProjectConfig struct {
 
 // Load reads both local (~/.ticket/config.yaml) and shared (<central_root>/config.yaml)
 // configs, merging them into a single Config. Local fields (central_root, git_email,
-// git_name, default_store, sync_interval, spawn_command, per-project path) come from local config.
+// git_name, default_store, sync_interval, spawn_command, per-project path and
+// verify_timeout) come from local config.
 // Shared fields (journal_defaults_migrated, per-project store, auto_link,
 // auto_close, auto_retrospect, registered_at) come from shared config. Missing
 // files are not errors — returns what's available.
@@ -190,7 +199,8 @@ func Load() (Config, error) {
 }
 
 // Save writes the config to both local and shared files, splitting fields
-// appropriately. Local gets top-level fields + per-project path. Shared gets
+// appropriately. Local gets top-level fields + per-project path and
+// verify_timeout. Shared gets
 // journal_defaults_migrated and per-project store, auto_link, auto_close,
 // auto_retrospect, registered_at.
 func Save(cfg Config) error {
@@ -388,6 +398,42 @@ func VerifyAllow() ([]string, error) {
 	return local.VerifyAllow, nil
 }
 
+// VerifyTimeout returns the bound a project's verify commands run under, and
+// the error a set-but-unusable value is. A project that is absent, or that sets
+// no verify_timeout, returns 0 — no per-project bound, so RunVerify applies
+// ticket.DefaultVerifyTimeout.
+//
+// It fails closed: a value that does not parse, or that is not positive, is
+// returned as an error naming the key and the value rather than as 0. The
+// caller hands that error to RunVerify, which refuses every command with it,
+// because silently restoring the default would run a suite under a bound the
+// user had deliberately changed and record the overrun as a failed contract —
+// the outcome the key exists to fix.
+//
+// The value is taken from the merged config's project entry, which mergeConfigs
+// fills from the local half alone: a verify_timeout in the shared config is
+// ignored, on the same terms as verify_allow.
+//
+// Reading the merged config means TK_STORE_ROOT relocates this key exactly as
+// it relocates `path`, rather than pinning it to the home config the way
+// verify_allow is pinned. That is the right seam: the bound decides how long an
+// already-allow-listed program runs, not what runs, so whoever sets the
+// override gains no program the right to run.
+func VerifyTimeout(cfg Config, name string) (time.Duration, error) {
+	p, ok := cfg.Projects[name]
+	if !ok || p.VerifyTimeout == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.VerifyTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("projects.%s.verify_timeout %q is not a positive duration: %w", name, p.VerifyTimeout, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("projects.%s.verify_timeout %q is not a positive duration", name, p.VerifyTimeout)
+	}
+	return d, nil
+}
+
 // SpawnCommand returns the TUI's spawn_command template, plus the error that
 // made it unreadable. It reads ~/.ticket/config.yaml directly for the same
 // reason VerifyAllow does: the template is handed to `sh -c`, so whoever
@@ -523,7 +569,7 @@ func centralStoreRootFromLocal(cfg Config) (string, error) {
 }
 
 // mergeConfigs combines local and shared configs. Local provides top-level fields
-// and per-project path. Shared provides journal_defaults_migrated and per-project
+// and per-project path and verify_timeout. Shared provides journal_defaults_migrated and per-project
 // store, auto_link, auto_close, auto_retrospect, registered_at. Projects present
 // in either source are included.
 func mergeConfigs(local, shared Config) Config {
@@ -553,10 +599,12 @@ func mergeConfigs(local, shared Config) Config {
 		}
 	}
 
-	// Overlay local projects (path, and fill in shared fields if not in shared)
+	// Overlay local projects (path, verify_timeout, and fill in shared fields if
+	// not in shared)
 	for name, lp := range local.Projects {
 		if existing, ok := merged.Projects[name]; ok {
 			existing.Path = lp.Path
+			existing.VerifyTimeout = lp.VerifyTimeout
 			merged.Projects[name] = existing
 		} else {
 			// Local-only project (backward compat)
@@ -589,9 +637,10 @@ func saveLocal(cfg Config, hasShared bool) error {
 
 	for name, p := range cfg.Projects {
 		if hasShared {
-			// Only store path locally — shared fields go to shared config
-			if p.Path != "" {
-				localCfg.Projects[name] = ProjectConfig{Path: p.Path}
+			// Only store path and verify_timeout locally — shared fields go to
+			// shared config
+			if p.Path != "" || p.VerifyTimeout != "" {
+				localCfg.Projects[name] = ProjectConfig{Path: p.Path, VerifyTimeout: p.VerifyTimeout}
 			}
 		} else {
 			// No shared config available — store everything locally
