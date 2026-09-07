@@ -3289,6 +3289,67 @@ func TestVerifyNoAcceptanceCriteria(t *testing.T) {
 	}
 }
 
+// TestVerifyMatchesShownAcceptanceCriteria pins the numbering contract a
+// consumer depends on: the criteria ticket_show reports are the ones
+// ticket_verify runs, in the same order, even when the body carries a second
+// `## Acceptance*` heading.
+func TestVerifyMatchesShownAcceptanceCriteria(t *testing.T) {
+	session, _ := verifyServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{
+		"title": "Two acceptance headings",
+		"type":  "feature",
+		"acceptance": "- First check.\n  verify: /bin/echo first\n\n" +
+			"## Acceptance Notes\n\n- Second check.\n  verify: /bin/echo second\n",
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	shownAcceptance, _ := shown["acceptance_criteria"].(string)
+	if shownAcceptance == "" {
+		t.Fatalf("ticket_show returned no acceptance_criteria: %+v", shown)
+	}
+	shownCriteria := ticket.ParseCriteria(shownAcceptance)
+	if len(shownCriteria) != 2 {
+		t.Fatalf("ticket_show reported %d criteria, want 2: %+v", len(shownCriteria), shownCriteria)
+	}
+
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if len(report.Results) != len(shownCriteria) {
+		t.Fatalf("ticket_verify ran %d criteria, ticket_show showed %d", len(report.Results), len(shownCriteria))
+	}
+	for i, c := range shownCriteria {
+		if report.Results[i].Criterion != c.Text || report.Results[i].Command != c.Command {
+			t.Errorf("criterion %d: verify ran %q (%q), ticket_show showed %q (%q)",
+				i, report.Results[i].Criterion, report.Results[i].Command, c.Text, c.Command)
+		}
+	}
+}
+
 func TestCreateRejectsNonEpicParent(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

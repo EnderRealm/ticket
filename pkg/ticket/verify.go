@@ -56,20 +56,14 @@ const verifyWaitDelay = 5 * time.Second
 // failure. Package-level so tests can shrink it.
 var verifyTimeout = 120 * time.Second
 
-// AcceptanceCriteria returns the text of the body's acceptance criteria section.
+// AcceptanceCriteria returns the text of the body's acceptance criteria
+// section: the same section BodySections returns and ticket_show reports as
+// acceptance_criteria, so the criterion index a consumer takes from there is
+// the one `tk verify --criterion <n>` runs. BodySections owns the split; a
+// second scan here is how the two came to disagree.
 func AcceptanceCriteria(body string) string {
-	var section []string
-	in := false
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "## ") {
-			in = strings.HasPrefix(line, "## Acceptance")
-			continue
-		}
-		if in {
-			section = append(section, line)
-		}
-	}
-	return strings.TrimSpace(strings.Join(section, "\n"))
+	_, _, acceptance, _ := BodySections(body)
+	return acceptance
 }
 
 // ParseCriteria extracts criteria from an acceptance-criteria section. A

@@ -530,15 +530,47 @@ func UpdateSection(body, heading, content string) string {
 // structuralSections above is a separate list serving a different job (it
 // bounds a section being replaced, and includes `## Notes`); the two are not
 // derived from one another.
+//
+// This is the single definition of the acceptance section — AcceptanceCriteria
+// delegates here, so the criteria ticket_show reports are the ones `tk verify`
+// and `--criterion <n>` index over. Two rules follow from that contract, which
+// is verify's numbering as it has always run:
+//
+//   - Every `## Acceptance*` block is part of one section; a later block is
+//     appended to the earlier one in body order rather than replacing it.
+//   - Any other `## ` heading closes the acceptance section, and the text under
+//     it lands in no returned field.
+//
+// Outside the acceptance section an unrecognised `## ` heading folds into the
+// section in progress, because descriptions routinely carry their own
+// subheadings and ticket_show must keep showing them.
+//
+// The read contract has no write counterpart. An acceptance edit goes through
+// UpdateSection, which bounds the rewrite by structuralSections: it replaces
+// from `## Acceptance Criteria` through the next marker in that list, so a
+// later `## Acceptance*` block sits inside the replaced span and does not
+// survive the write — unless it is a second literal `## Acceptance Criteria`,
+// which is itself a boundary and survives as stale text this read then
+// appends. Such a block is safe to read, not to edit around.
 func BodySections(body string) (desc, design, acceptance, testResults string) {
 	lines := strings.Split(body, "\n")
 	var current *string
 	var buf []string
 
 	flush := func() {
-		if current != nil {
-			*current = strings.TrimSpace(strings.Join(buf, "\n"))
+		if current == nil {
+			buf = nil
+			return
 		}
+		text := strings.TrimSpace(strings.Join(buf, "\n"))
+		if current == &acceptance && acceptance != "" {
+			if text == "" {
+				buf = nil
+				return
+			}
+			text = acceptance + "\n\n" + text
+		}
+		*current = text
 		buf = nil
 	}
 
@@ -556,6 +588,9 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 		case strings.HasPrefix(line, "## Test Results"):
 			flush()
 			current = &testResults
+		case current == &acceptance && strings.HasPrefix(line, "## "):
+			flush()
+			current = nil
 		default:
 			buf = append(buf, line)
 		}

@@ -93,6 +93,113 @@ func TestAcceptanceCriteriaSection(t *testing.T) {
 	}
 }
 
+// TestAcceptanceSectionAgreement pins the contract that AcceptanceCriteria and
+// BodySections answer "what is this body's acceptance section?" identically: a
+// consumer that reads ticket_show's acceptance_criteria indexes the same list
+// `tk verify --criterion <n>` runs.
+func TestAcceptanceSectionAgreement(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []Criterion
+	}{
+		{
+			name: "single acceptance heading",
+			body: "Description.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n",
+			want: []Criterion{{Text: "a", Command: "true"}},
+		},
+		{
+			name: "second acceptance heading appends",
+			body: "Description.\n\n## Acceptance Criteria\n\n- a\n  verify: go test ./a\n\n## Acceptance Notes\n\n- b\n  verify: go test ./b\n",
+			want: []Criterion{
+				{Text: "a", Command: "go test ./a"},
+				{Text: "b", Command: "go test ./b"},
+			},
+		},
+		{
+			name: "acceptance blocks separated by design",
+			body: "Description.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Design\n\n- not a criterion\n\n## Acceptance Notes\n\n- b\n  verify: false\n",
+			want: []Criterion{
+				{Text: "a", Command: "true"},
+				{Text: "b", Command: "false"},
+			},
+		},
+		{
+			name: "unrecognised heading closes the section",
+			body: "Description.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Foo\n\n- x\n  verify: false\n",
+			want: []Criterion{{Text: "a", Command: "true"}},
+		},
+		{
+			name: "no acceptance section",
+			body: "Description.\n\n## Design\n\n- not a criterion\n",
+		},
+		{
+			name: "acceptance last before test results",
+			body: "Description.\n\n## Design\n\nSome design.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Test Results\n\n- PASS (exit 0): something\n",
+			want: []Criterion{{Text: "a", Command: "true"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, acceptance, _ := BodySections(tc.body)
+			fromSections := ParseCriteria(acceptance)
+			fromVerify := ParseCriteria(AcceptanceCriteria(tc.body))
+
+			if len(fromVerify) != len(tc.want) {
+				t.Fatalf("AcceptanceCriteria gave %d criteria, want %d: %+v", len(fromVerify), len(tc.want), fromVerify)
+			}
+			if len(fromSections) != len(tc.want) {
+				t.Fatalf("BodySections gave %d criteria, want %d: %+v", len(fromSections), len(tc.want), fromSections)
+			}
+			for i := range tc.want {
+				if fromVerify[i] != tc.want[i] {
+					t.Errorf("AcceptanceCriteria criterion %d = %+v, want %+v", i, fromVerify[i], tc.want[i])
+				}
+				if fromSections[i] != tc.want[i] {
+					t.Errorf("BodySections criterion %d = %+v, want %+v", i, fromSections[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestBodySectionsTwoAcceptanceHeadings checks what ticket_show renders for a
+// body with a second `## Acceptance*` block: both bullets, and the other
+// sections — including a description carrying its own subheading — untouched.
+func TestBodySectionsTwoAcceptanceHeadings(t *testing.T) {
+	body := "Description.\n\n## Scope\n\nIn scope.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Acceptance Notes\n\n- b\n  verify: false\n\n## Test Results\n\nnone yet\n"
+	desc, design, acceptance, testResults := BodySections(body)
+
+	if !strings.Contains(acceptance, "- a") || !strings.Contains(acceptance, "- b") {
+		t.Errorf("acceptance = %q, want both bullets", acceptance)
+	}
+	if !strings.Contains(desc, "## Scope") || !strings.Contains(desc, "In scope.") {
+		t.Errorf("description = %q, want the Scope subheading folded in", desc)
+	}
+	if design != "" {
+		t.Errorf("design = %q, want empty", design)
+	}
+	if testResults != "none yet" {
+		t.Errorf("test results = %q, want %q", testResults, "none yet")
+	}
+}
+
+// TestBodySectionsClosingHeadingDropsText pins the other half of the section
+// contract: text under the unrecognised heading that closes the acceptance
+// section lands in no returned field.
+func TestBodySectionsClosingHeadingDropsText(t *testing.T) {
+	body := "Description.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Foo\n\ndropped text\n"
+	desc, design, acceptance, testResults := BodySections(body)
+
+	sections := map[string]string{"description": desc, "design": design, "acceptance": acceptance, "test results": testResults}
+	for name, section := range sections {
+		if strings.Contains(section, "dropped text") {
+			t.Errorf("%s = %q, want no text from under the closing heading", name, section)
+		}
+	}
+}
+
 // testAllow is the allow-list the library tests run under: absolute paths to
 // stock binaries, plus /bin/sh for the cases that need a controlled exit code.
 // Permitting a shell is a user decision the allow-list makes explicit; the

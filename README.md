@@ -297,6 +297,8 @@ Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bul
 - Docs updated.
 ```
 
+Every heading beginning `## Acceptance` opens that section, so a hand-written `## Acceptance Notes` block is part of it: its bullets are criteria too, appended after the earlier block's in body order. The section ends at the next `## ` heading of any kind, so bullets under an unrelated heading are not criteria. `tk verify`, `--criterion <n>` and the `acceptance_criteria` field the `ticket_show` MCP tool returns all read that one section, so the criterion index a consumer reads out of `ticket_show` is the one tk runs. That is a read contract only: an acceptance edit (`tk edit --acceptance`, the `ticket_edit` MCP tool's `acceptance`) rewrites the `## Acceptance Criteria` block alone, replacing the body from that heading through the next `## Design`, `## Acceptance Criteria`, `## Test Results` or `## Notes` heading — a later `## Acceptance*` block falls inside that span and is dropped by the write, unless it is a second literal `## Acceptance Criteria` heading, which is itself a boundary and survives as stale text the read then appends. It is safe to read, not preserved across an edit.
+
 `tk verify <id>` runs each declared command in the ticket's project directory (from the project's configured `path`, falling back to the working directory), sequentially, with a 120s timeout per command — a command that overruns is a failure. Criteria with no `verify:` line are reported as `unverified`, not failed.
 
 ```bash

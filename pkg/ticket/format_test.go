@@ -1361,6 +1361,43 @@ func TestUpdateSection_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestSerialize_TwoAcceptanceHeadingsRoundTrip guards the storage side of the
+// merged acceptance section: BodySections joins the blocks for its callers, but
+// the stored body still carries both headings verbatim.
+func TestSerialize_TwoAcceptanceHeadingsRoundTrip(t *testing.T) {
+	tk := &Ticket{
+		ID:       "test-two-acceptance-1234",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Two acceptance headings",
+		Body:     "Description.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Acceptance Notes\n\n- b\n  verify: false\n",
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk2, err := parseBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data2, err := Serialize(tk2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count := strings.Count(tk2.Body, "## Acceptance"); count != 2 {
+		t.Errorf("expected 2 Acceptance headings after round-trip, got %d.\nBody:\n%s", count, tk2.Body)
+	}
+	if string(data2) != string(data) {
+		t.Errorf("re-serialization differs:\nfirst:\n%s\nsecond:\n%s", data, data2)
+	}
+}
+
 func parseBytes(data []byte) (*Ticket, error) {
 	r := strings.NewReader(string(data))
 	return Parse(r)
