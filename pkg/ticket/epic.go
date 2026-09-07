@@ -295,7 +295,9 @@ func resolveAbandonIntent(t *Ticket, priorAbandoned bool, children []*Ticket, in
 //
 // Writes tk makes on its own behalf go through Store.Update and touch no other
 // ticket. A move closes the ticket it left behind in the source to record that
-// it went elsewhere, which is not a decision about the children staying put.
+// it went elsewhere, which is not a decision about the children staying put —
+// and an epic left behind stores backlog rather than closed, its status being
+// derived and a stored closed reading as an abandon.
 //
 // Returns the children the abandon closed, so a caller reporting the edit can
 // name the tickets it mutated besides the one it was asked to write.

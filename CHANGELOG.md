@@ -6,6 +6,9 @@
 - The "project directory is not a directory" refusal now has a single definition, shared by `MultiStore.Create` and `CentralStoreForRepo`, with a test that compares the two paths' error text for the same root and project rather than matching each against a substring — three hand-maintained copies of the same check is how one of them came to be missing a branch. Behaviour on the registered paths is unchanged, message text included.
 - The unregistered-project branch of the repo resolution now refuses a project directory that exists and is not one — a symlink, a file — with that same error, where it previously reported the repo as having no ticket store. A write through it lands outside the store whether or not the project is registered, and `tk init` fixes neither that nor the stat failure the branch also swallowed; a missing directory still reads as no store, so an unregistered project with a real ticket directory still surfaces with its warning.
 
+### Fixed
+- `tk move` no longer plants a false candidate in `tk audit`. The ticket left behind in the source is closed to record that it left, but on an epic that stored `closed` was read by the audit's epic-status section as a hand-close made before statuses were derived — and the remedy it prints, `tk edit <id> --status closed`, would record an abandon nobody expressed and cascade-close the children that stayed. An epic left behind now stores `backlog`: equally inert for readers, since an epic's status is derived from its children either way, and it carries no abandon signature — the epic may still appear in the report as `stale-status`, the class that names no remedy. Non-epics still store `closed`, and an epic carrying `abandoned: true` keeps both that flag and its `closed`: the pair is a decision a human took before the move, it derives `closed` and so reports no drift at all, and it is never read as a hand-close.
+
 ## [8.2.0] - 2026-09-06
 
 ### Added

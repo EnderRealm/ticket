@@ -16,7 +16,8 @@ type MoveResult struct {
 }
 
 // MoveTicket moves a single ticket from src store to dst store.
-// The ticket is closed in src with a note, and created in dst with a new ID.
+// The ticket is closed in src with a note — an epic is not, its status being
+// derived — and created in dst with a new ID.
 //
 // Both stores are resolved by the caller (ResolveStoreForRepo), which is where
 // a destination that resolves to no store is refused: nothing here checks that
@@ -25,9 +26,9 @@ type MoveResult struct {
 // is the same directory as src is refused here, before anything is written.
 //
 // The move is not atomic and nothing is rolled back on failure: the results
-// for the tickets that completed (created in dst and closed in src) are
-// returned alongside the error, and the error names any ticket already
-// written to dst whose source copy is still open, so it can be reconciled.
+// for the tickets that completed (created in dst and recorded as moved in src)
+// are returned alongside the error, and the error names any ticket already
+// written to dst whose source copy is unchanged, so it can be reconciled.
 func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, error) {
 	srcWhere, err := storeLabel(src)
 	if err != nil {
@@ -196,14 +197,29 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		// Closed, not done: the ticket did not complete here, it left. It is an
 		// epic's children that carry this — an epic derives done only once every
 		// child of it is done, so a child that moved away leaves the epic
-		// staying behind reading closed rather than finished. On an epic that is
-		// itself moving the status written here is inert: an epic's status is
-		// derived, and the write goes through Update, which records no abandon
-		// intent, so what stays behind reads as whatever children stayed with it.
+		// staying behind reading closed rather than finished.
+		//
+		// An epic that is itself moving stores backlog instead. Either value is
+		// inert for readers, since an epic's status is derived, but the stored
+		// one is not inert for `tk audit`: a stored closed with no abandon flag
+		// is reported as a hand-close candidate whose remedy — `tk edit --status
+		// closed` — would abandon the epic and cascade-close the children that
+		// stayed, which nobody asked for. backlog carries no abandon signature,
+		// so the epic can only turn up in the audit as stale-status, the class
+		// that names no remedy. Written rather than left alone: t came from
+		// src.Get, so t.Status is the derived value, and an epic whose children
+		// were already terminal echoes exactly the closed the audit flags.
+		//
+		// An epic already carrying the abandon flag keeps its closed: that pair
+		// is the decision a human took before the move, it derives closed and so
+		// reports no drift at all, and it is never read as a hand-close.
 		t.Status = StatusClosed
+		if t.Type == TypeEpic && !t.Abandoned {
+			t.Status = StatusBacklog
+		}
 		if err := src.Update(t); err != nil {
-			return results, fmt.Errorf("closing %s in source: %w. %s was written to %s but %s is still "+
-				"open here — delete the target copy or close it by hand",
+			return results, fmt.Errorf("recording the move of %s in source: %w. %s was written to %s but %s is "+
+				"unchanged here — delete the target copy or record the move by hand",
 				t.ID, err, newID, dstWhere, t.ID)
 		}
 

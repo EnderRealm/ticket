@@ -15,7 +15,7 @@ var moveCmd = &cobra.Command{
 		"A repo that owns none is refused, as is a target " +
 		"that resolves to the store the ticket already lives in — that would rename it rather " +
 		"than move it; re-parenting within a project is 'tk edit --parent'. " +
-		"Closes the original with a note. " +
+		"Closes the original with a note; an epic left behind is not closed, since its status is derived from the children that stayed. " +
 		"A closed ticket is hidden from a default 'tk ls', so list moved tickets with 'tk ls --status=closed'.",
 	Args: cobra.ExactArgs(2),
 	RunE: runMove,
@@ -55,14 +55,14 @@ func runMove(cmd *cobra.Command, args []string) error {
 	}
 	if err != nil {
 		// The move is not rolled back, so name what completed; the error names
-		// any target copy whose source ticket is still open. The moved IDs are
+		// any target copy whose source ticket is unchanged. The moved IDs are
 		// the result and stay on stdout; this banner is a diagnostic.
 		if len(results) > 0 {
 			landed := fmt.Sprintf("the %d tickets above are", len(results))
 			if len(results) == 1 {
 				landed = "the ticket above is"
 			}
-			fmt.Fprintf(os.Stderr, "Move failed partway: %s in %s and closed here.\n",
+			fmt.Fprintf(os.Stderr, "Move failed partway: %s in %s and recorded as moved here.\n",
 				landed, targetRepo)
 		}
 		return err

@@ -552,7 +552,7 @@ func TestMoveNonRecursiveLeavesTheChildrenAlone(t *testing.T) {
 			t.Errorf("child %s = %q, want %q — a move is not an abandon", id, child.Status, want)
 		}
 	}
-	// The closed the move wrote on the epic is inert: an epic's status is
+	// The backlog the move wrote on the epic is inert: an epic's status is
 	// derived, and a move records no abandon intent, so what stayed behind reads
 	// as the children that stayed with it.
 	epic, err := src.Get("nr-epic-0001")
@@ -841,5 +841,92 @@ func TestMovePreservesCreated(t *testing.T) {
 	}
 	if !moved.Created.Equal(orig.Created) {
 		t.Errorf("Created not preserved on move: was %v, now %v", orig.Created, moved.Created)
+	}
+}
+
+func TestMoveLeavesNoStoredClosedOnTheEpicThatLeft(t *testing.T) {
+	// The status a move stores on an epic it left behind is inert for readers,
+	// but a stored closed with no abandon flag is what `tk audit` reports as a
+	// hand-close candidate — and its remedy would abandon the epic and close the
+	// children that stayed. Three shapes: the epic whose live child keeps it
+	// deriving open, the one whose children were already terminal — where the
+	// derived value the move started from was closed — and the one abandoned
+	// before it moved, which keeps the closed that decision recorded.
+	cases := []struct {
+		name       string
+		epicID     string
+		recursive  bool
+		abandon    bool
+		children   map[string]Status
+		wantStored Status
+	}{
+		{
+			name:       "live child stays behind",
+			epicID:     "audit-live-0001",
+			children:   map[string]Status{"audit-open-0002": StatusOpen},
+			wantStored: StatusBacklog,
+		},
+		{
+			name:       "children already terminal",
+			epicID:     "audit-shut-0001",
+			recursive:  true,
+			children:   map[string]Status{"audit-done-0002": StatusDone, "audit-closed-0003": StatusClosed},
+			wantStored: StatusBacklog,
+		},
+		{
+			name:       "abandoned before it moved",
+			epicID:     "audit-gone-0001",
+			abandon:    true,
+			children:   map[string]Status{"audit-shut-0002": StatusClosed},
+			wantStored: StatusClosed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &FileStore{Dir: t.TempDir()}
+			dst := &FileStore{Dir: t.TempDir()}
+
+			mkMovable(t, src, tc.epicID, TypeEpic, StatusBacklog, "")
+			for id, status := range tc.children {
+				mkMovable(t, src, id, TypeFeature, status, tc.epicID)
+			}
+			if tc.abandon {
+				if err := setStatus(t, src, tc.epicID, StatusClosed); err != nil {
+					t.Fatalf("abandoning %s: %v", tc.epicID, err)
+				}
+			}
+
+			if _, err := MoveTicket(src, dst, tc.epicID, tc.recursive); err != nil {
+				t.Fatalf("MoveTicket: %v", err)
+			}
+
+			stored, err := src.getStored(tc.epicID)
+			if err != nil {
+				t.Fatalf("getStored %s: %v", tc.epicID, err)
+			}
+			if stored.Status != tc.wantStored {
+				t.Errorf("stored epic status = %q, want %q", stored.Status, tc.wantStored)
+			}
+			if stored.Abandoned != tc.abandon {
+				t.Errorf("stored epic abandoned = %v, want %v — a move neither records an abandon nor takes one back", stored.Abandoned, tc.abandon)
+			}
+
+			drift, _, err := auditStoreEpicStatus(src)
+			if err != nil {
+				t.Fatalf("auditStoreEpicStatus: %v", err)
+			}
+			for _, d := range drift {
+				if !SameTicketID(d.ID, tc.epicID) {
+					continue
+				}
+				if d.Kind == EpicDriftStoredClosed {
+					t.Errorf("audit reports %s as %s (stored %q) — the remedy would abandon it", d.ID, d.Kind, d.Stored)
+				}
+				if tc.abandon {
+					t.Errorf("audit reports %s as %s (stored %q) — the kept abandon derives closed, so there is no drift", d.ID, d.Kind, d.Stored)
+				}
+			}
+		})
 	}
 }

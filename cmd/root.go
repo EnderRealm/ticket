@@ -82,7 +82,8 @@ Creating & Editing:
   renames rather than moves it; re-parent within a project with
   'tk edit --parent'. The moved ticket gets a new ID in the destination
   project, and the original is closed with a note — so list moved tickets
-  with 'tk ls --status=closed'.
+  with 'tk ls --status=closed'. An epic left behind is not closed: its status
+  is derived from the children that stayed.
 
 Dependencies & Links:
   dep <id> <dep-id>          Add dependency (id depends on dep-id)

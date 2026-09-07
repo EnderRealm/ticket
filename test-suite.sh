@@ -18,10 +18,13 @@ fi
 TEST_HOME=$(mktemp -d)
 CENTRAL_ROOT=$(mktemp -d)
 PROJECT_DIR=$(mktemp -d)
+# The move case needs a second repo owning a second project. It is registered
+# where that case runs, so nothing before it sees more than one project.
+OTHER_DIR=$(mktemp -d)
 export HOME="$TEST_HOME"
 
 cleanup() {
-    rm -rf "$TEST_HOME" "$CENTRAL_ROOT" "$PROJECT_DIR"
+    rm -rf "$TEST_HOME" "$CENTRAL_ROOT" "$PROJECT_DIR" "$OTHER_DIR"
 }
 trap cleanup EXIT
 
@@ -485,6 +488,20 @@ assert_contains "tk audit" "stored-closed" "Audit calls out an epic storing clos
 assert_contains "tk audit --project tktest" "legacy-epic-9999" "Epic report scoped to a project"
 assert_ok "tk edit legacy-epic-9999 --status closed" "The remedy the audit names re-records the abandon"
 assert_not_contains "tk audit" "legacy-epic-9999" "Audit clean once the abandon is re-recorded"
+
+# A move records that a ticket left by closing it here, but an epic left behind
+# stores backlog: its status is derived either way, and a stored closed with no
+# abandon flag is what the audit reports as a hand-close candidate — whose
+# remedy would abandon the epic and close the children that stayed.
+(cd "$OTHER_DIR" && git init -q && tk init --central-root "$CENTRAL_ROOT" --project tkother --yes) > /dev/null
+MOVE_EPIC=$(tk create "Epic that moves projects" -t epic | extract_id)
+MOVE_CHILD=$(tk create "Child that stays behind" --parent "$MOVE_EPIC" | extract_id)
+assert_ok "tk move $MOVE_EPIC $OTHER_DIR" "Move an epic to another project"
+# Scoped to this epic: the block above deliberately leaves another epic storing
+# a closed its children no longer imply, which is a stored-closed of its own.
+assert_not_contains "tk audit | grep $MOVE_EPIC" "stored-closed" "A moved epic plants no stored-closed candidate"
+assert_contains "grep '^status:' $STORE_DIR/$MOVE_EPIC.md" "status: backlog" "The epic left behind stores backlog"
+assert_contains "tk show $MOVE_CHILD" "status: backlog" "The child of a moved epic is left as it was"
 
 # The central store is a git repo other machines push into, so a ticket file can
 # carry a value tk would never have written. A mistyped typed field costs that
