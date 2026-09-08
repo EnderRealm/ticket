@@ -58,6 +58,47 @@ func TestParseCriteria(t *testing.T) {
 			want:    []Criterion{{Text: "First thing.", Command: "true"}},
 		},
 		{
+			name:    "unverifiable line attaches its reason",
+			section: "- Reviewed by hand.\n  unverifiable: no runnable check for a human read-through.",
+			want: []Criterion{
+				{Text: "Reviewed by hand.", Unverifiable: true, UnverifiableReason: "no runnable check for a human read-through."},
+			},
+		},
+		{
+			name:    "unindented unverifiable line is not a marker",
+			section: "- First thing.\nunverifiable: nope",
+			want:    []Criterion{{Text: "First thing."}},
+		},
+		{
+			name:    "unverifiable without preceding bullet",
+			section: "  unverifiable: nope\n- First thing.",
+			want:    []Criterion{{Text: "First thing."}},
+		},
+		{
+			name:    "first unverifiable line under a bullet wins",
+			section: "- First thing.\n  unverifiable: first reason\n  unverifiable: second reason",
+			want:    []Criterion{{Text: "First thing.", Unverifiable: true, UnverifiableReason: "first reason"}},
+		},
+		{
+			name:    "empty unverifiable line still marks and consumes the slot",
+			section: "- First thing.\n  unverifiable:\n  unverifiable: later reason",
+			want:    []Criterion{{Text: "First thing.", Unverifiable: true}},
+		},
+		{
+			name:    "verify then unverifiable keeps the command",
+			section: "- First thing.\n  verify: true\n  unverifiable: partial check only.",
+			want: []Criterion{
+				{Text: "First thing.", Command: "true", Unverifiable: true, UnverifiableReason: "partial check only."},
+			},
+		},
+		{
+			name:    "unverifiable then verify keeps the command",
+			section: "- First thing.\n  unverifiable: partial check only.\n  verify: true",
+			want: []Criterion{
+				{Text: "First thing.", Command: "true", Unverifiable: true, UnverifiableReason: "partial check only."},
+			},
+		},
+		{
 			name:    "empty bullets skipped",
 			section: "- \n- \t\n-\n- First thing.",
 			want:    []Criterion{{Text: "First thing."}},
@@ -241,6 +282,37 @@ func TestRunVerify(t *testing.T) {
 	}
 	if results[2].Output != "boom" {
 		t.Errorf("output = %q, want %q", results[2].Output, "boom")
+	}
+}
+
+// TestRunVerifyUnverifiableReasonNeverRuns pins that an unverifiable reason is
+// data: it takes the unverified path with no command, and prose shaped like an
+// allow-listed command executes nothing.
+func TestRunVerifyUnverifiableReasonNeverRuns(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "sentinel.txt")
+
+	criteria := []Criterion{{
+		Text:               "reviewed by hand",
+		Unverifiable:       true,
+		UnverifiableReason: "/bin/sh -c 'touch " + sentinel + "'",
+	}}
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow})
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("the unverifiable reason ran as a command: sentinel stat err = %v", err)
+	}
+	if results[0].Status != VerifyUnverified {
+		t.Errorf("status = %q, want %q", results[0].Status, VerifyUnverified)
+	}
+	if results[0].Criterion.Command != "" {
+		t.Errorf("command = %q, want empty", results[0].Criterion.Command)
+	}
+	if !results[0].Criterion.Unverifiable || results[0].Criterion.UnverifiableReason != criteria[0].UnverifiableReason {
+		t.Errorf("criterion = %+v, want the marker and reason carried through", results[0].Criterion)
 	}
 }
 
@@ -524,11 +596,13 @@ func TestVerifyStripsControlCharactersFromEchoedCommand(t *testing.T) {
 func TestVerifyStripsControlCharactersFromCriterionText(t *testing.T) {
 	// The bullet text is as attacker-writable as the verify line and prints on
 	// the same line, so an escape planted there repaints the very output the
-	// operator is judging — and the record replays it on every later read.
+	// operator is judging — and the record replays it on every later read. An
+	// unverifiable reason is written the same way and prints on that same line.
 	criteria := []Criterion{
 		{Text: "\x1b[1A\x1b[2KPASS (exit 0) all good", Command: "/bin/echo ok"},
 		{Text: "refused \x1b[2Jspoof", Command: "rm -rf /"},
 		{Text: "unverified ‮special"},
+		{Text: "hand-checked", Unverifiable: true, UnverifiableReason: "\x1b[2Jspoof"},
 	}
 	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
@@ -537,6 +611,9 @@ func TestVerifyStripsControlCharactersFromCriterionText(t *testing.T) {
 	for i, r := range results {
 		if strings.ContainsRune(r.Criterion.Text, 0x1b) || strings.ContainsRune(r.Criterion.Text, 0x202e) {
 			t.Errorf("result %d carried a raw escape in the criterion text:\n%q", i, r.Criterion.Text)
+		}
+		if strings.ContainsRune(r.Criterion.UnverifiableReason, 0x1b) || strings.ContainsRune(r.Criterion.UnverifiableReason, 0x202e) {
+			t.Errorf("result %d carried a raw escape in the unverifiable reason:\n%q", i, r.Criterion.UnverifiableReason)
 		}
 	}
 

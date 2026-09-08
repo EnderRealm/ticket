@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `ParseCriteria` reads an `unverifiable: <reason>` continuation line beside `verify:`, and `ticket.Criterion` carries it as `Unverifiable` plus `UnverifiableReason`. The marker the capture flow requires on any criterion that has no runnable command was invisible to tk: a criterion deliberately marked unverifiable and one nobody wrote a line for both parsed to an empty `Command` and both reported `unverified`, so nothing downstream could tell "no command because none can exist" from "no command because nobody wrote one" without a second scan of the body — which is how two readings of the same section come to disagree. The line follows the same rules as `verify:`: at least two spaces of indent, the first one under a bullet wins, one with no preceding bullet is ignored. It never touches `Command`, so a criterion carrying both lines keeps its command. Two fields rather than one because a bare `unverifiable:` with no reason still carries the claim, which an empty string could not distinguish from an absent line. The empty value is the one deliberate divergence from `verify:`, where an empty command leaves the slot open for a later non-empty one: an empty reason still consumes the slot, since the claim is the line's presence. The reason is data and never reaches the executor — it is stripped of control characters like the text and command, and is never tokenized or execed; a criterion carrying only the marker still yields `unverified`. Behaviour is otherwise unchanged and nothing reads the new fields yet.
+
 ## [8.3.0] - 2026-09-07
 
 ### Added

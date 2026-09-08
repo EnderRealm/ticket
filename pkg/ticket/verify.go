@@ -12,10 +12,18 @@ import (
 	"unicode/utf8"
 )
 
-// Criterion is one acceptance criterion, optionally carrying a verify command.
+// Criterion is one acceptance criterion, optionally carrying a verify command
+// or a claim that no command can exist for it.
+//
+// Unverifiable and UnverifiableReason are two fields rather than one because a
+// bare "unverifiable:" with no reason text still carries the claim: an empty
+// reason must stay distinguishable from a criterion carrying no such line at
+// all, which a single string field would collapse.
 type Criterion struct {
-	Text    string
-	Command string // empty = unverified
+	Text               string
+	Command            string // empty = unverified
+	Unverifiable       bool   // an "unverifiable:" line was present
+	UnverifiableReason string // the prose from that line; may be empty
 }
 
 // VerifyStatus is the outcome of checking a single criterion.
@@ -30,9 +38,9 @@ const (
 
 // VerifyResult pairs a criterion with the outcome of running its command. A
 // refused command never ran: its Output carries the refusal, not command output.
-// Criterion holds the sanitized text and command — RunVerify strips control
-// characters once, so every consumer can print it as-is; the raw command is
-// what was tokenized and execed.
+// Criterion holds the sanitized text, command and unverifiable reason —
+// RunVerify strips control characters once, so every consumer can print it
+// as-is; the raw command is what was tokenized and execed.
 type VerifyResult struct {
 	Criterion Criterion
 	Status    VerifyStatus
@@ -42,6 +50,12 @@ type VerifyResult struct {
 
 // verifyPrefix marks a criterion's check command on a continuation line.
 const verifyPrefix = "verify:"
+
+// unverifiablePrefix marks, on a continuation line, a criterion for which no
+// runnable command can exist, with the reason it cannot. It is carried as data
+// only: the reason is prose from the same untrusted body a verify command comes
+// from, with no allow-list behind it, so it is never tokenized or execed.
+const unverifiablePrefix = "unverifiable:"
 
 // maxVerifyOutput caps captured output per criterion so a chatty command can't
 // blow up the reported results.
@@ -92,9 +106,15 @@ func AcceptanceCriteria(body string) string {
 
 // ParseCriteria extracts criteria from an acceptance-criteria section. A
 // top-level "- " bullet starts a criterion; a following line indented by at
-// least two spaces and reading "verify: <command>" attaches that command to it.
-// The first such line wins — later ones under the same bullet are ignored, as
-// is a verify line with no preceding bullet. Bullets with no text are skipped.
+// least two spaces and reading "verify: <command>" attaches that command to it,
+// and one reading "unverifiable: <reason>" marks it as having no runnable check
+// and records the reason. The first line of each kind wins — later ones under
+// the same bullet are ignored, as is either line with no preceding bullet. An
+// empty verify line is not a command, so it leaves the slot open for a later
+// non-empty one; an empty unverifiable line still consumes the slot, because
+// the claim is the line's presence rather than the reason. The two are
+// independent: a criterion carrying both keeps its command. Bullets with no
+// text are skipped.
 func ParseCriteria(section string) []Criterion {
 	var criteria []Criterion
 	for _, line := range strings.Split(section, "\n") {
@@ -110,6 +130,16 @@ func ParseCriteria(section string) []Criterion {
 				continue
 			}
 			criteria[len(criteria)-1].Command = strings.TrimSpace(trimmed[len(verifyPrefix):])
+		case strings.HasPrefix(line, "  ") && strings.HasPrefix(trimmed, unverifiablePrefix):
+			// Unlike an empty verify line, which leaves the slot open for a later
+			// non-empty one because an empty command is not runnable, an empty
+			// unverifiable line consumes the slot: the claim is the line's
+			// presence, and an empty reason is still the claim.
+			if len(criteria) == 0 || criteria[len(criteria)-1].Unverifiable {
+				continue
+			}
+			criteria[len(criteria)-1].Unverifiable = true
+			criteria[len(criteria)-1].UnverifiableReason = strings.TrimSpace(trimmed[len(unverifiablePrefix):])
 		}
 	}
 	return criteria
@@ -129,11 +159,12 @@ func ParseCriteria(section string) []Criterion {
 // argument, and a policy whose controls could not be read refuses everything
 // naming the cause.
 //
-// A criterion's text and command are stripped of control characters; a
-// command's own captured Output is deliberately left raw, so that the coloured
-// output of a test runner survives to the terminal in the readable form the
-// field exists for. That output comes from a program the machine's owner
-// allow-listed, which is a narrower trust than the ticket content around it.
+// A criterion's text, command and unverifiable reason are stripped of control
+// characters; a command's own captured Output is deliberately left raw, so
+// that the coloured output of a test runner survives to the terminal in the
+// readable form the field exists for. That output comes from a program the
+// machine's owner allow-listed, which is a narrower trust than the ticket
+// content around it.
 func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy VerifyPolicy) ([]VerifyResult, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -149,11 +180,12 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy Ver
 		if c.Command != "" {
 			res = runCriterion(ctx, c, dir, policy)
 		}
-		// A criterion's text and command are both untrusted markdown that every
-		// consumer prints. Sanitizing here, where the result is produced, keeps
-		// each print site from having to remember to.
+		// A criterion's text, command and unverifiable reason are all untrusted
+		// markdown that every consumer prints. Sanitizing here, where the result
+		// is produced, keeps each print site from having to remember to.
 		res.Criterion.Text = SanitizeControl(res.Criterion.Text)
 		res.Criterion.Command = SanitizeControl(res.Criterion.Command)
+		res.Criterion.UnverifiableReason = SanitizeControl(res.Criterion.UnverifiableReason)
 		results = append(results, res)
 	}
 	return results, nil
