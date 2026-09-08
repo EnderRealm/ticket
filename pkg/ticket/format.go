@@ -320,8 +320,8 @@ func Serialize(t *Ticket) ([]byte, error) {
 	}
 
 	if len(t.Notes) > 0 {
-		if !strings.Contains(t.Body, "## Notes") {
-			buf.WriteString("\n## Notes\n")
+		if lineIndex(t.Body, func(line string) bool { return line == notesHeading }) < 0 {
+			buf.WriteString("\n" + notesHeading + "\n")
 		}
 		for _, n := range t.Notes {
 			buf.WriteString("\n**" + n.Timestamp.UTC().Format(time.RFC3339) + "**\n\n")
@@ -391,8 +391,8 @@ func parseBody(t *Ticket, body string) {
 	rest := strings.Join(lines[titleIdx+1:], "\n")
 
 	// Extract ## Notes section.
-	notesIdx := strings.Index(rest, "\n## Notes\n")
-	if notesIdx == -1 && strings.HasPrefix(rest, "## Notes\n") {
+	notesIdx := strings.Index(rest, "\n"+notesHeading+"\n")
+	if notesIdx == -1 && strings.HasPrefix(rest, notesHeading+"\n") {
 		notesIdx = 0
 	}
 
@@ -413,9 +413,9 @@ func parseBody(t *Ticket, body string) {
 	t.Body = rest[:bodyEnd]
 
 	if notesIdx >= 0 {
-		sectionStart := notesIdx + len("\n## Notes\n")
+		sectionStart := notesIdx + len("\n"+notesHeading+"\n")
 		if notesIdx == 0 {
-			sectionStart = len("## Notes\n")
+			sectionStart = len(notesHeading + "\n")
 		}
 		// Notes section ends at the next structural section or end.
 		sectionEnd := len(rest)
@@ -475,6 +475,13 @@ const acceptanceHeadingPrefix = "## Acceptance"
 // section back under.
 const acceptanceHeading = "## Acceptance Criteria"
 
+// notesHeading is the heading Serialize writes notes under and parseBody reads
+// them back from. Both match it as a whole line and nothing looser: parseBody
+// takes only an exact heading line for the section, so Serialize has to write
+// one whenever the body carries no such line, however often the prose above
+// names it.
+const notesHeading = "## Notes"
+
 // sectionKind is the section a body line opens, if any.
 type sectionKind int
 
@@ -483,6 +490,7 @@ const (
 	sectionDesign
 	sectionAcceptance
 	sectionTestResults
+	sectionNotes
 	sectionOther // a `## ` heading tk does not name
 )
 
@@ -498,31 +506,47 @@ func classifyLine(line string) sectionKind {
 		return sectionAcceptance
 	case strings.HasPrefix(line, "## Test Results"):
 		return sectionTestResults
+	case strings.HasPrefix(line, notesHeading):
+		return sectionNotes
 	case strings.HasPrefix(line, "## "):
 		return sectionOther
 	}
 	return sectionNone
 }
 
-// structuralSections lists the heading prefixes that delimit ticket body sections.
-var structuralSections = []string{
-	"\n## Design",
-	"\n" + acceptanceHeadingPrefix,
-	"\n## Test Results",
-	"\n## Notes",
+// lineIndex returns the byte offset of the first line of s that match accepts,
+// or -1 when no line does. Every heading lookup goes through it, because a
+// heading named inline in prose — which is what a ticket about the ticket
+// format is full of — is not a heading, and a substring search took it for one.
+func lineIndex(s string, match func(line string) bool) int {
+	for off := 0; off < len(s); {
+		line, next := s[off:], len(s)
+		if i := strings.IndexByte(line, '\n'); i >= 0 {
+			line, next = line[:i], off+i+1
+		}
+		if match(line) {
+			return off
+		}
+		off = next
+	}
+	return -1
 }
 
-// nextStructuralSection returns the index of the next known structural section
-// marker in s, or -1 if none found.
-func nextStructuralSection(s string) int {
-	best := -1
-	for _, marker := range structuralSections {
-		idx := strings.Index(s, marker)
-		if idx >= 0 && (best < 0 || idx < best) {
-			best = idx
-		}
+// structural reports whether kind opens a section that bounds the one before
+// it. `## Notes` bounds a section without being one BodySections returns:
+// Serialize keeps the notes it parses out of the body under that heading.
+func (k sectionKind) structural() bool {
+	switch k {
+	case sectionDesign, sectionAcceptance, sectionTestResults, sectionNotes:
+		return true
 	}
-	return best
+	return false
+}
+
+// nextStructuralSection returns the offset of the line opening the next
+// structural section of s, or -1 if there is none.
+func nextStructuralSection(s string) int {
+	return lineIndex(s, func(line string) bool { return classifyLine(line).structural() })
 }
 
 // UpdateSection replaces or inserts a markdown section in the body.
@@ -531,7 +555,7 @@ func UpdateSection(body, heading, content string) string {
 	if heading == "" {
 		idx := nextStructuralSection(body)
 		if idx >= 0 {
-			return "\n" + content + "\n" + body[idx:]
+			return "\n" + content + "\n\n" + body[idx:]
 		}
 		return "\n" + content + "\n"
 	}
@@ -545,20 +569,24 @@ func UpdateSection(body, heading, content string) string {
 		if updated, ok := replaceAcceptanceSection(body, content); ok {
 			return updated
 		}
-	} else if idx := strings.Index(body, marker); idx >= 0 {
-		rest := body[idx+len(marker):]
-		nextIdx := nextStructuralSection(rest)
+	} else if idx := lineIndex(body, func(line string) bool { return strings.HasPrefix(line, marker) }); idx >= 0 {
+		// From the line after the heading, so what bounds the section is the
+		// next heading line rather than any text the heading line trails.
+		rest := ""
+		if i := strings.IndexByte(body[idx:], '\n'); i >= 0 {
+			rest = body[idx+i+1:]
+		}
 		var after string
-		if nextIdx >= 0 {
-			after = rest[nextIdx:]
+		if nextIdx := nextStructuralSection(rest); nextIdx >= 0 {
+			after = "\n" + rest[nextIdx:]
 		}
 		return body[:idx] + marker + "\n\n" + content + "\n" + after
 	}
 
-	// Section doesn't exist — append before Notes if present, else at end.
-	notesIdx := strings.Index(body, "\n## Notes")
+	// Section doesn't exist — insert before Notes if present, else at end.
+	notesIdx := lineIndex(body, func(line string) bool { return classifyLine(line) == sectionNotes })
 	if notesIdx >= 0 {
-		return body[:notesIdx] + "\n" + marker + "\n\n" + content + "\n" + body[notesIdx:]
+		return body[:notesIdx] + marker + "\n\n" + content + "\n\n" + body[notesIdx:]
 	}
 	return body + "\n" + marker + "\n\n" + content + "\n"
 }
@@ -604,9 +632,10 @@ func replaceAcceptanceSection(body, content string) (string, bool) {
 //
 // The headings match on prefix, so `## Acceptance Notes` written by hand reads
 // as the acceptance section — intentional, and the same looseness UpdateSection
-// writes through, since both split the body with classifyLine.
-// structuralSections above is a separate list serving a different job (it
-// bounds a non-acceptance section being replaced, and includes `## Notes`).
+// writes through, since both split the body with classifyLine. `## Notes` is
+// classified too, but only so it bounds a section UpdateSection replaces; here
+// it closes the acceptance section like any other unnamed heading, because the
+// notes are parsed out of the body rather than returned as a section.
 //
 // This is the single definition of the acceptance section — AcceptanceCriteria
 // delegates here, so the criteria ticket_show reports are the ones `tk verify`
@@ -665,7 +694,7 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 		case kind == sectionTestResults:
 			flush()
 			current = &testResults
-		case kind == sectionOther && current == &acceptance:
+		case (kind == sectionOther || kind == sectionNotes) && current == &acceptance:
 			flush()
 			current = nil
 		default:

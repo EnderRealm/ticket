@@ -3495,6 +3495,105 @@ func TestVerifyMatchesShownAcceptanceCriteria(t *testing.T) {
 	}
 }
 
+// showTicket calls ticket_show and returns the decoded response.
+func showTicket(t *testing.T, session *mcp.ClientSession, id string) map[string]any {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_show",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_show error: %v", result.Content)
+	}
+	var shown map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	return shown
+}
+
+// TestVerifyRecordsUnderTheRealTestResultsHeading covers the sequence that was
+// observed to destroy a ticket: a description naming the structural headings
+// inline, a verify run, then a description edit. The names are prose, so the
+// record lands under the real heading, the description survives byte-identical
+// and the note stays a note.
+func TestVerifyRecordsUnderTheRealTestResultsHeading(t *testing.T) {
+	session, _ := verifyServer(t)
+	ctx := context.Background()
+
+	const desc = "A verify run records under `## Test Results`, a note lands under\n`## Notes`, and criteria sit under `## Acceptance Criteria`."
+	id := createTicketID(t, session, map[string]any{
+		"title":       "Ticket naming the structural headings",
+		"type":        "feature",
+		"description": desc,
+		"acceptance":  "- Passing check.\n  verify: /bin/echo ok\n",
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_add_note",
+		Arguments: map[string]any{"id": id, "text": "A note that must stay a note."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_add_note error: %v", result.Content)
+	}
+
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+
+	shown := showTicket(t, session, id)
+	if shown["description"] != desc {
+		t.Errorf("description after verify = %q, want %q", shown["description"], desc)
+	}
+	if results, _ := shown["test_results"].(string); !strings.Contains(results, "PASS") {
+		t.Errorf("test_results should hold the run record:\n%s", results)
+	}
+	if notes, _ := shown["notes"].([]any); len(notes) != 1 {
+		t.Errorf("notes after verify = %+v, want the one note", shown["notes"])
+	}
+
+	// The repair edit that followed the verify run in the wild: it must leave
+	// the recorded results, the criteria and the note where they are.
+	const newDesc = "A rewritten description that still names `## Test Results`."
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": id, "description": newDesc},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit error: %v", result.Content)
+	}
+
+	shown = showTicket(t, session, id)
+	if shown["description"] != newDesc {
+		t.Errorf("description after the edit = %q, want %q", shown["description"], newDesc)
+	}
+	if results, _ := shown["test_results"].(string); !strings.Contains(results, "PASS") {
+		t.Errorf("test_results should survive the description edit:\n%s", results)
+	}
+	if acceptance, _ := shown["acceptance_criteria"].(string); !strings.Contains(acceptance, "Passing check.") {
+		t.Errorf("acceptance_criteria should survive the description edit:\n%s", acceptance)
+	}
+	if notes, _ := shown["notes"].([]any); len(notes) != 1 {
+		t.Errorf("notes after the edit = %+v, want the one note", shown["notes"])
+	}
+}
+
 func TestCreateRejectsNonEpicParent(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

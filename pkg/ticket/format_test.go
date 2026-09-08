@@ -1539,3 +1539,145 @@ func TestSerialize_NotesDuplication(t *testing.T) {
 		t.Errorf("expected 2 notes, got %d", len(tk3.Notes))
 	}
 }
+
+// TestUpdateSection_HeadingNamedInProse pins the anchoring: a description that
+// names a structural heading inline — the shape every ticket about the ticket
+// format has — is prose, not a heading, so an edit spans the real section and
+// leaves the rest of the body byte-identical.
+func TestUpdateSection_HeadingNamedInProse(t *testing.T) {
+	const prose = "The structural headings are `## Design`, `## Acceptance Criteria`,\n" +
+		"`## Test Results` and `## Notes`."
+	body := func(desc, design, acceptance, results string) string {
+		return "\n" + desc + "\n\n## Design\n\n" + design +
+			"\n\n## Acceptance Criteria\n\n" + acceptance +
+			"\n\n## Test Results\n\n" + results + "\n"
+	}
+	original := body(prose, "A real design.", "- a criterion", "A real run record.")
+
+	tests := []struct {
+		name    string
+		heading string
+		content string
+		want    string
+	}{
+		{
+			name:    "design edit",
+			heading: "Design",
+			content: "A new design.",
+			want:    body(prose, "A new design.", "- a criterion", "A real run record."),
+		},
+		{
+			name:    "test results edit",
+			heading: "Test Results",
+			content: "A new run record.",
+			want:    body(prose, "A real design.", "- a criterion", "A new run record."),
+		},
+		{
+			name:    "description edit",
+			heading: "",
+			content: "A new description.",
+			want:    body("A new description.", "A real design.", "- a criterion", "A real run record."),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if updated := UpdateSection(original, tt.heading, tt.content); updated != tt.want {
+				t.Errorf("body after the edit =\n%q\nwant\n%q", updated, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateSection_DescriptionKeepsLeadingHeading covers a body with no
+// description at all: the first heading opens the body, and parseBody trims the
+// newline that would have preceded it, so the description edit has to recognise
+// a heading sitting at offset 0.
+func TestUpdateSection_DescriptionKeepsLeadingHeading(t *testing.T) {
+	body := "## Design\n\nA real design.\n"
+	updated := UpdateSection(body, "", "A new description.")
+
+	desc, design, _, _ := BodySections(updated)
+	if desc != "A new description." || design != "A real design." {
+		t.Errorf("desc = %q, design = %q, want the design section to survive.\nBody:\n%s", desc, design, updated)
+	}
+}
+
+func TestNextStructuralSection(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string // the heading line the offset lands on, "" for no match
+	}{
+		{
+			name: "prose naming a later structural heading",
+			body: "Description mentioning `## Test Results` inline.\n\n## Design\n\nA design.\n",
+			want: "## Design",
+		},
+		{
+			name: "heading at the start of the body",
+			body: "## Notes\n\nA note.\n",
+			want: "## Notes",
+		},
+		{
+			name: "no structural heading",
+			body: "Description only, naming `## Notes` in prose.\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx := nextStructuralSection(tt.body)
+			if tt.want == "" {
+				if idx >= 0 {
+					t.Errorf("nextStructuralSection = %d, want -1.\nRest:\n%s", idx, tt.body[idx:])
+				}
+				return
+			}
+			if idx < 0 {
+				t.Fatalf("nextStructuralSection = -1, want the %q line", tt.want)
+			}
+			if !strings.HasPrefix(tt.body[idx:], tt.want) {
+				t.Errorf("nextStructuralSection landed on %q, want the %q line", tt.body[idx:], tt.want)
+			}
+		})
+	}
+}
+
+// TestSerialize_NotesHeadingNamedInProse guards the notes round trip against a
+// description that names the notes heading inline: the heading has to be
+// written because the parse side only reads notes under a real one, and without
+// it the notes come back as body text under whatever section ends the body.
+func TestSerialize_NotesHeadingNamedInProse(t *testing.T) {
+	tk := &Ticket{
+		ID:       "test-notes-prose",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Deps:     []string{},
+		Links:    []string{},
+		Created:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:    "Notes heading named in prose",
+		Body:     "The headings are `## Notes` and the rest.\n\n## Acceptance Criteria\n\n- a criterion\n",
+		Notes: []Note{{
+			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			Text:      "A note that must stay a note.",
+		}},
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk2, err := parseBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tk2.Notes) != 1 || tk2.Notes[0].Text != "A note that must stay a note." {
+		t.Errorf("notes = %+v, want the note to survive.\nSerialized:\n%s", tk2.Notes, data)
+	}
+	if tk2.Body != tk.Body {
+		t.Errorf("body = %q, want %q", tk2.Body, tk.Body)
+	}
+}
