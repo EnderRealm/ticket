@@ -567,7 +567,10 @@ Description.
 }
 
 func TestParse_BackwardCompat_LegacyReviewLogStripped(t *testing.T) {
-	// Legacy ticket with Review Log section — should be silently stripped.
+	// Legacy ticket with a Review Log section: v7 retired the review system, so
+	// the section is stripped from the body and never parsed — but the read
+	// records how much it dropped, which is what the write that removes it from
+	// the file reports and what `tk audit` lists until then.
 	input := `---
 id: t-revlog
 status: open
@@ -600,6 +603,12 @@ Decision: use JWT for auth.
 	// Review Log should be stripped from body.
 	if strings.Contains(tk.Body, "Review Log") {
 		t.Errorf("body should not contain Review Log section:\n%s", tk.Body)
+	}
+
+	// The section runs from its heading to the notes that follow it.
+	section := "\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED — All file paths verified.\n"
+	if tk.droppedReviewLog != len(section) {
+		t.Errorf("droppedReviewLog = %d, want %d — the strip has to be recorded, not silent", tk.droppedReviewLog, len(section))
 	}
 
 	// Notes should still work.

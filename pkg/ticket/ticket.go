@@ -152,6 +152,15 @@ type Ticket struct {
 	// of the work item, it is what a write is held against. Empty on a ticket
 	// the caller built rather than read, which writes unconditionally.
 	version string
+
+	// droppedReviewLog is how many bytes of a legacy `## Review Log` section
+	// parseBody stripped out of the body it read. Unexported for the reason
+	// version is, and for one more: keeping it off YAML and JSON is what stops
+	// any path carrying the retired section back into a body. Zero for every
+	// ticket written since v7 retired the review system; the files that still
+	// hold one are what writeTicket warns about as it drops it and what
+	// `tk audit` lists while it is still there.
+	droppedReviewLog int
 }
 
 // Validate checks all fields for consistency. Returns the first error found.

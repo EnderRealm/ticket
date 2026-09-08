@@ -931,5 +931,19 @@ func (s *FileStore) writeTicket(t *Ticket) error {
 		return err
 	}
 	t.version = versionOf(data)
+	// v7 retired the review system and the parser strips a legacy
+	// `## Review Log` out of every body it reads, so this write is the moment
+	// the section leaves the file. Reported here rather than at the parse: a
+	// read happens for every listing, and only a write drops anything. Cleared
+	// afterwards because the bytes now on disk carry no section, so a second
+	// write of the same in-memory ticket has nothing left to report.
+	//
+	// Named in the store's namespace: MultiStore strips it before delegating, so
+	// the bare ID here would not match the namespaced one `tk audit` reports for
+	// the same ticket.
+	if t.droppedReviewLog > 0 {
+		Warnf("warning: ticket %q: this write dropped a legacy Review Log section of %d bytes from its body — the section has not been read since v7 retired the review system, and its content stays recoverable from the store's git history\n", qualifyForStore(s, t.ID), t.droppedReviewLog)
+		t.droppedReviewLog = 0
+	}
 	return nil
 }

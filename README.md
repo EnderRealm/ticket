@@ -161,8 +161,8 @@ Viewing:
   frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
   audit [--project=NAME]     Report invalid parents, epics whose stored status is not read, tickets missing
-                             body content, files that cannot be read as tickets (exits non-zero), and
-                             files whose id names another project
+                             body content, tickets storing a legacy Review Log, files that cannot be read
+                             as tickets (exits non-zero), and files whose id names another project
   verify <id>                Run the ticket's acceptance-criteria verify commands
     --dir <path>             Run the commands in this directory instead of the project's
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
@@ -287,6 +287,8 @@ A file's directory decides which project its ticket belongs to. Ticket files arr
 `tk audit` also reports tickets whose stored body is missing content it was meant to carry, in the two shapes an MCP write leaves behind. A section ending in a tool-call envelope fragment — a closing `description`, `parameter`, `invoke` or `function_calls` tag, bare or `antml:`-prefixed — is text that ran past its own parameter: the caller closed the parameter with the wrong tag, the tool-call parser consumed to the end of the call, and every argument after it was absorbed into this one value rather than stored. The `acceptance` a create call believed it sent is exactly what goes missing that way, which is the second shape: a ticket carrying a description with no acceptance criteria states no contract, and is one neither `/capture` nor `/work` accepts. Epics are excluded from that half — a container's children carry the contract — and the count is a census, so it includes finished tickets and backlog stubs alongside the open ones worth acting on. `ticket_create` and `ticket_edit` now refuse a fragment outright rather than storing it — sanitizing it away would leave the ticket just as uncontracted, minus the evidence — and `ticket_create` returns an `empty_acceptance_warning` when a description arrives with no acceptance beside it, a warning and not a refusal so stub-first flows still create.
 
 The fragment check is anchored at the *tail* of a section, not a search for the tokens anywhere in it: a ticket may legitimately discuss this markup — the one that asked for the check does — and the corruption always leaves the envelope's terminator at the end of the value, because the parser consumed to the end of the call. Prose quoting a tag ends with its own quoting and passes.
+
+`tk audit` also reports every ticket whose file still stores a legacy `## Review Log` section, as `legacy-review-log` with the size of the section in bytes. v7 retired the review system and the parser has stripped that section out of the body on every read since, so the section survives only until something writes the ticket — a status change, a priority cycle, an added note — and until then a ticket's Review Log either exists or does not depending on whether anyone happened to touch it. Nothing is migrated and no file is rewritten: the audit lists what is still there, so clearing them is a decision taken once over a known set, and a write that drops one now warns, naming the ticket and the byte count. The content stays recoverable from the store's git history either way.
 
 ### Verifiable Acceptance Criteria
 

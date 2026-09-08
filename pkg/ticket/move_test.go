@@ -930,3 +930,44 @@ func TestMoveLeavesNoStoredClosedOnTheEpicThatLeft(t *testing.T) {
 		})
 	}
 }
+
+// The destination file is new and the body was stripped at parse time, so the
+// copy's write drops nothing — but the drop count rides the shallow copy unless
+// it is reset, and a warning asserting content loss where none occurred is the
+// failure the warning exists to fix.
+func TestMoveWarnsOnlyForTheSourceReviewLogDrop(t *testing.T) {
+	srcDir := t.TempDir()
+	src := &FileStore{Dir: srcDir, Project: "srcproj"}
+	dst := &FileStore{Dir: t.TempDir(), Project: "dstproj"}
+
+	legacy := &Ticket{
+		ID:       "rlog-move-0001",
+		Status:   StatusReady,
+		Type:     TypeFeature,
+		Priority: 2,
+		Title:    "Review log move",
+		Body:     "\nDescription.\n\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED\n",
+		Deps:     []string{},
+		Links:    []string{},
+	}
+	plantTicketFile(t, srcDir, legacy.ID+".md", legacy)
+
+	warnings := captureWarnings(t)
+
+	results, err := MoveTicket(src, dst, legacy.ID, false)
+	if err != nil {
+		t.Fatalf("MoveTicket: %v", err)
+	}
+
+	if len(*warnings) != 1 {
+		t.Fatalf("the move produced %d warning(s), want 1: %v", len(*warnings), *warnings)
+	}
+	warning := (*warnings)[0]
+	if !strings.Contains(warning, "srcproj/"+legacy.ID) {
+		t.Errorf("the warning does not name the source ticket the section left: %q", warning)
+	}
+	_, bareNew := ParseNamespacedID(results[0].NewID)
+	if strings.Contains(warning, bareNew) {
+		t.Errorf("the warning names the destination copy, which dropped nothing: %q", warning)
+	}
+}

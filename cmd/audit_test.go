@@ -409,6 +409,49 @@ func TestAuditReportsMissingBodyContent(t *testing.T) {
 	}
 }
 
+func TestAuditReportsLegacyReviewLogs(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha", "beta")
+	store := stores["alpha"]
+	section := "\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED — All file paths verified.\n"
+	contract := "\nA description.\n\n## Acceptance Criteria\n\nWhat done means.\n"
+	auditBodyTicket(t, store, "au-rlog-0001", contract+section)
+	auditBodyTicket(t, store, "au-clean-0002", contract)
+
+	out := captureAudit(t)
+
+	if !contains(out, "au-rlog-0001") || !contains(out, string(ticket.ContentLegacyReviewLog)) {
+		t.Errorf("audit should report the ticket still storing a Review Log:\n%s", out)
+	}
+	if contains(out, "au-clean-0002") {
+		t.Errorf("audit should not report a ticket carrying no Review Log:\n%s", out)
+	}
+	if !contains(out, "1 ticket(s) still store") {
+		t.Errorf("audit should count the tickets still storing one:\n%s", out)
+	}
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var result ticket.AuditReport
+	jsonOut := captureAudit(t, "project", "alpha")
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
+	}
+	want := ticket.ContentIssue{ID: "alpha/au-rlog-0001", Kind: ticket.ContentLegacyReviewLog, Bytes: len(section)}
+	found := false
+	for _, c := range result.Content {
+		if c == want {
+			found = true
+		}
+		if c.Kind == ticket.ContentLegacyReviewLog && c.ID != want.ID {
+			t.Errorf("json content reports %+v, want only the ticket that stores a section", c)
+		}
+	}
+	if !found {
+		t.Errorf("json content is missing %+v: %+v", want, result.Content)
+	}
+}
+
 // captureContentIssues renders one content section and returns what it printed.
 func captureContentIssues(t *testing.T, issues []ticket.ContentIssue) string {
 	t.Helper()

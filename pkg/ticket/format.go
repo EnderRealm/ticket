@@ -402,6 +402,18 @@ func parseBody(t *Ticket, body string) {
 		reviewIdx = 0
 	}
 
+	// The stripped section is recorded, not preserved: v7 retired the review
+	// system and no reader has parsed the section since, so the byte count is
+	// what lets writeTicket say what a write dropped and `tk audit` list the
+	// files still holding one. It ends at the notes when those follow it.
+	if reviewIdx >= 0 {
+		reviewEnd := len(rest)
+		if notesIdx > reviewIdx {
+			reviewEnd = notesIdx
+		}
+		t.droppedReviewLog = reviewEnd - reviewIdx
+	}
+
 	// Determine body end: the earliest of review log or notes.
 	bodyEnd := len(rest)
 	if reviewIdx >= 0 && reviewIdx < bodyEnd {

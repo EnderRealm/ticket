@@ -13,13 +13,15 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, files that cannot be read as tickets, and files whose id names another project",
+	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, tickets storing a legacy Review Log, files that cannot be read as tickets, and files whose id names another project",
 	Long: "Report tickets whose parent breaks the one-level epic hierarchy: a parent that is not an epic, " +
 		"a parent that does not resolve, a parent in another project, an epic that has a parent, or a parent cycle. " +
 		"Each parent is resolved within the project that owns the ticket, so the report matches what a write would accept. " +
 		"Also report every epic whose stored status differs from the status it now derives from its children, since " +
 		"stored statuses were left in place and are no longer read, and every ticket whose stored body is missing content: " +
 		"a section ending in a tool-call envelope fragment, or a description with no acceptance criteria. " +
+		"Also report every ticket whose file still stores a legacy `## Review Log` section, which nothing has read since v7 retired the review system: " +
+		"the section is stripped from the body on read and the ticket's next write drops it from the file, so this is the list of what is still there. " +
 		"Also report every file that could not be read as a ticket at all, which exits non-zero: it is a ticket no listing yields, and " +
 		"it could be any epic's child, so no epic in its project reads done or closed while it stands. " +
 		"Also report every file whose stored id names a project other than the directory holding it: the directory decides a ticket's " +
@@ -240,16 +242,17 @@ func printEpicStatusDrift(drift []ticket.EpicStatusDrift) {
 const contentEmptyListLimit = 10
 
 // printContentIssues reports the tickets whose stored body is missing content
-// it was meant to carry. Both classes are silent everywhere else: the ticket
-// lists and renders, and only reading its text shows that the contract is not
-// there.
+// it was meant to carry, and the tickets still storing a legacy Review Log.
+// Every class is silent everywhere else: the ticket lists and renders, and only
+// reading its text shows that the contract is not there — or that the file
+// holds a section nothing reads.
 func printContentIssues(issues []ticket.ContentIssue) {
 	if len(issues) == 0 {
-		fmt.Println("\nNo ticket is missing body content.")
+		fmt.Println("\nNo ticket is missing body content or storing a legacy Review Log.")
 		return
 	}
 	fmt.Println()
-	fragments, empty := 0, 0
+	fragments, empty, reviewLogs, reviewBytes := 0, 0, 0, 0
 	// An ID carries its project namespace, and a project name is a store
 	// directory name or a shared-config key another machine wrote — bounded
 	// against path separators and nothing else — so it goes through the same
@@ -262,6 +265,15 @@ func printContentIssues(issues []ticket.ContentIssue) {
 			// The field is ours; the tail came off the store, so it is quoted
 			// the way storedStatus quotes an unrecognised status.
 			fmt.Printf("%s  %s  %s: %q\n", ticket.SanitizeControl(c.ID), c.Kind, c.Field, c.Detail)
+			continue
+		}
+		if c.Kind == ticket.ContentLegacyReviewLog {
+			reviewLogs++
+			reviewBytes += c.Bytes
+			// Every one is listed, uncapped: this is the enumeration the
+			// retirement was never given, and a ticket left off it is one whose
+			// content goes without anyone having seen it named.
+			fmt.Printf("%s  %s  %d bytes\n", ticket.SanitizeControl(c.ID), c.Kind, c.Bytes)
 			continue
 		}
 		empty++
@@ -279,6 +291,10 @@ func printContentIssues(issues []ticket.ContentIssue) {
 	fmt.Println()
 	if fragments > 0 {
 		fmt.Printf("%d section(s) absorbed part of the tool call that wrote them — the text that followed was never stored, so the real content is likely missing; rewrite each from the source\n", fragments)
+	}
+	if reviewLogs > 0 {
+		fmt.Printf("%d ticket(s) still store a legacy `## Review Log` section, %d bytes in total — nothing has read it since v7 retired the review system, and each ticket's next write drops its own for good. "+
+			"Clear them deliberately, or leave them and expect the warning a write prints; either way the content stays in the store's git history\n", reviewLogs, reviewBytes)
 	}
 	if empty > 0 {
 		fmt.Printf("%d ticket(s) carry a description with no acceptance criteria — nothing states what done means. "+

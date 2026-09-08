@@ -977,3 +977,70 @@ func TestFileStore_NamespaceWithNoTicketIDAfterItYieldsNoTicket(t *testing.T) {
 		t.Errorf("epic reads %s, want %s — a file claiming this project's namespace could be its child", epic.Status, StatusBacklog)
 	}
 }
+
+// The v7 retirement of the review system left the removal to whatever wrote a
+// ticket next — a status change, a priority cycle, an added note — and said
+// nothing when it happened, so 9.6 KB went from 19 tickets before anyone knew.
+// A write that drops one now reports it, with the ticket and the size, through
+// the sink the TUI and the CLI both surface.
+func TestWriteWarnsWhenItDropsALegacyReviewLog(t *testing.T) {
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	section := "\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED — All file paths verified.\n"
+	legacy := sampleTicket("t-rlog1")
+	legacy.Body = "\nDescription.\n" + section
+	plantTicketFile(t, dir, "t-rlog1.md", legacy)
+	plantTicketFile(t, dir, "t-plain2.md", sampleTicket("t-plain2"))
+
+	warnings := captureWarnings(t)
+
+	got, err := store.Get("t-rlog1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(*warnings) != 0 {
+		t.Fatalf("a read warned %v — a listing reads every ticket, so only the write may warn", *warnings)
+	}
+	if err := store.Update(got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("the write produced %d warning(s), want 1: %v", len(*warnings), *warnings)
+	}
+	warning := (*warnings)[0]
+	// Namespaced: `tk audit` reports the same ticket as proj/t-rlog1, and an
+	// operator correlating the two should not have to infer the project.
+	if !strings.Contains(warning, `"proj/t-rlog1"`) {
+		t.Errorf("warning does not name the ticket in the store's namespace: %q", warning)
+	}
+	if !strings.Contains(warning, fmt.Sprintf("%d bytes", len(section))) {
+		t.Errorf("warning does not name the %d bytes it dropped: %q", len(section), warning)
+	}
+	if !strings.Contains(warning, "git history") {
+		t.Errorf("warning does not say the content is still recoverable: %q", warning)
+	}
+
+	// The section is gone from the file, so the ticket the write handed back has
+	// nothing left to report on the next one.
+	if err := store.Update(got); err != nil {
+		t.Fatalf("second Update: %v", err)
+	}
+	stored, err := store.Get("t-rlog1")
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if strings.Contains(stored.Body, "Review Log") {
+		t.Errorf("the stored body still carries the section:\n%s", stored.Body)
+	}
+
+	plain, err := store.Get("t-plain2")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := store.Update(plain); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Errorf("a write of a ticket carrying no Review Log warned: %v", *warnings)
+	}
+}

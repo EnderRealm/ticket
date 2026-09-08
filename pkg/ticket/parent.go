@@ -124,16 +124,20 @@ type ContentIssueKind string
 const (
 	ContentEnvelopeFragment ContentIssueKind = "envelope-fragment"
 	ContentEmptyAcceptance  ContentIssueKind = "empty-acceptance"
+	ContentLegacyReviewLog  ContentIssueKind = "legacy-review-log"
 )
 
-// ContentIssue is one ticket whose stored body says something is missing:
+// ContentIssue is one ticket whose stored body says something is missing —
 // either a section that absorbed part of the tool call that wrote it, or a
-// description with no acceptance criteria beside it.
+// description with no acceptance criteria beside it — or holds content no
+// reader sees: a legacy `## Review Log` the parser strips and the ticket's next
+// write drops for good.
 type ContentIssue struct {
 	ID     string           `json:"id"`
 	Kind   ContentIssueKind `json:"kind"`
 	Field  string           `json:"field,omitempty"`  // which body section, for envelope-fragment
 	Detail string           `json:"detail,omitempty"` // the offending tail, for envelope-fragment
+	Bytes  int              `json:"bytes,omitempty"`  // size of the stripped section, for legacy-review-log
 }
 
 // ProjectSkip is a project the audit could not read, and why. The reason is
@@ -170,8 +174,10 @@ type AuditReport struct {
 // derived epic statuses can be reconciled, and every ticket whose stored body
 // is missing content — a section that absorbed part of the tool call that wrote
 // it, or a description with no acceptance criteria — so the ones already
-// written are findable now that the write path refuses them. Strictly
-// read-only: nothing is repaired or rewritten.
+// written are findable now that the write path refuses them, and every ticket
+// still storing a legacy `## Review Log`, so the sections the v7 retirement
+// leaves for the next write to drop are a known set rather than an unknown one.
+// Strictly read-only: nothing is repaired or rewritten.
 //
 // A MultiStore is audited project by project, against the same per-project
 // FileStore the write path validates against. Resolving through MultiStore.Get
@@ -250,7 +256,9 @@ func auditStore(store Store) (AuditReport, error) {
 // absorbed rather than stored, and a description with no acceptance criteria,
 // which is a ticket neither /capture nor /work will accept. The check that
 // refuses both now runs at the MCP boundary; this is what finds the ones
-// already written. Read-only, like the rest of the audit.
+// already written. It also reports the tickets still storing a legacy
+// `## Review Log`, which is the opposite case — content that is there and is
+// read by nothing. Read-only, like the rest of the audit.
 //
 // Read through listStored, like the epic-status audit: only stored body text is
 // inspected, so no derived status is needed, and List would warn a second time
@@ -279,6 +287,14 @@ func auditStoreContent(store Store) ([]ContentIssue, error) {
 		// criteria to be missing.
 		if t.Type != TypeEpic && desc != "" && acceptance == "" {
 			issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEmptyAcceptance})
+		}
+		// The parse above stripped the section, and the ticket's next write is
+		// what removes it from the file. Listing them is what makes the store
+		// determinate: the retirement is a decision to take once over a known
+		// set, rather than one that executes a ticket at a time whenever
+		// something happens to write.
+		if t.droppedReviewLog > 0 {
+			issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentLegacyReviewLog, Bytes: t.droppedReviewLog})
 		}
 	}
 	return issues, nil
