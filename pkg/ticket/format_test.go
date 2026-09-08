@@ -1310,6 +1310,88 @@ func TestUpdateSection_ReplacesExisting(t *testing.T) {
 	}
 }
 
+// TestUpdateSection_MergedAcceptanceSection covers the write side of the merged
+// acceptance section: the read joins every `## Acceptance*` block, so the edit
+// replaces the whole run under one heading rather than dropping the later block
+// or leaving it as stale text.
+func TestUpdateSection_MergedAcceptanceSection(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		survives string // substring the edit must leave intact, in order
+		gone     string // text of a replaced block, absent afterwards
+	}{
+		{
+			name: "later acceptance block replaced",
+			body: "\nDescription.\n\n## Acceptance Criteria\n\n- old one\n\n## Acceptance Notes\n\n- old two\n",
+			gone: "old two",
+		},
+		{
+			name:     "test results and notes survive",
+			body:     "\nDescription.\n\n## Acceptance Criteria\n\n- old one\n\n## Acceptance Notes\n\n- old two\n\n## Test Results\n\nrun record\n\n## Notes\n\nkeep me\n",
+			survives: "## Test Results\n\nrun record\n\n## Notes\n\nkeep me\n",
+			gone:     "old two",
+		},
+		{
+			name:     "unrelated heading closes the section",
+			body:     "\nDescription.\n\n## Acceptance Criteria\n\n- old one\n\n## Something\n\n- not a criterion\n",
+			survives: "## Something\n\n- not a criterion\n",
+		},
+		{
+			name: "second literal acceptance criteria block replaced",
+			body: "\nDescription.\n\n## Acceptance Criteria\n\n- old one\n\n## Acceptance Criteria\n\n- old two\n",
+			gone: "old two",
+		},
+		{
+			name:     "acceptance blocks separated by design",
+			body:     "\nDescription.\n\n## Acceptance Criteria\n\n- old one\n\n## Design\n\nA design.\n\n## Acceptance Notes\n\n- old two\n\n## Test Results\n\nrun record\n",
+			survives: "## Acceptance Criteria\n\n- new one\n\n## Design\n\nA design.\n\n## Test Results\n\nrun record\n",
+			gone:     "old two",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updated := UpdateSection(tt.body, "Acceptance Criteria", "- new one")
+
+			if count := strings.Count(updated, "## Acceptance"); count != 1 {
+				t.Errorf("expected 1 Acceptance heading, got %d.\nBody:\n%s", count, updated)
+			}
+
+			criteria := ParseCriteria(AcceptanceCriteria(updated))
+			if len(criteria) != 1 || criteria[0].Text != "new one" {
+				t.Fatalf("criteria = %+v, want only the replacement.\nBody:\n%s", criteria, updated)
+			}
+			if tt.gone != "" && strings.Contains(updated, tt.gone) {
+				t.Errorf("expected %q replaced:\n%s", tt.gone, updated)
+			}
+			if tt.survives != "" && !strings.Contains(updated, tt.survives) {
+				t.Errorf("expected %q to survive the edit:\n%s", tt.survives, updated)
+			}
+		})
+	}
+}
+
+// TestUpdateSection_DescriptionStopsAtAcceptanceNotes guards the description
+// edit against a body whose first structural heading is `## Acceptance Notes`:
+// the marker list matches the acceptance prefix, so the edit bounds itself
+// there instead of replacing the whole body.
+func TestUpdateSection_DescriptionStopsAtAcceptanceNotes(t *testing.T) {
+	body := "\nOld description.\n\n## Acceptance Notes\n\n- a criterion\n"
+	updated := UpdateSection(body, "", "New description.")
+
+	if !strings.Contains(updated, "## Acceptance Notes") {
+		t.Errorf("expected the acceptance block to survive:\n%s", updated)
+	}
+	criteria := ParseCriteria(AcceptanceCriteria(updated))
+	if len(criteria) != 1 || criteria[0].Text != "a criterion" {
+		t.Errorf("expected the criterion to survive, got %+v.\nBody:\n%s", criteria, updated)
+	}
+	if strings.Contains(updated, "Old description.") {
+		t.Errorf("expected the description replaced:\n%s", updated)
+	}
+}
+
 func TestUpdateSection_RoundTrip(t *testing.T) {
 	tk := &Ticket{
 		ID:       "test-roundtrip-1234",

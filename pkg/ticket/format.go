@@ -467,10 +467,47 @@ func parseNotes(section string) []Note {
 	return notes
 }
 
+// acceptanceHeadingPrefix opens the acceptance section: every heading beginning
+// with it is part of one section.
+const acceptanceHeadingPrefix = "## Acceptance"
+
+// acceptanceHeading is the single heading an acceptance edit writes the merged
+// section back under.
+const acceptanceHeading = "## Acceptance Criteria"
+
+// sectionKind is the section a body line opens, if any.
+type sectionKind int
+
+const (
+	sectionNone sectionKind = iota // not a `## ` heading
+	sectionDesign
+	sectionAcceptance
+	sectionTestResults
+	sectionOther // a `## ` heading tk does not name
+)
+
+// classifyLine is the one definition of the section boundaries in a ticket
+// body. Both sides consume it — BodySections to split the body, UpdateSection
+// to span the acceptance section it replaces — so the write cannot fall behind
+// a change to the read.
+func classifyLine(line string) sectionKind {
+	switch {
+	case strings.HasPrefix(line, "## Design"):
+		return sectionDesign
+	case strings.HasPrefix(line, acceptanceHeadingPrefix):
+		return sectionAcceptance
+	case strings.HasPrefix(line, "## Test Results"):
+		return sectionTestResults
+	case strings.HasPrefix(line, "## "):
+		return sectionOther
+	}
+	return sectionNone
+}
+
 // structuralSections lists the heading prefixes that delimit ticket body sections.
 var structuralSections = []string{
 	"\n## Design",
-	"\n## Acceptance Criteria",
+	"\n" + acceptanceHeadingPrefix,
 	"\n## Test Results",
 	"\n## Notes",
 }
@@ -500,8 +537,15 @@ func UpdateSection(body, heading, content string) string {
 	}
 
 	marker := "## " + heading
-	idx := strings.Index(body, marker)
-	if idx >= 0 {
+	if marker == acceptanceHeading {
+		// An acceptance edit replaces the whole merged section — every
+		// `## Acceptance*` block BodySections reads as one — under a single
+		// heading, so a client that writes the merged value it read back does not
+		// duplicate it and no later block is lost.
+		if updated, ok := replaceAcceptanceSection(body, content); ok {
+			return updated
+		}
+	} else if idx := strings.Index(body, marker); idx >= 0 {
 		rest := body[idx+len(marker):]
 		nextIdx := nextStructuralSection(rest)
 		var after string
@@ -519,6 +563,40 @@ func UpdateSection(body, heading, content string) string {
 	return body + "\n" + marker + "\n\n" + content + "\n"
 }
 
+// replaceAcceptanceSection rewrites every acceptance block in body — each runs
+// from a `## Acceptance*` heading to the next `## ` heading of any kind, which
+// is what BodySections merges into one section — as a single
+// `## Acceptance Criteria` block holding content, positioned where the first
+// one was. Blocks sitting between two acceptance blocks are re-emitted in
+// order, so nothing but the acceptance text moves. ok is false when the body
+// carries no acceptance heading, leaving the caller its insert path.
+func replaceAcceptanceSection(body, content string) (string, bool) {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines)+3)
+	var inAcceptance, replaced bool
+	for _, line := range lines {
+		kind := classifyLine(line)
+		if kind == sectionAcceptance {
+			if !replaced {
+				out = append(out, acceptanceHeading, "", content, "")
+				replaced = true
+			}
+			inAcceptance = true
+			continue
+		}
+		if kind != sectionNone {
+			inAcceptance = false
+		}
+		if !inAcceptance {
+			out = append(out, line)
+		}
+	}
+	if !replaced {
+		return "", false
+	}
+	return strings.Join(out, "\n"), true
+}
+
 // BodySections splits a ticket body into the free-text sections the structural
 // headings delimit. The counterpart to UpdateSection, which writes them: the
 // MCP response fields are read out with it, and so is the audit that inspects
@@ -526,10 +604,9 @@ func UpdateSection(body, heading, content string) string {
 //
 // The headings match on prefix, so `## Acceptance Notes` written by hand reads
 // as the acceptance section — intentional, and the same looseness UpdateSection
-// writes through, which is why a section written by one is found by the other.
+// writes through, since both split the body with classifyLine.
 // structuralSections above is a separate list serving a different job (it
-// bounds a section being replaced, and includes `## Notes`); the two are not
-// derived from one another.
+// bounds a non-acceptance section being replaced, and includes `## Notes`).
 //
 // This is the single definition of the acceptance section — AcceptanceCriteria
 // delegates here, so the criteria ticket_show reports are the ones `tk verify`
@@ -545,13 +622,13 @@ func UpdateSection(body, heading, content string) string {
 // section in progress, because descriptions routinely carry their own
 // subheadings and ticket_show must keep showing them.
 //
-// The read contract has no write counterpart. An acceptance edit goes through
-// UpdateSection, which bounds the rewrite by structuralSections: it replaces
-// from `## Acceptance Criteria` through the next marker in that list, so a
-// later `## Acceptance*` block sits inside the replaced span and does not
-// survive the write — unless it is a second literal `## Acceptance Criteria`,
-// which is itself a boundary and survives as stale text this read then
-// appends. Such a block is safe to read, not to edit around.
+// The write is the inverse of that read. An acceptance edit goes through
+// UpdateSection, which classifies the body the same way and replaces every
+// block this merges — wherever they sit, including one that follows a
+// `## Design` block — with the new content under one `## Acceptance Criteria`
+// heading, re-emitting the intervening blocks in place. So no later
+// `## Acceptance*` block is lost, none survives as stale text, and a client
+// that writes back the merged value it read here does not duplicate it.
 func BodySections(body string) (desc, design, acceptance, testResults string) {
 	lines := strings.Split(body, "\n")
 	var current *string
@@ -578,17 +655,17 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 	current = &desc
 
 	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "## Design"):
+		switch kind := classifyLine(line); {
+		case kind == sectionDesign:
 			flush()
 			current = &design
-		case strings.HasPrefix(line, "## Acceptance"):
+		case kind == sectionAcceptance:
 			flush()
 			current = &acceptance
-		case strings.HasPrefix(line, "## Test Results"):
+		case kind == sectionTestResults:
 			flush()
 			current = &testResults
-		case current == &acceptance && strings.HasPrefix(line, "## "):
+		case kind == sectionOther && current == &acceptance:
 			flush()
 			current = nil
 		default:

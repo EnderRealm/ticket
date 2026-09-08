@@ -39,8 +39,8 @@ func testServer(t *testing.T) *mcp.ClientSession {
 }
 
 // testServerDir is testServer with the store directory handed back, for a test
-// that has to plant a file the tools themselves cannot write — one that does
-// not parse — beside the tickets they do.
+// that has to reach the stored files directly — to plant one the tools
+// themselves cannot write, or to read back what they wrote.
 func testServerDir(t *testing.T) (*mcp.ClientSession, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -1254,6 +1254,77 @@ func TestEditBodyFields(t *testing.T) {
 	}
 	if shown["design"] != "The design plan" {
 		t.Errorf("design clobbered: %q", shown["design"])
+	}
+}
+
+// TestEditAcceptanceReplacesMergedSection pins the write side of the merged
+// acceptance section: an edit replaces every `## Acceptance*` block with the new
+// criteria under one heading, so the later block is neither dropped from the
+// read nor left behind as a stale duplicate heading.
+func TestEditAcceptanceReplacesMergedSection(t *testing.T) {
+	session, dir := testServerDir(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{
+		"title": "Merged acceptance section",
+		"type":  "feature",
+		"acceptance": "- First check.\n  verify: /bin/echo first\n\n" +
+			"## Acceptance Notes\n\n- Second check.\n  verify: /bin/echo second\n",
+	})
+
+	showCriteria := func() []ticket.Criterion {
+		t.Helper()
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "ticket_show",
+			Arguments: map[string]any{"id": id},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var shown map[string]any
+		if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &shown); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+		acceptance, _ := shown["acceptance_criteria"].(string)
+		return ticket.ParseCriteria(acceptance)
+	}
+	countHeadings := func() int {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(dir, id+".md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(raw), "## Acceptance")
+	}
+
+	// The edit is only exercised if create stored both blocks verbatim.
+	if criteria := showCriteria(); len(criteria) != 2 {
+		t.Fatalf("before the edit ticket_show reported %d criteria, want 2: %+v", len(criteria), criteria)
+	}
+	if count := countHeadings(); count != 2 {
+		t.Fatalf("before the edit the stored body carries %d Acceptance headings, want 2", count)
+	}
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "ticket_edit",
+		Arguments: map[string]any{
+			"id":         id,
+			"acceptance": "- Replacement check.\n  verify: /bin/echo replacement\n",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_edit error: %v", result.Content)
+	}
+
+	criteria := showCriteria()
+	if len(criteria) != 1 || criteria[0].Text != "Replacement check." {
+		t.Fatalf("acceptance criteria = %+v, want only the replacement", criteria)
+	}
+	if count := countHeadings(); count != 1 {
+		t.Errorf("stored body carries %d Acceptance headings, want 1", count)
 	}
 }
 
