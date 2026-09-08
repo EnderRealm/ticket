@@ -362,9 +362,84 @@ func TestRunVerifyTimeout(t *testing.T) {
 	}
 	// The note names the bound that was applied, not the default: a record
 	// saying 2m0s for a run cut off at 50ms is what makes the timeout
-	// unreadable on a project that set its own.
-	if !strings.Contains(results[0].Output, "timed out after 50ms") {
-		t.Errorf("output = %q, want a timeout note naming the configured bound", results[0].Output)
+	// unreadable on a project that set its own. It also attributes it to
+	// verify_timeout, so this case cannot be read as the defaulted one.
+	for _, want := range []string{"timed out after 50ms", "the project's configured verify_timeout"} {
+		if !strings.Contains(results[0].Output, want) {
+			t.Errorf("output = %q, want a timeout note naming the configured bound (%q)", results[0].Output, want)
+		}
+	}
+	if strings.Contains(results[0].Output, "default") {
+		t.Errorf("output = %q, want the configured bound not attributed to the default", results[0].Output)
+	}
+}
+
+// The defaulted branch is asserted on timeoutNote directly: reaching it through
+// RunVerify means waiting out DefaultVerifyTimeout, which is a const and not
+// swappable per run. The two wordings must stay mutually exclusive — neither
+// case may pass on the other's branch — since telling them apart is the whole
+// point of the note.
+func TestVerifyTimeoutNoteNamesDefaultBound(t *testing.T) {
+	note := timeoutNote(DefaultVerifyTimeout, false, false)
+	// A user who set 600s and reads 2m0s has to be able to tell the setting
+	// never reached the run from a bound the project asked for. The claim stops
+	// at what the policy knows: no verify_timeout was resolved, which is not the
+	// same as the project setting none.
+	for _, want := range []string{"timed out after 2m0s", "default", "no verify_timeout was resolved"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note = %q, want the defaulted bound named as such (%q)", note, want)
+		}
+	}
+	if strings.Contains(note, "the project's configured verify_timeout") {
+		t.Errorf("note = %q, want the default not attributed to the project", note)
+	}
+	if configured := timeoutNote(600*time.Second, true, false); strings.Contains(configured, "no verify_timeout was resolved") {
+		t.Errorf("note = %q, want the configured bound not read as the defaulted one", configured)
+	}
+}
+
+// A run the caller's deadline cut short names neither bound: the per-criterion
+// one never applied, and a record claiming it did is the misreport this note
+// exists to close.
+func TestRunVerifyCallerDeadlineIsNotTheVerifyBound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	results, err := RunVerify(ctx, []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	if results[0].Status != VerifyFail {
+		t.Errorf("status = %q, want fail", results[0].Status)
+	}
+	if !strings.Contains(results[0].Output, "cut short by the caller's deadline") {
+		t.Errorf("output = %q, want the caller's deadline named as the cause", results[0].Output)
+	}
+	for _, unwanted := range []string{"timed out after", "no verify_timeout was resolved"} {
+		if strings.Contains(results[0].Output, unwanted) {
+			t.Errorf("output = %q, should not claim the %s bound applied (%q)", results[0].Output, DefaultVerifyTimeout, unwanted)
+		}
+	}
+}
+
+// A command that outruns its bound after emitting far more than maxVerifyOutput
+// is the shape the note exists for — a chatty suite — so it is the one that must
+// not lose it. capOutput cuts from the tail, so the command's output is capped
+// before the note is appended rather than after.
+func TestRunVerifyTimeoutNoteSurvivesChattyCommand(t *testing.T) {
+	policy := VerifyPolicy{Allow: testAllow, Timeout: 300 * time.Millisecond}
+	// ~100KB on stdout, then a hang past the bound. exec so the kill closes the
+	// output pipe at once rather than after verifyWaitDelay.
+	cmd := "/bin/sh -c 'i=0; while [ $i -lt 2000 ]; do echo 0123456789012345678901234567890123456789012345678; i=$((i+1)); done; exec sleep 5'"
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "chatty and slow", Command: cmd}}, t.TempDir(), policy)
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	if results[0].Status != VerifyFail {
+		t.Errorf("status = %q, want fail", results[0].Status)
+	}
+	if !strings.Contains(results[0].Output, timeoutNote(300*time.Millisecond, true, false)) {
+		t.Errorf("output should carry the whole timeout note after 100KB of command output:\n%s", results[0].Output)
 	}
 }
 

@@ -3246,10 +3246,88 @@ func TestVerifyUsesProjectTimeout(t *testing.T) {
 	if report.Results[0].Status != string(ticket.VerifyFail) {
 		t.Errorf("status = %q, want fail", report.Results[0].Status)
 	}
-	// The bound the run applied, not the default: the report is what the caller
-	// grades the contract on.
-	if !strings.Contains(report.Results[0].Output, "timed out after 200ms") {
-		t.Errorf("output should name the project's bound:\n%s", report.Results[0].Output)
+	// The bound the run applied, and where it came from: the report is what the
+	// caller grades the contract on, and a bound that never reached the run
+	// must not read as a small one the project chose.
+	for _, want := range []string{"timed out after 200ms", "the project's configured verify_timeout"} {
+		if !strings.Contains(report.Results[0].Output, want) {
+			t.Errorf("output should name the project's bound (%q):\n%s", want, report.Results[0].Output)
+		}
+	}
+
+	// A second edit, same session: the handler reads the bound at the start of
+	// each run, so it applies to the next one rather than at the next server
+	// start.
+	setVerifyTimeout(t, "350ms")
+	report = verifyReport(t, session, "- Slow check.\n  verify: /bin/sh -c 'sleep 3'\n")
+	if !strings.Contains(report.Results[0].Output, "timed out after 350ms") {
+		t.Errorf("output should name the edited bound, with no server restart:\n%s", report.Results[0].Output)
+	}
+}
+
+// setVerifyAllow rewrites the machine-local verify_allow verifyServer wrote,
+// the way the host user editing ~/.ticket/config.yaml would.
+func setVerifyAllow(t *testing.T, allow []string) {
+	t.Helper()
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.VerifyAllow = allow
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An edit to verify_allow takes effect on the next ticket_verify, not at the
+// next server start — one session throughout, since restarting it is what this
+// rules out. Both directions: the program is first removed from the list, then
+// added back.
+func TestVerifyAllowEditAppliesWithoutServerRestart(t *testing.T) {
+	session, _ := verifyServer(t)
+	const acceptance = "- Check.\n  verify: /bin/echo ok\n"
+
+	setVerifyAllow(t, []string{"/bin/cat"})
+	report := verifyReport(t, session, acceptance)
+	if report.Results[0].Status != string(ticket.VerifyRefused) {
+		t.Errorf("status = %q, want refused once /bin/echo was removed from verify_allow", report.Results[0].Status)
+	}
+
+	setVerifyAllow(t, []string{"/bin/cat", "/bin/echo"})
+	report = verifyReport(t, session, acceptance)
+	if report.Results[0].Status != string(ticket.VerifyPass) {
+		t.Errorf("status = %q, want pass once /bin/echo was added back:\n%s", report.Results[0].Status, report.Results[0].Output)
+	}
+}
+
+// A config that stops parsing while the server runs must not fall back to the
+// compiled defaults: the next call names the cause and nothing runs under a
+// policy nobody set. The handler fails it at project.Load inside verifyWorkDir,
+// before a policy is built and before VerifyAllow is consulted, so this is not
+// coverage of the per-criterion AllowErr refusal.
+func TestVerifyRefusesWhenConfigBecomesUnreadable(t *testing.T) {
+	session, _ := verifyServer(t)
+
+	path, err := project.ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("<<<<<<< HEAD\nverify_allow:\n  - rm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, sentinel, _ := verifyRefusalCase(t, session)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("a command ran while the config was unreadable: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("ticket_verify should report the unreadable config: %v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	for _, want := range []string{"config.yaml", "parsing"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error missing %q, so a user can't act on it:\n%s", want, text)
+		}
 	}
 }
 

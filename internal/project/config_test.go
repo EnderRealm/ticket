@@ -539,6 +539,40 @@ func TestVerifyAllowFailsClosedOnUnreadableConfig(t *testing.T) {
 	}
 }
 
+// Nothing caches the list: every call reads ~/.ticket/config.yaml, so an edit
+// takes effect on the next verify run rather than at the next `tk serve`
+// start. Both directions, because a program removed from the list matters more
+// than one added — a stale reader would keep running what the owner revoked.
+func TestVerifyAllowRereadsConfigOnEveryCall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	localPath, _ := ConfigPath()
+	os.MkdirAll(filepath.Dir(localPath), 0o755)
+	if err := os.WriteFile(localPath, []byte("verify_allow:\n  - go\n  - make\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if !slices.Equal(got, []string{"go", "make"}) {
+		t.Fatalf("VerifyAllow() = %q, want [go make]", got)
+	}
+
+	// make removed, pytest added, in the same edit.
+	if err := os.WriteFile(localPath, []byte("verify_allow:\n  - go\n  - pytest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = VerifyAllow()
+	if err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if !slices.Equal(got, []string{"go", "pytest"}) {
+		t.Errorf("VerifyAllow() = %q after an edit, want [go pytest] read from the file as it stands now", got)
+	}
+}
+
 func TestVerifyAllowExplicitEmptyRefusesEverything(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -931,6 +965,81 @@ func TestVerifyTimeoutFailsClosedOnBadValue(t *testing.T) {
 				t.Errorf("error for %q missing %q: %v", value, want, err)
 			}
 		}
+	}
+}
+
+// The bound is read through a fresh Load, which caches nothing either: a
+// verify run started after the file changed applies the value it holds now.
+func TestVerifyTimeoutRereadsConfigOnEveryLoad(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	localPath, _ := ConfigPath()
+	os.MkdirAll(filepath.Dir(localPath), 0o755)
+	if err := os.WriteFile(localPath, []byte("projects:\n  proj:\n    verify_timeout: 300s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := VerifyTimeout(cfg, "proj")
+	if err != nil {
+		t.Fatalf("VerifyTimeout: %v", err)
+	}
+	if got != 300*time.Second {
+		t.Fatalf("VerifyTimeout = %s, want 300s", got)
+	}
+
+	if err := os.WriteFile(localPath, []byte("projects:\n  proj:\n    verify_timeout: 600s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err = VerifyTimeout(cfg, "proj")
+	if err != nil {
+		t.Fatalf("VerifyTimeout: %v", err)
+	}
+	if got != 600*time.Second {
+		t.Errorf("VerifyTimeout = %s after an edit, want the 600s the file now holds", got)
+	}
+}
+
+// A config that becomes unreadable after a successful read fails closed on the
+// next one, exactly as it does on the first: falling back to the compiled
+// defaults would run a suite under a policy nobody set, and a long-lived reader
+// is where that would go unnoticed.
+func TestVerifyConfigFailsClosedWhenItBecomesUnreadable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	localPath, _ := ConfigPath()
+	os.MkdirAll(filepath.Dir(localPath), 0o755)
+	if err := os.WriteFile(localPath, []byte("verify_allow:\n  - go\nprojects:\n  proj:\n    verify_timeout: 300s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyAllow(); err != nil {
+		t.Fatalf("VerifyAllow: %v", err)
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if err := os.WriteFile(localPath, []byte("<<<<<<< HEAD\nverify_allow:\n  - go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := VerifyAllow()
+	if err == nil {
+		t.Errorf("VerifyAllow() = %q, want an error once the config stopped parsing", got)
+	}
+	if len(got) != 0 {
+		t.Errorf("VerifyAllow() = %q, want an empty list rather than the defaults", got)
+	}
+	cfg, err := Load()
+	if err == nil {
+		t.Errorf("Load() = %+v, want an error once the config stopped parsing", cfg)
 	}
 }
 

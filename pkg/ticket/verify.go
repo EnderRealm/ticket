@@ -45,7 +45,7 @@ type VerifyResult struct {
 	Criterion Criterion
 	Status    VerifyStatus
 	ExitCode  int    // meaningful for pass/fail
-	Output    string // combined stdout+stderr, trimmed and capped
+	Output    string // combined stdout+stderr, trimmed and capped, then tk's own notes
 }
 
 // verifyPrefix marks a criterion's check command on a continuation line.
@@ -316,6 +316,28 @@ func timeoutRefusal(command string, timeoutErr error) string {
 		"command: %s", SanitizeControl(command)))
 }
 
+// timeoutNote names the bound a killed command ran under and where that bound
+// came from. The value alone is ambiguous: a `tk serve` older than the build
+// that introduced verify_timeout kills at the 120s it was compiled with, and a
+// record naming only the number reads as a bound the project chose, so the
+// command it killed looks like one that disagreed.
+//
+// The defaulted wording claims no more than VerifyPolicy carries. A run reaches
+// it whenever no verify_timeout was resolved for it — which includes a project
+// name that did not resolve — not only when the project sets none, and telling
+// a user who did set the key that they did not would misreport in the other
+// direction. A run cut short by the caller's deadline names neither: that bound
+// never applied.
+func timeoutNote(bound time.Duration, configured, cutByCaller bool) string {
+	switch {
+	case cutByCaller:
+		return fmt.Sprintf("command cut short by the caller's deadline, before its %s bound was reached", bound)
+	case configured:
+		return fmt.Sprintf("command timed out after %s (the project's configured verify_timeout)", bound)
+	}
+	return fmt.Sprintf("command timed out after %s (tk's built-in default; no verify_timeout was resolved for this run)", bound)
+}
+
 // SanitizeControl replaces C0 and C1 control characters, DEL, and the Unicode
 // format characters with U+FFFD. It is the shared rule for any untrusted string
 // tk prints to an operator or writes into a line-oriented record. A criterion's
@@ -370,15 +392,30 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	if timeout <= 0 {
 		timeout = DefaultVerifyTimeout
 	}
+	// The caller's deadline, read before the per-criterion one is layered on: a
+	// context expiring from the parent still reports DeadlineExceeded, so
+	// without this the note would credit the kill to a bound that never cut
+	// anything. WithTimeout keeps the earlier of the two, so the derived
+	// deadline equalling the caller's is exactly the case where the caller won.
+	callerDeadline, hasCallerDeadline := ctx.Deadline()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	cutByCaller := hasCallerDeadline && callerDeadline.Equal(deadline)
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.WaitDelay = verifyWaitDelay
 	out, err := cmd.CombinedOutput()
 
-	res := VerifyResult{Criterion: c, Status: VerifyPass, Output: string(out)}
+	// The command's own output is capped here, before the notes below are
+	// appended: capOutput cuts from the tail, and a chatty suite that overran
+	// its bound is the case the timeout note exists to make legible — it must
+	// not be the case that loses it. Same rule as refusal, from the other end:
+	// untrusted output never gets to push a diagnostic past the cut. The notes
+	// are bounded and few, so appending after the cap can only exceed it by a
+	// known amount.
+	res := VerifyResult{Criterion: c, Status: VerifyPass, Output: capOutput(string(out))}
 	if err != nil {
 		res.Status = VerifyFail
 		res.ExitCode = -1
@@ -389,10 +426,10 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 			res.Output += "\n" + err.Error()
 		}
 		if ctx.Err() == context.DeadlineExceeded {
-			res.Output += fmt.Sprintf("\ncommand timed out after %s", timeout)
+			res.Output += "\n" + timeoutNote(timeout, policy.Timeout > 0, cutByCaller)
 		}
+		res.Output = strings.TrimSpace(res.Output)
 	}
-	res.Output = capOutput(res.Output)
 	return res
 }
 

@@ -66,11 +66,18 @@ Viewing:
   Each command is bounded by verify_timeout under the project in
   ~/.ticket/config.yaml, beside its path: a Go duration such as 300s or
   5m, defaulting to 120s when unset, and a timed-out command's output
-  names the bound that was applied. It is machine-local like
+  names the bound that was applied and whether it came from
+  verify_timeout or from the default. It is machine-local like
   verify_allow — the bound is a property of the machine and the suite,
   not of a ticket that syncs to every machine — and a value that is not
   a positive duration refuses every verify command in that project
   rather than falling back to the default.
+  Both settings are read from ~/.ticket/config.yaml at the start of
+  every run, by this command and by tk serve alike, so an edit applies
+  to the next run with no server restart. The staleness that does bite
+  is a tk serve process older than the build that introduced a setting:
+  a binary predating verify_timeout applies the 120s it was built with
+  however current the config is, so restart the server after upgrading.
   Criteria with no command are reported unverified. Results are recorded
   in the ticket's Test Results section; exit is non-zero on any failure
   or refusal.
