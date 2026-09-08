@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.4.0] - 2026-09-07
 
 ### Added
 - `ticket_create` and `tk create` report acceptance criteria that carry neither a `verify: <command>` nor an `unverifiable: <reason>` line. The rule that every criterion carries one of the two lived only in the `/capture` skill body, and `ticket_create` is reachable without it: of the eight tickets filed with entirely bare criteria since the rule landed, four came from a batch path calling the tool directly, seconds apart, which never reads that body. The check therefore sits at the create boundary, which every path crosses. The MCP response gains `bare_acceptance_criteria` (the texts, so a caller can machine-read which bullets are the gap) and `bare_acceptance_warning` (the remedy sentence), both set by `ticket_create` alone; the CLI prints the same sentence to stderr, derived from the stored body so a `-d` description carrying an `## Acceptance Criteria` section is covered. It reports and never refuses — refusing would strand a batch filing path mid-flow, which is worse than a ticket that is visibly bare — and there is no type exemption, unlike the empty-acceptance warning: an empty contract is expected on a container, but a criterion that was written and cannot be checked is a gap whatever the type. A criterion marked `unverifiable:` is not reported.
