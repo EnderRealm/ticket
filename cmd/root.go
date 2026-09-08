@@ -28,8 +28,9 @@ Viewing:
   frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
   audit [--project=NAME]     Report invalid parents, epics whose stored status is not read, tickets missing
-                             body content, tickets storing a legacy Review Log, files that cannot be read
-                             as tickets (exits non-zero), and files whose id names another project
+                             body content, tickets whose acceptance criteria nothing can check, tickets
+                             storing a legacy Review Log, files that cannot be read as tickets (exits
+                             non-zero), and files whose id names another project
   verify <id>                Run the ticket's acceptance-criteria verify commands
     --dir <path>             Run the commands in this directory instead of the project's
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,

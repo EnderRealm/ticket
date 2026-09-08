@@ -124,20 +124,22 @@ type ContentIssueKind string
 const (
 	ContentEnvelopeFragment ContentIssueKind = "envelope-fragment"
 	ContentEmptyAcceptance  ContentIssueKind = "empty-acceptance"
+	ContentBareAcceptance   ContentIssueKind = "bare-acceptance"
 	ContentLegacyReviewLog  ContentIssueKind = "legacy-review-log"
 )
 
 // ContentIssue is one ticket whose stored body says something is missing —
-// either a section that absorbed part of the tool call that wrote it, or a
-// description with no acceptance criteria beside it — or holds content no
-// reader sees: a legacy `## Review Log` the parser strips and the ticket's next
-// write drops for good.
+// a section that absorbed part of the tool call that wrote it, a description
+// with no acceptance criteria beside it, or criteria that state what done means
+// with nothing that can decide it — or holds content no reader sees: a legacy
+// `## Review Log` the parser strips and the ticket's next write drops for good.
 type ContentIssue struct {
 	ID     string           `json:"id"`
 	Kind   ContentIssueKind `json:"kind"`
 	Field  string           `json:"field,omitempty"`  // which body section, for envelope-fragment
 	Detail string           `json:"detail,omitempty"` // the offending tail, for envelope-fragment
 	Bytes  int              `json:"bytes,omitempty"`  // size of the stripped section, for legacy-review-log
+	Bare   int              `json:"bare,omitempty"`   // how many criteria carry no check, for bare-acceptance
 }
 
 // ProjectSkip is a project the audit could not read, and why. The reason is
@@ -256,7 +258,9 @@ func auditStore(store Store) (AuditReport, error) {
 // absorbed rather than stored, and a description with no acceptance criteria,
 // which is a ticket neither /capture nor /work will accept. The check that
 // refuses both now runs at the MCP boundary; this is what finds the ones
-// already written. It also reports the tickets still storing a legacy
+// already written. It also reports the tickets whose criteria carry neither a
+// verify command nor an unverifiable claim, which the create-time warning only
+// catches on tickets not yet written, and the tickets still storing a legacy
 // `## Review Log`, which is the opposite case — content that is there and is
 // read by nothing. Read-only, like the rest of the audit.
 //
@@ -287,6 +291,17 @@ func auditStoreContent(store Store) ([]ContentIssue, error) {
 		// criteria to be missing.
 		if t.Type != TypeEpic && desc != "" && acceptance == "" {
 			issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEmptyAcceptance})
+		}
+		// Criteria that were written and cannot be checked, through the same
+		// reading BareCriteria gives `tk create` and ticket_create — the warning
+		// there only reaches tickets not yet created, and a second scan here is
+		// how two definitions of "bare" would come to disagree. No type
+		// exemption, unlike the check above: an epic carries no contract of its
+		// own, but one that does state criteria and leaves them bare has the same
+		// gap. A ticket with no acceptance section parses to no criteria and is
+		// never reported.
+		if bare := BareCriteria(t.Body); len(bare) > 0 {
+			issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentBareAcceptance, Bare: len(bare)})
 		}
 		// The parse above stripped the section, and the ticket's next write is
 		// what removes it from the file. Listing them is what makes the store

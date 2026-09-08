@@ -13,13 +13,15 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, tickets storing a legacy Review Log, files that cannot be read as tickets, and files whose id names another project",
+	Short: "Report invalid parents, epics whose stored status is no longer read, tickets missing body content, tickets whose acceptance criteria nothing can check, tickets storing a legacy Review Log, files that cannot be read as tickets, and files whose id names another project",
 	Long: "Report tickets whose parent breaks the one-level epic hierarchy: a parent that is not an epic, " +
 		"a parent that does not resolve, a parent in another project, an epic that has a parent, or a parent cycle. " +
 		"Each parent is resolved within the project that owns the ticket, so the report matches what a write would accept. " +
 		"Also report every epic whose stored status differs from the status it now derives from its children, since " +
 		"stored statuses were left in place and are no longer read, and every ticket whose stored body is missing content: " +
 		"a section ending in a tool-call envelope fragment, or a description with no acceptance criteria. " +
+		"Also report every ticket carrying acceptance criteria that have neither a `verify:` command nor an `unverifiable:` reason, " +
+		"with how many of its criteria are bare: nothing decides whether they are met, and the warning `tk create` prints only reaches tickets not yet written. " +
 		"Also report every ticket whose file still stores a legacy `## Review Log` section, which nothing has read since v7 retired the review system: " +
 		"the section is stripped from the body on read and the ticket's next write drops it from the file, so this is the list of what is still there. " +
 		"Also report every file that could not be read as a ticket at all, which exits non-zero: it is a ticket no listing yields, and " +
@@ -242,17 +244,18 @@ func printEpicStatusDrift(drift []ticket.EpicStatusDrift) {
 const contentEmptyListLimit = 10
 
 // printContentIssues reports the tickets whose stored body is missing content
-// it was meant to carry, and the tickets still storing a legacy Review Log.
-// Every class is silent everywhere else: the ticket lists and renders, and only
-// reading its text shows that the contract is not there — or that the file
-// holds a section nothing reads.
+// it was meant to carry, the tickets whose criteria nothing can check, and the
+// tickets still storing a legacy Review Log. Every class is silent everywhere
+// else: the ticket lists and renders, and only reading its text shows that the
+// contract is not there, or is there and undecidable — or that the file holds a
+// section nothing reads.
 func printContentIssues(issues []ticket.ContentIssue) {
 	if len(issues) == 0 {
-		fmt.Println("\nNo ticket is missing body content or storing a legacy Review Log.")
+		fmt.Println("\nNo ticket is missing body content, carrying criteria nothing can check, or storing a legacy Review Log.")
 		return
 	}
 	fmt.Println()
-	fragments, empty, reviewLogs, reviewBytes := 0, 0, 0, 0
+	fragments, empty, bareTickets, bareCriteria, reviewLogs, reviewBytes := 0, 0, 0, 0, 0, 0
 	// An ID carries its project namespace, and a project name is a store
 	// directory name or a shared-config key another machine wrote — bounded
 	// against path separators and nothing else — so it goes through the same
@@ -260,29 +263,41 @@ func printContentIssues(issues []ticket.ContentIssue) {
 	// parent-violation and epic-drift loops above still print theirs raw; they
 	// are left as they are on purpose, for a separate change.
 	for _, c := range issues {
-		if c.Kind == ticket.ContentEnvelopeFragment {
+		switch c.Kind {
+		case ticket.ContentEnvelopeFragment:
 			fragments++
 			// The field is ours; the tail came off the store, so it is quoted
 			// the way storedStatus quotes an unrecognised status.
 			fmt.Printf("%s  %s  %s: %q\n", ticket.SanitizeControl(c.ID), c.Kind, c.Field, c.Detail)
-			continue
-		}
-		if c.Kind == ticket.ContentLegacyReviewLog {
+		case ticket.ContentBareAcceptance:
+			bareTickets++
+			bareCriteria += c.Bare
+			// Uncapped, like the Review Log listing and unlike the empty count
+			// below: the enumeration is what this class is for. An empty-acceptance
+			// count describes the shape of the store, but a bare criterion is
+			// repaired one ticket at a time and a capped list names none of the
+			// rest. The live store holds hundreds, so a store-wide run is long;
+			// --project scopes it.
+			fmt.Printf("%s  %s  %d bare criterion(s)\n", ticket.SanitizeControl(c.ID), c.Kind, c.Bare)
+		case ticket.ContentLegacyReviewLog:
 			reviewLogs++
 			reviewBytes += c.Bytes
 			// Every one is listed, uncapped: this is the enumeration the
 			// retirement was never given, and a ticket left off it is one whose
 			// content goes without anyone having seen it named.
 			fmt.Printf("%s  %s  %d bytes\n", ticket.SanitizeControl(c.ID), c.Kind, c.Bytes)
-			continue
-		}
-		empty++
-		// Every fragment is listed — they are rare and each names a ticket to
-		// repair — but a description with no criteria is the ordinary state of a
-		// backlog stub, so listing them all would bury the sections above on a
-		// healthy store. The count below is what the report is actually for.
-		if empty <= contentEmptyListLimit {
-			fmt.Printf("%s  %s\n", ticket.SanitizeControl(c.ID), c.Kind)
+		default:
+			// ContentEmptyAcceptance, and anything a later kind adds: counted here
+			// so a new kind is visible in the report rather than dropped, and read
+			// as empty-acceptance until it is given a case of its own.
+			empty++
+			// Every fragment is listed — they are rare and each names a ticket to
+			// repair — but a description with no criteria is the ordinary state of a
+			// backlog stub, so listing them all would bury the sections above on a
+			// healthy store. The count below is what the report is actually for.
+			if empty <= contentEmptyListLimit {
+				fmt.Printf("%s  %s\n", ticket.SanitizeControl(c.ID), c.Kind)
+			}
 		}
 	}
 	if empty > contentEmptyListLimit {
@@ -299,6 +314,11 @@ func printContentIssues(issues []ticket.ContentIssue) {
 	if empty > 0 {
 		fmt.Printf("%d ticket(s) carry a description with no acceptance criteria — nothing states what done means. "+
 			"The count is a census and includes finished tickets and backlog stubs; the open and ready ones are the actionable half, since /capture and /work both gate on that contract\n", empty)
+	}
+	if bareTickets > 0 {
+		fmt.Printf("%d ticket(s) carry %d acceptance criterion(s) with neither a `verify:` nor an `unverifiable:` line — the criteria state what done means and nothing decides whether they are met. "+
+			"Add a `verify: <command>` line under each, or an `unverifiable: <reason>` line saying why no command can exist. "+
+			"The count is a census like the one above and spans the whole store, done and closed tickets included; the open and ready ones are the actionable half\n", bareTickets, bareCriteria)
 	}
 }
 

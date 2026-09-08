@@ -500,3 +500,107 @@ func TestAuditCapsTheEmptyAcceptanceListing(t *testing.T) {
 		t.Errorf("audit should still count every empty-acceptance ticket:\n%s", out)
 	}
 }
+
+func TestAuditReportsBareAcceptanceCriteria(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	store := stores["alpha"]
+	auditBodyTicket(t, store, "au-bare-0001", "\nA description.\n\n## Acceptance Criteria\n\n- Nothing checks this.\n- Nor this.\n- This one is checked.\n  verify: go test ./cmd/\n")
+	auditBodyTicket(t, store, "au-checked-0002", "\nA description.\n\n## Acceptance Criteria\n\n- Checked.\n  verify: go test ./cmd/\n- Marked.\n  unverifiable: no command can decide a reading of prose.\n")
+	auditBodyTicket(t, store, "au-unver-0003", "\nA description.\n\n## Acceptance Criteria\n\n- Marked.\n  unverifiable: no command can decide a reading of prose.\n")
+	// No acceptance section at all: a stub states no criteria, so it has none
+	// that could be bare. Reported as empty-acceptance and nothing else.
+	auditBodyTicket(t, store, "au-stub-0004", "\nA description and nothing else.\n")
+	// The same for an epic, which the empty-acceptance half also passes over.
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: "au-epic-0005", Status: ticket.StatusBacklog, Type: ticket.TypeEpic,
+		Created: time.Now(), Title: "Epic au-epic-0005", Body: "\nA description and nothing else.\n",
+	})
+	// An epic that does state criteria is reported like anything else: the
+	// empty-acceptance check exempts epics because a container carries no
+	// contract of its own, but criteria that were written and cannot be checked
+	// are the same gap whatever the type.
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: "au-epicbare-0006", Status: ticket.StatusBacklog, Type: ticket.TypeEpic,
+		Created: time.Now(), Title: "Epic au-epicbare-0006",
+		Body: "\nA description.\n\n## Acceptance Criteria\n\n- Nothing checks this.\n",
+	})
+
+	out := captureAudit(t)
+
+	if !contains(out, "au-bare-0001  bare-acceptance  2 bare criterion(s)") {
+		t.Errorf("audit should name the ticket and how many of its criteria are bare:\n%s", out)
+	}
+	if contains(out, "au-checked-0002") || contains(out, "au-unver-0003") {
+		t.Errorf("audit should not report criteria carrying a verify or unverifiable line:\n%s", out)
+	}
+	for _, id := range []string{"au-stub-0004", "au-epic-0005"} {
+		if contains(out, id+"  "+string(ticket.ContentBareAcceptance)) {
+			t.Errorf("audit should not report %s, which states no criteria at all:\n%s", id, out)
+		}
+	}
+	if !contains(out, "au-epicbare-0006  bare-acceptance  1 bare criterion(s)") {
+		t.Errorf("audit should report an epic that states criteria and leaves them bare:\n%s", out)
+	}
+	if !contains(out, "2 ticket(s) carry 3 acceptance criterion(s) with neither") {
+		t.Errorf("audit should count the tickets and their bare criteria:\n%s", out)
+	}
+	if !contains(out, "`unverifiable: <reason>` line saying why no command can exist") {
+		t.Errorf("audit should name the remedy for a bare criterion:\n%s", out)
+	}
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var result ticket.AuditReport
+	jsonOut := captureAudit(t, "project", "alpha")
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, jsonOut)
+	}
+	want := map[ticket.ContentIssue]bool{
+		{ID: "alpha/au-bare-0001", Kind: ticket.ContentBareAcceptance, Bare: 2}:     false,
+		{ID: "alpha/au-epicbare-0006", Kind: ticket.ContentBareAcceptance, Bare: 1}: false,
+	}
+	for _, c := range result.Content {
+		if c.Kind != ticket.ContentBareAcceptance {
+			continue
+		}
+		if _, ok := want[c]; !ok {
+			t.Errorf("json content reports %+v, want only the tickets with bare criteria", c)
+			continue
+		}
+		want[c] = true
+	}
+	for issue, found := range want {
+		if !found {
+			t.Errorf("json content is missing %+v: %+v", issue, result.Content)
+		}
+	}
+}
+
+func TestAuditDoesNotCapTheBareAcceptanceListing(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	count := contentEmptyListLimit + 3
+	for i := 0; i < count; i++ {
+		auditBodyTicket(t, stores["alpha"], fmt.Sprintf("au-bare-%04d", i),
+			"\nA description.\n\n## Acceptance Criteria\n\n- Nothing checks this.\n")
+	}
+
+	out := captureAudit(t)
+
+	// Unlike the empty-acceptance class, this one is never summarised as a
+	// count: a bare criterion is repaired one ticket at a time, so a ticket left
+	// off the listing is one nobody can act on.
+	for i := 0; i < count; i++ {
+		if !contains(out, fmt.Sprintf("au-bare-%04d  bare-acceptance  1 bare criterion(s)", i)) {
+			t.Errorf("audit should name every ticket carrying a bare criterion, and did not name au-bare-%04d:\n%s", i, out)
+		}
+	}
+	// No fixture here yields an empty-acceptance issue, so any "... and N more"
+	// in this output would be a cap applied to the bare class.
+	if contains(out, "... and ") {
+		t.Errorf("audit should not cap the bare-acceptance listing:\n%s", out)
+	}
+	if !contains(out, fmt.Sprintf("%d ticket(s) carry %d acceptance criterion(s) with neither", count, count)) {
+		t.Errorf("audit should count every ticket carrying a bare criterion:\n%s", out)
+	}
+}
