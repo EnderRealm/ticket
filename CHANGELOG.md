@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- The TUI edit form no longer deletes body sections tk does not name. `BodySections` treats the description as everything up to the first heading tk names — Design, Acceptance Criteria, Test Results — so a `## Scope` or `## Shape` section is part of the description, and `UpdateSection` replaces exactly that region; `tk edit -d` and `ticket_edit` have always agreed with it. The form did not: it seeded its description field by splitting on the first `## ` heading of any kind, so the field held a prefix of what submitting it wrote back, and everything between the two boundaries was deleted by a save that changed nothing — on one 2334-byte description, two paragraphs shown and four sections lost. The field is now derived from `BodySections`, so the form shows the region it writes. Across the live store this took a no-op save from losing a section on 313 of 2059 tickets to none, and the fix is in the form's seeding rather than in `UpdateSection`, because the other two write surfaces were already correct and a change there would have broken them.
+
 ## [8.4.0] - 2026-09-07
 
 ### Added

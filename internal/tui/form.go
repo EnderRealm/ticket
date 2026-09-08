@@ -157,12 +157,15 @@ func newEditFormModel(t *ticket.Ticket, w, h int) formModel {
 	return m
 }
 
+// extractDescription returns the region the form's description field owns —
+// the same one submitting it writes back through UpdateSection. It has to come
+// from BodySections rather than a boundary of its own: the description runs to
+// the first heading tk names, and every other `## ` section belongs to it. A
+// field seeded at the first heading of any kind showed a prefix of what it
+// wrote, so saving an untouched form deleted whatever lay between the two.
 func extractDescription(body string) string {
-	idx := strings.Index(body, "\n## ")
-	if idx >= 0 {
-		return strings.TrimSpace(body[:idx])
-	}
-	return strings.TrimSpace(body)
+	desc, _, _, _ := ticket.BodySections(body)
+	return strings.TrimSpace(desc)
 }
 
 func (m *formModel) setSize(w, h int) {
