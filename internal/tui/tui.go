@@ -259,7 +259,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 
 	case statusMsg:
-		a.status = string(msg)
+		// Sanitized here rather than at either render site: a status can quote a
+		// ticket ID or title read off disk, and the footer and the overlay row
+		// both render this value.
+		a.status = ticket.SanitizeControl(string(msg))
 		return a, clearStatusAfter(3 * time.Second)
 
 	case clearStatusMsg:
@@ -536,11 +539,15 @@ func (a App) View() string {
 	// authoritative for layout; the Update-time contentHeight() only feeds the
 	// scroll math, which a stale-by-one footer state can never push to overflow.
 	footer, footerLines := a.footerView()
+	statusRows, statusLines := "", 0
+	if a.overlay != overlayNone && a.status != "" {
+		statusRows, statusLines = a.statusView()
+	}
 	warnLines := 0
 	if a.warning != "" {
 		warnLines = 1
 	}
-	contentH := a.height - 3 - footerLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + warning
+	contentH := a.height - 3 - footerLines - statusLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + status + warning
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -591,6 +598,15 @@ func (a App) View() string {
 		b.WriteString(footer)
 	}
 
+	// An overlay renders its own footer, so footerView — the only site that
+	// renders a.status — never runs in that branch: a store rejection of a save
+	// would leave the form open with no feedback at all. Kept above the warning
+	// row so the warning keeps the frame's last line.
+	if statusLines > 0 {
+		b.WriteString("\n")
+		b.WriteString(statusRows)
+	}
+
 	// Last line of the frame in either branch: an overlay renders its own footer
 	// over the whole height, so this is the only row a warning is sure to reach
 	// the user on, and the renderer keeps the frame's trailing rows when it
@@ -617,6 +633,42 @@ func (a App) warningView() string {
 		text = string(runes[:width-1]) + "…"
 	}
 	return lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1).Render(StyleWarning.Render(text))
+}
+
+// statusRowsMax caps the rows the status may claim. Both sentences of the
+// store's parent rejections fit in three at 80 columns, and an uncapped count
+// would let one message starve the content area on a short terminal.
+const statusRowsMax = 3
+
+// statusView renders the status wrapped over as many rows as it needs, up to
+// statusRowsMax, and reports the row count so View reserves exactly the rows it
+// writes. Clamping to one row the way warningView does would cut a store
+// rejection mid-ID: the remedy it names — "Repoint the parent at an epic" —
+// sits in the second sentence, and that clause is the half the user acts on.
+// The last row kept marks the cut when the message outruns the cap.
+func (a App) statusView() (string, int) {
+	width := a.width - 2
+	if width < 1 {
+		width = 1
+	}
+	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
+
+	wrapped := wrapText(a.status, width)
+	lines := make([]string, 0, statusRowsMax)
+	for i, wl := range wrapped {
+		if i == statusRowsMax {
+			break
+		}
+		text := wl.text
+		if i == statusRowsMax-1 && len(wrapped) > statusRowsMax {
+			if runes := []rune(text); len(runes) >= width {
+				text = string(runes[:width-1])
+			}
+			text += "…"
+		}
+		lines = append(lines, pad.Render(StyleWarning.Render(text)))
+	}
+	return strings.Join(lines, "\n"), len(lines)
 }
 
 // ─── Render Components ──────────────────────────────────────────────────────
