@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -112,6 +113,14 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if err := store.Create(t); err != nil {
 		return err
+	}
+
+	// The description is written raw into the body, so a `## Acceptance
+	// Criteria` section in it is how this path produces criteria. Warned about
+	// here, in the same sentence ticket_create returns, because the caller
+	// still holds the context they came from.
+	if bare := ticket.BareCriteria(t.Body); len(bare) > 0 {
+		fmt.Fprintln(os.Stderr, ticket.BareAcceptanceWarning(t.ID, bare))
 	}
 
 	return showTicket(store, id, false)

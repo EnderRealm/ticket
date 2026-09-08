@@ -297,8 +297,13 @@ Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bul
 
 - Frontier excludes blocked tickets.
   verify: go test ./pkg/ticket -run TestFrontier
-- Docs updated.
+- The TUI redraws cleanly at 40 columns.
+  unverifiable: needs a human at a terminal.
 ```
+
+A criterion for which no runnable command can exist declares that instead, on a line of the same shape: `unverifiable: <reason>`. The two are what tell a contract gap from an honest one — a criterion nobody wrote a command for and one that cannot have a command both leave `verify:` absent, and only the marker distinguishes them. A criterion carrying both lines keeps its command; the reason is data and is never run.
+
+A bullet carrying neither line is bare, and `tk create` and the `ticket_create` MCP tool report one at the moment it is written — the CLI on stderr, the tool in `bare_acceptance_criteria` (the texts) and `bare_acceptance_warning` (the remedy). It is a report and not a refusal: the ticket is created and its ID returned, so a batch filing path is never left unable to record one. The caller is the audience because it still holds the context the criteria came from and can re-send them with a line attached.
 
 Every heading beginning `## Acceptance` opens that section, so a hand-written `## Acceptance Notes` block is part of it: its bullets are criteria too, appended after the earlier block's in body order. The section ends at the next `## ` heading of any kind, so bullets under an unrelated heading are not criteria. `tk verify`, `--criterion <n>` and the `acceptance_criteria` field the `ticket_show` MCP tool returns all read that one section, so the criterion index a consumer reads out of `ticket_show` is the one tk runs. The write matches that read: an acceptance edit (the `ticket_edit` MCP tool's `acceptance` argument) replaces every `## Acceptance*` block — including one sitting further down the body, after a `## Design` block — with the new text under a single `## Acceptance Criteria` heading where the first block was, leaving whatever sat between them in place. So no block is dropped by the write and none is left behind as stale text, and writing back the section `ticket_show` returned reproduces it rather than duplicating it. A heading counts only where it opens a line: a description naming `## Acceptance Criteria`, `## Test Results` or `## Notes` inline is prose, and an edit spans the real section rather than the mention.
 
@@ -308,7 +313,7 @@ Every heading beginning `## Acceptance` opens that section, so a hand-written `#
 tk verify 5c4
 # verifying nw-5c46 in /Users/you/code/myproject
 # PASS (exit 0) Frontier excludes blocked tickets.
-# UNVERIFIED Docs updated.
+# UNVERIFIED The TUI redraws cleanly at 40 columns.
 # 1 pass, 0 fail, 0 refused, 1 unverified
 ```
 
@@ -317,7 +322,7 @@ The command exits non-zero if any criterion failed or was refused, and records t
 ```
 verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 0 refused, 1 unverified
 - PASS (exit 0): Frontier excludes blocked tickets.
-- UNVERIFIED: Docs updated.
+- UNVERIFIED: The TUI redraws cleanly at 40 columns.
 ```
 
 `tk verify --json` and the `ticket_verify` MCP tool return the same results structured, including each command's exit code and captured output (capped at 4KB per criterion). The MCP tool executes the commands on the server host and requires the ticket's project to have a configured path.

@@ -36,11 +36,16 @@ Viewing:
                              20 refused or unverified
     --no-record              Skip writing the Test Results section
 
-  A criterion declares its check on an indented continuation line:
+  A criterion declares its check on an indented continuation line, or
+  declares that no command can exist for it:
 
     - Frontier excludes blocked tickets.
       verify: go test ./pkg/ticket -run TestFrontier
-    - Docs updated.
+    - The TUI redraws cleanly at 40 columns.
+      unverifiable: needs a human at a terminal.
+
+  A criterion carrying neither line is reported on stderr by tk create
+  when the ticket is written; the ticket is still created.
 
   Each command runs in the project directory, execed as argv and never
   through a shell: quotes group arguments, everything else

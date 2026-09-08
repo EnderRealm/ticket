@@ -145,6 +145,45 @@ func ParseCriteria(section string) []Criterion {
 	return criteria
 }
 
+// BareCriteria returns the text of every acceptance criterion in body that
+// carries neither a verify command nor an unverifiable claim. Such a criterion
+// states what done means with nothing that can decide it, and no other surface
+// reports the gap at the moment it is written. Text is sanitized because it is
+// untrusted markdown both the CLI and the MCP response print.
+func BareCriteria(body string) []string {
+	var bare []string
+	for _, c := range ParseCriteria(AcceptanceCriteria(body)) {
+		if c.Command == "" && !c.Unverifiable {
+			bare = append(bare, SanitizeControl(c.Text))
+		}
+	}
+	return bare
+}
+
+// BareAcceptanceWarning is the one phrasing for criteria BareCriteria found,
+// said the same way by `tk create` and ticket_create. Empty bare means no
+// warning, so a caller can assign the result unconditionally.
+//
+// The remedy names ticket_edit and the section itself, and deliberately not
+// `tk edit`: that command has no acceptance flag, and its --description writes
+// only the description section, so a CLI operator sent there finds nothing that
+// writes the criteria. One phrasing reaches both surfaces, so it may name only
+// what is true on both.
+func BareAcceptanceWarning(id string, bare []string) string {
+	if len(bare) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(bare))
+	for i, text := range bare {
+		quoted[i] = fmt.Sprintf("%q", text)
+	}
+	return fmt.Sprintf("ticket %s has acceptance criteria with no way to check them: %s. "+
+		"Nothing decides whether they are met, and the workflow gates on that. "+
+		"Add a `verify: <command>` line under each, or an `unverifiable: <reason>` line saying why no command can exist — "+
+		"with ticket_edit on %s and an `acceptance` argument, or by editing that ticket's `## Acceptance Criteria` section.",
+		id, strings.Join(quoted, ", "), id)
+}
+
 // RunVerify executes each criterion's command in dir, sequentially and in
 // order, each bounded by policy's timeout and by ctx. Criteria without commands
 // yield unverified results. An unusable dir is a single error rather than a

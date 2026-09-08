@@ -755,3 +755,73 @@ func TestTokenizeCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestBareCriteria(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "no acceptance section",
+			body: "\nJust a description.\n",
+		},
+		{
+			name: "every criterion marked",
+			body: "\n## Acceptance Criteria\n\n- Checked.\n  verify: go test ./...\n- Cannot be.\n  unverifiable: needs a human to look.\n",
+		},
+		{
+			name: "mix reports only the bare ones",
+			body: "\n## Acceptance Criteria\n\n- Checked.\n  verify: go test ./...\n- Bare one.\n- Cannot be.\n  unverifiable: needs a human to look.\n- Bare two.\n",
+			want: []string{"Bare one.", "Bare two."},
+		},
+		{
+			name: "unverifiable with no reason still carries the claim",
+			body: "\n## Acceptance Criteria\n\n- Cannot be.\n  unverifiable:\n",
+		},
+		{
+			// The other half of the asymmetry: an empty verify line is not a
+			// command, so the criterion is still bare and still reported.
+			name: "empty verify line leaves the criterion bare",
+			body: "\n## Acceptance Criteria\n\n- Half done.\n  verify:\n",
+			want: []string{"Half done."},
+		},
+		{
+			name: "text is sanitized",
+			body: "\n## Acceptance Criteria\n\n- Bare\x1b[2K one.\n",
+			want: []string{"Bare�[2K one."},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BareCriteria(tc.body)
+			if len(got) != len(tc.want) {
+				t.Fatalf("BareCriteria = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("bare[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestBareAcceptanceWarning(t *testing.T) {
+	if got := BareAcceptanceWarning("proj/tk-0001", nil); got != "" {
+		t.Errorf("BareAcceptanceWarning with nothing bare = %q, want empty", got)
+	}
+	got := BareAcceptanceWarning("proj/tk-0001", []string{"Bare one.", "Bare two."})
+	for _, want := range []string{"proj/tk-0001", "Bare one.", "Bare two.", "verify:", "unverifiable:"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning %q does not name %q", got, want)
+		}
+	}
+	// The CLI prints this same sentence, and `tk edit` cannot write the
+	// acceptance section — naming it would send an operator to a flag that
+	// does not exist.
+	if strings.Contains(got, "tk edit") {
+		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", got)
+	}
+}

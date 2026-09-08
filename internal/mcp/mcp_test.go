@@ -4050,3 +4050,86 @@ func TestCreateWarnsOnEmptyAcceptance(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateReportsBareAcceptanceCriteria(t *testing.T) {
+	session := testServer(t)
+
+	tests := []struct {
+		name       string
+		ticketType string
+		acceptance string
+		want       []string
+	}{
+		{
+			name:       "mix reports only the bare ones",
+			acceptance: "- Checked.\n  verify: go test ./...\n- Bare one.\n- Cannot be.\n  unverifiable: needs a human to look.\n- Bare two.",
+			want:       []string{"Bare one.", "Bare two."},
+		},
+		{
+			name:       "every criterion marked",
+			acceptance: "- Checked.\n  verify: go test ./...\n- Cannot be.\n  unverifiable: needs a human to look.",
+		},
+		{
+			// Unlike empty_acceptance_warning, which exempts epics because a
+			// container's children carry the contract, a criterion that was
+			// written and cannot be checked is a gap whatever the type.
+			name:       "an epic is not exempt",
+			ticketType: "epic",
+			acceptance: "- Bare one.",
+			want:       []string{"Bare one."},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{"title": "Bare " + tt.name, "description": "Why it matters", "acceptance": tt.acceptance}
+			if tt.ticketType != "" {
+				args["type"] = tt.ticketType
+			}
+			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "ticket_create",
+				Arguments: args,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError {
+				t.Fatalf("ticket_create error: %v", result.Content)
+			}
+			var created map[string]any
+			json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &created)
+
+			// The report never refuses the call: the ticket exists and its id
+			// is what the caller edits to attach the missing lines.
+			id, _ := created["id"].(string)
+			if id == "" {
+				t.Fatalf("create returned no id: %v", created)
+			}
+
+			var bare []string
+			reported, _ := created["bare_acceptance_criteria"].([]any)
+			for _, c := range reported {
+				bare = append(bare, c.(string))
+			}
+			warning, _ := created["bare_acceptance_warning"].(string)
+			if len(tt.want) == 0 {
+				if len(bare) != 0 || warning != "" {
+					t.Fatalf("fully marked criteria reported %q / %q", bare, warning)
+				}
+				return
+			}
+			if len(bare) != len(tt.want) {
+				t.Fatalf("bare_acceptance_criteria = %q, want %q", bare, tt.want)
+			}
+			for i := range bare {
+				if bare[i] != tt.want[i] {
+					t.Errorf("bare[%d] = %q, want %q", i, bare[i], tt.want[i])
+				}
+			}
+			for _, want := range append([]string{id}, tt.want...) {
+				if !strings.Contains(warning, want) {
+					t.Errorf("warning %q does not name %q", warning, want)
+				}
+			}
+		})
+	}
+}

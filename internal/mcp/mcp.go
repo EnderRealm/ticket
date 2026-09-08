@@ -142,6 +142,17 @@ type ticketJSON struct {
 	// nothing else reports it; a warning rather than a refusal, so stub-first
 	// flows still create.
 	EmptyAcceptanceWarning string `json:"empty_acceptance_warning,omitempty"`
+	// BareAcceptanceCriteria names the criteria that carry neither a `verify:`
+	// nor an `unverifiable:` line, so a caller can machine-read which bullets
+	// are the gap rather than parse the sentence below. Set by ticket_create
+	// alone — every other tool leaves it empty.
+	BareAcceptanceCriteria []string `json:"bare_acceptance_criteria,omitempty"`
+	// BareAcceptanceWarning is the remedy for those criteria. Set by
+	// ticket_create alone. The caller is the only party still holding the
+	// context the criteria came from, so it is the one that can attach commands
+	// cheaply; a warning rather than a refusal, so a batch filing path is not
+	// left unable to record the ticket at all.
+	BareAcceptanceWarning string `json:"bare_acceptance_warning,omitempty"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -605,7 +616,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		if args.Title == "" {
 			r, _ := errResult("title is required")
@@ -784,6 +795,13 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			j.EmptyAcceptanceWarning = fmt.Sprintf("ticket %s has a description but no acceptance criteria: nothing states what done means, and the workflow gates on that contract. "+
 				"Add it with ticket_edit on %s and an `acceptance` argument.", t.ID, t.ID)
 		}
+		// Read off the stored body, not args.Acceptance, so the CLI — which has
+		// no acceptance argument, only a description carrying the section —
+		// reaches the same helper. No type exemption: unlike an empty contract,
+		// which is expected on a container, a criterion that was written but
+		// cannot be checked is a gap whatever the type.
+		j.BareAcceptanceCriteria = ticket.BareCriteria(t.Body)
+		j.BareAcceptanceWarning = ticket.BareAcceptanceWarning(t.ID, j.BareAcceptanceCriteria)
 		r, err := jsonResult(j)
 		return r, nil, err
 	})
