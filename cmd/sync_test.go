@@ -1185,15 +1185,26 @@ func TestServeSyncStarts(t *testing.T) {
 	os.WriteFile(filepath.Join(storeRoot, "tickets", "sync-test.md"), []byte("test"), 0o644)
 
 	started := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
 		close(started)
 		syncLoop(ctx, storeRoot, 100*time.Millisecond)
+		close(done)
 	}()
 	<-started
 
 	// Wait for at least one cycle
 	time.Sleep(300 * time.Millisecond)
 	cancel()
+
+	// Join the loop before asserting: cancel only signals, and syncLoop shells
+	// out to git, so a surviving child races both the log read below and
+	// t.TempDir()'s RemoveAll of the repo it is writing in.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("syncLoop did not stop after context cancel")
+	}
 
 	// Verify the file was committed
 	out, _ := execCommand("git", "-C", gitRoot, "log", "--oneline")

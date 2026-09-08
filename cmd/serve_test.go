@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"os"
@@ -364,8 +365,32 @@ func serveSession(t *testing.T, store ticket.Store, defaultProject, centralRoot 
 
 	st, ct := gomcp.NewInMemoryTransports()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go server.Run(ctx, st)
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		runErr = server.Run(ctx, st)
+		close(done)
+	}()
+
+	// Join the server before the test returns: cancel only signals, and a
+	// goroutine still live once t.TempDir()'s RemoveAll starts can write into
+	// the tree being removed. Registered before the session's Close cleanup so
+	// LIFO cancels after the client is gone. Callers must create any
+	// t.TempDir() before calling serveSession, so this cleanup runs before
+	// their removals.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+			// runErr is written before close(done), so this read is ordered.
+			// It is not read on the timeout path, where the goroutine lives on.
+			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+				t.Errorf("serveSession: server.Run: %v", runErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("serveSession: server.Run did not return after context cancel")
+		}
+	})
 
 	client := gomcp.NewClient(&gomcp.Implementation{Name: "test", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
