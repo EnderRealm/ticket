@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.5.0] - 2026-09-09
 
 ### Added
 - `ticket.NewAuditor` prepares a store's audit once and `Auditor.Ticket` answers what is wrong with a single ticket off it, for the surfaces that want the per-ticket question — `tk show`, the TUI detail page, the MCP `ticket_show` response — rather than "what is wrong across this whole store". The preparation holds the listing, the parent index and the children map, so asking about every ticket in the store one at a time costs the reads one `ticket.Audit` costs rather than one listing per ticket; `Audit` is now that same per-ticket check fanned out over what was listed, so the store-wide report and the per-ticket answer cannot come to disagree. `Findings` carries a parent violation, an epic-status drift and the content issues, and deliberately has nowhere to put a `FileSkip` or a `ProjectSkip`: `unreadable` and `foreign-namespace` describe files that never became tickets, so they are unexpressible on this path rather than returned empty, which a caller could read as a check that ran. A ticket the auditor has no prepared context for — another project's, or a bare ID against a central store — comes back as an error, which is what tells "could not evaluate" apart from a clean ticket. Each project is now listed once instead of three times, so `tk audit` no longer prints `FileStore.List`'s per-file stderr warnings for the files it could not read; the report's own `unreadable` and `foreign-namespace` causes already name them, and `--json` is unchanged.
