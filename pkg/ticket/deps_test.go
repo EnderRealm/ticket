@@ -309,16 +309,44 @@ func TestBlockedTickets(t *testing.T) {
 	}
 }
 
-// countingStore counts the single-ticket reads a caller makes through it, so a
-// loop over the whole store can be held to answering from what it listed.
+// countingStore counts what a caller costs the store it wraps: the
+// single-ticket reads it makes, through either entry point — a stored read is a
+// read — so a loop over the whole store can be held to answering from what it
+// listed, and the directory listings, so a caller that prepares once can be
+// held to one. It implements the same optional interfaces the FileStore it
+// embeds does, so callers take the same path through it as through the store
+// itself.
 type countingStore struct {
 	*FileStore
-	gets int
+	gets  int
+	lists int
 }
+
+var (
+	_ Store        = (*countingStore)(nil)
+	_ storedLister = (*countingStore)(nil)
+	_ storedReader = (*countingStore)(nil)
+	_ projectStore = (*countingStore)(nil)
+)
 
 func (c *countingStore) Get(id string) (*Ticket, error) {
 	c.gets++
 	return c.FileStore.Get(id)
+}
+
+func (c *countingStore) getStored(id string) (*Ticket, error) {
+	c.gets++
+	return c.FileStore.getStored(id)
+}
+
+func (c *countingStore) List() ([]*Ticket, error) {
+	c.lists++
+	return c.FileStore.List()
+}
+
+func (c *countingStore) listStored() ([]*Ticket, []FileSkip, error) {
+	c.lists++
+	return c.FileStore.listStored()
 }
 
 func TestStoreWideLoopsResolveDepsFromTheListedSet(t *testing.T) {

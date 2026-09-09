@@ -581,8 +581,9 @@ func (s *FileStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// Stamped here for the reason auditStore stamps its own: a File is a base
-	// filename, which names nothing without the project whose directory held it.
+	// Stamped here for the reason the audit stamps its own (newAuditContext): a
+	// File is a base filename, which names nothing without the project whose
+	// directory held it.
 	for i := range skips {
 		skips[i].Project = s.Project
 	}

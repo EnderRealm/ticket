@@ -912,10 +912,11 @@ func TestMoveLeavesNoStoredClosedOnTheEpicThatLeft(t *testing.T) {
 				t.Errorf("stored epic abandoned = %v, want %v — a move neither records an abandon nor takes one back", stored.Abandoned, tc.abandon)
 			}
 
-			drift, _, err := auditStoreEpicStatus(src)
+			auditor, err := NewAuditor(src)
 			if err != nil {
-				t.Fatalf("auditStoreEpicStatus: %v", err)
+				t.Fatalf("NewAuditor: %v", err)
 			}
+			drift := auditor.Report().EpicStatus
 			for _, d := range drift {
 				if !SameTicketID(d.ID, tc.epicID) {
 					continue
