@@ -395,18 +395,18 @@ assert_ok "tk edit $EPIC_CHILD --parent=''" "Clear a parent"
 assert_not_contains "tk show $EPIC_CHILD" "^parent:" "Cleared parent is gone"
 
 # Every ticket above was written through a validated path, so nothing violates.
-assert_contains "tk audit" "No parent violations." "Audit reports a clean store"
+assert_contains "tk audit parent-not-epic" "No parent-not-epic findings." "Audit reports a clean store"
 
 # Plant a ticket the write path would have refused, so the report has something
 # to name — an exit-0 assertion alone would pass with the reporting gutted.
 STORE_DIR="$CENTRAL_ROOT/tickets/tktest"
 printf -- '---\nid: bad-9999\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: feature\npriority: 2\nparent: %s\n---\n# Planted violation\n' "$ID1" > "$STORE_DIR/bad-9999.md"
-assert_contains "tk audit" "bad-9999" "Audit names the violating ticket"
-assert_contains "tk audit" "parent-not-epic" "Audit classifies the violation"
-assert_contains "tk audit --project tktest" "bad-9999" "Audit scoped to a project"
+assert_contains "tk audit parent-not-epic" "bad-9999" "Audit names the violating ticket"
+assert_contains "tk audit parent-not-epic" "bad-9999.*parent-not-epic" "Audit classifies the violation"
+assert_contains "tk audit --project tktest parent-not-epic" "bad-9999" "Audit scoped to a project"
 assert_fail "tk edit bad-9999 --priority 0" "Editing a violating ticket is refused"
 assert_ok "tk edit bad-9999 --parent=''" "The remedy the audit names clears it"
-assert_contains "tk audit" "No parent violations." "Audit clean once the parent is cleared"
+assert_contains "tk audit parent-not-epic" "No parent-not-epic findings." "Audit clean once the parent is cleared"
 
 # ─── EPIC STATUS ────────────────────────────────────────────────────────────
 log_section "EPIC STATUS"
@@ -483,11 +483,11 @@ assert_contains "tk show $INVENT_EPIC" "status: done" "An unrelated edit invents
 # the only place the two can still be compared. Plant an epic the way a store
 # written before derivation holds one.
 printf -- '---\nid: legacy-epic-9999\nstatus: closed\ndeps: []\nlinks: []\ncreated: 2026-01-01T00:00:00Z\ntype: epic\npriority: 2\n---\n# Planted legacy epic\n' > "$STORE_DIR/legacy-epic-9999.md"
-assert_contains "tk audit" "legacy-epic-9999" "Audit names the epic whose stored status is no longer read"
-assert_contains "tk audit" "stored-closed" "Audit calls out an epic storing closed separately"
-assert_contains "tk audit --project tktest" "legacy-epic-9999" "Epic report scoped to a project"
+assert_contains "tk audit stored-closed" "legacy-epic-9999" "Audit names the epic whose stored status is no longer read"
+assert_contains "tk audit stored-closed" "legacy-epic-9999.*stored-closed" "Audit calls out an epic storing closed separately"
+assert_contains "tk audit --project tktest stored-closed" "legacy-epic-9999" "Epic report scoped to a project"
 assert_ok "tk edit legacy-epic-9999 --status closed" "The remedy the audit names re-records the abandon"
-assert_not_contains "tk audit" "legacy-epic-9999" "Audit clean once the abandon is re-recorded"
+assert_not_contains "tk audit stored-closed" "legacy-epic-9999" "Audit clean once the abandon is re-recorded"
 
 # A move records that a ticket left by closing it here, but an epic left behind
 # stores backlog: its status is derived either way, and a stored closed with no
@@ -498,8 +498,9 @@ MOVE_EPIC=$(tk create "Epic that moves projects" -t epic | extract_id)
 MOVE_CHILD=$(tk create "Child that stays behind" --parent "$MOVE_EPIC" | extract_id)
 assert_ok "tk move $MOVE_EPIC $OTHER_DIR" "Move an epic to another project"
 # Scoped to this epic: the block above deliberately leaves another epic storing
-# a closed its children no longer imply, which is a stored-closed of its own.
-assert_not_contains "tk audit | grep $MOVE_EPIC" "stored-closed" "A moved epic plants no stored-closed candidate"
+# a closed its children no longer imply, so the listing itself is not empty —
+# what is under test is that this epic is not in it.
+assert_not_contains "tk audit stored-closed" "$MOVE_EPIC" "A moved epic plants no stored-closed candidate"
 assert_contains "grep '^status:' $STORE_DIR/$MOVE_EPIC.md" "status: backlog" "The epic left behind stores backlog"
 assert_contains "tk show $MOVE_CHILD" "status: backlog" "The child of a moved epic is left as it was"
 
@@ -519,7 +520,7 @@ assert_contains "tk show $UNREADABLE_EPIC" "status: backlog" "No epic reads term
 assert_contains "tk ls" "broken-9997.md" "A file that cannot be read is named rather than dropped"
 # stderr dropped: the Warnf every listing emits would satisfy these on its own,
 # and what is under test is the audit's own report.
-assert_contains "tk audit 2>/dev/null" "broken-9997.md" "Audit names the file it could not read"
+assert_contains "tk audit unreadable 2>/dev/null" "broken-9997.md" "Audit names the file it could not read"
 assert_contains "tk audit 2>/dev/null" "incomplete" "Audit calls a report covering less than the store incomplete"
 rm "$STORE_DIR/broken-9997.md"
 assert_contains "tk show $UNREADABLE_EPIC" "status: done" "The epic reads done again once the file is gone"

@@ -27,10 +27,14 @@ Viewing:
                              and closed hidden; --all shows them)
   frontier [--project=NAME]  List ready tickets with all deps done/closed
   search <query>             Search tickets by relevance (best matches first)
-  audit [--project=NAME]     Report invalid parents, epics whose stored status is not read, tickets missing
-                             body content, tickets whose acceptance criteria nothing can check, tickets
-                             storing a legacy Review Log, files that cannot be read as tickets (exits
-                             non-zero), and files whose id names another project
+  audit [cause] [--project=NAME]
+                             Summarise findings by cause, one line each with the count and the
+                             command that lists that cause's tickets: invalid parents, epics whose
+                             stored status is not read, tickets missing body content, tickets whose
+                             acceptance criteria nothing can check, tickets storing a legacy Review
+                             Log, files that cannot be read as tickets (exits non-zero), and files
+                             whose id names another project. tk audit <cause> lists that cause's
+                             tickets in full and nothing else; --json is the whole report either way
   verify <id>                Run the ticket's acceptance-criteria verify commands
     --dir <path>             Run the commands in this directory instead of the project's
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
@@ -188,10 +192,11 @@ Statuses: backlog, ready, open, done, closed
   reports the edit; setting any other status on an abandoned epic takes that
   back. The same applies to a status set alongside --type epic. Statuses
   stored on epics before this were left in place and are ignored, not
-  migrated; tk audit lists every epic that now reads a different one, and the
-  ones it reports as stored-closed should be re-recorded before those epics
-  are edited — but only where the file predates the change, since a later
-  write of an epic leaves the same shape behind.
+  migrated; tk audit counts every epic that now reads a different one and
+  tk audit stale-status and tk audit stored-closed list them, and the ones
+  it reports as stored-closed should be re-recorded before those epics are
+  edited — but only where the file predates the change, since a later write
+  of an epic leaves the same shape behind.
 
 Global flags:
   --repo <name|path>  Operate on a different registered project or repo
