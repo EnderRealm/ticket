@@ -179,6 +179,9 @@ var (
 // updateLocked rather than Update: re-entering Update would block forever on the
 // lock this call already holds, on a second descriptor of the same lock file.
 func (s *FileStore) mutate(id string, fn func(*Ticket) error) (*Ticket, error) {
+	if err := s.guardWrite(); err != nil {
+		return nil, fmt.Errorf("update: %w", err)
+	}
 	path, err := s.Resolve(id)
 	if err != nil {
 		return nil, err

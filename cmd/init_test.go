@@ -259,6 +259,45 @@ func TestInitNonInteractive(t *testing.T) {
 	}
 }
 
+func TestInitRefusesRootBinding(t *testing.T) {
+	home := setupTestHome(t)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	cfg := project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}}
+	project.Save(cfg)
+
+	projDir := filepath.Join(home, "ideas")
+	os.MkdirAll(projDir, 0o755)
+	oldDir, _ := os.Getwd()
+	os.Chdir(projDir)
+	defer os.Chdir(oldDir)
+
+	initCmd.Flags().Set("yes", "true")
+	initCmd.Flags().Set("project", project.RootNamespace)
+	defer func() {
+		initCmd.Flags().Set("yes", "false")
+		initCmd.Flags().Set("project", "")
+	}()
+
+	err := runInit(initCmd, nil)
+	if err == nil || !contains(err.Error(), "Root has no repository") {
+		t.Fatalf("init --project _root: want the Root binding refusal, got %v", err)
+	}
+	// Refused before anything is made: no directory to collide with at
+	// activation, and no config entry binding Root to this checkout.
+	if _, err := os.Stat(filepath.Join(centralRoot, "tickets", project.RootNamespace)); !os.IsNotExist(err) {
+		t.Errorf("refused init created the _root directory (stat err: %v)", err)
+	}
+	cfg, err = project.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.Projects[project.RootNamespace]; ok {
+		t.Error("refused init registered _root in config")
+	}
+}
+
 // `tk init` is re-runnable, and it replaces the whole project entry: the fields
 // it does not write itself — the registration date, and the auto_retrospect
 // opt-in nobody but a human sets — have to survive the second run, or re-running

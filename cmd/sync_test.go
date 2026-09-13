@@ -564,6 +564,7 @@ func TestInsideCentralStorePaths(t *testing.T) {
 		{"tickets/proj/ticket-7cd2.md", true},
 		{"tickets/", true},
 		{"config.yaml", true},
+		{"catalog.yaml", true},
 		// Near misses: the directory entry matches by prefix and the file entry
 		// exactly, so neither of these is the store's.
 		{"ticketsX/y.md", false},

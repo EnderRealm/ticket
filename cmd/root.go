@@ -202,6 +202,23 @@ Global flags:
   --repo <name|path>  Operate on a different registered project or repo
   --json           Output in JSON format
 
+Namespaces:
+  A namespace is a directory under <central_root>/tickets/ and the first half
+  of every project/id. A project is a namespace with a repository registered
+  behind it; _root (Root) is the built-in namespace for ideas that have no
+  repository yet, and tk init refuses to register it. <central_root>/catalog.yaml
+  lists every namespace with its kind (root, project, legacy) and the
+  required_features every binary sharing the store must implement; a
+  .namespace marker inside each namespace directory keeps an empty one in git.
+  Writes are refused before they touch the store when the catalog requires a
+  feature this binary lacks, and writes to _root are refused until the catalog
+  requires root-namespace. No catalog means the store predates activation:
+  every read and write to an ordinary project behaves as before. Binaries
+  released before this guard ignore the catalog and the markers entirely, so
+  activation requires replacing every tk binary, embedded library and
+  long-lived process (MCP servers, watchers) sharing the store — a marker
+  alone cannot make an already-released binary refuse.
+
 Environment:
   TK_STORE_ROOT <abs path>
     Resolve the whole store against this root instead of the configured

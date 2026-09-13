@@ -139,7 +139,11 @@ func (m *MultiStore) Create(t *Ticket) error {
 	if err != nil {
 		return err
 	}
-	if missing {
+	// Root is built in rather than registered, so no config entry stands in
+	// for its directory: whether a write to it is allowed at all is the
+	// store's guard's to say, which store.Create runs before it makes the
+	// directory.
+	if missing && !project.IsRoot(proj) {
 		// Registration is the authority the directory only stands in for.
 		cfg, err := project.Load()
 		if err != nil {

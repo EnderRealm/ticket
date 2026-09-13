@@ -39,14 +39,14 @@ const (
 )
 
 // centralStorePaths are the tk-managed paths inside the central store root: the
-// tickets directory and the shared config. They are the only paths init's
-// bootstrap and every sync cycle stage. `git -C` sets the working directory but
-// not the pathspec, so staging without one sweeps up the entire worktree of a
-// repo the store root happens to be nested inside. Both consumers run git with
-// `-C <storeRoot>` and scope staging, the staged-changes check and the commit to
-// these same relative paths, so neither can commit anything outside the store
-// root.
-var centralStorePaths = []string{"tickets/", "config.yaml"}
+// tickets directory, the shared config and the namespace catalog. They are the
+// only paths init's bootstrap and every sync cycle stage. `git -C` sets the
+// working directory but not the pathspec, so staging without one sweeps up the
+// entire worktree of a repo the store root happens to be nested inside. Both
+// consumers run git with `-C <storeRoot>` and scope staging, the staged-changes
+// check and the commit to these same relative paths, so neither can commit
+// anything outside the store root.
+var centralStorePaths = []string{"tickets/", "config.yaml", ticket.CatalogFile}
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",

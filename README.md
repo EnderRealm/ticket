@@ -522,6 +522,29 @@ Every ticket change is appended to `~/.ticket/state/<project>/mutations.jsonl`, 
 
 Other tools (`ticket_show`, `ticket_edit`, etc.) accept namespaced IDs directly — pass `forge/my-ticket-1234` to operate on a specific project's ticket.
 
+### Namespaces, Root and the catalog
+
+A **namespace** is one directory under `<central_root>/tickets/` and the first half of every `project/id`. A **project** is a namespace with a repository registered behind it on some machine — the `path` in `~/.ticket/config.yaml` and `store: central` in the shared config. Registration is machine-local; the namespace is shared.
+
+**Root** is the built-in namespace `_root`, for ideas that need a stable home before they have a repository. It is always in the inventory and is bound to no repository — `tk init` refuses to register it, so nothing a registration drives (the journal watcher, auto-close) ever runs for it. Its tickets keep the ordinary `_root/slug-hash` shape, so nothing about IDs changes when an idea later becomes a project: register the real repository and file the implementation tickets there.
+
+`<central_root>/catalog.yaml` is the shared **namespace catalog**. It sits beside `config.yaml`, outside every namespace directory, and syncs with the store:
+
+```yaml
+required_features:
+  - root-namespace
+namespaces:
+  _root: {kind: root}
+  warp:  {kind: project}
+  code:  {kind: legacy}
+```
+
+`kind` is `root` for Root, `project` for a registered project, and `legacy` for a directory that predates the catalog and has no repository registration — admitting one invents no registration and moves nothing. `required_features` is both the compatibility contract and the activation marker: every binary sharing the store must implement each feature listed, and `root-namespace` being listed is what allows writes to `_root`. A `.namespace` marker inside each namespace directory keeps an empty namespace in git, so one that has never held a ticket survives a clone and reads as *empty* rather than *missing*.
+
+`ticket.ReadInventory` is the read-only view consumers take of this: every namespace with its kind, registration, repo path, directory, marker and state, plus `Complete` and `Diagnostics`. No catalog, a catalogued namespace with no directory or marker, a config entry binding `_root` to a repository, or a required feature this binary lacks each make the inventory incomplete and are named — never reported as an empty, healthy store. A malformed catalog or config is an error, not an empty result.
+
+**Compatibility.** Every central write — CLI, TUI, MCP, embedded library — passes one guard before it touches the store: a catalog requiring a feature outside `ticket.SupportedFeatures` refuses the write and says the binary must be replaced, and a write to `_root` is refused until `root-namespace` is required. Reads are never gated, and a store with no catalog behaves exactly as it did before the catalog existed. The guard only protects binaries that carry it: **tk binaries released before this guard ignore the catalog and the markers entirely**, so activating Root requires coordinated replacement of every tk binary, embedded library and long-lived process (MCP servers, watchers) sharing the store — a marker alone cannot make an already-released binary refuse. No command activates Root yet; `ticket.PreflightActivation` reports what would block it (a `_root` config entry, or a `_root` directory not catalogued as Root) and adopts or moves nothing.
+
 ### Isolated stores (`TK_STORE_ROOT`)
 
 Set `TK_STORE_ROOT` to an absolute path and tk resolves its whole store against that root instead of the configured `central_root` — for a test harness driving `tk serve`, or anything else that must not write to the real store:

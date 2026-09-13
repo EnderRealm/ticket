@@ -100,6 +100,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if projectName == "" {
 		return fmt.Errorf("failed to resolve project name")
 	}
+	// Before the central directory is made: registering would bind a checkout
+	// to the one namespace that has none, and the directory it creates would
+	// then collide with the catalogued Root at activation.
+	if project.IsRoot(projectName) {
+		return project.ErrRootBinding
+	}
 
 	registeredAt := time.Now().UTC().Format(time.RFC3339)
 	// A re-run must not clear an opt-in nobody re-stated: UpsertProject replaces

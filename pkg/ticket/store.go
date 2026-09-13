@@ -257,10 +257,26 @@ func (s *FileStore) EnsureDir() error {
 	return os.MkdirAll(s.Dir, 0o755)
 }
 
+// guardWrite is the catalog check every write entry point makes first —
+// Create, Update, Delete and mutate — before any lock is taken or directory
+// made. The catalog is resolved from the store's own layout: a project store
+// is <central_root>/tickets/<project>, the shape CentralProjectDir fixes and
+// every central caller builds, so the central root is two levels up. A store
+// with no project is not a central store and has no catalog to consult.
+func (s *FileStore) guardWrite() error {
+	if s.Project == "" {
+		return nil
+	}
+	return checkWrite(filepath.Dir(filepath.Dir(s.Dir)), s.Project)
+}
+
 // Create writes a new ticket to disk. The ticket must already have an ID.
 // If the ID collides with an existing ticket, a new ID is generated and
 // the ticket is retried (up to 5 attempts).
 func (s *FileStore) Create(t *Ticket) error {
+	if err := s.guardWrite(); err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
 	if err := t.Validate(); err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
@@ -401,6 +417,9 @@ func (s *FileStore) getStored(id string) (*Ticket, error) {
 // a note, a dep, a link — has nothing to decide on that error and goes through
 // Mutate instead, which holds the lock across the read as well.
 func (s *FileStore) Update(t *Ticket) error {
+	if err := s.guardWrite(); err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
 	if err := t.Validate(); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
@@ -510,6 +529,9 @@ func (s *FileStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
 
 // Delete removes a ticket file by exact or partial ID.
 func (s *FileStore) Delete(id string) error {
+	if err := s.guardWrite(); err != nil {
+		return fmt.Errorf("delete: %w", err)
+	}
 	path, err := s.Resolve(id)
 	if err != nil {
 		return err
