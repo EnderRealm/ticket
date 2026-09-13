@@ -70,7 +70,7 @@ func Parse(r io.Reader) (*Ticket, error) {
 	//     lets the epic read done over it; `deps: notalist` silently empties the
 	//     dependencies, which shows the ticket as unblocked in `tk ready` and the
 	//     frontier; `type: [epic]` on an epic's own file leaves it typeless, so
-	//     deriveEpics passes over it and it renders the stale status its file
+	//     the snapshot passes over it and it renders the stale status its file
 	//     stores — often a done a previous write baked in — with the demotion
 	//     bypassed entirely. All three are the failure this leniency exists to
 	//     remove, reintroduced through the door it opened, and none is visible

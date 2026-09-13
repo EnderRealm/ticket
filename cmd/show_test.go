@@ -257,8 +257,9 @@ func TestShowResolvesNamespacedDepsAndLinks(t *testing.T) {
 	want := []string{
 		// A namespaced dep renders with the target's real status and title.
 		"- proj/sn-blocker-0001 [open] Item sn-blocker-0001",
-		// A bare dep renders exactly as before.
-		"- sn-bare-0002 [ready] Item sn-bare-0002",
+		// A dep typed bare is stored qualified with the store's own project,
+		// and renders as stored.
+		"- proj/sn-bare-0002 [ready] Item sn-bare-0002",
 		// A namespaced link renders with the target's real status and title.
 		"- proj/sn-linked-0003 [done] Item sn-linked-0003",
 	}
@@ -428,7 +429,8 @@ func TestShowLeavesAReferenceToANestedStoredIDUnknown(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("show output missing Blockers section — a done impostor cleared a real blocker:\n%s", out)
 	}
-	if !contains(out[idx:], "- sn-nested-0001 [unknown]") {
+	// The dep was typed bare and is stored qualified; it stays unresolved.
+	if !contains(out[idx:], "- proj/sn-nested-0001 [unknown]") {
 		t.Errorf("a bare reference resolved to a file whose stored id is not a ticket ID here:\n%s", out[idx:])
 	}
 	if contains(out, "Nested-id impostor") {
@@ -480,7 +482,7 @@ func TestShowLeavesADuplicatedIDUnknown(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("show output missing Blockers section — a done impostor cleared a real blocker:\n%s", out)
 	}
-	if !contains(out[idx:], "- sd-target-0001 [unknown]") {
+	if !contains(out[idx:], "- proj/sd-target-0001 [unknown]") {
 		t.Errorf("a bare reference two files claim did not stay unknown:\n%s", out[idx:])
 	}
 	if contains(out, "Same-id impostor") {
@@ -529,7 +531,7 @@ func TestShowLeavesAForeignNamespacedNamesakeUnknown(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("show output missing Blockers section — a done namesake cleared a real blocker:\n%s", out)
 	}
-	if !contains(out[idx:], "- sn-target-0001 [unknown]") {
+	if !contains(out[idx:], "- proj/sn-target-0001 [unknown]") {
 		t.Errorf("Blockers section did not leave the dep unknown:\n%s", out[idx:])
 	}
 	if contains(out, "Another project's namesake") {

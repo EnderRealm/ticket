@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,12 +131,27 @@ func TestIsReady_ParentActive(t *testing.T) {
 }
 
 func TestIsReadyOpen_BypassesParentGate(t *testing.T) {
-	s := depStore(t, mk("t-parent", StatusDone))
-	writeLegacy(t, s, mkWithParent("t-child", StatusReady, "t-parent"))
+	// The parent gate is the one thing open mode bypasses. A child of an
+	// active epic is ready either way; a child whose parent is not an epic
+	// carries a relationship issue, which is not a gate but an invalid leaf,
+	// and is offered in neither mode — a terminal parent over a live child is
+	// only writable in a store that predates the one-level rule, and such a
+	// parent is not an epic.
+	epic := mk("t-epic", StatusBacklog)
+	epic.Type = TypeEpic
+	s := depStore(t, epic, mkWithParent("t-child", StatusReady, "t-epic"), mk("t-parent", StatusDone))
+	writeLegacy(t, s, mkWithParent("t-orphan", StatusReady, "t-parent"))
 
 	tk, _ := s.Get("t-child")
 	if !IsReadyOpen(s, tk) {
-		t.Error("IsReadyOpen should bypass parent gating")
+		t.Error("child of an active epic should be ready in open mode")
+	}
+	orphan, _ := s.Get("t-orphan")
+	if RelationshipIssue(orphan) == "" {
+		t.Fatal("a child of a non-epic parent should carry a relationship issue")
+	}
+	if IsReadyOpen(s, orphan) {
+		t.Error("IsReadyOpen offered a leaf whose parent relationship is invalid")
 	}
 }
 
@@ -175,7 +191,9 @@ func TestIsReady_BacklogWithUnresolvedDep(t *testing.T) {
 
 func TestIsReady_BacklogUnderTerminalParent(t *testing.T) {
 	// Same shape as TestIsReady_ParentGating: only a store predating the
-	// one-level rule holds a terminal parent over a live child.
+	// one-level rule holds a terminal parent over a live child, and that parent
+	// is not an epic, so the child is an invalid leaf in both modes rather than
+	// a gated one — the reason is stated on the ticket.
 	s := depStore(t, mk("t-parent", StatusDone))
 	writeLegacy(t, s, mkWithParent("t-child", StatusBacklog, "t-parent"))
 
@@ -183,8 +201,11 @@ func TestIsReady_BacklogUnderTerminalParent(t *testing.T) {
 	if IsReady(s, tk) {
 		t.Error("backlog child of a terminal parent should not be ready")
 	}
-	if !IsReadyOpen(s, tk) {
-		t.Error("IsReadyOpen should bypass parent gating for a backlog ticket")
+	if IsReadyOpen(s, tk) {
+		t.Error("IsReadyOpen offered a leaf whose parent is not an epic")
+	}
+	if !strings.Contains(RelationshipIssue(tk), "not an epic") {
+		t.Errorf("RelationshipIssue = %q, want it to say the parent is not an epic", RelationshipIssue(tk))
 	}
 }
 
@@ -437,12 +458,14 @@ func TestLookupsMatchANamespacedIDAgainstABareListing(t *testing.T) {
 	s := NewProjectFileStore(t.TempDir(), "proj")
 	for _, tk := range []*Ticket{
 		mkEpic("ns-epic-0001", StatusBacklog, ""),
-		mkWithParent("ns-child-0002", StatusReady, "proj/ns-epic-0001", "proj/ns-epic-0001"),
+		mk("ns-dep-0003", StatusDone),
+		mkWithParent("ns-child-0002", StatusReady, "proj/ns-epic-0001", "proj/ns-dep-0003"),
 	} {
 		if err := s.Create(tk); err != nil {
 			t.Fatalf("Create %s: %v", tk.ID, err)
 		}
 	}
+	counting := &countingStore{FileStore: s}
 	tickets, err := s.List()
 	if err != nil {
 		t.Fatal(err)
@@ -454,29 +477,23 @@ func TestLookupsMatchANamespacedIDAgainstABareListing(t *testing.T) {
 		}
 	}
 
-	reads := 0
-	fallback := func(id string) (*Ticket, error) {
-		reads++
-		return s.Get(id)
-	}
-	parentOf := parentLookup(s, tickets, fallback)
-	parent, err := parentOf(child)
+	depOf := depLookup(counting, tickets)
+	parent, err := parentOfVia(depOf)(child)
 	if err != nil {
-		t.Fatalf("parentLookup: %v", err)
+		t.Fatalf("parent lookup: %v", err)
 	}
 	if parent.ID != "ns-epic-0001" {
 		t.Errorf("parent = %s, want ns-epic-0001", parent.ID)
 	}
-
-	dep, err := depLookup(s, tickets)(child.Deps[0])
+	dep, err := depOf(child, child.Deps[0])
 	if err != nil {
 		t.Fatalf("depLookup: %v", err)
 	}
-	if dep.ID != "ns-epic-0001" {
-		t.Errorf("dep = %s, want ns-epic-0001", dep.ID)
+	if dep.ID != "ns-dep-0003" {
+		t.Errorf("dep = %s, want ns-dep-0003", dep.ID)
 	}
-	if reads != 0 {
-		t.Errorf("%d lookup(s) fell through to the store, want the index to answer a namespaced ID against a bare listing", reads)
+	if counting.gets != 0 {
+		t.Errorf("%d lookup(s) fell through to the store, want the index to answer a namespaced ID against a bare listing", counting.gets)
 	}
 
 	// A prefix naming another project is not stripped: FileStore.Resolve refuses
@@ -484,21 +501,25 @@ func TestLookupsMatchANamespacedIDAgainstABareListing(t *testing.T) {
 	if _, ok := ticketsByID(tickets, s.Project)("other/ns-epic-0001"); ok {
 		t.Error("an ID prefixed with another project matched this project's listing")
 	}
+	if _, err := depOf(child, "other/ns-epic-0001"); err == nil {
+		t.Error("a dep prefixed with another project resolved against this project's listing")
+	}
 }
 
 func TestStoreProjectSeesThroughAWrapper(t *testing.T) {
 	// A store that wraps a FileStore answers with the wrapped store's project.
-	// Read off the concrete type it would report none, after which every
-	// namespaced parent in a listing counts as another project's and is dropped.
+	// Read off the concrete type it would report none, after which every bare
+	// reference in a listing would be qualified with no namespace and miss the
+	// index keyed on the store's own.
 	s := &countingStore{FileStore: NewProjectFileStore(t.TempDir(), "proj")}
 	if got := storeProject(s); got != "proj" {
 		t.Errorf("storeProject = %q, want %q", got, "proj")
 	}
-	if isCrossProjectParent(s, mkWithParent("c-0001", StatusOpen, "proj/e-0002")) {
-		t.Error("a parent in the wrapped store's own project was called cross-project")
+	if got := ownerNS(s, mk("c-0001", StatusOpen)); got != "proj" {
+		t.Errorf("ownerNS of a bare ID = %q, want the wrapped store's %q", got, "proj")
 	}
-	if !isCrossProjectParent(s, mkWithParent("c-0003", StatusOpen, "other/e-0004")) {
-		t.Error("a parent in another project was not called cross-project")
+	if got := ownerNS(s, mk("other/c-0003", StatusOpen)); got != "other" {
+		t.Errorf("ownerNS of a qualified ID = %q, want its own %q", got, "other")
 	}
 }
 
@@ -518,10 +539,10 @@ func TestFindCycles_NoCycles(t *testing.T) {
 }
 
 func TestFindCycles_SimpleCycle(t *testing.T) {
-	s := depStore(t,
-		mk("t-1", StatusReady, "t-2"),
-		mk("t-2", StatusReady, "t-1"),
-	)
+	// The write path refuses a cycle now, so only a store written before the
+	// check can hold one; the reporter still has to find it.
+	s := depStore(t, mk("t-1", StatusReady, "t-2"))
+	writeLegacy(t, s, mk("t-2", StatusReady, "t-1"))
 	cycles, err := FindCycles(s)
 	if err != nil {
 		t.Fatalf("FindCycles: %v", err)
@@ -535,16 +556,59 @@ func TestFindCycles_SimpleCycle(t *testing.T) {
 }
 
 func TestFindCycles_IgnoresDone(t *testing.T) {
-	s := depStore(t,
-		mk("t-1", StatusDone, "t-2"),
-		mk("t-2", StatusDone, "t-1"),
-	)
+	s := depStore(t, mk("t-1", StatusDone, "t-2"))
+	writeLegacy(t, s, mk("t-2", StatusDone, "t-1"))
 	cycles, err := FindCycles(s)
 	if err != nil {
 		t.Fatalf("FindCycles: %v", err)
 	}
 	if len(cycles) != 0 {
 		t.Error("done tickets should not generate cycles")
+	}
+}
+
+// A project store lists bare IDs while a dep written through the boundary is
+// stored qualified, and a legacy dep is bare. Indexed by the ID as listed,
+// the qualified edge misses its target and a cycle held across the two forms
+// goes unreported — the earlier cases pass only because a store with no
+// project qualifies nothing.
+func TestFindCycles_ProjectStoreMeetsQualifiedAndBareDeps(t *testing.T) {
+	root, _ := centralFixture(t, true)
+	warp := nsStore(root, "warp")
+	mustCreate(t, warp, mk("t-1", StatusReady, "t-2"))
+	writeLegacy(t, warp, mk("t-2", StatusReady, "t-1"))
+	if deps := mustGet(t, warp, "t-1").Deps; len(deps) != 1 || deps[0] != "warp/t-2" {
+		t.Fatalf("t-1 deps = %v, want the qualified warp/t-2 the boundary writes", deps)
+	}
+
+	cycles, err := FindCycles(warp)
+	if err != nil {
+		t.Fatalf("FindCycles: %v", err)
+	}
+	if len(cycles) != 1 {
+		t.Fatalf("expected 1 cycle, got %d: %v", len(cycles), cycles)
+	}
+	if got := normalizeCycle(cycles[0].IDs); got != "t-1,t-2" {
+		t.Errorf("cycle = %v, want t-1 and t-2 in the bare form the listing uses", cycles[0].IDs)
+	}
+}
+
+// The MultiStore lists qualified IDs, so it is the legacy bare dep that has
+// to be read relative to its owner to meet the listing's key.
+func TestFindCycles_MultiStoreMeetsLegacyBareDep(t *testing.T) {
+	root, ms := centralFixture(t, true)
+	mustCreate(t, ms, mk("warp/t-1", StatusReady, "warp/t-2"))
+	writeLegacy(t, nsStore(root, "warp"), mk("t-2", StatusReady, "t-1"))
+
+	cycles, err := FindCycles(ms)
+	if err != nil {
+		t.Fatalf("FindCycles: %v", err)
+	}
+	if len(cycles) != 1 {
+		t.Fatalf("expected 1 cycle, got %d: %v", len(cycles), cycles)
+	}
+	if got := normalizeCycle(cycles[0].IDs); got != "warp/t-1,warp/t-2" {
+		t.Errorf("cycle = %v, want warp/t-1 and warp/t-2 in the qualified form the listing uses", cycles[0].IDs)
 	}
 }
 
@@ -777,8 +841,9 @@ func TestForeignNamespacedFileAnswersNoDepHere(t *testing.T) {
 	if !BlockedFunc(s, tickets)(tickets[0]) {
 		t.Error("subject reads unblocked: the dep resolved to a file naming another project")
 	}
-	if blocking := BlockingDeps(s, tickets[0]); len(blocking) != 1 || blocking[0] != "fd-target-0002" {
-		t.Errorf("BlockingDeps = %v, want [fd-target-0002]", blocking)
+	// Reported as stored: a new dep is written qualified with its own project.
+	if blocking := BlockingDeps(s, tickets[0]); len(blocking) != 1 || blocking[0] != "proj/fd-target-0002" {
+		t.Errorf("BlockingDeps = %v, want [proj/fd-target-0002]", blocking)
 	}
 
 	ready, err := ReadyTickets(s)

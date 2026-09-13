@@ -386,17 +386,22 @@ func listWithSkips(store ticket.Store) ([]*ticket.Ticket, []ticket.FileSkip, err
 	return tickets, nil, err
 }
 
-// skippedFilesJSON renders the skips a response carries, scoped to the project
-// the response itself is scoped to: a file skipped in a project the caller
-// filtered out says nothing about the tickets it can see. Returns nil when
-// there is nothing to report, so a healthy store's response carries no field.
+// skippedFilesJSON renders the skips a response carries. A skip that degrades
+// the epics is kept whatever project the response is scoped to: the derivation
+// demotes every epic in the store over it (FileSkipKind.DegradesEpicStatus),
+// so a project view that dropped a foreign one would show a demoted epic with
+// no cause in sight. Only a kind that degrades nothing — a file naming another
+// project — says nothing about the tickets the caller can see, and is scoped
+// to the project the response is. Returns nil when there is nothing to report,
+// so a healthy store's response carries no field.
 func skippedFilesJSON(skips []ticket.FileSkip, project string) []fileSkipJSON {
 	var out []fileSkipJSON
 	for _, s := range skips {
-		if project != "" && s.Project != project {
+		degraded := s.Kind.DegradesEpicStatus()
+		if project != "" && s.Project != project && !degraded {
 			continue
 		}
-		out = append(out, fileSkipJSON{FileSkip: s, EpicStatusDegraded: s.Kind.DegradesEpicStatus()})
+		out = append(out, fileSkipJSON{FileSkip: s, EpicStatusDegraded: degraded})
 	}
 	return out
 }
@@ -404,7 +409,7 @@ func skippedFilesJSON(skips []ticket.FileSkip, project string) []fileSkipJSON {
 // skippedFilesDoc documents the skip fields in the tool descriptions that carry
 // them, so the three cannot describe the same field differently.
 const skippedFilesDoc = " `skipped_files` names every file in the projects read that was not read as a ticket, with the reason. " +
-	"An entry with `epic_status_degraded` could not be read at all, and it could be any epic's child — so while it stands, no epic in that project reads done or closed, whatever its children say."
+	"An entry with `epic_status_degraded` is a ticket the store cannot place — a file that could not be read, a `duplicate-id` two files claim, or a `namespace` that could not be read — and it could be any epic's child in any project, so while it stands anywhere in the store, no epic anywhere reads done or closed, whatever its children say; a project view carries such an entry from another project for that reason."
 
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{

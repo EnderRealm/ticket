@@ -99,7 +99,7 @@ Creating & Editing:
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
   move <id> <repo-path>      Move a ticket to another repo's ticket store
-    -r, --recursive          Move the ticket and all its descendants
+                             Only an isolated leaf moves; -r/--recursive is refused
 
   The target resolves to the project that repo owns in the central store.
   A repo that owns none is refused rather than having a store created for it,

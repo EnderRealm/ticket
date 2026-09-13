@@ -12,24 +12,61 @@ import (
 )
 
 func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
-	// The move is not rolled back. The completed moves are the command's
-	// result and stay on stdout; the failure banner is a diagnostic and goes
-	// to stderr, so piping stdout still yields only moved IDs.
+	// The move is not rolled back. When the source close fails after the
+	// target copy is written, the error names the orphaned copy and the source
+	// ticket left open — that pair is what reconciling needs — and stdout
+	// reports no move, since none completed.
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the read-only file mode this test relies on")
 	}
 	src, targetRepo, targetDir := movePair(t)
 	srcDir := src.Dir
 
-	mkMoveTicket(t, src, "mv-epic-0001", ticket.TypeEpic, ticket.StatusBacklog, "")
-	mkMoveTicket(t, src, "mv-child-0002", ticket.TypeFeature, ticket.StatusOpen, "mv-epic-0001")
+	mkMoveTicket(t, src, "mv-leaf-0001", ticket.TypeFeature, ticket.StatusOpen, "")
 
-	// The child's close fails after its target copy is written.
-	childFile := filepath.Join(srcDir, "mv-child-0002.md")
-	if err := os.Chmod(childFile, 0o444); err != nil {
+	// The close fails after the target copy is written.
+	leafFile := filepath.Join(srcDir, "mv-leaf-0001.md")
+	if err := os.Chmod(leafFile, 0o444); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	t.Cleanup(func() { os.Chmod(childFile, 0o644) })
+	t.Cleanup(func() { os.Chmod(leafFile, 0o644) })
+
+	stdout, stderr, moveErr := captureMove(t, "mv-leaf-0001", targetRepo)
+	if moveErr == nil {
+		t.Fatal("runMove succeeded, want a failure closing the read-only source")
+	}
+
+	dstTickets, err := ticket.NewProjectFileStore(targetDir, "mv-dst").List()
+	if err != nil {
+		t.Fatalf("List target: %v", err)
+	}
+	if len(dstTickets) != 1 {
+		t.Fatalf("target holds %d tickets, want the orphaned copy", len(dstTickets))
+	}
+	// The destination is a central project, so what the error names is the
+	// namespaced form of the ID on disk.
+	orphanID := ticket.FormatNamespacedID("mv-dst", dstTickets[0].ID)
+
+	if contains(stdout, "Moved") {
+		t.Errorf("stdout reports a move that did not complete:\n%s", stdout)
+	}
+	if contains(stderr, "Move failed partway") {
+		t.Errorf("no move completed, so there is no partial move to banner:\n%s", stderr)
+	}
+	if !contains(moveErr.Error(), orphanID) {
+		t.Errorf("error %q does not name %s, the target copy left behind", moveErr, orphanID)
+	}
+	if !contains(moveErr.Error(), "mv-leaf-0001") {
+		t.Errorf("error %q does not name the source ticket left open", moveErr)
+	}
+}
+
+// A recursive move is refused as a whole: the flag is still accepted so an
+// old invocation fails with the reason rather than as an unknown flag.
+func TestMoveRefusesRecursive(t *testing.T) {
+	src, targetRepo, targetDir := movePair(t)
+	mkMoveTicket(t, src, "mv-epic-0001", ticket.TypeEpic, ticket.StatusBacklog, "")
+	mkMoveTicket(t, src, "mv-child-0002", ticket.TypeFeature, ticket.StatusOpen, "mv-epic-0001")
 
 	f := moveCmd.Flags()
 	if err := f.Set("recursive", "true"); err != nil {
@@ -37,44 +74,15 @@ func TestMovePartialFailurePrintsWhatLanded(t *testing.T) {
 	}
 	defer func() { _ = f.Set("recursive", "false") }()
 
-	stdout, stderr, moveErr := captureMove(t, "mv-epic-0001", targetRepo)
-	if moveErr == nil {
-		t.Fatal("runMove succeeded, want a failure closing the read-only child")
+	stdout, _, err := captureMove(t, "mv-epic-0001", targetRepo)
+	if err == nil || !contains(err.Error(), "recursive moves are refused") {
+		t.Fatalf("runMove = %v, want the recursive refusal", err)
 	}
-
-	dstTickets, err := ticket.NewProjectFileStore(targetDir, "mv-dst").List()
-	if err != nil {
-		t.Fatalf("List target: %v", err)
+	if contains(stdout, "Moved") {
+		t.Errorf("stdout reports a move that did not happen:\n%s", stdout)
 	}
-	// The destination is a central project, so what the command reports and
-	// what its error names are the namespaced forms of the IDs on disk.
-	var movedID, orphanID string
-	for _, dt := range dstTickets {
-		switch dt.Title {
-		case "Item mv-epic-0001":
-			movedID = ticket.FormatNamespacedID("mv-dst", dt.ID)
-		case "Item mv-child-0002":
-			orphanID = ticket.FormatNamespacedID("mv-dst", dt.ID)
-		}
-	}
-	if movedID == "" || orphanID == "" {
-		t.Fatalf("target holds %d tickets, want the epic copy and the orphaned child copy", len(dstTickets))
-	}
-
-	if !contains(stdout, "Moved mv-epic-0001 -> "+movedID) {
-		t.Errorf("stdout does not report the completed move:\n%s", stdout)
-	}
-	if contains(stdout, "Move failed partway") {
-		t.Errorf("failure banner belongs on stderr, found on stdout:\n%s", stdout)
-	}
-	if !contains(stderr, "Move failed partway: the ticket above is") {
-		t.Errorf("stderr does not carry the failure banner:\n%s", stderr)
-	}
-	if !contains(moveErr.Error(), orphanID) {
-		t.Errorf("error %q does not name %s, the target copy left behind", moveErr, orphanID)
-	}
-	if !contains(moveErr.Error(), "mv-child-0002") {
-		t.Errorf("error %q does not name the source ticket left open", moveErr)
+	if landed, _ := filepath.Glob(filepath.Join(targetDir, "*.md")); len(landed) != 0 {
+		t.Errorf("target holds %v, want nothing", landed)
 	}
 }
 

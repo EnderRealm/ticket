@@ -1,19 +1,30 @@
 package ticket
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
-func TestMoveTicketPreservesAllFields(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
+// moveStores is a source and a destination project in one central store —
+// the only shape a move runs in, since it holds the source's store lock across
+// both ends. The destination directory is not made: a registered project that
+// has never held a ticket has none, and the create makes it.
+func moveStores(t *testing.T) (src, dst *FileStore) {
+	t.Helper()
+	root := catalogRoot(t)
+	src = NewProjectFileStore(mkNamespaceDir(t, root, "mv-src"), "mv-src")
+	dst = NewProjectFileStore(filepath.Join(root, "tickets", "mv-dst"), "mv-dst")
+	return src, dst
+}
 
-	src := &FileStore{Dir: srcDir}
-	dst := &FileStore{Dir: dstDir}
+func TestMoveTicketPreservesAllFields(t *testing.T) {
+	src, dst := moveStores(t)
 
 	original := &Ticket{
 		ID:          "test-ticket-1234",
@@ -94,11 +105,7 @@ func TestMoveTicketPreservesAllFields(t *testing.T) {
 }
 
 func TestMoveTicketCreatesFileInBothDirs(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	src := &FileStore{Dir: srcDir}
-	dst := &FileStore{Dir: dstDir}
+	src, dst := moveStores(t)
 
 	original := &Ticket{
 		ID:       "iso-test-abcd",
@@ -124,8 +131,8 @@ func TestMoveTicketCreatesFileInBothDirs(t *testing.T) {
 	}
 
 	// Verify one file exists in each directory.
-	dstFiles, _ := filepath.Glob(filepath.Join(dstDir, "*.md"))
-	srcFiles, _ := filepath.Glob(filepath.Join(srcDir, "*.md"))
+	dstFiles, _ := filepath.Glob(filepath.Join(dst.Dir, "*.md"))
+	srcFiles, _ := filepath.Glob(filepath.Join(src.Dir, "*.md"))
 	if len(dstFiles) != 1 || len(srcFiles) != 1 {
 		t.Errorf("expected 1 file in each dir, got dst=%d src=%d", len(dstFiles), len(srcFiles))
 	}
@@ -140,9 +147,12 @@ func TestMoveTicketCreatesFileInBothDirs(t *testing.T) {
 	}
 }
 
-func TestMoveRemapsDepCargo(t *testing.T) {
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
+// A ticket with a dep, and the cargo on it, does not move: the copy would
+// either carry a dep on a ticket in another project's plan or drop the edge,
+// and the original would close with the cargo unresolved. Refused before any
+// write, naming the dep.
+func TestMoveRefusesATicketWithDepsAndCargo(t *testing.T) {
+	src, dst := moveStores(t)
 
 	parent := &Ticket{
 		ID:       "cargo-parent-0001",
@@ -158,14 +168,10 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 		Status:   StatusReady,
 		Type:     TypeFeature,
 		Priority: 2,
-		Parent:   parent.ID,
 		Title:    "Cargo child",
-		Deps:     []string{parent.ID, "outside-9999"},
+		Deps:     []string{"outside-9999"},
 		Links:    []string{},
-		DepCargo: map[string]string{
-			parent.ID:      "event schema",
-			"outside-9999": "migration doc",
-		},
+		DepCargo: map[string]string{"outside-9999": "migration doc"},
 	}
 	if err := src.Create(parent); err != nil {
 		t.Fatalf("Create parent: %v", err)
@@ -173,40 +179,29 @@ func TestMoveRemapsDepCargo(t *testing.T) {
 	if err := src.Create(child); err != nil {
 		t.Fatalf("Create child: %v", err)
 	}
+	before := snapshotTree(t, filepath.Dir(src.Dir))
 
-	results, err := MoveTicket(src, dst, parent.ID, true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
+	results, err := MoveTicket(src, dst, child.ID, false)
+	if err == nil || !strings.Contains(err.Error(), "dep mv-src/outside-9999") {
+		t.Fatalf("MoveTicket = %v, want a refusal naming the dep", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if len(results) != 0 {
+		t.Errorf("results = %v, want none", results)
 	}
-	newParent, newChild := results[0].NewID, results[1].NewID
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
 
-	moved, err := dst.Get(newChild)
-	if err != nil {
-		t.Fatalf("Get moved child: %v", err)
-	}
-	if len(moved.DepCargo) != 1 {
-		t.Fatalf("DepCargo = %v, want only the surviving dep", moved.DepCargo)
-	}
-	if moved.DepCargo[newParent] != "event schema" {
-		t.Errorf("DepCargo[%s] = %q, want event schema", newParent, moved.DepCargo[newParent])
-	}
-
-	// The source ticket's map must not have been aliased and mutated.
+	// The source ticket's map must not have been touched.
 	orig, err := src.Get(child.ID)
 	if err != nil {
 		t.Fatalf("Get source child: %v", err)
 	}
-	if len(orig.DepCargo) != 2 || orig.DepCargo[parent.ID] != "event schema" || orig.DepCargo["outside-9999"] != "migration doc" {
-		t.Errorf("source DepCargo = %v, want the original two entries", orig.DepCargo)
+	if len(orig.DepCargo) != 1 || orig.DepCargo["mv-src/outside-9999"] != "migration doc" {
+		t.Errorf("source DepCargo = %v, want the original entry under its qualified key", orig.DepCargo)
 	}
 }
 
 func TestMoveLeavesVerdictsBehind(t *testing.T) {
-	src := &FileStore{Dir: t.TempDir(), Project: "srcproj"}
-	dst := &FileStore{Dir: t.TempDir(), Project: "dstproj"}
+	src, dst := moveStores(t)
 
 	original := &Ticket{
 		ID:       "verd-move-0001",
@@ -246,376 +241,211 @@ func TestMoveLeavesVerdictsBehind(t *testing.T) {
 	}
 }
 
-func TestMoveRecursiveCollectsNamespacedParentDescendants(t *testing.T) {
-	// The central store records a child's parent namespaced; tickets written
-	// before the namespacing rollout record it bare. A recursive move must
-	// carry both forms.
-	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
-	dst := &FileStore{Dir: t.TempDir()}
+// A recursive move is refused as a whole, whatever the tree looks like: the
+// move copies under new IDs and closes originals, and an epic's children would
+// be left naming a closed copy. Nothing is written.
+func TestMoveRefusesRecursive(t *testing.T) {
+	src, dst := moveStores(t)
 
 	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusBacklog, "")
 	mkMovable(t, src, "mv-bare-0002", TypeFeature, StatusClosed, "mv-epic-0001")
-	mkMovable(t, src, "mv-ns-0003", TypeFeature, StatusClosed, "proj/mv-epic-0001")
+	mkMovable(t, src, "mv-ns-0003", TypeFeature, StatusOpen, "mv-src/mv-epic-0001")
+	before := snapshotTree(t, filepath.Dir(src.Dir))
 
 	results, err := MoveTicket(src, dst, "mv-epic-0001", true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "recursive moves are refused") {
+		t.Fatalf("MoveTicket = %v, want the recursive refusal", err)
 	}
-
-	moved := map[string]string{}
-	for _, r := range results {
-		moved[r.OldID] = r.NewID
+	if len(results) != 0 {
+		t.Errorf("results = %v, want none", results)
 	}
-	for _, id := range []string{"mv-epic-0001", "mv-bare-0002", "mv-ns-0003"} {
-		if moved[id] == "" {
-			t.Fatalf("%s was left behind, moved set = %v", id, moved)
-		}
-	}
-
-	// Carrying the tickets is only half the move — a namespaced parent must
-	// remap to the moving epic's new ID, not be dropped as if it stayed.
-	wantParent := map[string]string{
-		"mv-epic-0001": "",
-		"mv-bare-0002": moved["mv-epic-0001"],
-		"mv-ns-0003":   moved["mv-epic-0001"],
-	}
-	for oldID, want := range wantParent {
-		got, err := dst.Get(moved[oldID])
-		if err != nil {
-			t.Fatalf("Get moved %s: %v", oldID, err)
-		}
-		if got.Parent != want {
-			t.Errorf("%s moved with parent %q, want %q", oldID, got.Parent, want)
-		}
-	}
-
-	dstTickets, err := dst.List()
-	if err != nil {
-		t.Fatalf("List target: %v", err)
-	}
-	if len(dstTickets) != 3 {
-		t.Errorf("target holds %d tickets, want 3", len(dstTickets))
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
+	if _, err := os.Stat(dst.Dir); !os.IsNotExist(err) {
+		t.Errorf("the refusal created the destination directory (stat err: %v)", err)
 	}
 }
 
-func TestMoveRecursiveSkipsForeignProjectChild(t *testing.T) {
-	// A child whose parent names a different project is not this store's child,
-	// even when the bare IDs match. Sweeping it into the move would set the
-	// wrong ticket done and copy it into the target repo — the mis-resolution
-	// FileStore.Resolve rejects for the same reason.
-	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
-	dst := &FileStore{Dir: t.TempDir()}
+// An epic does not move on its own either: its children would be left naming
+// a closed copy in the source.
+func TestMoveRefusesAnEpic(t *testing.T) {
+	src, dst := moveStores(t)
 
-	mkMovable(t, src, "mv-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "mv-own-0002", TypeFeature, StatusClosed, "proj/mv-epic-0001")
-	// A parent in another project is refused on write; this one predates that
-	// rule, and the walk still has to leave it alone.
-	writeLegacy(t, src, movable("mv-foreign-0003", TypeFeature, StatusClosed, "otherproj/mv-epic-0001"))
+	mkMovable(t, src, "nr-epic-0001", TypeEpic, StatusBacklog, "")
+	mkMovable(t, src, "nr-open-0002", TypeFeature, StatusOpen, "nr-epic-0001")
+	before := snapshotTree(t, filepath.Dir(src.Dir))
 
-	results, err := MoveTicket(src, dst, "mv-epic-0001", true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
+	_, err := MoveTicket(src, dst, "nr-epic-0001", false)
+	if err == nil || !strings.Contains(err.Error(), "is an epic and cannot move") {
+		t.Fatalf("MoveTicket = %v, want the epic refusal", err)
 	}
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
 
-	var movedIDs []string
-	for _, r := range results {
-		movedIDs = append(movedIDs, r.OldID)
-	}
-	if len(movedIDs) != 2 || movedIDs[0] != "mv-epic-0001" || movedIDs[1] != "mv-own-0002" {
-		t.Fatalf("moved %v, want [mv-epic-0001 mv-own-0002] — the foreign child is not this epic's", movedIDs)
-	}
-
-	// The foreign child must be untouched: the move would flip it to done.
-	foreign, err := src.Get("mv-foreign-0003")
-	if err != nil {
-		t.Fatalf("Get foreign child: %v", err)
-	}
-	if foreign.Status != StatusClosed {
-		t.Errorf("foreign child status = %q, want %q — it was swept into the move", foreign.Status, StatusClosed)
-	}
-
-	dstTickets, err := dst.List()
-	if err != nil {
-		t.Fatalf("List target: %v", err)
-	}
-	if len(dstTickets) != 2 {
-		t.Errorf("target holds %d tickets, want 2: %v", len(dstTickets), ids(dstTickets))
+	// A childless epic is refused too: the rule is the type, not the tree.
+	mkMovable(t, src, "lone-epic-0003", TypeEpic, StatusBacklog, "")
+	if _, err := MoveTicket(src, dst, "lone-epic-0003", false); err == nil {
+		t.Error("a childless epic moved")
 	}
 }
 
-func TestMoveRemapsNamespacedDepsAndLinks(t *testing.T) {
-	// A dep or link on a ticket that is also moving must be remapped, not
-	// reported as stripped, when it is recorded namespaced.
-	src := &FileStore{Dir: t.TempDir(), Project: "proj"}
-	dst := &FileStore{Dir: t.TempDir()}
+// A ticket related to any other — by its own parent, dep or link, or by another
+// ticket naming it — is refused, naming the relationship, with nothing written.
+func TestMoveRefusesARelatedTicket(t *testing.T) {
+	src, dst := moveStores(t)
 
-	parent := &Ticket{
-		ID: "nsdep-parent-0001", Status: StatusBacklog, Type: TypeEpic, Priority: 2,
-		Title: "Namespaced dep parent", Deps: []string{}, Links: []string{},
+	mkMovable(t, src, "rel-epic-0001", TypeEpic, StatusBacklog, "")
+	mkMovable(t, src, "rel-child-0002", TypeFeature, StatusOpen, "rel-epic-0001")
+	mkMovable(t, src, "rel-blocker-0003", TypeFeature, StatusOpen, "")
+	mkMovable(t, src, "rel-waiter-0004", TypeFeature, StatusOpen, "")
+	if _, err := Mutate(src, "rel-waiter-0004", func(t *Ticket) error { return AddDep(t, "rel-blocker-0003") }); err != nil {
+		t.Fatal(err)
 	}
-	child := &Ticket{
-		ID: "nsdep-child-0002", Status: StatusReady, Type: TypeFeature, Priority: 2,
-		Parent: "proj/nsdep-parent-0001", Title: "Namespaced dep child",
-		Deps:     []string{"proj/nsdep-parent-0001"},
-		Links:    []string{"proj/nsdep-parent-0001"},
-		DepCargo: map[string]string{"proj/nsdep-parent-0001": "event schema"},
+	mkMovable(t, src, "rel-link-0005", TypeFeature, StatusOpen, "")
+	mkMovable(t, src, "rel-linked-0006", TypeFeature, StatusOpen, "")
+	linked, _ := src.Get("rel-linked-0006")
+	if _, err := Mutate(src, "rel-link-0005", func(t *Ticket) error { AddLink(t, linked); return nil }); err != nil {
+		t.Fatal(err)
 	}
-	if err := src.Create(parent); err != nil {
-		t.Fatalf("Create parent: %v", err)
-	}
-	if err := src.Create(child); err != nil {
-		t.Fatalf("Create child: %v", err)
-	}
+	before := snapshotTree(t, filepath.Dir(src.Dir))
 
-	results, err := MoveTicket(src, dst, parent.ID, true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
+	cases := map[string]string{
+		"rel-child-0002":   "parent mv-src/rel-epic-0001",
+		"rel-waiter-0004":  "dep mv-src/rel-blocker-0003",
+		"rel-blocker-0003": "dep of mv-src/rel-waiter-0004",
+		"rel-link-0005":    "link mv-src/rel-linked-0006",
+		"rel-linked-0006":  "link of mv-src/rel-link-0005",
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	for id, want := range cases {
+		results, err := MoveTicket(src, dst, id, false)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("MoveTicket(%s) = %v, want a refusal naming %q", id, err, want)
+		}
+		if len(results) != 0 {
+			t.Errorf("MoveTicket(%s) results = %v, want none", id, results)
+		}
 	}
-	newParent, childResult := results[0].NewID, results[1]
-
-	if len(childResult.StrippedDeps) > 0 || len(childResult.StrippedLinks) > 0 {
-		t.Errorf("stripped deps %v links %v, want none — both name a moving ticket",
-			childResult.StrippedDeps, childResult.StrippedLinks)
-	}
-
-	movedChild, err := dst.Get(childResult.NewID)
-	if err != nil {
-		t.Fatalf("Get moved child: %v", err)
-	}
-	if len(movedChild.Deps) != 1 || movedChild.Deps[0] != newParent {
-		t.Errorf("Deps = %v, want [%s]", movedChild.Deps, newParent)
-	}
-	if len(movedChild.Links) != 1 || movedChild.Links[0] != newParent {
-		t.Errorf("Links = %v, want [%s]", movedChild.Links, newParent)
-	}
-	if movedChild.DepCargo[newParent] != "event schema" {
-		t.Errorf("DepCargo[%s] = %q, want event schema", newParent, movedChild.DepCargo[newParent])
-	}
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
 }
 
-func TestCollectDescendantsTerminatesOnParentCycle(t *testing.T) {
-	// Two tickets naming each other as parent must not spin the BFS forever.
-	// A cycle is only writable in a store that predates the one-level rule.
-	src := &FileStore{Dir: t.TempDir()}
-	writeLegacy(t, src, movable("cyc-a-0001", TypeFeature, StatusOpen, "cyc-b-0002"))
-	writeLegacy(t, src, movable("cyc-b-0002", TypeFeature, StatusOpen, "cyc-a-0001"))
-
-	type walk struct {
-		descendants []*Ticket
-		err         error
+// References land on the ID a file stores, not on its name, and so does the
+// close that records the move: a file renamed while keeping its id is still
+// that ticket to everything naming it, and moving it by the new name has to
+// find those referrers — and, once nothing names it, is still refused, since
+// the source cannot be closed under a name no file holds.
+func TestMoveRefusesARenamedFile(t *testing.T) {
+	src, dst := moveStores(t)
+	mkMovable(t, src, "ren-blocker-0001", TypeFeature, StatusOpen, "")
+	mkMovable(t, src, "ren-waiter-0002", TypeFeature, StatusOpen, "")
+	if _, err := Mutate(src, "ren-waiter-0002", func(t *Ticket) error { return AddDep(t, "ren-blocker-0001") }); err != nil {
+		t.Fatal(err)
 	}
-	done := make(chan walk, 1)
-	go func() {
-		got, err := collectDescendants(src, "cyc-a-0001")
-		done <- walk{descendants: got, err: err}
-	}()
-
-	select {
-	case res := <-done:
-		if res.err != nil {
-			t.Fatalf("collectDescendants: %v", res.err)
-		}
-		if len(res.descendants) != 1 || res.descendants[0].ID != "cyc-b-0002" {
-			t.Errorf("descendants = %v, want just cyc-b-0002", ids(res.descendants))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("collectDescendants did not terminate on a parent cycle")
+	if err := os.Rename(filepath.Join(src.Dir, "ren-blocker-0001.md"), filepath.Join(src.Dir, "renamed-0003.md")); err != nil {
+		t.Fatal(err)
 	}
+	before := snapshotTree(t, filepath.Dir(src.Dir))
+
+	results, err := MoveTicket(src, dst, "renamed-0003", false)
+	if err == nil || !strings.Contains(err.Error(), "dep of mv-src/ren-waiter-0002") {
+		t.Errorf("moving a renamed, referenced leaf: want a refusal naming the referrer of the stored id, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %v, want none", results)
+	}
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
+
+	// Unreferenced, the mismatch alone refuses it.
+	if _, err := Mutate(src, "ren-waiter-0002", func(t *Ticket) error { RemoveDep(t, "mv-src/ren-blocker-0001"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before = snapshotTree(t, filepath.Dir(src.Dir))
+	results, err = MoveTicket(src, dst, "renamed-0003", false)
+	if err == nil || !strings.Contains(err.Error(), "stored as ren-blocker-0001") {
+		t.Errorf("moving a renamed leaf: want a refusal naming the stored id, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %v, want none", results)
+	}
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
 }
 
-func TestMoveRecursiveEpicWithNonTerminalChildren(t *testing.T) {
-	// An epic worth moving to another repo is one that still has open work in
-	// it. The whole tree must land.
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
+// A move needs the whole store read: an unreadable file anywhere in it could
+// be a ticket naming the one that is moving.
+func TestMoveRefusesOnAnIncompleteSnapshot(t *testing.T) {
+	src, dst := moveStores(t)
+	mkMovable(t, src, "inc-move-0001", TypeFeature, StatusOpen, "")
+	other := mkNamespaceDir(t, filepath.Dir(filepath.Dir(src.Dir)), "other")
+	plantUnreadable(t, other, "broken-9999.md")
+	before := snapshotTree(t, filepath.Dir(src.Dir))
 
-	mkMovable(t, src, "live-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "live-open-0002", TypeFeature, StatusOpen, "live-epic-0001")
-	mkMovable(t, src, "live-ready-0003", TypeFeature, StatusReady, "live-epic-0001")
-	mkMovable(t, src, "live-backlog-0004", TypeFeature, StatusBacklog, "live-epic-0001")
-
-	results, err := MoveTicket(src, dst, "live-epic-0001", true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
+	_, err := MoveTicket(src, dst, "inc-move-0001", false)
+	if err == nil || !strings.Contains(err.Error(), "broken-9999.md") {
+		t.Fatalf("MoveTicket = %v, want a refusal naming the unreadable file", err)
 	}
-	if len(results) != 4 {
-		t.Fatalf("moved %d tickets, want 4", len(results))
-	}
-
-	dstTickets, err := dst.List()
-	if err != nil {
-		t.Fatalf("List target: %v", err)
-	}
-	if len(dstTickets) != 4 {
-		t.Errorf("target holds %d tickets, want 4: %v", len(dstTickets), ids(dstTickets))
-	}
-	for _, r := range results {
-		orig, err := src.Get(r.OldID)
-		if err != nil {
-			t.Fatalf("Get source %s: %v", r.OldID, err)
-		}
-		if orig.Status != StatusClosed {
-			t.Errorf("source %s = %q, want %q — it left, it did not complete", r.OldID, orig.Status, StatusClosed)
-		}
-	}
-}
-
-func TestMoveRecursiveFullyClosedEpic(t *testing.T) {
-	// The case that already worked keeps working, modulo the marker status.
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
-
-	// The epic reads closed off the child rather than being stored that way.
-	mkMovable(t, src, "shut-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "shut-child-0002", TypeFeature, StatusClosed, "shut-epic-0001")
-
-	results, err := MoveTicket(src, dst, "shut-epic-0001", true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("moved %d tickets, want 2", len(results))
-	}
-	for _, r := range results {
-		moved, err := dst.Get(r.NewID)
-		if err != nil {
-			t.Fatalf("Get moved %s: %v", r.NewID, err)
-		}
-		if moved.Status != StatusBacklog {
-			t.Errorf("target %s = %q, want %q", r.NewID, moved.Status, StatusBacklog)
-		}
-		orig, err := src.Get(r.OldID)
-		if err != nil {
-			t.Fatalf("Get source %s: %v", r.OldID, err)
-		}
-		if orig.Status != StatusClosed {
-			t.Errorf("source %s = %q, want %q", r.OldID, orig.Status, StatusClosed)
-		}
-	}
+	assertTreeUnchanged(t, before, snapshotTree(t, filepath.Dir(src.Dir)))
 }
 
 func TestMoveClosesTheTicketThatLeft(t *testing.T) {
 	// A ticket that moves away is closed in the source, not done: it did not
-	// complete here, it left. The epic staying behind reads that off its
-	// children — every one of them terminal, one of them closed — rather than
-	// off a status of its own, so it does not claim to have finished either.
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
+	// complete here, it left.
+	src, dst := moveStores(t)
+	mkMovable(t, src, "stay-leaf-0002", TypeFeature, StatusOpen, "")
 
-	mkMovable(t, src, "stay-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "stay-child-0002", TypeFeature, StatusOpen, "stay-epic-0001")
-
-	if _, err := MoveTicket(src, dst, "stay-child-0002", false); err != nil {
+	if _, err := MoveTicket(src, dst, "stay-leaf-0002", false); err != nil {
 		t.Fatalf("MoveTicket: %v", err)
 	}
 
-	child, err := src.Get("stay-child-0002")
+	left, err := src.Get("stay-leaf-0002")
 	if err != nil {
-		t.Fatalf("Get child: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
-	if child.Status != StatusClosed {
-		t.Errorf("child left behind = %q, want %q", child.Status, StatusClosed)
-	}
-	epic, err := src.Get("stay-epic-0001")
-	if err != nil {
-		t.Fatalf("Get epic: %v", err)
-	}
-	if epic.Status != StatusClosed {
-		t.Errorf("epic left behind = %q, want %q — its only child left rather than finished", epic.Status, StatusClosed)
-	}
-}
-
-func TestMoveNonRecursiveLeavesTheChildrenAlone(t *testing.T) {
-	// Moving an epic without -r moves only the epic. Closing it in the source
-	// records that it left, which is not a decision to abandon the children that
-	// stayed — nobody asked for those to be closed.
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
-
-	mkMovable(t, src, "nr-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "nr-open-0002", TypeFeature, StatusOpen, "nr-epic-0001")
-	mkMovable(t, src, "nr-ready-0003", TypeFeature, StatusReady, "nr-epic-0001")
-
-	if _, err := MoveTicket(src, dst, "nr-epic-0001", false); err != nil {
-		t.Fatalf("MoveTicket: %v", err)
-	}
-
-	for id, want := range map[string]Status{"nr-open-0002": StatusOpen, "nr-ready-0003": StatusReady} {
-		child, err := src.Get(id)
-		if err != nil {
-			t.Fatalf("Get %s: %v", id, err)
-		}
-		if child.Status != want {
-			t.Errorf("child %s = %q, want %q — a move is not an abandon", id, child.Status, want)
-		}
-	}
-	// The backlog the move wrote on the epic is inert: an epic's status is
-	// derived, and a move records no abandon intent, so what stayed behind reads
-	// as the children that stayed with it.
-	epic, err := src.Get("nr-epic-0001")
-	if err != nil {
-		t.Fatalf("Get nr-epic-0001: %v", err)
-	}
-	if epic.Status != StatusOpen {
-		t.Errorf("source epic = %q, want %q — its open child stayed put", epic.Status, StatusOpen)
+	if left.Status != StatusClosed {
+		t.Errorf("ticket left behind = %q, want %q", left.Status, StatusClosed)
 	}
 }
 
 func TestMovePartialFailureReportsWhatLanded(t *testing.T) {
 	// The move is not atomic. When the source write fails after the target
-	// write, the caller needs the completed moves and the name of the target
-	// copy whose source is still open — that pair is what reconciling needs.
+	// write, the caller needs the name of the target copy whose source is still
+	// open — that pair is what reconciling needs.
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the read-only file mode this test relies on")
 	}
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
+	src, dst := moveStores(t)
+	mkMovable(t, src, "part-leaf-0002", TypeFeature, StatusOpen, "")
 
-	mkMovable(t, src, "part-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "part-child-0002", TypeFeature, StatusOpen, "part-epic-0001")
-
-	childFile := filepath.Join(src.Dir, "part-child-0002.md")
-	if err := os.Chmod(childFile, 0o444); err != nil {
+	file := filepath.Join(src.Dir, "part-leaf-0002.md")
+	if err := os.Chmod(file, 0o444); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	t.Cleanup(func() { os.Chmod(childFile, 0o644) })
+	t.Cleanup(func() { os.Chmod(file, 0o644) })
 
-	results, moveErr := MoveTicket(src, dst, "part-epic-0001", true)
+	results, moveErr := MoveTicket(src, dst, "part-leaf-0002", false)
 	if moveErr == nil {
-		t.Fatal("MoveTicket succeeded, want a failure closing the read-only child")
+		t.Fatal("MoveTicket succeeded, want a failure closing the read-only source")
 	}
-	if len(results) != 1 || results[0].OldID != "part-epic-0001" {
-		t.Fatalf("completed = %v, want only the epic — the child never closed", results)
+	if len(results) != 0 {
+		t.Fatalf("completed = %v, want none — the source never closed", results)
 	}
 
-	child, err := src.Get("part-child-0002")
+	left, err := src.Get("part-leaf-0002")
 	if err != nil {
-		t.Fatalf("Get source child: %v", err)
+		t.Fatalf("Get source: %v", err)
 	}
-	if child.Status != StatusOpen {
-		t.Fatalf("source child = %q, want %q — the write was supposed to fail", child.Status, StatusOpen)
+	if left.Status != StatusOpen {
+		t.Fatalf("source = %q, want %q — the write was supposed to fail", left.Status, StatusOpen)
 	}
 
 	dstTickets, err := dst.List()
 	if err != nil {
 		t.Fatalf("List target: %v", err)
 	}
-	if len(dstTickets) != 2 {
-		t.Fatalf("target holds %d tickets, want 2: %v", len(dstTickets), ids(dstTickets))
+	if len(dstTickets) != 1 {
+		t.Fatalf("target holds %d tickets, want the orphaned copy: %v", len(dstTickets), ids(dstTickets))
 	}
-	var orphan string
-	for _, dt := range dstTickets {
-		if dt.ID != results[0].NewID {
-			orphan = dt.ID
-		}
-	}
+	orphan := qualifyForStore(dst, dstTickets[0].ID)
 	if !strings.Contains(moveErr.Error(), orphan) {
 		t.Errorf("error %q does not name %s, the target copy left behind", moveErr, orphan)
 	}
-	if !strings.Contains(moveErr.Error(), "part-child-0002") {
+	if !strings.Contains(moveErr.Error(), "part-leaf-0002") {
 		t.Errorf("error %q does not name the source ticket left open", moveErr)
 	}
 }
@@ -659,37 +489,67 @@ func TestMoveRefusesADestinationThatIsTheSourceStore(t *testing.T) {
 	}
 }
 
-// The refusal lands before anything is written. MoveTicket is not atomic, so a
-// recursive self-move discovered partway would leave some descendants renamed
-// and some not.
-func TestMoveRefusesARecursiveSelfMoveAsAWhole(t *testing.T) {
-	dir := t.TempDir()
-	src := NewProjectFileStore(dir, "self-rec")
-	dst := NewProjectFileStore(dir, "self-rec")
+// A move writes through the boundary's helpers rather than through Create and
+// Update, so it makes the catalog guard those entry points make: Root before
+// activation and a catalog requiring a feature this binary lacks both refuse
+// the move, whichever end they are, and leave both stores as they were.
+func TestMoveRefusesWhatTheCatalogGuardRefuses(t *testing.T) {
+	t.Run("root not activated", func(t *testing.T) {
+		src, _ := moveStores(t)
+		mkMovable(t, src, "to-root-0001", TypeFeature, StatusOpen, "")
+		rootNS := NewProjectFileStore(mkNamespaceDir(t, filepath.Dir(filepath.Dir(src.Dir)), project.RootNamespace), project.RootNamespace)
+		writeLegacy(t, rootNS, movable("from-root-0002", TypeFeature, StatusOpen, ""))
+		tickets := filepath.Dir(src.Dir)
+		before := snapshotTree(t, tickets)
 
-	mkMovable(t, src, "rec-epic-0001", TypeEpic, StatusBacklog, "")
-	mkMovable(t, src, "rec-child-0002", TypeFeature, StatusOpen, "rec-epic-0001")
-	mkMovable(t, src, "rec-child-0003", TypeFeature, StatusReady, "rec-epic-0001")
-
-	if _, err := MoveTicket(src, dst, "rec-epic-0001", true); err == nil {
-		t.Fatal("MoveTicket succeeded, want a refusal")
-	}
-
-	for id, want := range map[string]Status{"rec-child-0002": StatusOpen, "rec-child-0003": StatusReady} {
-		got, err := src.Get(id)
-		if err != nil {
-			t.Fatalf("Get %s: %v", id, err)
+		results, err := MoveTicket(src, rootNS, "to-root-0001", false)
+		if !errors.Is(err, ErrRootNotActivated) {
+			t.Errorf("move into Root: want ErrRootNotActivated, got %v", err)
 		}
-		if got.Status != want {
-			t.Errorf("descendant %s = %q, want %q — the refusal moved part of the tree", id, got.Status, want)
+		if len(results) != 0 {
+			t.Errorf("move into Root: results = %v, want none", results)
 		}
+		results, err = MoveTicket(rootNS, src, "from-root-0002", false)
+		if !errors.Is(err, ErrRootNotActivated) {
+			t.Errorf("move out of Root: want ErrRootNotActivated, got %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("move out of Root: results = %v, want none", results)
+		}
+		assertTreeUnchanged(t, before, snapshotTree(t, tickets))
+	})
+	t.Run("unsupported feature", func(t *testing.T) {
+		src, dst := moveStores(t)
+		mkMovable(t, src, "stuck-0001", TypeFeature, StatusOpen, "")
+		root := filepath.Dir(filepath.Dir(src.Dir))
+		writeCatalog(t, root, "required_features: [root-namespace, time-travel]\nnamespaces:\n  mv-src: {kind: project}\n  mv-dst: {kind: project}\n")
+		before := snapshotTree(t, filepath.Join(root, "tickets"))
+
+		results, err := MoveTicket(src, dst, "stuck-0001", false)
+		var unsupported *UnsupportedFeatureError
+		if !errors.As(err, &unsupported) {
+			t.Errorf("want UnsupportedFeatureError, got %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("results = %v, want none", results)
+		}
+		assertTreeUnchanged(t, before, snapshotTree(t, filepath.Join(root, "tickets")))
+	})
+}
+
+// Two stores that do not share a central store cannot be covered by one hold
+// of the store lock, so the move is refused before anything is read.
+func TestMoveRefusesADestinationInAnotherCentralStore(t *testing.T) {
+	src := NewProjectFileStore(t.TempDir(), "alpha")
+	dst := NewProjectFileStore(t.TempDir(), "beta")
+	mkMovable(t, src, "apart-0001", TypeFeature, StatusOpen, "")
+
+	_, err := MoveTicket(src, dst, "apart-0001", false)
+	if err == nil || !strings.Contains(err.Error(), "not in the same central store") {
+		t.Fatalf("MoveTicket = %v, want a refusal naming the store mismatch", err)
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
-	if err != nil {
-		t.Fatalf("Glob: %v", err)
-	}
-	if len(files) != 3 {
-		t.Errorf("store holds %v, want the three originals", files)
+	if orig, _ := src.Get("apart-0001"); orig.Status != StatusOpen {
+		t.Errorf("source status = %q, want %q — nothing was moved", orig.Status, StatusOpen)
 	}
 }
 
@@ -776,13 +636,10 @@ func sameDirOnDisk(t *testing.T, a, b string) bool {
 }
 
 // The guard resolves symlinks best effort: a registered central project that has
-// never held a ticket has no directory until dst.Create makes one, and
+// never held a ticket has no directory until the create makes one, and
 // EvalSymlinks fails on a path that does not exist.
 func TestMoveIntoAProjectThatHasNeverHeldATicket(t *testing.T) {
-	src := NewProjectFileStore(t.TempDir(), "unused-from")
-	dstDir := filepath.Join(t.TempDir(), "never-used")
-	dst := NewProjectFileStore(dstDir, "unused-to")
-
+	src, dst := moveStores(t)
 	mkMovable(t, src, "unused-move-0001", TypeFeature, StatusOpen, "")
 
 	results, err := MoveTicket(src, dst, "unused-move-0001", false)
@@ -813,8 +670,7 @@ func mkMovable(t *testing.T, store *FileStore, id string, typ TicketType, status
 }
 
 func TestMovePreservesCreated(t *testing.T) {
-	src := &FileStore{Dir: t.TempDir()}
-	dst := &FileStore{Dir: t.TempDir()}
+	src, dst := moveStores(t)
 
 	original := &Ticket{
 		ID:       "keep-created-0001",
@@ -844,102 +700,12 @@ func TestMovePreservesCreated(t *testing.T) {
 	}
 }
 
-func TestMoveLeavesNoStoredClosedOnTheEpicThatLeft(t *testing.T) {
-	// The status a move stores on an epic it left behind is inert for readers,
-	// but a stored closed with no abandon flag is what `tk audit` reports as a
-	// hand-close candidate — and its remedy would abandon the epic and close the
-	// children that stayed. Three shapes: the epic whose live child keeps it
-	// deriving open, the one whose children were already terminal — where the
-	// derived value the move started from was closed — and the one abandoned
-	// before it moved, which keeps the closed that decision recorded.
-	cases := []struct {
-		name       string
-		epicID     string
-		recursive  bool
-		abandon    bool
-		children   map[string]Status
-		wantStored Status
-	}{
-		{
-			name:       "live child stays behind",
-			epicID:     "audit-live-0001",
-			children:   map[string]Status{"audit-open-0002": StatusOpen},
-			wantStored: StatusBacklog,
-		},
-		{
-			name:       "children already terminal",
-			epicID:     "audit-shut-0001",
-			recursive:  true,
-			children:   map[string]Status{"audit-done-0002": StatusDone, "audit-closed-0003": StatusClosed},
-			wantStored: StatusBacklog,
-		},
-		{
-			name:       "abandoned before it moved",
-			epicID:     "audit-gone-0001",
-			abandon:    true,
-			children:   map[string]Status{"audit-shut-0002": StatusClosed},
-			wantStored: StatusClosed,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			src := &FileStore{Dir: t.TempDir()}
-			dst := &FileStore{Dir: t.TempDir()}
-
-			mkMovable(t, src, tc.epicID, TypeEpic, StatusBacklog, "")
-			for id, status := range tc.children {
-				mkMovable(t, src, id, TypeFeature, status, tc.epicID)
-			}
-			if tc.abandon {
-				if err := setStatus(t, src, tc.epicID, StatusClosed); err != nil {
-					t.Fatalf("abandoning %s: %v", tc.epicID, err)
-				}
-			}
-
-			if _, err := MoveTicket(src, dst, tc.epicID, tc.recursive); err != nil {
-				t.Fatalf("MoveTicket: %v", err)
-			}
-
-			stored, err := src.getStored(tc.epicID)
-			if err != nil {
-				t.Fatalf("getStored %s: %v", tc.epicID, err)
-			}
-			if stored.Status != tc.wantStored {
-				t.Errorf("stored epic status = %q, want %q", stored.Status, tc.wantStored)
-			}
-			if stored.Abandoned != tc.abandon {
-				t.Errorf("stored epic abandoned = %v, want %v — a move neither records an abandon nor takes one back", stored.Abandoned, tc.abandon)
-			}
-
-			auditor, err := NewAuditor(src)
-			if err != nil {
-				t.Fatalf("NewAuditor: %v", err)
-			}
-			drift := auditor.Report().EpicStatus
-			for _, d := range drift {
-				if !SameTicketID(d.ID, tc.epicID) {
-					continue
-				}
-				if d.Kind == EpicDriftStoredClosed {
-					t.Errorf("audit reports %s as %s (stored %q) — the remedy would abandon it", d.ID, d.Kind, d.Stored)
-				}
-				if tc.abandon {
-					t.Errorf("audit reports %s as %s (stored %q) — the kept abandon derives closed, so there is no drift", d.ID, d.Kind, d.Stored)
-				}
-			}
-		})
-	}
-}
-
 // The destination file is new and the body was stripped at parse time, so the
 // copy's write drops nothing — but the drop count rides the shallow copy unless
 // it is reset, and a warning asserting content loss where none occurred is the
 // failure the warning exists to fix.
 func TestMoveWarnsOnlyForTheSourceReviewLogDrop(t *testing.T) {
-	srcDir := t.TempDir()
-	src := &FileStore{Dir: srcDir, Project: "srcproj"}
-	dst := &FileStore{Dir: t.TempDir(), Project: "dstproj"}
+	src, dst := moveStores(t)
 
 	legacy := &Ticket{
 		ID:       "rlog-move-0001",
@@ -951,7 +717,7 @@ func TestMoveWarnsOnlyForTheSourceReviewLogDrop(t *testing.T) {
 		Deps:     []string{},
 		Links:    []string{},
 	}
-	plantTicketFile(t, srcDir, legacy.ID+".md", legacy)
+	plantTicketFile(t, src.Dir, legacy.ID+".md", legacy)
 
 	warnings := captureWarnings(t)
 
@@ -964,7 +730,7 @@ func TestMoveWarnsOnlyForTheSourceReviewLogDrop(t *testing.T) {
 		t.Fatalf("the move produced %d warning(s), want 1: %v", len(*warnings), *warnings)
 	}
 	warning := (*warnings)[0]
-	if !strings.Contains(warning, "srcproj/"+legacy.ID) {
+	if !strings.Contains(warning, "mv-src/"+legacy.ID) {
 		t.Errorf("the warning does not name the source ticket the section left: %q", warning)
 	}
 	_, bareNew := ParseNamespacedID(results[0].NewID)

@@ -4,31 +4,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // MoveResult describes a single ticket move operation.
 type MoveResult struct {
-	OldID         string
-	NewID         string
-	StrippedDeps  []string
-	StrippedLinks []string
+	OldID string
+	NewID string
 }
 
-// MoveTicket moves a single ticket from src store to dst store.
-// The ticket is closed in src with a note — an epic is not, its status being
-// derived — and created in dst with a new ID.
+// MoveTicket moves a single ticket from src store to dst store. The ticket is
+// closed in src with a note and created in dst with a new ID: copy-and-close,
+// not reassignment, so the ID other tickets and commit messages reference is
+// not carried over. That is why only an isolated leaf moves. A ticket with a
+// parent, a dep or a link, or one another ticket names, would leave behind a
+// reference to a closed copy — a blocker that reads satisfied while its
+// replacement is unfinished; an epic's children would be orphaned or dragged
+// along. Each is refused, before any write, naming the relationship.
+// recursive is kept for the callers that pass it and is refused when set.
 //
 // Both stores are resolved by the caller (ResolveStoreForRepo), which is where
 // a destination that resolves to no store is refused: nothing here checks that
 // dst.Dir exists, because a registered central project that has never held a
-// ticket legitimately has no directory yet and dst.Create makes it. A dst that
-// is the same directory as src is refused here, before anything is written.
+// ticket legitimately has no directory yet and the create makes it. A dst that
+// is the same directory as src is refused here, before anything is written,
+// as is one in a different central store: the move runs under one hold of the
+// source's store lock, which has to cover both ends.
 //
-// The move is not atomic and nothing is rolled back on failure: the results
-// for the tickets that completed (created in dst and recorded as moved in src)
-// are returned alongside the error, and the error names any ticket already
-// written to dst whose source copy is unchanged, so it can be reconciled.
+// The move is not atomic and nothing is rolled back on failure: the error
+// names a ticket already written to dst whose source copy is unchanged, so it
+// can be reconciled.
 func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, error) {
 	srcWhere, err := storeLabel(src)
 	if err != nil {
@@ -41,87 +47,110 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 
 	// Refused here rather than in the callers, and before anything is read or
 	// written: a destination that resolves to the source store would rename the
-	// ticket — new ID, old one closed — for no gain, and the move is not atomic,
-	// so a recursive run has to be refused as a whole rather than partway.
+	// ticket — new ID, old one closed — for no gain.
 	same, err := sameStoreDir(src, dst)
 	if err != nil {
 		return nil, err
 	}
 	if same {
-		// Says only what the guard checked. It runs ahead of src.Get, so the
+		// Says only what the guard checked. It runs ahead of the read, so the
 		// requested ID has not been looked up yet and naming it as living here
 		// would be an unverified claim on a typo'd ID.
 		return nil, fmt.Errorf("destination resolves to %s, the source store — no move performed", srcWhere)
 	}
-
-	root, err := src.Get(id)
+	if recursive {
+		return nil, fmt.Errorf("recursive moves are refused: a move copies a ticket under a new ID and closes the original, and an epic's children would be left naming a closed copy. Move isolated leaves one at a time — no move performed")
+	}
+	central := centralFor(src)
+	shared, err := central.sameCentral(centralFor(dst))
 	if err != nil {
 		return nil, err
 	}
-
-	// Collect tickets to move.
-	var toMove []*Ticket
-	toMove = append(toMove, root)
-
-	if recursive {
-		children, err := collectDescendants(src, root.ID)
-		if err != nil {
-			return nil, err
-		}
-		toMove = append(toMove, children...)
+	if !shared {
+		return nil, fmt.Errorf("%s and %s are not in the same central store — no move performed", srcWhere, dstWhere)
 	}
 
-	// Build old ID → new ID mapping. Keyed on the bare ID, and every lookup
-	// below normalizes the same way: a map key can't tolerate the namespace
-	// mismatch the way SameTicketID does, and a moving ticket can name a
-	// moving parent, dep, or link namespaced. Bare IDs are unique within one
-	// store directory, so the bare form is an unambiguous key.
-	//
-	// The mapped value is the new ID in the destination's namespace: a central
-	// project's tickets reference each other namespaced, so a remapped parent,
-	// dep or link has to carry the destination's prefix rather than the one it
-	// arrived with. The file itself is written under the bare half.
-	idMap := map[string]string{}
-	for _, t := range toMove {
+	var results []MoveResult
+	err = central.write(src.Project, func(o *op) error {
+		// The catalog guard the destination's own write entry points would have
+		// made — write guards the source's namespace, and the move writes into
+		// both through op.create and op.update, which take the boundary as
+		// already guarded: a Root that is not activated or a feature this
+		// binary lacks refuses the move as it refuses a create. Under the store
+		// lock, so the catalog judged is the one the write lands under.
+		if err := dst.guardWrite(); err != nil {
+			return fmt.Errorf("destination %s: %w", dstWhere, err)
+		}
+		path, err := src.Resolve(id)
+		if err != nil {
+			return err
+		}
+		bare := strings.TrimSuffix(filepath.Base(path), ".md")
+		t, err := src.getStored(bare)
+		if err != nil {
+			return err
+		}
+		// References land on the ID the file stores, which is how the snapshot
+		// keyed it — a file renamed to `renamed.md` while keeping `id: original`
+		// is `original` to every ticket naming it, and checking the filename
+		// would find no referrer. The close that records the move is written
+		// under the stored ID too, and there is no file at that name to write:
+		// the mismatch is refused before anything lands in the destination.
+		qualified := FormatNamespacedID(src.Project, t.ID)
+		if t.Type == TypeEpic {
+			return fmt.Errorf("%s is an epic and cannot move: its children would be left naming a closed copy — no move performed", t.ID)
+		}
+		var related []string
+		if t.Parent != "" {
+			related = append(related, "parent "+t.Parent)
+		}
+		for _, d := range t.Deps {
+			related = append(related, "dep "+d)
+		}
+		for _, l := range t.Links {
+			related = append(related, "link "+l)
+		}
+		for _, in := range o.snap.Inbound(qualified) {
+			related = append(related, fmt.Sprintf("%s of %s", in.Kind, in.From))
+		}
+		if len(related) > 0 {
+			return fmt.Errorf("%s cannot move while it is related to other tickets (%s): a move copies it under a new ID and closes the original, which would leave those references pointing at a closed copy. Remove the relationships first — no move performed",
+				t.ID, strings.Join(related, ", "))
+		}
+		if t.ID != bare {
+			return fmt.Errorf("%s is stored as %s: a move closes the source under its stored ID, and no file holds that name. Rename the file to %s.md first — no move performed",
+				bare, t.ID, t.ID)
+		}
+		if !o.snap.Complete {
+			return o.incompleteError(fmt.Sprintf("moving %s", t.ID))
+		}
+
 		newID := GenerateIDFrom(t.Title, time.Now())
-		// Ensure no collision in target.
 		for i := 0; i < 5; i++ {
-			path := filepath.Join(dst.Dir, newID+".md")
-			if _, err := os.Stat(path); os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(dst.Dir, newID+".md")); os.IsNotExist(err) {
 				break
 			}
 			newID = GenerateIDFrom(t.Title, time.Now())
 		}
-		_, bare := ParseNamespacedID(t.ID)
-		idMap[bare] = qualifyForStore(dst, newID)
-	}
+		// The file is written under the bare half of the new ID — a project
+		// store's files are named for it, and the namespace is what the
+		// destination's readers put back — while the result and the notes
+		// carry the destination's prefix, which is how every reader there
+		// names it.
+		newRef := qualifyForStore(dst, newID)
+		now := time.Now().UTC()
+		result := MoveResult{OldID: t.ID, NewID: newRef}
 
-	now := time.Now().UTC()
-	var results []MoveResult
-
-	for _, t := range toMove {
-		_, bare := ParseNamespacedID(t.ID)
-		newID := idMap[bare]
-		result := MoveResult{OldID: t.ID, NewID: newID}
-
-		// Shallow copy all fields, then override what needs to change. The file
-		// is written under the bare half of the new ID — a project store's files
-		// are named for it, and the namespace is what the destination's readers
-		// put back — while every reference to it carries the destination's prefix.
-		_, bareNew := ParseNamespacedID(newID)
 		copied := *t
 		newTicket := &copied
-		newTicket.ID = bareNew
+		newTicket.ID = newID
 		newTicket.Status = StatusBacklog
-		// The copy starts over, so an abandoned epic does not arrive abandoned:
-		// the flag is the record of a decision taken about the work that stayed
-		// behind, not about the work that landed here.
-		newTicket.Abandoned = false
 		newTicket.Tags = copyStrings(t.Tags)
-		newTicket.Deps = nil
-		newTicket.Links = nil
+		newTicket.Deps = []string{}
+		newTicket.Links = []string{}
 		newTicket.DepCargo = nil // the shallow copy aliases the source map
 		newTicket.version = ""   // the copy is a new file, not the source's
+		newTicket.relationshipIssue = ""
 		// Same inherited read-state: the body was stripped at parse time, so the
 		// new file never holds a Review Log and its write drops nothing. Only the
 		// source's close warns.
@@ -130,113 +159,36 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		// ticket had there, so they say nothing about the copy landing in this one
 		// and do not travel with it. The closed source ticket keeps the record.
 		newTicket.Verdicts = nil
-		newTicket.Notes = copyNotes(t.Notes)
-		newTicket.Parent = ""
-
-		// Remap or strip parent.
-		if t.Parent != "" {
-			_, bareParent := ParseNamespacedID(t.Parent)
-			if newParent, ok := idMap[bareParent]; ok {
-				newTicket.Parent = newParent
-			}
-			// If parent isn't moving, drop it — ticket is moving to new repo.
-		}
-
-		// Remap or strip deps. Cargo follows its dep under the new ID; a
-		// stripped dep takes its cargo with it.
-		for _, d := range t.Deps {
-			_, bareDep := ParseNamespacedID(d)
-			if newDep, ok := idMap[bareDep]; ok {
-				newTicket.Deps = append(newTicket.Deps, newDep)
-				if cargo := CargoFor(t, d); cargo != "" {
-					if newTicket.DepCargo == nil {
-						newTicket.DepCargo = map[string]string{}
-					}
-					newTicket.DepCargo[newDep] = cargo
-				}
-			} else {
-				result.StrippedDeps = append(result.StrippedDeps, d)
-			}
-		}
-		if newTicket.Deps == nil {
-			newTicket.Deps = []string{}
-		}
-
-		// Remap or strip links.
-		for _, l := range t.Links {
-			_, bareLink := ParseNamespacedID(l)
-			if newLink, ok := idMap[bareLink]; ok {
-				newTicket.Links = append(newTicket.Links, newLink)
-			} else {
-				result.StrippedLinks = append(result.StrippedLinks, l)
-			}
-		}
-		if newTicket.Links == nil {
-			newTicket.Links = []string{}
-		}
-
-		// Add provenance note to target ticket.
-		newTicket.Notes = append(newTicket.Notes, Note{
+		newTicket.Notes = append(copyNotes(t.Notes), Note{
 			Timestamp: now,
 			Text:      fmt.Sprintf("Moved from %s in %s", t.ID, srcWhere),
 		})
-
-		// Create in target.
-		if err := dst.Create(newTicket); err != nil {
-			return results, fmt.Errorf("creating %s in target: %w", newID, err)
+		if err := o.create(dst, newTicket); err != nil {
+			return fmt.Errorf("creating %s in target: %w", newRef, err)
 		}
 
-		// Close original with note.
-		closeNote := fmt.Sprintf("Moved to %s in %s", newID, dstWhere)
-		if len(result.StrippedDeps) > 0 {
-			closeNote += fmt.Sprintf(". Stripped deps: %v", result.StrippedDeps)
-		}
-		if len(result.StrippedLinks) > 0 {
-			closeNote += fmt.Sprintf(". Stripped links: %v", result.StrippedLinks)
-		}
+		// Closed, not done: the ticket did not complete here, it left.
 		t.Notes = append(t.Notes, Note{
 			Timestamp: now,
-			Text:      closeNote,
+			Text:      fmt.Sprintf("Moved to %s in %s", newRef, dstWhere),
 		})
-		// Closed, not done: the ticket did not complete here, it left. It is an
-		// epic's children that carry this — an epic derives done only once every
-		// child of it is done, so a child that moved away leaves the epic
-		// staying behind reading closed rather than finished.
-		//
-		// An epic that is itself moving stores backlog instead. Either value is
-		// inert for readers, since an epic's status is derived, but the stored
-		// one is not inert for `tk audit`: a stored closed with no abandon flag
-		// is reported as a hand-close candidate whose remedy — `tk edit --status
-		// closed` — would abandon the epic and cascade-close the children that
-		// stayed, which nobody asked for. backlog carries no abandon signature,
-		// so the epic can only turn up in the audit as stale-status, the class
-		// that names no remedy. Written rather than left alone: t came from
-		// src.Get, so t.Status is the derived value, and an epic whose children
-		// were already terminal echoes exactly the closed the audit flags.
-		//
-		// An epic already carrying the abandon flag keeps its closed: that pair
-		// is the decision a human took before the move, it derives closed and so
-		// reports no drift at all, and it is never read as a hand-close.
 		t.Status = StatusClosed
-		if t.Type == TypeEpic && !t.Abandoned {
-			t.Status = StatusBacklog
-		}
-		if err := src.Update(t); err != nil {
-			return results, fmt.Errorf("recording the move of %s in source: %w. %s was written to %s but %s is "+
+		if err := o.update(src, t); err != nil {
+			return fmt.Errorf("recording the move of %s in source: %w. %s was written to %s but %s is "+
 				"unchanged here — delete the target copy or record the move by hand",
-				t.ID, err, newID, dstWhere, t.ID)
+				t.ID, err, newRef, dstWhere, t.ID)
 		}
 
 		// The move as a move, on both projects' logs. The stores logged the
 		// create and the edit they each performed, which read as two unrelated
 		// writes rather than as one ticket leaving a project for another.
-		dst.logMutation(bareNew, MutationMove, nil)
+		dst.logMutation(newTicket.ID, MutationMove, nil)
 		src.logMutation(bare, MutationMove, nil)
 
 		results = append(results, result)
-	}
-
-	return results, nil
+		return nil
+	})
+	return results, err
 }
 
 // qualifyForStore returns a bare ID in the store's namespace, so a reference
@@ -314,60 +266,6 @@ func storeDir(store *FileStore) (string, error) {
 		return eval, nil
 	}
 	return abs, nil
-}
-
-// collectDescendants returns all descendants (children, grandchildren, etc.)
-// of the given ticket ID.
-func collectDescendants(store *FileStore, parentID string) ([]*Ticket, error) {
-	all, err := store.List()
-	if err != nil {
-		return nil, err
-	}
-
-	// Build parent → children index. A map key can't tolerate the namespace
-	// mismatch the way SameTicketID does, so every ID entering the walk — the
-	// keys, the seed, and the queue — is normalized to its bare form: the
-	// central store records children with a namespaced parent, while tickets
-	// written before the namespacing rollout record it bare. A parent naming a
-	// different project is skipped, not stripped, on the same grounds as
-	// FileStore.Resolve: stripping it would index the child under a same-suffix
-	// ticket in this project and move the wrong one. A store with no project
-	// carries no namespace, so every namespaced parent is foreign to it.
-	childMap := map[string][]*Ticket{}
-	for _, t := range all {
-		if t.Parent == "" {
-			continue
-		}
-		project, parent := ParseNamespacedID(t.Parent)
-		if project != "" && project != store.Project {
-			continue
-		}
-		childMap[parent] = append(childMap[parent], t)
-	}
-
-	// BFS from parentID. The seed needs no project check — it is the root
-	// ticket's own ID, read from this store's files after Resolve rejected any
-	// foreign prefix. seen bounds the walk: a parent cycle would otherwise
-	// never terminate, and a ticket reachable by two paths would move twice.
-	_, seed := ParseNamespacedID(parentID)
-	var result []*Ticket
-	queue := []string{seed}
-	seen := map[string]bool{seed: true}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		for _, child := range childMap[pid] {
-			_, childID := ParseNamespacedID(child.ID)
-			if seen[childID] {
-				continue
-			}
-			seen[childID] = true
-			result = append(result, child)
-			queue = append(queue, childID)
-		}
-	}
-
-	return result, nil
 }
 
 func copyStrings(s []string) []string {

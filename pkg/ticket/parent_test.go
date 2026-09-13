@@ -69,14 +69,15 @@ func TestResolveParent_RejectsMissingParent(t *testing.T) {
 func TestResolveParent_StoresTheResolvedEpicID(t *testing.T) {
 	// A parent may be typed in any form tk resolves — full, partial hash, or
 	// namespaced under the store's own project — but every reader matches a
-	// parent by ID, so what lands on disk has to be the resolved epic.
+	// parent by exact qualified ID, so what lands on disk is the resolved epic
+	// under the store's own namespace whichever form was typed.
 	s := NewProjectFileStore(t.TempDir(), "proj")
 	if err := s.Create(mkEpic("epic-abcd", StatusBacklog, "")); err != nil {
 		t.Fatal(err)
 	}
 	forms := map[string]struct{ typed, stored string }{
-		"child-1111": {"epic-abcd", "epic-abcd"},
-		"child-2222": {"abcd", "epic-abcd"},
+		"child-1111": {"epic-abcd", "proj/epic-abcd"},
+		"child-2222": {"abcd", "proj/epic-abcd"},
 		"child-3333": {"proj/epic-abcd", "proj/epic-abcd"},
 	}
 	for id, form := range forms {

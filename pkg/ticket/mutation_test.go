@@ -310,8 +310,9 @@ func TestMutationLogFollowsStoreRootOverride(t *testing.T) {
 
 func TestMutationLogRecordsBothSidesOfAMove(t *testing.T) {
 	mutationSandbox(t)
-	src := NewProjectFileStore(t.TempDir(), "alpha")
-	dst := NewProjectFileStore(t.TempDir(), "beta")
+	root := t.TempDir()
+	src := NewProjectFileStore(filepath.Join(root, "tickets", "alpha"), "alpha")
+	dst := NewProjectFileStore(filepath.Join(root, "tickets", "beta"), "beta")
 	if err := src.Create(sampleTicket("v-0001")); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

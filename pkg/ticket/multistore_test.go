@@ -165,6 +165,46 @@ func TestMultiStoreGetBareIDNamesAnUnreadableFile(t *testing.T) {
 	}
 }
 
+// A bare Get finishes the ticket it matched rather than resolving its stored
+// ID a second time: Resolve matches file names, so a file renamed while
+// keeping its id would come back not found, and one claimant of a duplicated
+// ID would come back as the other file's contents.
+func TestMultiStoreGetBareIDKeepsTheMatchedFile(t *testing.T) {
+	ms, dir := testMultiStore(t, "proj")
+	projDir := filepath.Join(dir, "proj")
+	if err := ms.Create(sampleTicket("proj/original-0001")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(projDir, "original-0001.md"), filepath.Join(projDir, "renamed.md")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ms.Get("renamed")
+	if err != nil {
+		t.Fatalf("Get of a renamed file by its filename: %v", err)
+	}
+	if got.ID != "proj/original-0001" {
+		t.Errorf("Get(renamed).ID = %q, want proj/original-0001, the id the file stores", got.ID)
+	}
+
+	if err := ms.Create(sampleTicket("proj/x-0001")); err != nil {
+		t.Fatal(err)
+	}
+	claimant := sampleTicket("x-0001")
+	claimant.Title = "The zz claimant"
+	plantTicketFile(t, projDir, "zz-x-0001.md", claimant)
+	captureWarnings(t)
+	got, err = ms.Get("zz-x-0001")
+	if err != nil {
+		t.Fatalf("Get of a duplicate claimant by its filename: %v", err)
+	}
+	if got.Title != "The zz claimant" {
+		t.Errorf("Get(zz-x-0001).Title = %q, want the zz file's own title, not x-0001.md's", got.Title)
+	}
+	if got.relationshipIssue == "" {
+		t.Errorf("Get(zz-x-0001) carries no relationship issue, want the duplicate-id one")
+	}
+}
+
 func TestMultiStoreUpdate(t *testing.T) {
 	ms, _ := testMultiStore(t, "proj")
 	tk := sampleTicket("proj/up-ticket-3333")

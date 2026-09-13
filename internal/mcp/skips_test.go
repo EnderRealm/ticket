@@ -182,3 +182,39 @@ func TestSkippedFileDegradesTheEpicsACallerCanSee(t *testing.T) {
 	// that silently stopped reading done.
 	assertSkipReported(t, "ticket_list", payload, "sk-broken-0006.md")
 }
+
+func TestProjectScopedListCarriesADegradingSkipFromAnotherProject(t *testing.T) {
+	// The file could be any epic's child in any project, so the derivation
+	// demotes alpha's epics over a file in beta. A list scoped to alpha has to
+	// carry that skip, or it shows the demoted epic with no cause in sight.
+	session, root := testCentralServer(t, "alpha", "beta")
+	ctx := context.Background()
+	epic := createTicketID(t, session, map[string]any{"title": "Epic", "type": "epic", "project": "alpha"})
+	child := createTicketID(t, session, map[string]any{"title": "Child", "type": "feature", "parent": epic, "project": "alpha"})
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_edit",
+		Arguments: map[string]any{"id": child, "status": "done"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plantUnreadable(t, filepath.Join(root, "tickets", "beta"), "sk-broken-0007.md")
+
+	for _, tool := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"ticket_list", map[string]any{"project": "alpha", "type": "epic"}},
+		{"ticket_search", map[string]any{"project": "alpha", "query": "Epic"}},
+		{"ticket_frontier", map[string]any{"project": "alpha"}},
+	} {
+		payload := callJSON(t, session, tool.name, tool.args)
+		assertSkipReported(t, tool.name, payload, "sk-broken-0007.md")
+		skip, _ := payload["skipped_files"].([]any)[0].(map[string]any)
+		if skip["project"] != "beta" {
+			t.Errorf("%s skipped_files[0].project = %v, want beta", tool.name, skip["project"])
+		}
+	}
+	if got := callJSON(t, session, "ticket_show", map[string]any{"id": epic})["status"]; got == "done" {
+		t.Errorf("alpha's epic still reads done beside an unreadable file in beta that could be its child")
+	}
+}

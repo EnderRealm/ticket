@@ -50,7 +50,7 @@ func DepTree(store Store, id string, full bool) ([]DepNode, error) {
 				continue
 			}
 			seen[depID] = true
-			dep, err := depOf(depID)
+			dep, err := depOf(t, depID)
 			if err != nil {
 				// Dep references a missing ticket — include a stub.
 				nodes = append(nodes, DepNode{
@@ -92,11 +92,18 @@ func FindCycles(store Store) ([]Cycle, error) {
 		return nil, err
 	}
 
-	// Index only non-terminal tickets.
+	// Index only non-terminal tickets, keyed the way depLookup keys them: by
+	// qualified ID, with each dep walked relative to the ticket holding it. A
+	// project store lists bare IDs while every dep written through the
+	// boundary is stored qualified, and the MultiStore lists qualified IDs
+	// over legacy bare deps; keyed by the ID as listed, either edge misses
+	// and the cycle it closes goes unreported. The cycle is reported in the
+	// IDs the listing uses.
+	project := storeProject(store)
 	byID := map[string]*Ticket{}
 	for _, t := range tickets {
 		if t.Status != StatusDone && t.Status != StatusClosed {
-			byID[t.ID] = t
+			byID[qualifyRef(project, t.ID)] = t
 		}
 	}
 
@@ -115,7 +122,7 @@ func FindCycles(store Store) ([]Cycle, error) {
 			// Found cycle — extract from path.
 			var cycle []string
 			for i := len(path) - 1; i >= 0; i-- {
-				cycle = append([]string{path[i]}, cycle...)
+				cycle = append([]string{byID[path[i]].ID}, cycle...)
 				if path[i] == id {
 					break
 				}
@@ -133,7 +140,7 @@ func FindCycles(store Store) ([]Cycle, error) {
 		path = append(path, id)
 
 		for _, depID := range t.Deps {
-			dfs(depID)
+			dfs(qualifyRef(ownerNS(store, t), depID))
 		}
 
 		path = path[:len(path)-1]
@@ -178,17 +185,95 @@ func isTerminal(t *Ticket) bool {
 
 // IsBlocked returns true if any of the ticket's dependencies are not done/closed.
 func IsBlocked(store Store, t *Ticket) bool {
-	return isBlocked(t, store.Get)
+	return isBlocked(t, storeLookup(store))
+}
+
+// depResolver resolves a reference the owner ticket holds — a dep, a parent —
+// to the ticket it names. The owner is what the reference is relative to: a
+// bare reference names the owner's own namespace.
+type depResolver func(owner *Ticket, ref string) (*Ticket, error)
+
+// storeLookup resolves owner-relative references through the store, one read
+// each, for the single-ticket entry points.
+func storeLookup(store Store) depResolver {
+	return func(owner *Ticket, ref string) (*Ticket, error) {
+		return resolveRef(store, qualifyRef(ownerNS(store, owner), ref))
+	}
+}
+
+// resolveRef reads the ticket a qualified reference names, and only that
+// ticket. It is the one store read every reference lookup falls back to, so
+// the two rules below cannot drift apart between the single-ticket and the
+// listing entry points.
+//
+// A reference into another namespace is read through the boundary's store
+// for that namespace rather than through this one: FileStore.Resolve refuses
+// a prefix that is not its own project, so from a project store — the CLI's
+// default — an acceptance leaf's dep on another project, or its parent once
+// cross-project parents are activated, would never resolve and the leaf would
+// read blocked here while the MultiStore reads it ready. A leaf costs one
+// read; an epic derives off a snapshot, as Get always does. The ticket comes
+// back qualified, the way the MultiStore hands it back, so a reference it
+// holds is read relative to its own namespace and not this store's.
+//
+// The ticket read back has to be the one asked for. Resolve substring-matches
+// a fragment, so a missing `warp/task-0001` would otherwise read as done off
+// `warp/other-task-0001`, and a blocker that no longer exists would clear a
+// dependent — the snapshot and the cycle check treat the two as different
+// identities, and so does this. And it has to be the only file claiming that
+// ID: a single-file Get cannot see a second claimant in the namespace, so the
+// identity is checked through claimedStored first, the way the snapshot's
+// index refuses a claimed-twice ID — a foreign dep falling through from a
+// project listing would otherwise read done off `warp/x.md` while
+// `warp/zz.md` holds the same ID open.
+func resolveRef(store Store, id string) (*Ticket, error) {
+	project := storeProject(store)
+	ns, bare := ParseNamespacedID(id)
+	p, central := store.(centralProvider)
+	if central {
+		if _, err := p.central().claimedStored(id); err != nil {
+			return nil, err
+		}
+	}
+	var t *Ticket
+	if central && ns != "" && ns != project {
+		s, err := p.central().store(ns)
+		if err != nil {
+			return nil, err
+		}
+		if t, err = s.Get(bare); err != nil {
+			return nil, err
+		}
+		t.ID = FormatNamespacedID(ns, t.ID)
+	} else {
+		var err error
+		if t, err = store.Get(id); err != nil {
+			return nil, err
+		}
+	}
+	if qualifyRef(project, t.ID) != id {
+		return nil, fmt.Errorf("ticket %s not found", id)
+	}
+	return t, nil
+}
+
+// ownerNS is the namespace a ticket's bare references are relative to: the
+// one its own ID carries, or the store's when the ID is bare.
+func ownerNS(store Store, t *Ticket) string {
+	if ns := namespaceOf(t.ID); ns != "" {
+		return ns
+	}
+	return storeProject(store)
 }
 
 // isBlocked is IsBlocked with the dep lookup supplied, so a caller looping over
 // a list it already read can answer the deps from that list.
-func isBlocked(t *Ticket, depOf func(string) (*Ticket, error)) bool {
+func isBlocked(t *Ticket, depOf depResolver) bool {
 	if len(t.Deps) == 0 {
 		return false
 	}
 	for _, depID := range t.Deps {
-		dep, err := depOf(depID)
+		dep, err := depOf(t, depID)
 		if err != nil {
 			// Missing dep is treated as blocking.
 			return true
@@ -210,11 +295,13 @@ func BlockedFunc(store Store, tickets []*Ticket) func(*Ticket) bool {
 	}
 }
 
-// BlockingDeps returns the IDs of dependencies that are not done/closed.
+// BlockingDeps returns the IDs of dependencies that are not done/closed, as
+// the ticket spells them.
 func BlockingDeps(store Store, t *Ticket) []string {
+	depOf := storeLookup(store)
 	var blocking []string
 	for _, depID := range t.Deps {
-		dep, err := store.Get(depID)
+		dep, err := depOf(t, depID)
 		if err != nil {
 			blocking = append(blocking, depID)
 			continue
@@ -226,20 +313,41 @@ func BlockingDeps(store Store, t *Ticket) []string {
 	return blocking
 }
 
-// depLookup resolves a dep ID against a set the caller has already read. Store
-// resolution is the fallback, not the path: a dep naming an epic resolves
-// through Store.Get, which derives — reading the whole store — so a loop over
-// the store would re-read it once per epic dep. Whether an epic dep is terminal
-// genuinely depends on that derivation, so the answer has to come from a
-// derived set rather than a stored read; the index is the derived set the
-// caller is already holding.
-func depLookup(store Store, tickets []*Ticket) func(string) (*Ticket, error) {
-	index := ticketsByID(tickets, storeProject(store))
-	return func(id string) (*Ticket, error) {
-		if t, ok := index(id); ok {
+// depLookup resolves a reference against a set the caller has already read.
+// Store resolution is the fallback, not the path: a dep naming an epic
+// resolves through Store.Get, which derives — reading the whole store — so a
+// loop over the store would re-read it once per epic dep. Whether an epic dep
+// is terminal genuinely depends on that derivation, so the answer has to come
+// from a derived set rather than a stored read; the index is the derived set
+// the caller is already holding.
+//
+// The index is keyed by qualified ID and a reference is qualified relative to
+// the ticket holding it before it is looked up, so a bare dep names the
+// owner's own namespace and nothing else: an ID two listed tickets share
+// across projects resolves to the one in the owner's project, never by luck.
+// The fallback reads the qualified form too, so no path searches every
+// project for a bare ID. An ID two listed tickets both claim within one
+// namespace resolves to neither.
+func depLookup(store Store, tickets []*Ticket) depResolver {
+	project := storeProject(store)
+	byID := make(map[string]*Ticket, len(tickets))
+	claimed := map[string]bool{}
+	for _, t := range tickets {
+		id := qualifyRef(project, t.ID)
+		if _, seen := byID[id]; seen {
+			claimed[id] = true
+		}
+		byID[id] = t
+	}
+	return func(owner *Ticket, ref string) (*Ticket, error) {
+		id := qualifyRef(ownerNS(store, owner), ref)
+		if claimed[id] {
+			return nil, fmt.Errorf("ticket %s is claimed by more than one file", id)
+		}
+		if t, ok := byID[id]; ok {
 			return t, nil
 		}
-		return store.Get(id)
+		return resolveRef(store, id)
 	}
 }
 
@@ -255,6 +363,11 @@ func depLookup(store Store, tickets []*Ticket) func(string) (*Ticket, error) {
 // namespaced set matches only where one project holds it, the way MultiStore
 // resolves a bare ID; anything else misses and is left to the caller's
 // fallback, which is the store's own resolution.
+//
+// Display lookup only: it is what `tk show` and the TUI match a reference
+// against a listing with. Nothing that decides graph membership — children,
+// readiness, blocking, the audit — uses it, since those resolve a reference
+// relative to its owner (qualifyRef) and never by bare-suffix equality.
 //
 // An ID two listed tickets both claim resolves to neither, the same way a bare
 // half two of them share does.
@@ -340,20 +453,32 @@ func storeProject(store Store) string {
 }
 
 // IsReady returns true if the ticket is actionable: not terminal, all deps
-// done, and parent chain is active. Backlog counts: tickets are picked up
-// straight out of backlog on stores that never groom to ready, and excluding
-// them left the ready listing empty. Callers that need the groomed set alone
-// match Status == StatusReady, as FrontierTickets does.
+// done, parent chain active, and its parent relationship valid. Backlog
+// counts: tickets are picked up straight out of backlog on stores that never
+// groom to ready, and excluding them left the ready listing empty. Callers
+// that need the groomed set alone match Status == StatusReady, as
+// FrontierTickets does.
 func IsReady(store Store, t *Ticket) bool {
-	return isReady(t, store.Get, func(child *Ticket) (*Ticket, error) {
-		return store.Get(child.Parent)
-	})
+	depOf := storeLookup(store)
+	return isReady(t, depOf, parentOfVia(depOf))
+}
+
+// parentOfVia resolves a child's parent through the same owner-relative lookup
+// its deps resolve through: the parent field is one more reference the child
+// holds.
+func parentOfVia(depOf depResolver) func(*Ticket) (*Ticket, error) {
+	return func(child *Ticket) (*Ticket, error) {
+		return depOf(child, child.Parent)
+	}
 }
 
 // isReady is IsReady with the dep and parent lookups supplied, so a caller
-// looping over a list it already read can answer both from that list.
-func isReady(t *Ticket, depOf func(string) (*Ticket, error), parentOf func(*Ticket) (*Ticket, error)) bool {
-	if isTerminal(t) {
+// looping over a list it already read can answer both from that list. A
+// ticket carrying a relationship issue is never ready: its parent does not
+// resolve, is not an epic, or is one it may not belong to, and none of those
+// is evidence that nothing gates the work.
+func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, error)) bool {
+	if isTerminal(t) || t.relationshipIssue != "" {
 		return false
 	}
 	if isBlocked(t, depOf) {
@@ -365,26 +490,28 @@ func isReady(t *Ticket, depOf func(string) (*Ticket, error), parentOf func(*Tick
 // IsReadyOpen is like IsReady but bypasses parent gating.
 // Shows all unblocked non-terminal tickets regardless of epic status.
 func IsReadyOpen(store Store, t *Ticket) bool {
-	return isReadyOpen(t, store.Get)
+	return isReadyOpen(t, storeLookup(store))
 }
 
-// isReadyOpen is IsReadyOpen with the dep lookup supplied.
-func isReadyOpen(t *Ticket, depOf func(string) (*Ticket, error)) bool {
-	if isTerminal(t) {
+// isReadyOpen is IsReadyOpen with the dep lookup supplied. The parent gate is
+// bypassed; a relationship issue is not a gate, it is an invalid leaf.
+func isReadyOpen(t *Ticket, depOf depResolver) bool {
+	if isTerminal(t) || t.relationshipIssue != "" {
 		return false
 	}
 	return !isBlocked(t, depOf)
 }
 
-// parentChainActive checks that every ancestor (via parent field) is
-// not terminal. If a parent is not found in the store, it's treated as active.
+// parentChainActive checks that every ancestor (via parent field) is not
+// terminal. A parent that cannot be resolved is not treated as active: an
+// unresolved relationship says nothing about whether the work is gated.
 func parentChainActive(parentOf func(*Ticket) (*Ticket, error), t *Ticket) bool {
 	visited := map[string]bool{t.ID: true}
 	cur := t
 	for cur.Parent != "" {
 		parent, err := parentOf(cur)
 		if err != nil {
-			return true // parent not in store — treat as active
+			return false
 		}
 		if isTerminal(parent) {
 			return false
@@ -420,7 +547,7 @@ func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 	// derived every ticket in the store. Resolving either through store.Get
 	// instead would read the whole store again for every epic named.
 	depOf := depLookup(store, tickets)
-	parentOf := parentLookup(store, tickets, store.Get)
+	parentOf := parentOfVia(depOf)
 
 	var ready []*Ticket
 	for _, t := range tickets {
@@ -469,12 +596,14 @@ func FrontierTicketsWithSkips(store Store) ([]*Ticket, []FileSkip, error) {
 }
 
 // frontierOf filters a listing down to the schedulable set. Shared by both
-// entry points so the two cannot disagree about what the frontier is.
+// entry points so the two cannot disagree about what the frontier is. A leaf
+// whose parent relationship is invalid is left out: it is not automatically
+// runnable, and RelationshipIssue says why.
 func frontierOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var frontier []*Ticket
 	for _, t := range tickets {
-		if t.Status == StatusReady && !isBlocked(t, depOf) {
+		if t.Status == StatusReady && t.relationshipIssue == "" && !isBlocked(t, depOf) {
 			frontier = append(frontier, t)
 		}
 	}
@@ -506,6 +635,10 @@ func BlockedTickets(store Store) ([]*Ticket, error) {
 // "foo-abcd"). This matters because deps and links may have been stored
 // in bare form before the namespacing rollout while Get()-resolved IDs
 // come back namespaced; exact-string compare would miss those.
+//
+// Display lookup only, like ticketsByID: two qualified IDs that differ only
+// in namespace are two tickets, and this reads them as one. The helpers that
+// edit a ticket's references compare with sameRef.
 func SameTicketID(a, b string) bool {
 	if a == b {
 		return true
@@ -515,14 +648,49 @@ func SameTicketID(a, b string) bool {
 	return ab == bb
 }
 
+// sameRef reports whether two references the owner holds name one ticket, by
+// the reading rule: each is qualified relative to the owner's namespace and
+// the two are equal only as strings after that — the central store holds
+// identical bare IDs in different projects, and `warp/epic-1` beside
+// `loom/epic-1` is two edges, not one. A bare side names the owner's own
+// project, so a bare `epic-1` typed in warp is warp's edge and never loom's,
+// and a legacy bare reference stored before qualification matches the
+// qualified argument in that project alone. An owner whose namespace is
+// unknown — a ticket built rather than read, or one from a store with no
+// project — has nothing to qualify against, and there bare equality is the
+// fallback for a side that carries no namespace.
+func sameRef(ownerNS, a, b string) bool {
+	if ownerNS != "" {
+		return qualifyRef(ownerNS, a) == qualifyRef(ownerNS, b)
+	}
+	pa, ba := ParseNamespacedID(a)
+	pb, bb := ParseNamespacedID(b)
+	if pa != "" && pb != "" {
+		return a == b
+	}
+	return ba == bb
+}
+
+// editNS is the namespace a ticket's references are read relative to by the
+// helpers that edit them: the one its ID carries, or the project it was read
+// from when the ID is bare. ownerNS answers the same question with the store
+// in hand; the edit helpers have only the ticket.
+func editNS(t *Ticket) string {
+	if ns := namespaceOf(t.ID); ns != "" {
+		return ns
+	}
+	return t.namespace
+}
+
 // AddDep adds depID to the ticket's deps list. Returns error if it would
 // create a self-dependency.
 func AddDep(t *Ticket, depID string) error {
-	if SameTicketID(t.ID, depID) {
+	ns := editNS(t)
+	if sameRef(ns, t.ID, depID) {
 		return fmt.Errorf("cannot depend on self")
 	}
 	for _, d := range t.Deps {
-		if SameTicketID(d, depID) {
+		if sameRef(ns, d, depID) {
 			return nil // already present (maybe in the other ID form)
 		}
 	}
@@ -531,8 +699,8 @@ func AddDep(t *Ticket, depID string) error {
 }
 
 // SetDepCargo records what concretely flows across the edge from t to depID.
-// An empty cargo removes the annotation. Matching tolerates namespace-prefix
-// mismatches, so annotating an already-stored dep overwrites its entry instead
+// An empty cargo removes the annotation. Matching tolerates a bare side
+// (sameRef), so annotating an already-stored dep overwrites its entry instead
 // of adding a second one under the other ID form.
 func SetDepCargo(t *Ticket, depID, cargo string) error {
 	if err := ValidateCargoKey(depID); err != nil {
@@ -540,7 +708,7 @@ func SetDepCargo(t *Ticket, depID, cargo string) error {
 	}
 	key := depID
 	for k := range t.DepCargo {
-		if SameTicketID(k, depID) {
+		if sameRef(editNS(t), k, depID) {
 			key = k
 			break
 		}
@@ -564,7 +732,7 @@ func SetDepCargo(t *Ticket, depID, cargo string) error {
 // edge carries no annotation.
 func CargoFor(t *Ticket, depID string) string {
 	for k, v := range t.DepCargo {
-		if SameTicketID(k, depID) {
+		if sameRef(editNS(t), k, depID) {
 			return v
 		}
 	}
@@ -572,53 +740,56 @@ func CargoFor(t *Ticket, depID string) string {
 }
 
 // RemoveDep removes depID from the ticket's deps list, along with any cargo
-// recorded for that edge. Matching is tolerant of namespace-prefix mismatches
-// between the stored dep ID and the caller's argument.
+// recorded for that edge. Matching tolerates a bare side (sameRef) between
+// the stored dep ID and the caller's argument.
 func RemoveDep(t *Ticket, depID string) {
+	ns := editNS(t)
 	filtered := t.Deps[:0]
 	for _, d := range t.Deps {
-		if !SameTicketID(d, depID) {
+		if !sameRef(ns, d, depID) {
 			filtered = append(filtered, d)
 		}
 	}
 	t.Deps = filtered
 	for k := range t.DepCargo {
-		if SameTicketID(k, depID) {
+		if sameRef(ns, k, depID) {
 			delete(t.DepCargo, k)
 		}
 	}
 }
 
-// AddLink adds a symmetric link between two tickets.
+// AddLink adds a symmetric link between two tickets. Each side's links are
+// read relative to that side: the far ticket's ID is the argument, and a bare
+// one names the near ticket's own project.
 func AddLink(a, b *Ticket) {
-	if !containsID(a.Links, b.ID) {
+	if !containsID(editNS(a), a.Links, b.ID) {
 		a.Links = append(a.Links, b.ID)
 	}
-	if !containsID(b.Links, a.ID) {
+	if !containsID(editNS(b), b.Links, a.ID) {
 		b.Links = append(b.Links, a.ID)
 	}
 }
 
-// RemoveLink removes a symmetric link between two tickets. Matching is
-// tolerant of namespace-prefix mismatches.
+// RemoveLink removes a symmetric link between two tickets. Matching
+// tolerates a bare side (sameRef).
 func RemoveLink(a, b *Ticket) {
-	a.Links = removeID(a.Links, b.ID)
-	b.Links = removeID(b.Links, a.ID)
+	a.Links = removeID(editNS(a), a.Links, b.ID)
+	b.Links = removeID(editNS(b), b.Links, a.ID)
 }
 
-func containsID(ss []string, s string) bool {
+func containsID(ownerNS string, ss []string, s string) bool {
 	for _, v := range ss {
-		if SameTicketID(v, s) {
+		if sameRef(ownerNS, v, s) {
 			return true
 		}
 	}
 	return false
 }
 
-func removeID(ss []string, s string) []string {
+func removeID(ownerNS string, ss []string, s string) []string {
 	filtered := ss[:0]
 	for _, v := range ss {
-		if !SameTicketID(v, s) {
+		if !sameRef(ownerNS, v, s) {
 			filtered = append(filtered, v)
 		}
 	}

@@ -86,10 +86,11 @@ func TestMoveIntoCentralProjectLandsInTheStore(t *testing.T) {
 	}
 }
 
-func TestMoveIntoCentralProjectNamespacesRemappedRefs(t *testing.T) {
-	// A central project's tickets reference each other namespaced, so the
-	// remapped parent, dep and link have to carry the destination's prefix —
-	// under the source's, nothing in the destination resolves them.
+func TestMoveIntoCentralProjectRefusesARelatedTicket(t *testing.T) {
+	// A central project's tickets reference each other namespaced. A ticket
+	// that takes part in any relationship does not move — copy-and-close would
+	// leave the references pointing at a closed copy — and the refusal reaches
+	// the resolved destination store the same way a move does.
 	_, dstRepo, ticketsRoot := centralPair(t, "ns-from", "ns-to")
 	src := NewProjectFileStore(filepath.Join(ticketsRoot, "ns-from"), "ns-from")
 
@@ -100,7 +101,7 @@ func TestMoveIntoCentralProjectNamespacesRemappedRefs(t *testing.T) {
 	child := &Ticket{
 		ID: "ns-child-0002", Status: StatusReady, Type: TypeFeature, Priority: 2,
 		Parent: "ns-from/ns-epic-0001", Title: "Namespaced child",
-		Deps: []string{"ns-from/ns-epic-0001"}, Links: []string{"ns-from/ns-epic-0001"},
+		Deps: []string{}, Links: []string{"ns-from/ns-epic-0001"},
 	}
 	if err := src.Create(epic); err != nil {
 		t.Fatalf("Create epic: %v", err)
@@ -113,31 +114,14 @@ func TestMoveIntoCentralProjectNamespacesRemappedRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveStoreForRepo: %v", err)
 	}
-	results, err := MoveTicket(src, dst, "ns-epic-0001", true)
-	if err != nil {
-		t.Fatalf("MoveTicket: %v", err)
+	before := snapshotTree(t, ticketsRoot)
+	if _, err := MoveTicket(src, dst, "ns-child-0002", false); err == nil || !strings.Contains(err.Error(), "parent ns-from/ns-epic-0001") {
+		t.Fatalf("MoveTicket = %v, want a refusal naming the parent", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if _, err := MoveTicket(src, dst, "ns-epic-0001", false); err == nil || !strings.Contains(err.Error(), "is an epic") {
+		t.Fatalf("MoveTicket = %v, want a refusal for the epic", err)
 	}
-	newEpic, newChild := results[0].NewID, results[1].NewID
-	if !strings.HasPrefix(newEpic, "ns-to/") || !strings.HasPrefix(newChild, "ns-to/") {
-		t.Fatalf("new IDs = %q, %q, want both namespaced under ns-to", newEpic, newChild)
-	}
-
-	moved, err := dst.Get(newChild)
-	if err != nil {
-		t.Fatalf("Get moved child: %v", err)
-	}
-	if moved.Parent != newEpic {
-		t.Errorf("Parent = %q, want %q", moved.Parent, newEpic)
-	}
-	if len(moved.Deps) != 1 || moved.Deps[0] != newEpic {
-		t.Errorf("Deps = %v, want [%s]", moved.Deps, newEpic)
-	}
-	if len(moved.Links) != 1 || moved.Links[0] != newEpic {
-		t.Errorf("Links = %v, want [%s]", moved.Links, newEpic)
-	}
+	assertTreeUnchanged(t, before, snapshotTree(t, ticketsRoot))
 }
 
 func TestResolveStoreForRepoRefusesUnresolvableRepo(t *testing.T) {

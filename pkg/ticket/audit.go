@@ -34,132 +34,98 @@ func (f Findings) Empty() bool {
 // store and then asked per ticket. Every check needs the whole store — a parent
 // resolves against the other tickets, an epic's status derives from its
 // children — so a function taking a store and one ticket would read the store
-// once per ticket, and auditing N tickets would cost N listings. The listing,
-// the parent index and the children map are built here instead, once, and
-// every ticket is answered off them; Audit is the same per-ticket function
-// fanned out over what was listed, not a second path.
+// once per ticket, and auditing N tickets would cost N listings. One snapshot
+// is taken here instead, and every ticket is answered off it; Audit is the
+// same per-ticket function fanned out over what was listed, not a second path.
 //
 // What it holds is the store as it stood at NewAuditor time, read once and
 // never refreshed, so a caller that writes to the store prepares a new auditor
 // rather than asking this one about the state its write produced.
 //
-// A MultiStore is prepared project by project, against the same per-project
-// FileStore the write path validates against. Resolving through MultiStore.Get
-// instead would disagree with enforcement three ways — it accepts another
-// project's prefix, resolves a bare ID into another project, and turns a bare
-// ID that matches in two projects into a false parent-missing — so the audit
-// would clear tickets that no write can touch and flag tickets writes accept.
+// The snapshot resolves every reference the way the write path does — a bare
+// parent names its child's own project, a qualified one its own — so the
+// audit clears exactly the tickets a write accepts and flags exactly the ones
+// it refuses. Resolving through MultiStore.Get instead would disagree with
+// enforcement three ways: it accepts another project's prefix, resolves a
+// bare ID into another project, and turns a bare ID that matches in two
+// projects into a false parent-missing.
 type Auditor struct {
 	// multi says the store is a central one, whose report namespaces every ID.
 	// A single project's store reports bare IDs even when it has a project name
 	// of its own, which is what every other reader of it sees.
 	multi bool
-	// contexts in listing order, which is the order Report walks; a
+	snap  *Snapshot
+	// contexts in namespace order, which is the order Report walks; a
 	// single-project auditor holds exactly one.
 	contexts  []*auditContext
 	byProject map[string]*auditContext
 	skipped   []ProjectSkip
 }
 
-// auditContext is one project's store, read once: the tickets as their files
-// hold them, the files that yielded none, the parent index and children map the
-// per-ticket checks resolve against, the same listing indexed by ID so a check
-// can reach a ticket's stored twin, and whether the listing was partial.
+// auditContext is one namespace of the snapshot: its tickets with the IDs the
+// store reports — bare on a single project's store, qualified across a central
+// one — and the snapshot every check resolves against.
 type auditContext struct {
-	store      Store
-	project    string
-	tickets    []*Ticket
-	skips      []FileSkip
-	parentOf   func(*Ticket) (*Ticket, error)
-	storedByID func(string) (*Ticket, bool)
-	children   map[string][]*Ticket
-	incomplete bool
+	snap    *Snapshot
+	project string
+	tickets []*Ticket
+	// bare says the context reports bare IDs, so a ticket's qualified twin in
+	// the snapshot is found by qualifying with project first.
+	bare bool
 }
 
 // NewAuditor prepares an audit of a store. Every read the checks need happens
 // here, so Ticket reads nothing.
+//
+// A namespace the snapshot could not read is a ProjectSkip, so the report
+// never calls a store clean that it never read in full. The files inside the
+// namespaces it could read are carried as they are, stamped with their
+// project — the ID namespacing Report does cannot reach them: a file that did
+// not parse has no ID to namespace, and one whose stored ID names another
+// project has an ID that must not be relabelled with the project it was found
+// in, which is the whole reason it is a skip.
 func NewAuditor(store Store) (*Auditor, error) {
-	m, ok := store.(*MultiStore)
-	if !ok {
-		ctx, err := newAuditContext(store)
-		if err != nil {
-			return nil, err
-		}
-		return &Auditor{contexts: []*auditContext{ctx}}, nil
-	}
-
-	projects, err := m.projects()
+	snap, err := snapshotOf(store)
 	if err != nil {
 		return nil, err
 	}
-	a := &Auditor{multi: true, byProject: make(map[string]*auditContext, len(projects))}
-	for _, proj := range projects {
-		projStore, err := m.storeFor(proj)
-		if err != nil {
-			a.skipped = append(a.skipped, ProjectSkip{Project: proj, Error: oneLine(err)})
-			continue
+	_, multi := store.(*MultiStore)
+	a := &Auditor{multi: multi, snap: snap, byProject: map[string]*auditContext{}}
+	for _, skip := range snap.Skips {
+		if skip.Kind == FileSkipNamespace {
+			// A catalog that could not be read is a namespace skip with no
+			// project; labelled as skipLine and warnSkips label it, rather than
+			// reported as a project with no name.
+			name := skip.Project
+			if name == "" {
+				name = "catalog"
+			}
+			a.skipped = append(a.skipped, ProjectSkip{Project: name, Error: skip.Error})
 		}
-		ctx, err := newAuditContext(projStore)
-		if err != nil {
-			a.skipped = append(a.skipped, ProjectSkip{Project: proj, Error: oneLine(err)})
-			continue
-		}
+	}
+	if !multi {
+		project := storeProject(store)
+		a.contexts = []*auditContext{{snap: snap, project: project, tickets: projectView(snap, project), bare: true}}
+		return a, nil
+	}
+	byNS := map[string][]*Ticket{}
+	for _, t := range snap.Tickets {
+		ns := namespaceOf(t.ID)
+		byNS[ns] = append(byNS[ns], t)
+	}
+	for _, ns := range snap.namespaces {
+		ctx := &auditContext{snap: snap, project: ns, tickets: byNS[ns]}
 		a.contexts = append(a.contexts, ctx)
-		a.byProject[proj] = ctx
+		a.byProject[ns] = ctx
 	}
 	return a, nil
 }
 
-// newAuditContext reads one project's store and builds everything the checks
-// resolve against. One listing serves all three: only stored fields are read —
-// a parent's type, an epic's own status and its children's, a body — so no
-// derived status is needed anywhere, and listStored is what reports a stored
-// epic status at all. It is also read through rather than List because List
-// warns about every file it skipped, and the skips are carried in the report
-// instead, where they are one entry per file however many times the audit
-// consults the listing.
-//
-// The skipped files are stamped with the project here, where the store that
-// produced them is in hand — the ID namespacing Report does cannot reach them:
-// a file that did not parse has no ID to namespace, and one whose stored ID
-// names another project has an ID that must not be relabelled with the project
-// it was found in, which is the whole reason it is a skip. The stamp is the
-// directory it sat in, which is what an operator needs to go and look.
-func newAuditContext(store Store) (*auditContext, error) {
-	tickets, skips, err := listStored(store)
-	if err != nil {
-		return nil, err
-	}
-	project := storeProject(store)
-	for i := range skips {
-		skips[i].Project = project
-	}
-	return &auditContext{
-		store:   store,
-		project: project,
-		tickets: tickets,
-		skips:   skips,
-		// Neither the index nor its fallback derives a status, so preparing an
-		// audit of N tickets reads the store once.
-		parentOf: parentLookup(store, tickets, func(id string) (*Ticket, error) {
-			return readStored(store, id)
-		}),
-		// Indexed off the listing already in hand, so reaching a stored twin
-		// costs no read of its own.
-		storedByID: ticketsByID(tickets, project),
-		children:   childrenByBareParent(tickets, project),
-		incomplete: hasUnreadable(skips),
-	}, nil
-}
-
 // Ticket reports what the audit finds wrong with one ticket. Nothing is listed
 // and no lookup is built here: the ticket is routed to the context prepared for
-// its project, and the checks answer from what that context already read. The
-// one store read a ticket can still cost is parentLookup's fallback, for a
-// parent no listed ticket matches — a single-ticket resolution, and the same
-// one the store-wide audit makes for that ticket. How the ticket was read does
-// not change the answer: the epic-status check takes the stored side from the
-// context's listing rather than from the copy it was handed.
+// its project, and the checks answer from the snapshot. How the ticket was
+// read does not change the answer: the epic-status check takes the stored side
+// from the snapshot rather than from the copy it was handed.
 //
 // The error is what tells a caller the ticket could not be evaluated, as
 // opposed to being clean — a ticket namespaced to a project this audit did not
@@ -175,28 +141,28 @@ func (a *Auditor) Ticket(t *Ticket) (Findings, error) {
 
 // Report is the whole store's audit: the same per-ticket check over every
 // ticket each context listed, in listing order, plus the projects that could
-// not be read and the files inside the ones that could.
+// not be read and the files inside the ones that could. A finding carries the
+// ID its context reports — namespaced across a central store, bare on a
+// single project's store, where every other reader sees the bare IDs its
+// listing yields.
 func (a *Auditor) Report() AuditReport {
 	report := AuditReport{Skipped: a.skipped}
 	for _, c := range a.contexts {
 		for _, t := range c.tickets {
 			f := c.findings(t)
 			if f.Parent != nil {
-				v := *f.Parent
-				v.ID = a.reportID(c, v.ID)
-				report.Violations = append(report.Violations, v)
+				report.Violations = append(report.Violations, *f.Parent)
 			}
 			if f.EpicStatus != nil {
-				d := *f.EpicStatus
-				d.ID = a.reportID(c, d.ID)
-				report.EpicStatus = append(report.EpicStatus, d)
+				report.EpicStatus = append(report.EpicStatus, *f.EpicStatus)
 			}
-			for _, issue := range f.Content {
-				issue.ID = a.reportID(c, issue.ID)
-				report.Content = append(report.Content, issue)
-			}
+			report.Content = append(report.Content, f.Content...)
 		}
-		report.SkippedFiles = append(report.SkippedFiles, c.skips...)
+	}
+	for _, skip := range a.snap.Skips {
+		if skip.Kind != FileSkipNamespace {
+			report.SkippedFiles = append(report.SkippedFiles, skip)
+		}
 	}
 	return report
 }
@@ -220,22 +186,12 @@ func (a *Auditor) contextFor(t *Ticket) (*auditContext, error) {
 	if ctx, ok := a.byProject[proj]; ok {
 		return ctx, nil
 	}
-	for _, s := range a.skipped {
-		if s.Project == proj {
-			return nil, fmt.Errorf("ticket %s: project %s could not be read by this audit: %s", t.ID, proj, s.Error)
-		}
+	// Keyed on the snapshot's failed namespaces rather than on the report's
+	// ProjectSkips, whose catalog entry carries a label and not a namespace.
+	if reason, failed := a.snap.failed[proj]; failed {
+		return nil, fmt.Errorf("ticket %s: project %s could not be read by this audit: %s", t.ID, proj, reason)
 	}
 	return nil, fmt.Errorf("ticket %s: project %s is not one this audit prepared", t.ID, proj)
-}
-
-// reportID is the ID a finding carries in a store-wide report: namespaced under
-// the project holding it across a central store, and bare on a single project's
-// store, where every other reader sees the bare IDs its listing yields.
-func (a *Auditor) reportID(c *auditContext, id string) string {
-	if !a.multi {
-		return id
-	}
-	return FormatNamespacedID(c.project, id)
 }
 
 // findings runs the three checks over one ticket, which is the single reading
@@ -250,13 +206,33 @@ func (c *auditContext) findings(t *Ticket) Findings {
 	}
 }
 
-// parentViolation runs the checks ResolveParent runs, plus the cycle class only
-// a pre-rule store can hold. The parent resolves against the tickets the
-// context already listed, falling back to the store for the partial forms
-// stored parent fields can carry; unlike the write path this only reads them —
-// nothing here rewrites a parent to what it resolved to. One violation per
-// ticket, most specific first — a cycle is reported as a cycle rather than as
-// the non-epic parent each of its members also has.
+// qualified is a ticket's ID as the snapshot keys it. A bare context prefixes
+// only an ID that carries no namespace: contextFor admits one already naming
+// the context's own project, and prefixing that again would key nothing.
+func (c *auditContext) qualified(id string) string {
+	if c.bare {
+		return qualifyRef(c.project, id)
+	}
+	return id
+}
+
+// parentOf resolves a snapshot ticket's parent the snapshot's way — bare means
+// the child's own namespace — for the cycle walk.
+func (c *auditContext) parentOf(t *Ticket) (*Ticket, error) {
+	parent, ok := c.snap.Get(qualifyRef(namespaceOf(t.ID), t.Parent))
+	if !ok {
+		return nil, fmt.Errorf("parent %s does not resolve", t.Parent)
+	}
+	return parent, nil
+}
+
+// parentViolation runs the checks the write path runs, plus the cycle class
+// only a pre-rule store can hold. The parent resolves against the snapshot by
+// the owner-relative rule; unlike the write path this only reads — nothing
+// here rewrites a parent to what it resolved to, and a parent stored as a
+// fragment is reported as missing rather than resolved by substring. One
+// violation per ticket, most specific first — a cycle is reported as a cycle
+// rather than as the non-epic parent each of its members also has.
 func (c *auditContext) parentViolation(t *Ticket) *ParentViolation {
 	if t.Parent == "" {
 		return nil
@@ -267,15 +243,22 @@ func (c *auditContext) parentViolation(t *Ticket) *ParentViolation {
 	if t.Type == TypeEpic {
 		return violation(ViolationEpicHasParent, "epics are top level and cannot have a parent")
 	}
-	if isCrossProjectParent(c.store, t) {
-		return violation(ViolationParentCrossProject, "an epic and its children must live in the same project")
+	parentID := qualifyRef(c.project, t.Parent)
+	parentNS := namespaceOf(parentID)
+	if parentNS != c.project && !c.snap.crossProject {
+		return violation(ViolationParentCrossProject, fmt.Sprintf("an epic and its children must live in the same project until the catalog requires %s", FeatureCrossProjectParents))
 	}
-	parent, err := c.parentOf(t)
-	if err != nil {
-		return violation(ViolationParentMissing, err.Error())
+	parent, ok := c.snap.Get(parentID)
+	if !ok {
+		if reason, failed := c.snap.failed[parentNS]; failed {
+			return violation(ViolationParentMissing, fmt.Sprintf("parent %s is in namespace %q, which could not be read: %s", parentID, parentNS, reason))
+		}
+		return violation(ViolationParentMissing, fmt.Sprintf("parent %s does not resolve", parentID))
 	}
-	if chain := parentCycle(c.parentOf, t); chain != "" {
-		return violation(ViolationParentCycle, chain)
+	if twin, ok := c.snap.Get(c.qualified(t.ID)); ok {
+		if chain := parentCycle(c.parentOf, twin); chain != "" {
+			return violation(ViolationParentCycle, chain)
+		}
 	}
 	if parent.Type != TypeEpic {
 		return violation(ViolationParentNotEpic, fmt.Sprintf("parent %s is type %s", parent.ID, parent.Type))
@@ -292,24 +275,22 @@ func (c *auditContext) parentViolation(t *Ticket) *ParentViolation {
 // degradation included, or the audit would compare against a status no reader
 // is shown and report drift that is not there while missing drift that is.
 //
-// The stored side comes from the context's own listing rather than from the
-// status the caller's copy carries, so the answer does not depend on how the
-// ticket was read: every exported read derives (Get, List), and comparing a
-// derived status against itself would report every epic clean — a check that
-// could not run, indistinguishable from one that ran and found nothing. Only
-// the status is taken from the stored twin, because it is the only field a
-// derived read rewrites that any check reads; the caller's copy is the subject
-// everywhere else. A ticket the listing does not hold is judged by the status
-// it carries, which is all there is.
+// The stored side comes from the snapshot, which kept it beside the derived
+// value, rather than from the status the caller's copy carries, so the answer
+// does not depend on how the ticket was read: every exported read derives
+// (Get, List), and comparing a derived status against itself would report
+// every epic clean — a check that could not run, indistinguishable from one
+// that ran and found nothing. A ticket the snapshot does not hold is judged by
+// the status it carries, which is all there is.
 func (c *auditContext) epicStatusDrift(t *Ticket) *EpicStatusDrift {
 	if t.Type != TypeEpic {
 		return nil
 	}
-	_, bare := ParseNamespacedID(t.ID)
-	derived := derivedEpicStatus(t.Abandoned, c.children[bare], c.incomplete)
+	id := c.qualified(t.ID)
+	derived := derivedEpicStatus(t.Abandoned, c.snap.Children(id), !c.snap.Complete)
 	stored := t.Status
-	if twin, ok := c.storedByID(t.ID); ok {
-		stored = twin.Status
+	if twin, ok := c.snap.epicStored[id]; ok {
+		stored = twin
 	}
 	if derived == stored {
 		return nil

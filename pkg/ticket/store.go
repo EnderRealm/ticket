@@ -47,6 +47,21 @@ const (
 	// names a project other than the directory holding it — a ticket this
 	// project cannot place, and no child of any epic here.
 	FileSkipForeignNamespace FileSkipKind = "foreign-namespace"
+	// FileSkipNamespace is a whole namespace the snapshot could not read: its
+	// directory could not be listed, or the catalog expects it and it has no
+	// directory. It carries no File — Project names the namespace — and every
+	// ticket it holds is unknown, so it degrades every epic's derivation the way
+	// one unreadable file does. A catalog that cannot be read is the same kind
+	// with an empty Project.
+	FileSkipNamespace FileSkipKind = "namespace"
+	// FileSkipDuplicateID is one of two or more files in one namespace whose
+	// stored IDs read as the same ticket — `x.md` holding `id: x` beside
+	// `zz.md` holding `id: proj/x`. Both tickets are listed and neither answers
+	// a reference to the ID: a reference resolved by directory order would let
+	// an impostor reading done clear a real blocker. Which file is the ticket is
+	// a decision for the operator, so the derivation is degraded until it is
+	// taken.
+	FileSkipDuplicateID FileSkipKind = "duplicate-id"
 )
 
 // FileSkip is one file in a store that was not read as one of its tickets, and
@@ -66,29 +81,20 @@ type FileSkip struct {
 	Error   string       `json:"error"`
 }
 
-// DegradesEpicStatus reports whether a file skipped for this reason leaves the
-// epics in its project derived from a partial set of children. Only an
-// unreadable file does: it could be any epic's child, so a derivation that
-// cannot see it is partial. A file naming another project is no child of any
-// epic here (see readFile), and degrading on it would stop every epic in the
-// project reading done over a file that was never theirs. A kind this build
-// does not know says nothing about a child either, so it does not degrade one:
-// the claim is made only where it is known to hold. Every reader that has to
-// say whether a listing was partial — the derivation and the audit's report
-// alike — asks here, so the two cannot answer differently.
+// DegradesEpicStatus reports whether a skip of this kind leaves the epics
+// derived from a partial set of children. An unreadable file, an unreadable
+// namespace and a duplicated ID all do: each is a ticket that could be any
+// epic's child and cannot be placed, so a derivation that cannot see it is
+// partial — across the whole store, since a child may live in any namespace. A
+// file naming another project is no child of any epic (see readFile), and
+// degrading on it would stop every epic reading done over a file that was
+// never theirs. A kind this build does not know says nothing about a child
+// either, so it does not degrade one: the claim is made only where it is known
+// to hold. Every reader that has to say whether a listing was partial — the
+// snapshot and the audit's report alike — asks here, so the two cannot answer
+// differently.
 func (k FileSkipKind) DegradesEpicStatus() bool {
-	return k == FileSkipUnreadable
-}
-
-// hasUnreadable reports whether any skip degrades the epic derivations in its
-// project, which is the flag deriveEpics and derivedEpicStatus take.
-func hasUnreadable(skips []FileSkip) bool {
-	for _, s := range skips {
-		if s.Kind.DegradesEpicStatus() {
-			return true
-		}
-	}
-	return false
+	return k == FileSkipUnreadable || k == FileSkipNamespace || k == FileSkipDuplicateID
 }
 
 // ForeignNamespaceError is a ticket file whose stored ID names a project other
@@ -259,77 +265,27 @@ func (s *FileStore) EnsureDir() error {
 
 // guardWrite is the catalog check every write entry point makes first —
 // Create, Update, Delete and mutate — before any lock is taken or directory
-// made. The catalog is resolved from the store's own layout: a project store
-// is <central_root>/tickets/<project>, the shape CentralProjectDir fixes and
-// every central caller builds, so the central root is two levels up. A store
-// with no project is not a central store and has no catalog to consult.
+// made. The catalog is the boundary's (centralFor): a store in the central
+// layout consults the catalog at its central root, and a store outside it —
+// no project, or a directory that is not <root>/tickets/<project> — is not a
+// central store and has no catalog to consult. central.write repeats the
+// check under the lock; this one fails fast.
 func (s *FileStore) guardWrite() error {
-	if s.Project == "" {
-		return nil
-	}
-	return checkWrite(filepath.Dir(filepath.Dir(s.Dir)), s.Project)
+	return centralFor(s).guard(s.Project)
 }
 
 // Create writes a new ticket to disk. The ticket must already have an ID.
 // If the ID collides with an existing ticket, a new ID is generated and
-// the ticket is retried (up to 5 attempts).
+// the ticket is retried (up to 5 attempts). The write passes the central
+// boundary: catalog guard, exclusive store lock, validation against the
+// snapshot taken under it, then the ticket lock and the write.
 func (s *FileStore) Create(t *Ticket) error {
 	if err := s.guardWrite(); err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
-	if err := t.Validate(); err != nil {
-		return fmt.Errorf("create: %w", err)
-	}
-	if err := ResolveParent(s, t); err != nil {
-		return fmt.Errorf("create: %w", err)
-	}
-	// A new epic's status is the one its children imply — which for a ticket
-	// nothing yet names as parent is backlog. Storing another value would be
-	// inert rather than wrong, since nothing reads it back, but a status the
-	// caller chose and no reader will ever see is worth refusing.
-	if t.Type == TypeEpic {
-		children, incomplete, err := epicChildren(s, t.ID)
-		if err != nil {
-			return fmt.Errorf("create: %w", err)
-		}
-		if derived := derivedEpicStatus(t.Abandoned, children, incomplete); t.Status != derived {
-			// closed is the one value changing the children cannot produce on a
-			// childless epic: it is the abandon intent, and only an edit records
-			// one — so it is refused with the remedy that does.
-			remedy := "Create it, then change its children"
-			if t.Status == StatusClosed {
-				remedy = fmt.Sprintf("Create it, then run `tk edit %s --status closed` to abandon it", t.ID)
-			}
-			return fmt.Errorf("create: cannot create epic %s as %s: an epic's status is derived from its children, and it would read %s. %s",
-				t.ID, t.Status, derived, remedy)
-		}
-	}
-	if err := s.EnsureDir(); err != nil {
-		return err
-	}
-
-	// Check for existing ticket with the same ID.
-	path, err := s.ticketFile(t.ID)
-	if err != nil {
-		return fmt.Errorf("create: %w", err)
-	}
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("ticket %s already exists", t.ID)
-	}
-
-	// Retry on hash collision (different title, same 4-char hash).
-	const maxRetries = 5
-	for i := 0; i < maxRetries; i++ {
-		written, err := s.createLocked(t)
-		if err != nil {
-			return err
-		}
-		if written {
-			return nil
-		}
-		t.ID = GenerateID(t.Title)
-	}
-	return fmt.Errorf("ticket ID collision after %d attempts", maxRetries)
+	return centralFor(s).write(s.Project, func(o *op) error {
+		return o.create(s, t)
+	})
 }
 
 // createLocked writes t if nothing has claimed its ID, holding that ticket's
@@ -357,25 +313,109 @@ func (s *FileStore) createLocked(t *Ticket) (bool, error) {
 }
 
 // Get retrieves a ticket by exact or partial ID. An epic comes back with the
-// status and completion date its children imply, so a single-ticket read agrees
-// with List.
+// status and completion date its children imply — across every namespace,
+// off a snapshot taken under the shared store lock — so a single-ticket read
+// agrees with List. A leaf stays a single-file read, plus a listing of its
+// namespace to say the ID is its alone and one read of its parent to say
+// whether the relationship is valid: no snapshot, and no store lock, so a Get
+// of a leaf is safe from inside a mutation callback where a Get of an epic is
+// not.
 func (s *FileStore) Get(id string) (*Ticket, error) {
 	t, err := s.getStored(id)
 	if err != nil {
 		return nil, err
 	}
-	// Deriving one epic costs a pass over the store's other tickets, where List
-	// derives them all in the pass it was making anyway. Epics are a small
-	// minority of a store, and reading one has to agree with listing it — but a
-	// caller that only wants stored fields goes through getStored instead.
-	if t.Type == TypeEpic {
-		children, incomplete, err := epicChildren(s, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		t.Status, t.Completed = deriveEpicFrom(t.Abandoned, children, incomplete)
+	if err := s.stampStored(t); err != nil {
+		return nil, err
 	}
 	return t, nil
+}
+
+// stampStored finishes a ticket read exactly as its file holds it into what
+// Get returns: the derived status and completion date for an epic, the
+// relationship issue for a leaf. t carries its bare ID. Shared with the
+// bare-ID path of MultiStore.Get, which already holds the stored ticket and
+// must not resolve it a second time by ID — Resolve matches file names, so a
+// file renamed while keeping its `id` would come back not found, and one
+// claimant of a duplicated ID would come back as the other.
+func (s *FileStore) stampStored(t *Ticket) error {
+	c := centralFor(s)
+	if t.Type == TypeEpic {
+		snap, err := c.snapshot()
+		if err != nil {
+			return err
+		}
+		(&op{c: c, snap: snap}).stamp(FormatNamespacedID(s.Project, t.ID), t)
+		return nil
+	}
+	t.relationshipIssue = c.leafIssue(s.Project, t)
+	return nil
+}
+
+// leafIssue is the relationship issue a leaf carries, resolved by lock-free
+// listings of its own namespace and its parent's rather than by a snapshot.
+// The rule is the snapshot's (buildSnapshot, Snapshot.parentIssue), applied in
+// the same order: the leaf's own ID has to be claimed by one file, then a
+// bare parent is local, a qualified one names its namespace, a foreign one is
+// a child only once the catalog says so, and the parent has to exist under
+// exactly that ID, claimed by one file — the two things claimedStored
+// answers for.
+func (c *central) leafIssue(ns string, t *Ticket) string {
+	if _, err := c.claimedStored(FormatNamespacedID(ns, t.ID)); err != nil {
+		return oneLine(err)
+	}
+	if t.Parent == "" {
+		return ""
+	}
+	parentID := qualifyRef(ns, t.Parent)
+	if namespaceOf(parentID) != ns && !c.crossProjectActivated() {
+		return fmt.Sprintf("parent %s is in another project, and cross-project parents are not activated (the catalog does not require %s)", parentID, FeatureCrossProjectParents)
+	}
+	parent, err := c.claimedStored(parentID)
+	if err != nil {
+		return fmt.Sprintf("parent %s does not resolve: %v", parentID, oneLine(err))
+	}
+	if parent.Type != TypeEpic {
+		return fmt.Sprintf("parent %s is type %s, not an epic", parentID, parent.Type)
+	}
+	return ""
+}
+
+// claimedStored reads the ticket a qualified ID names, exactly as its file
+// holds it, off a listing of that one namespace: no snapshot and no store
+// lock, so it is safe wherever a leaf Get is. It is the single-ticket
+// counterpart of the snapshot's index, and applies the same two rules — the
+// stored ID has to be exactly the one asked for, never a fragment Resolve
+// would substring-match, and it has to be claimed by one file. `x.md`
+// holding `id: x` beside `zz.md` holding `id: proj/x` answers a reference to
+// x with neither (listStored, FileSkipDuplicateID), because resolved by
+// directory order the done one would clear a blocker the open one still
+// holds. A leaf's parent check and the dep fallback both read through here,
+// so a duplicate the listings refuse is refused by the single reads too.
+func (c *central) claimedStored(id string) (*Ticket, error) {
+	ns, bare := ParseNamespacedID(id)
+	store, err := c.store(ns)
+	if err != nil {
+		return nil, err
+	}
+	tickets, _, err := store.listStored()
+	if err != nil {
+		return nil, err
+	}
+	var found *Ticket
+	for _, t := range tickets {
+		if t.ID != bare {
+			continue
+		}
+		if found != nil {
+			return nil, errors.New(duplicateIssue(id))
+		}
+		found = t
+	}
+	if found == nil {
+		return nil, fmt.Errorf("ticket %s not found", id)
+	}
+	return found, nil
 }
 
 // getStored retrieves a ticket exactly as its file holds it, without deriving
@@ -416,25 +456,19 @@ func (s *FileStore) getStored(id string) (*Ticket, error) {
 // silently overwriting it. A caller whose change is an accumulation — appending
 // a note, a dep, a link — has nothing to decide on that error and goes through
 // Mutate instead, which holds the lock across the read as well.
+//
+// Relationships are validated on every update, not only when the parent
+// changes: a ticket that predates a rule must be fixed before any of its
+// fields is written back. The validation runs against the snapshot the
+// exclusive store lock was taken over, so the parent it resolves and the
+// cycle it refuses are the store's state at the moment of the write.
 func (s *FileStore) Update(t *Ticket) error {
 	if err := s.guardWrite(); err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	if err := t.Validate(); err != nil {
-		return fmt.Errorf("update: %w", err)
-	}
-	// Checked on every update, not only when parent changes: a ticket that
-	// predates the one-level rule must be fixed before any of its fields is
-	// written back. Outside the lock: it reads other tickets, not this one.
-	if err := ResolveParent(s, t); err != nil {
-		return fmt.Errorf("update: %w", err)
-	}
-	release, err := s.lockTicket(t.ID)
-	if err != nil {
-		return fmt.Errorf("update: %w", err)
-	}
-	defer release()
-	return s.updateLocked(t)
+	return centralFor(s).write(s.Project, func(o *op) error {
+		return o.update(s, t)
+	})
 }
 
 // updateLocked is the compare-and-swap half of Update, with the ticket's lock
@@ -493,64 +527,88 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 
 // saveEdit writes an edit, recording the abandon intent when the writer set an
 // epic's status and cascading into the children when the edit abandons it.
+// One boundary hold covers the decision, the epic's write and the cascade, so
+// the children the intent was resolved against are the children that are
+// closed, and no other writer lands between the two.
+//
+// An abandon is refused while the snapshot is incomplete — every child being
+// terminal is not a claim a partial read can make — and while any
+// non-terminal child lives in another project: closing work in another
+// repository is not something an edit to this epic does invisibly, so the
+// affected IDs are named, grouped by project, for the operator to close or
+// reparent first. Nothing is written in either case.
 func (s *FileStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
-	abandon := false
-	// The children the intent is resolved against, carried through to the
-	// cascade: one listing serves both, and there is no window in which a second
-	// listing could disagree with the one the decision was made on.
-	var children []*Ticket
-	var incomplete bool
-	if t.Type == TypeEpic {
-		prior, err := s.getStored(t.ID)
-		if err != nil {
-			return nil, err
-		}
-		if children, incomplete, err = epicChildren(s, t.ID); err != nil {
-			return nil, err
-		}
-		// Only a ticket that was already an epic has an intent to carry: one
-		// being promoted was read as an ordinary ticket, whose file has no
-		// abandon of its own. The promotion itself is judged by the same rule as
-		// any other edit — an untouched status decides nothing, so `--type epic`
-		// alone stays one ordinary operation, while a status the writer set with
-		// it is the epic's status they set and is read as one.
-		if abandon, err = resolveAbandonIntent(t, prior.Type == TypeEpic && prior.Abandoned, children, incomplete, statusSet); err != nil {
-			return nil, err
-		}
+	if err := s.guardWrite(); err != nil {
+		return nil, fmt.Errorf("update: %w", err)
 	}
-	if err := s.Update(t); err != nil {
-		return nil, err
-	}
-	if abandon {
-		return closeEpicChildren(s, t, children)
-	}
-	return nil, nil
+	var closed []string
+	err := centralFor(s).write(s.Project, func(o *op) error {
+		id := FormatNamespacedID(s.Project, t.ID)
+		prior, _ := o.snap.Get(id)
+		abandon := false
+		var children []*Ticket
+		if t.Type == TypeEpic {
+			if prior == nil {
+				stored, err := s.getStored(t.ID)
+				if err != nil {
+					return err
+				}
+				prior = stored
+			}
+			children = o.snap.Children(id)
+			// Only a ticket that was already an epic has an intent to carry: one
+			// being promoted was read as an ordinary ticket, whose file has no
+			// abandon of its own. The promotion itself is judged by the same rule
+			// as any other edit — an untouched status decides nothing, so `--type
+			// epic` alone stays one ordinary operation, while a status the writer
+			// set with it is the epic's status they set and is read as one.
+			var err error
+			if abandon, err = resolveAbandonIntent(t, prior.Type == TypeEpic && prior.Abandoned, children, !o.snap.Complete, statusSet); err != nil {
+				return err
+			}
+		}
+		if abandon {
+			if !o.snap.Complete {
+				return o.incompleteError(fmt.Sprintf("abandoning epic %s", t.ID))
+			}
+			var foreign []string
+			for _, c := range children {
+				if !isTerminal(c) && namespaceOf(c.ID) != s.Project {
+					foreign = append(foreign, c.ID)
+				}
+			}
+			if len(foreign) > 0 {
+				return fmt.Errorf("cannot abandon epic %s: it has unfinished children in other projects (%s). Close or reparent them first, then abandon the epic",
+					t.ID, groupByProject(foreign))
+			}
+		}
+		if err := o.update(s, t); err != nil {
+			return err
+		}
+		if abandon {
+			var err error
+			closed, err = o.closeChildren(t, children)
+			return err
+		}
+		return nil
+	})
+	return closed, err
 }
 
-// Delete removes a ticket file by exact or partial ID.
+// Delete removes a ticket file by exact or partial ID. Refused while any
+// ticket in any namespace still names it as parent, dep or link, and while
+// the snapshot cannot prove that none does.
 func (s *FileStore) Delete(id string) error {
 	if err := s.guardWrite(); err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
-	path, err := s.Resolve(id)
-	if err != nil {
-		return err
-	}
-	// Under the ticket's lock, keyed on the resolved file's own name the way
-	// mutate keys it: an unlocked delete can land between updateLocked's read
-	// and its rename, and the rename then recreates the ticket the delete
-	// removed.
-	resolved := strings.TrimSuffix(filepath.Base(path), ".md")
-	release, err := s.lockTicket(resolved)
-	if err != nil {
-		return err
-	}
-	defer release()
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-	s.logMutation(resolved, MutationDelete, nil)
-	return nil
+	return centralFor(s).write(s.Project, func(o *op) error {
+		path, err := s.Resolve(id)
+		if err != nil {
+			return err
+		}
+		return o.delete(s, path)
+	})
 }
 
 // List reads all tickets from the directory. Epics come back with the status
@@ -558,59 +616,98 @@ func (s *FileStore) Delete(id string) error {
 // — this is the choke point every consumer reads through, so no display site
 // derives its own.
 //
-// A file the listing did not take as one of this project's tickets is warned
-// about here and nowhere else, in the wording its kind calls for. This is
-// the display choke point, so one CLI command produces one warning per skipped
-// file; warning from listStored instead would repeat it once per internal read
-// — a single `tk ls` derives every epic in the store off the same listing.
+// A file the snapshot did not take as a ticket is warned about here and
+// nowhere else, in the wording its kind calls for. This is the display choke
+// point, so one CLI command produces one warning per skipped file; warning
+// from listStored instead would repeat it once per internal read.
 func (s *FileStore) List() ([]*Ticket, error) {
 	tickets, skips, err := s.ListWithSkips()
 	if err != nil {
 		return nil, err
 	}
+	warnSkips(skips)
+	return tickets, nil
+}
+
+// warnSkips reports each skipped file or namespace once, in the wording its
+// kind calls for. Shared by FileStore.List and MultiStore.List so a project
+// view and the central view say the same thing about the same file.
+func warnSkips(skips []FileSkip) {
 	for _, skip := range skips {
 		// Joined here rather than through FormatNamespacedID: a filename is not a
 		// ticket ID — the file did not parse, so it has no ID — and nothing
 		// resolves this string. It is a location for a human to go and look.
 		name := skip.File
-		if s.Project != "" {
-			name = s.Project + "/" + skip.File
+		if skip.Project != "" {
+			name = skip.Project + "/" + skip.File
 		}
 		// Quoted: a filename arrives over a git remote like the file's contents,
 		// and this goes straight to a terminal.
-		if !skip.Kind.DegradesEpicStatus() {
+		switch {
+		case skip.Kind == FileSkipNamespace && skip.Project == "":
+			Warnf("warning: the catalog could not be read (%s), so the namespaces it names are unknown and no epic reads done or closed\n", skip.Error)
+		case skip.Kind == FileSkipNamespace:
+			Warnf("warning: namespace %q could not be read (%s), so its tickets are not shown and no epic reads done or closed\n", skip.Project, skip.Error)
+		case skip.Kind == FileSkipDuplicateID:
+			Warnf("warning: %q claims an ID another file in the namespace also claims (%s), so neither answers a reference to it and no epic reads done or closed\n", name, skip.Error)
+		case !skip.Kind.DegradesEpicStatus():
 			// Read fine and placed nowhere, so neither half of the unreadable
-			// wording applies: the epics here are not degraded by it. Keyed off
-			// the derivation's own predicate rather than a kind, so the wording
-			// and the degradation cannot disagree about a kind added later.
+			// wording applies: the epics are not degraded by it. Keyed off the
+			// derivation's own predicate rather than a kind, so the wording and
+			// the degradation cannot disagree about a kind added later.
 			Warnf("warning: %q is not shown as a ticket here (%s)\n", name, skip.Error)
-			continue
+		default:
+			Warnf("warning: %q could not be read (%s), so its ticket is not shown and no epic reads done or closed\n", name, skip.Error)
 		}
-		Warnf("warning: %q could not be read (%s), so its ticket is not shown and no epic here reads done or closed\n", name, skip.Error)
 	}
-	return tickets, nil
 }
 
 // ListWithSkips is List with the skipped files handed to the caller instead of
 // warned about. A caller whose stderr nobody reads — the MCP server's is
 // discarded at both ends — can otherwise not tell a short result set from a
-// complete one, and a skip that degrades the derivation reaches tickets it can
-// see: every epic in the project comes back derived from a partial set of
-// children. The warnings stay List's alone, so one CLI command still produces
-// one warning per skipped file.
+// complete one. The tickets are this project's alone, with bare IDs. A skip
+// that degrades the epics is carried from any namespace, because it degrades
+// the epics here and a project view that hid it would show a demoted epic
+// with no cause in sight; a skip that degrades nothing says nothing about the
+// tickets shown here, so only this project's own are carried.
 func (s *FileStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
-	tickets, skips, err := s.listStored()
+	snap, err := centralFor(s).snapshot()
 	if err != nil {
 		return nil, nil, err
 	}
-	// Stamped here for the reason the audit stamps its own (newAuditContext): a
-	// File is a base filename, which names nothing without the project whose
-	// directory held it.
-	for i := range skips {
-		skips[i].Project = s.Project
+	var skips []FileSkip
+	for _, skip := range snap.Skips {
+		if !skip.Kind.DegradesEpicStatus() && skip.Project != s.Project {
+			continue
+		}
+		skips = append(skips, skip)
 	}
-	deriveEpics(tickets, s.Project, hasUnreadable(skips))
-	return tickets, skips, nil
+	return projectView(snap, s.Project), skips, nil
+}
+
+// projectView is the snapshot's tickets in one namespace, their IDs stripped
+// back to the bare form a project store reports. Copies, so the snapshot's own
+// index still answers the qualified ID.
+func projectView(snap *Snapshot, ns string) []*Ticket {
+	var tickets []*Ticket
+	for _, t := range snap.Tickets {
+		tns, bare := ParseNamespacedID(t.ID)
+		if tns != ns {
+			continue
+		}
+		view := *t
+		view.ID = bare
+		tickets = append(tickets, &view)
+	}
+	return tickets
+}
+
+// Snapshot is the graph of the store this project belongs to, read under the
+// shared store lock: every namespace, every ticket under its qualified ID,
+// every epic derived from its full child set. The public read of the graph
+// for a consumer that needs relationships rather than a listing.
+func (s *FileStore) Snapshot() (*Snapshot, error) {
+	return centralFor(s).snapshot()
 }
 
 // listStored reads all tickets from the directory exactly as their files hold
@@ -638,6 +735,7 @@ func (s *FileStore) listStored() ([]*Ticket, []FileSkip, error) {
 	}
 
 	var tickets []*Ticket
+	var files []string
 	var skips []FileSkip
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".md") {
@@ -654,8 +752,39 @@ func (s *FileStore) listStored() ([]*Ticket, []FileSkip, error) {
 			continue
 		}
 		tickets = append(tickets, t)
+		files = append(files, e.Name())
+	}
+	// Two files can claim one ID: a stored prefix naming this project reads as
+	// its bare remainder, so `x.md` holding `id: x` and `zz.md` holding `id:
+	// proj/x` both yield x. Both tickets are listed — each is a file somebody
+	// wrote — and each file is reported, naming the other, so the operator can
+	// decide which is the ticket; the snapshot answers a reference to the ID
+	// with neither meanwhile.
+	claims := map[string][]string{}
+	for i, t := range tickets {
+		claims[t.ID] = append(claims[t.ID], files[i])
+	}
+	for i, t := range tickets {
+		if names := claims[t.ID]; len(names) > 1 {
+			skips = append(skips, FileSkip{File: files[i], Kind: FileSkipDuplicateID,
+				Error: fmt.Sprintf("stored id %q is also claimed by %s", t.ID, strings.Join(others(names, files[i]), ", "))})
+		}
 	}
 	return tickets, skips, nil
+}
+
+// others is names without one of them, for a skip naming its rivals. Each is
+// quoted: a rival's name arrived over the git remote like the file's contents
+// and reaches the terminal inside the reason (warnSkips prints it as it is),
+// where warnSkips quotes only the file the skip is about.
+func others(names []string, self string) []string {
+	var rest []string
+	for _, n := range names {
+		if n != self {
+			rest = append(rest, fmt.Sprintf("%q", n))
+		}
+	}
+	return rest
 }
 
 // Resolve finds the full file path for an exact or partial ticket ID.
@@ -796,6 +925,7 @@ func (s *FileStore) readFile(path string) (*Ticket, error) {
 	// epic's status, so what they hand back already differs from what is stored
 	// and hashing the struct would conflict with itself.
 	t.version = versionOf(data)
+	t.namespace = s.Project
 	return t, nil
 }
 

@@ -249,6 +249,50 @@ func TestOneLineFlattensAndDisarmsAReason(t *testing.T) {
 	}
 }
 
+func TestDuplicateIDSkipQuotesRivalFilenames(t *testing.T) {
+	// A rival's filename arrived over the git remote like its contents, and the
+	// skip's reason reaches the terminal as it is: warnSkips quotes the file the
+	// skip is about, so the rival it names has to arrive already escaped.
+	dir := t.TempDir()
+	store := NewProjectFileStore(dir, "proj")
+	rival := "zz\n\x1b[2Jtwin-0001.md"
+	plantTicketFile(t, dir, "twin-0001.md", mk("twin-0001", StatusOpen))
+	plantTicketFile(t, dir, rival, mk("proj/twin-0001", StatusDone))
+
+	_, skips, err := store.listStored()
+	if err != nil {
+		t.Fatalf("listStored: %v", err)
+	}
+	var reasons []string
+	for _, skip := range skips {
+		if skip.Kind == FileSkipDuplicateID {
+			reasons = append(reasons, skip.Error)
+		}
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("skips = %+v, want a duplicate-id skip per file", skips)
+	}
+	for _, reason := range reasons {
+		if strings.ContainsAny(reason, "\n\x1b") {
+			t.Errorf("reason %q carries raw control bytes", reason)
+		}
+	}
+	quoted := fmt.Sprintf("%q", rival)
+	if !strings.Contains(reasons[0], quoted) {
+		t.Errorf("reason for the well-named file = %q, want the rival quoted as %s", reasons[0], quoted)
+	}
+
+	warnings := captureWarnings(t)
+	if _, err := store.List(); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, w := range *warnings {
+		if strings.ContainsAny(w, "\x1b") {
+			t.Errorf("warning %q carries a raw escape", w)
+		}
+	}
+}
+
 func TestFileStore_ListReportsAndWarnsAboutUnreadableFiles(t *testing.T) {
 	dir := t.TempDir()
 	store := NewProjectFileStore(dir, "proj")
@@ -307,6 +351,44 @@ func TestFileStore_ListWithSkipsReportsWithoutWarning(t *testing.T) {
 	// Warnings stay List's, so one CLI command still produces one per file.
 	if len(*warnings) != 0 {
 		t.Errorf("ListWithSkips warned %v, want the skips carried on the return alone", *warnings)
+	}
+}
+
+func TestFileStore_ListScopesNonDegradingSkipsToItsOwnProject(t *testing.T) {
+	// A file in loom naming another project is no child of any epic and is not
+	// shown in loom either, so it changes nothing warp can see: warp's listing
+	// says nothing about it. An unreadable file in loom degrades warp's epics
+	// too, so that one still crosses the boundary.
+	root, ms := centralFixture(t, false)
+	loom := filepath.Join(root, "tickets", "loom")
+	plantTicketFile(t, loom, "alien-0001.md", sampleTicket("ticket/alien-0001"))
+	warp := nsStore(root, "warp")
+
+	warnings := captureWarnings(t)
+	if _, err := warp.List(); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(*warnings) != 0 {
+		t.Errorf("warp's List warned about loom's foreign-namespace file: %v", *warnings)
+	}
+	if _, skips, err := nsStore(root, "loom").ListWithSkips(); err != nil || len(skips) != 1 || skips[0].Kind != FileSkipForeignNamespace {
+		t.Errorf("loom's ListWithSkips = %+v, %v, want its own foreign-namespace skip", skips, err)
+	}
+
+	plantUnreadable(t, loom, "broken-9999.md")
+	*warnings = nil
+	if _, err := warp.List(); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("warp's List emitted %d warnings, want the unreadable file alone: %v", len(*warnings), *warnings)
+	}
+	if !strings.Contains((*warnings)[0], "loom/broken-9999.md") || !strings.Contains((*warnings)[0], "could not be read") {
+		t.Errorf("warning = %q, want it to name loom's unreadable file", (*warnings)[0])
+	}
+	// The central view is scoped to no project, so it keeps both.
+	if _, skips, err := ms.ListWithSkips(); err != nil || len(skips) != 2 {
+		t.Errorf("MultiStore.ListWithSkips = %+v, %v, want both skips", skips, err)
 	}
 }
 

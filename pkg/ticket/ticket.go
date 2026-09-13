@@ -161,6 +161,35 @@ type Ticket struct {
 	// hold one are what writeTicket warns about as it drops it and what
 	// `tk audit` lists while it is still there.
 	droppedReviewLog int
+
+	// relationshipIssue is why this ticket's parent does not make it any
+	// epic's child: the parent does not resolve, is not an epic, sits in
+	// another project before cross-project parents were activated, or lives in
+	// a namespace the snapshot could not read — or why the ticket is nobody's
+	// at all, its ID being claimed by another file. Stamped by the snapshot
+	// and by Get, the way version is, and read through RelationshipIssue. A
+	// leaf carrying one is excluded from every automatic listing (ready,
+	// frontier) rather than treated as if its parent were active: an
+	// unresolved relationship is not evidence that nothing gates the work.
+	relationshipIssue string
+
+	// namespace is the project the file was read from, stamped by readFile
+	// the way version is. A project store hands its tickets back under bare
+	// IDs, so without it the helpers that edit a ticket's references could
+	// not tell which project a bare argument names: a bare dep typed in warp
+	// means warp's ticket, and `loom/epic-1` already stored is a different
+	// edge. Unexported for the reason version is; empty on a ticket the
+	// caller built rather than read, and on one read from a store with no
+	// project, where every reference is bare and nothing is qualified.
+	namespace string
+}
+
+// RelationshipIssue reports why a ticket's parent relationship is invalid, or
+// "" when it is valid or the ticket names no parent. It is the reason a leaf
+// is missing from `tk ready` and `tk frontier`, stated so a consumer can show
+// it rather than infer it.
+func RelationshipIssue(t *Ticket) string {
+	return t.relationshipIssue
 }
 
 // Validate checks all fields for consistency. Returns the first error found.

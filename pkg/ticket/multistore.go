@@ -31,8 +31,31 @@ func NewMultiStore(rootDir string) *MultiStore {
 
 // Get retrieves a ticket by namespaced ("project/id") or bare ID.
 // Bare IDs are resolved across all projects; ambiguous matches return an error.
+// The owner is found by stored reads, and the ticket that matched is then
+// finished in place by its own store, so an epic named bare costs one
+// derivation rather than one per project searched — and the match is never
+// re-resolved by its stored ID, which names a file only by luck: the file may
+// have been renamed, or the ID may be one another file also claims.
 func (m *MultiStore) Get(id string) (*Ticket, error) {
-	return m.get(id, (*FileStore).Get)
+	proj, _ := ParseNamespacedID(id)
+	if proj != "" {
+		return m.get(id, (*FileStore).Get)
+	}
+	matched, err := m.resolveAcrossProjects(id, (*FileStore).getStored)
+	if err != nil {
+		return nil, err
+	}
+	owner, bare := ParseNamespacedID(matched.ID)
+	store, err := m.storeFor(owner)
+	if err != nil {
+		return nil, err
+	}
+	matched.ID = bare
+	if err := store.stampStored(matched); err != nil {
+		return nil, fmt.Errorf("project %s: %w", owner, err)
+	}
+	matched.ID = FormatNamespacedID(owner, bare)
+	return matched, nil
 }
 
 // getStored retrieves a ticket without deriving an epic's status, against the
@@ -59,60 +82,36 @@ func (m *MultiStore) get(id string, read func(*FileStore, string) (*Ticket, erro
 	return m.resolveAcrossProjects(ticketID, read)
 }
 
-// List returns all tickets from all projects with namespaced IDs.
+// List returns all tickets from all projects with namespaced IDs, off one
+// snapshot of the store. A project that could not be read is warned about
+// rather than dropped: its tickets are unknown, and every epic is derived as
+// if one of them could be its child.
 func (m *MultiStore) List() ([]*Ticket, error) {
-	projects, err := m.projects()
+	tickets, skips, err := m.ListWithSkips()
 	if err != nil {
 		return nil, err
 	}
-
-	var all []*Ticket
-	for _, proj := range projects {
-		store, err := m.storeFor(proj)
-		if err != nil {
-			continue
-		}
-		tickets, err := store.List()
-		if err != nil {
-			continue
-		}
-		for _, t := range tickets {
-			t.ID = FormatNamespacedID(proj, t.ID)
-			all = append(all, t)
-		}
-	}
-	return all, nil
+	warnSkips(skips)
+	return tickets, nil
 }
 
-// ListWithSkips is List with each read project's skipped files carried out
-// beside the tickets, for a caller that has to say the listing was partial. The
-// per-project stores stamp their own project onto every skip, so a base
-// filename identifies a file here. A project whose listing fails is skipped
-// whole, as in List — this reports the files inside the projects it read.
+// ListWithSkips is List with every skip carried out beside the tickets, for a
+// caller that has to say the listing was partial: the files no project's
+// listing yields, stamped with their project, and the namespaces that could
+// not be read at all.
 func (m *MultiStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
-	projects, err := m.projects()
+	snap, err := centralForMulti(m).snapshot()
 	if err != nil {
 		return nil, nil, err
 	}
+	return snap.Tickets, snap.Skips, nil
+}
 
-	var all []*Ticket
-	var skips []FileSkip
-	for _, proj := range projects {
-		store, err := m.storeFor(proj)
-		if err != nil {
-			continue
-		}
-		tickets, projSkips, err := store.ListWithSkips()
-		if err != nil {
-			continue
-		}
-		for _, t := range tickets {
-			t.ID = FormatNamespacedID(proj, t.ID)
-			all = append(all, t)
-		}
-		skips = append(skips, projSkips...)
-	}
-	return all, skips, nil
+// Snapshot is the graph of the whole central store, read under the shared
+// store lock. The public read of the graph for a consumer that needs
+// relationships rather than a listing.
+func (m *MultiStore) Snapshot() (*Snapshot, error) {
+	return centralForMulti(m).snapshot()
 }
 
 // Create writes a new ticket. The ticket ID must be namespaced ("project/id")
@@ -168,10 +167,10 @@ func (m *MultiStore) Update(t *Ticket) error {
 	return m.update(t, (*FileStore).Update)
 }
 
-// saveEdit writes an edit against the project store that owns the ticket, so an
-// abandoned epic cascades into its own project's children and no other's. The
-// children it closed come back namespaced, like every other ID this store
-// reports.
+// saveEdit writes an edit against the project store that owns the ticket. The
+// children an abandon closed come back namespaced, like every other ID this
+// store reports; they are all in the epic's own project, since the abandon
+// refuses while an unfinished child lives in another.
 func (m *MultiStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
 	var closed []string
 	err := m.update(t, func(s *FileStore, t *Ticket) error {

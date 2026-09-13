@@ -37,6 +37,13 @@ const (
 	// as not activated, and a binary that does not list it in
 	// SupportedFeatures refuses every write once it is.
 	FeatureRootNamespace = "root-namespace"
+
+	// FeatureCrossProjectParents is the required-feature name whose presence
+	// in the catalog lets a leaf name an epic in another namespace as its
+	// parent. Until it is required, the write boundary refuses a foreign
+	// parent exactly as it did before the central graph existed, and a legacy
+	// file already holding one is a relationship issue rather than a child.
+	FeatureCrossProjectParents = "cross-project-parents"
 )
 
 // SupportedFeatures is the set of catalog required_features this binary
@@ -44,9 +51,10 @@ const (
 // the store may hold data this binary would misread — a Root ticket, a parent
 // in another project — so the guard refuses every write rather than letting
 // this binary write what it does not understand. A feature joins the list when
-// the code that honours it lands: cross-project parents are still refused by
-// ResolveParent, so their feature is not claimed here.
-var SupportedFeatures = []string{FeatureRootNamespace}
+// the code that honours it lands: the central snapshot (snapshot.go) resolves
+// a foreign parent and derives its epic across namespaces, so cross-project
+// parents are claimed, and stay gated on the catalog requiring them.
+var SupportedFeatures = []string{FeatureRootNamespace, FeatureCrossProjectParents}
 
 // NamespaceKind says what a catalogued namespace is.
 type NamespaceKind string
@@ -132,6 +140,12 @@ func (c *Catalog) Requires(feature string) bool {
 // predates the catalog can never have a Root directory to collide with.
 func (c *Catalog) RootActivated() bool {
 	return c.Requires(FeatureRootNamespace)
+}
+
+// CrossProjectParentsActivated reports whether a leaf may be parented to an
+// epic in another namespace: the catalog requires cross-project-parents.
+func (c *Catalog) CrossProjectParentsActivated() bool {
+	return c.Requires(FeatureCrossProjectParents)
 }
 
 // UnsupportedFeatures returns the required features this binary does not

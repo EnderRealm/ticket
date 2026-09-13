@@ -48,8 +48,10 @@ import (
 // applies one further condition this function cannot know about — a store
 // holding a file it could not read has no business claiming every child is
 // terminal, so a derived done or closed demotes to backlog there
-// (derivedEpicStatus). Call this to ask what a set of children implies; read the
-// store to ask what an epic says.
+// (derivedEpicStatus). The children are the epic's children in every namespace
+// of the central store (Snapshot), not the ones in its own project. Call this
+// to ask what a set of children implies; read the store to ask what an epic
+// says.
 func DeriveEpicStatus(abandoned bool, children []*Ticket) Status {
 	allTerminal := true
 	anyOpen := false
@@ -106,13 +108,14 @@ func deriveEpicCompleted(derived Status, children []*Ticket) time.Time {
 }
 
 // derivedEpicStatus is DeriveEpicStatus over a store that may not have been
-// read in full. incomplete says a file in it could not be read at all; that
-// file is a ticket, it could name any epic as its parent, and nothing about it
-// is knowable — so `every child is terminal` is not a claim the store is in a
-// position to make, and done and closed are exactly the two values that rest on
-// it. Both demote to backlog, which is what the derivation already returns for
-// children it cannot call finished: the outcome is identical to a phantom child
-// of unknown, non-terminal, non-open status.
+// read in full. incomplete says a file or a namespace in it could not be read
+// at all, or two files claim one ID; the missing ticket could name any epic as
+// its parent, and nothing about it is knowable — so `every child is terminal`
+// is not a claim the store is in a position to make, and done and closed are
+// exactly the two values that rest on it. Both demote to backlog, which is
+// what the derivation already returns for children it cannot call finished:
+// the outcome is identical to a phantom child of unknown, non-terminal,
+// non-open status.
 //
 // Applied to every path that derives or compares a derived status, so a Get, a
 // List and the audit agree — an epic that quietly read done while live work sat
@@ -133,98 +136,6 @@ func derivedEpicStatus(abandoned bool, children []*Ticket, incomplete bool) Stat
 func deriveEpicFrom(abandoned bool, children []*Ticket, incomplete bool) (Status, time.Time) {
 	status := derivedEpicStatus(abandoned, children, incomplete)
 	return status, deriveEpicCompleted(status, children)
-}
-
-// deriveEpics replaces every epic's status and completion date with the values
-// derived from its children. FileStore.List applies it to the whole set it just
-// read, so CLI, TUI and MCP all see derived values without a display site of
-// its own — and no stored value has to be kept in sync by a guard on every
-// write path.
-//
-// Values are computed against stored fields and assigned afterwards, so an epic
-// under an epic — only a store predating the one-level rule holds one — derives
-// the same way whatever order the files were read in, and the same way it does
-// through FileStore.Get, which reads its children stored too. Such a child
-// contributes the advisory status its file holds rather than a derived one;
-// the one-level rule makes the shape unwritable, and nothing else can hold a
-// child that is itself an epic.
-func deriveEpics(tickets []*Ticket, project string, incomplete bool) {
-	children := childrenByBareParent(tickets, project)
-	type derivation struct {
-		epic      *Ticket
-		status    Status
-		completed time.Time
-	}
-	var derived []derivation
-	for _, t := range tickets {
-		if t.Type != TypeEpic {
-			continue
-		}
-		_, bare := ParseNamespacedID(t.ID)
-		status, completed := deriveEpicFrom(t.Abandoned, children[bare], incomplete)
-		derived = append(derived, derivation{epic: t, status: status, completed: completed})
-	}
-	for _, d := range derived {
-		d.epic.Status, d.epic.Completed = d.status, d.completed
-	}
-}
-
-// childrenByBareParent groups tickets by the bare ID of the parent they name.
-// A map key can't tolerate the namespace mismatch the way SameTicketID does,
-// and the central store records children with a namespaced parent while tickets
-// written before the namespacing rollout record it bare. project is the
-// namespace the set's own tickets live under.
-//
-// A parent naming another project is dropped rather than stripped down to its
-// bare ID, which would make it a child of a same-named epic here — the rule
-// FileStore.Resolve applies to every other cross-project reference.
-func childrenByBareParent(tickets []*Ticket, project string) map[string][]*Ticket {
-	children := make(map[string][]*Ticket)
-	for _, t := range tickets {
-		if t.Parent == "" {
-			continue
-		}
-		parentProject, bare := ParseNamespacedID(t.Parent)
-		if parentProject != "" && parentProject != project {
-			continue
-		}
-		children[bare] = append(children[bare], t)
-	}
-	return children
-}
-
-// epicChildren returns the tickets naming epicID as their parent, read exactly
-// as their files hold them. The derivation reads a child's stored status and
-// completion date and nothing else, so listing through Store.List would derive
-// every epic in the store to discard all but this one's children.
-//
-// A ticket whose parent names another project is skipped: SameTicketID
-// tolerates a namespace mismatch, which would make it a child of this store's
-// same-named epic — and the abandon cascade writes what it matches.
-//
-// The bool reports that the store held a file the listing could not read. Such
-// a file names no parent this can match, so it is absent from the children
-// returned; it is reported instead, because it may be a child of this very epic
-// and the derivation has to know it is working from a partial set. Only that
-// kind of skip counts — see hasUnreadable.
-func epicChildren(store Store, epicID string) ([]*Ticket, bool, error) {
-	tickets, skips, err := listStored(store)
-	if err != nil {
-		return nil, false, err
-	}
-	var children []*Ticket
-	for _, t := range tickets {
-		if SameTicketID(t.ID, epicID) {
-			continue
-		}
-		if isCrossProjectParent(store, t) {
-			continue
-		}
-		if SameTicketID(t.Parent, epicID) {
-			children = append(children, t)
-		}
-	}
-	return children, hasUnreadable(skips), nil
 }
 
 // resolveAbandonIntent records on t the abandon intent the writer expressed and
@@ -283,9 +194,11 @@ func resolveAbandonIntent(t *Ticket, priorAbandoned bool, children []*Ticket, in
 // SaveEdit writes a ticket whose fields a user or agent just chose. It is
 // Store.Update plus the one thing that cannot be read off the ticket — the
 // writer's intent: an epic whose status the writer set to closed is being
-// abandoned, so the intent is recorded and every non-terminal child is closed
-// with it, which is what makes the epic read closed instead of reading as its
-// children imply.
+// abandoned, so the intent is recorded and every non-terminal child in the
+// epic's own project is closed with it, which is what makes the epic read
+// closed instead of reading as its children imply. An abandon is refused while
+// a non-terminal child lives in another project, naming the children: closing
+// another repository's work is not something an edit here does invisibly.
 //
 // statusSet is whether this edit set the status field at all, which the caller
 // knows and the ticket cannot say: `tk edit` has --status among its flags, MCP
@@ -308,9 +221,8 @@ func SaveEdit(store Store, t *Ticket, statusSet bool) ([]string, error) {
 	return nil, store.Update(t)
 }
 
-// editSaver is the store side of SaveEdit. The cascade has to run against the
-// one project's store: across a MultiStore, matching children by ID tolerates a
-// namespace mismatch and would reach into a same-named epic in another project.
+// editSaver is the store side of SaveEdit: the decision, the epic's write and
+// the cascade under one hold of the store lock.
 type editSaver interface {
 	saveEdit(t *Ticket, statusSet bool) ([]string, error)
 }
@@ -324,48 +236,6 @@ func ClosedChildrenNote(closed []string) string {
 		return ""
 	}
 	return fmt.Sprintf(" (closed %d child ticket(s): %s)", len(closed), strings.Join(closed, ", "))
-}
-
-// closeEpicChildren closes every non-terminal child of an abandoned epic. The
-// derivation honours the abandon intent only while every child is terminal, so
-// without the cascade closing an epic would not stick. Children that already
-// finished keep their record: they are terminal, which is all the derivation
-// asks, and rewriting a done child as closed would erase that it completed.
-//
-// The children are the ones the abandon was decided against, handed through
-// rather than listed again: a second listing would read the store twice and
-// could disagree with the one the decision was made on.
-//
-// Every child is attempted rather than stopping at the first failure, so the
-// error can name what was closed and what was not — a partial cascade leaves
-// the epic reading as its children imply, not as closed, and the rest have to
-// be closed by hand.
-//
-// The IDs it closed come back either way: on success for the caller to report,
-// and beside the error so a partial cascade names both halves.
-func closeEpicChildren(store Store, epic *Ticket, children []*Ticket) ([]string, error) {
-	var closed, failed []string
-	for _, child := range children {
-		if isTerminal(child) {
-			continue
-		}
-		child.Status = StatusClosed
-		if err := store.Update(child); err != nil {
-			failed = append(failed, fmt.Sprintf("%s (%v)", child.ID, err))
-			continue
-		}
-		closed = append(closed, child.ID)
-	}
-	if len(failed) == 0 {
-		return closed, nil
-	}
-	closedList := "none"
-	if len(closed) > 0 {
-		closedList = strings.Join(closed, ", ")
-	}
-	return closed, fmt.Errorf("epic %s was closed but %d child ticket(s) were not: %s. Closed: %s. "+
-		"Close the rest by hand — the epic reads as closed only while every child is terminal",
-		epic.ID, len(failed), strings.Join(failed, "; "), closedList)
 }
 
 // EpicDriftKind classifies why an epic's stored status differs from the one it

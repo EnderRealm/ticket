@@ -15,14 +15,17 @@ var moveCmd = &cobra.Command{
 		"A repo that owns none is refused, as is a target " +
 		"that resolves to the store the ticket already lives in — that would rename it rather " +
 		"than move it; re-parenting within a project is 'tk edit --parent'. " +
-		"Closes the original with a note; an epic left behind is not closed, since its status is derived from the children that stayed. " +
+		"Only an isolated leaf moves: a ticket with a parent, deps or links, one other tickets reference, and any epic are refused, " +
+		"because the move copies the ticket under a new ID and closes the original, which would leave those references pointing at a closed copy. " +
+		"--recursive is refused for the same reason. " +
+		"Closes the original with a note. " +
 		"A closed ticket is hidden from a default 'tk ls', so list moved tickets with 'tk ls --status=closed'.",
 	Args: cobra.ExactArgs(2),
 	RunE: runMove,
 }
 
 func init() {
-	moveCmd.Flags().BoolP("recursive", "r", false, "move parent and all descendant tickets")
+	moveCmd.Flags().BoolP("recursive", "r", false, "refused: a move copies under a new ID and closes the original, so a tree cannot move as one")
 	rootCmd.AddCommand(moveCmd)
 }
 

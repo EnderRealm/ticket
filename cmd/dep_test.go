@@ -93,8 +93,9 @@ func TestDepWithoutCargoUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tk.Deps) != 1 || tk.Deps[0] != "dp-6666" {
-		t.Errorf("Deps = %v, want [dp-6666]", tk.Deps)
+	// A new dep is stored qualified with the store's own project.
+	if len(tk.Deps) != 1 || tk.Deps[0] != "dp-dep/dp-6666" {
+		t.Errorf("Deps = %v, want [dp-dep/dp-6666]", tk.Deps)
 	}
 	if len(tk.DepCargo) != 0 {
 		t.Errorf("DepCargo = %v, want empty", tk.DepCargo)
@@ -118,7 +119,7 @@ func TestDepClearsCargo(t *testing.T) {
 	if got := ticket.CargoFor(tk, "dp-dddd"); got != "" {
 		t.Errorf("CargoFor = %q, want cleared", got)
 	}
-	if len(tk.Deps) != 1 || tk.Deps[0] != "dp-dddd" {
+	if len(tk.Deps) != 1 || tk.Deps[0] != "dp-dep/dp-dddd" {
 		t.Errorf("Deps = %v, want the dep retained", tk.Deps)
 	}
 }
@@ -152,10 +153,11 @@ func TestShowRendersDepCargo(t *testing.T) {
 		t.Fatalf("runDep: %v", err)
 	}
 
+	// The cargo key is the dep as stored: qualified, like the dep itself.
 	out := captureShow(t, store, "dp-aaaa", false)
 	for _, want := range []string{
-		"dep-cargo:\n  dp-bbbb: 'event schema: the ingest table'\n",
-		"## Dep Cargo\n\n- dp-bbbb: event schema: the ingest table\n",
+		"dep-cargo:\n  dp-dep/dp-bbbb: 'event schema: the ingest table'\n",
+		"## Dep Cargo\n\n- dp-dep/dp-bbbb: event schema: the ingest table\n",
 	} {
 		if !contains(out, want) {
 			t.Errorf("show output missing %q:\n%s", want, out)

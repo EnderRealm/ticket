@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,10 +104,22 @@ func (s *FileStore) lockFile(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// A hard failure, not a fallback to a shared directory: an environment with
-	// neither XDG_CACHE_HOME nor HOME is a misconfiguration the caller can fix,
-	// and falling back to os.TempDir would restore exactly the exposure this
-	// avoids — silently, on the one platform where it matters.
+	locks, err := locksDir()
+	if err != nil {
+		return "", err
+	}
+	key := sha256.Sum256([]byte(dir))
+	return filepath.Join(locks, hex.EncodeToString(key[:6])+"-"+id+".lock"), nil
+}
+
+// locksDir is the directory every lock file lives in — the per-ticket ones
+// and the store lock (central.lockPath) alike — created on first use.
+//
+// A hard failure, not a fallback to a shared directory: an environment with
+// neither XDG_CACHE_HOME nor HOME is a misconfiguration the caller can fix,
+// and falling back to os.TempDir would restore exactly the exposure lockFile
+// describes — silently, on the one platform where it matters.
+func locksDir() (string, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("locate the ticket lock directory: %w", err)
@@ -115,8 +128,7 @@ func (s *FileStore) lockFile(id string) (string, error) {
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return "", err
 	}
-	key := sha256.Sum256([]byte(dir))
-	return filepath.Join(locks, hex.EncodeToString(key[:6])+"-"+id+".lock"), nil
+	return locks, nil
 }
 
 // mutateRetries bounds the fallback path's re-reads. A store outside this
@@ -124,19 +136,19 @@ func (s *FileStore) lockFile(id string) (string, error) {
 // Create uses for ID collisions.
 const mutateRetries = 5
 
-// Mutate applies fn to a ticket and writes the result, holding the ticket's
-// lock across the read, the change and the write. It is the write path for an
-// accumulating change — a note, a dep, a link — where the new value is computed
-// from the stored one and a conflict error would leave the caller with nothing
-// to do but read and apply it again.
+// Mutate applies fn to a ticket and writes the result, holding the store lock
+// and the ticket's lock across the read, the change and the write. It is the
+// write path for an accumulating change — a note, a dep, a link — where the new
+// value is computed from the stored one and a conflict error would leave the
+// caller with nothing to do but read and apply it again.
 //
 // fn receives the ticket as Store.Get returns it and must only mutate that
-// struct. It must not write the same ticket through the store: that deadlocks,
-// because the lock is held on a descriptor this call owns and the nested write
-// would block acquiring a second one. Reading is safe — no read path takes the
-// lock, and mutate itself reads the ticket and resolves its parent while
-// holding it. fn must not change the ticket's ID either: the lock and the file
-// are both keyed on it.
+// struct. It must not reach the store through any entry point that takes the
+// store lock: a write (Update, Mutate, Delete, SaveEdit), a listing, or a Get
+// of an epic — each waits on the exclusive lock this call holds and returns
+// ErrStoreLockTimeout rather than deadlocking. A Get of a leaf is a single
+// file read and stays safe. fn must not change the ticket's ID either: the
+// lock and the file are both keyed on it.
 //
 // A store that cannot lock (an implementation outside this package) falls back
 // to Get/fn/Update, retrying on ErrConflict. That loses no data but re-runs fn.
@@ -174,53 +186,67 @@ var (
 	_ mutator = (*MultiStore)(nil)
 )
 
-// mutate holds the ticket's lock across the whole read-modify-write, so the
-// state fn is handed is the state the write lands on. It writes through
-// updateLocked rather than Update: re-entering Update would block forever on the
-// lock this call already holds, on a second descriptor of the same lock file.
+// mutate holds the store lock and then the ticket's lock across the whole
+// read-modify-write, so the state fn is handed is the state the write lands
+// on. The ticket is read from its file under the ticket lock and given what a
+// Get would have derived off the operation's snapshot; it writes through
+// updateLocked rather than Update, which would wait on the store lock this
+// call already holds.
 func (s *FileStore) mutate(id string, fn func(*Ticket) error) (*Ticket, error) {
 	if err := s.guardWrite(); err != nil {
 		return nil, fmt.Errorf("update: %w", err)
 	}
-	path, err := s.Resolve(id)
-	if err != nil {
-		return nil, err
-	}
-	// Keyed on the resolved ID, not the caller's: a partial ID names a file, and
-	// two callers spelling one ticket differently have to take the same lock.
-	resolved := strings.TrimSuffix(filepath.Base(path), ".md")
-	release, err := s.lockTicket(resolved)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
+	var result *Ticket
+	err := centralFor(s).write(s.Project, func(o *op) error {
+		path, err := s.Resolve(id)
+		if err != nil {
+			return err
+		}
+		// Keyed on the resolved ID, not the caller's: a partial ID names a file,
+		// and two callers spelling one ticket differently have to take the same
+		// lock.
+		resolved := strings.TrimSuffix(filepath.Base(path), ".md")
+		release, err := s.lockTicket(resolved)
+		if err != nil {
+			return err
+		}
+		defer release()
 
-	t, err := s.Get(resolved)
+		t, err := s.getStored(resolved)
+		if err != nil {
+			return err
+		}
+		o.stamp(FormatNamespacedID(s.Project, resolved), t)
+		// The stored relationships, kept apart from the struct fn mutates: the
+		// validation below tells a new reference from an existing one by them,
+		// and RemoveDep filters a slice in place.
+		prior := *t
+		prior.Deps = copyStrings(t.Deps)
+		prior.Links = copyStrings(t.Links)
+		prior.DepCargo = maps.Clone(t.DepCargo)
+		if err := fn(t); err != nil {
+			return err
+		}
+		// The lock and the write are both keyed on the file this resolved to, so
+		// a ticket that ends up under another ID — a mutation that renamed it, or
+		// a file whose stored id disagrees with its own name — is refused rather
+		// than written to a file nothing locked.
+		if t.ID != resolved {
+			return fmt.Errorf("%s reads as %s: a mutation writes the file it was read from, and these do not agree", resolved, t.ID)
+		}
+		if err := o.validate(s.Project, &prior, t); err != nil {
+			return fmt.Errorf("update: %w", err)
+		}
+		if err := s.updateLocked(t); err != nil {
+			return err
+		}
+		result = t
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := fn(t); err != nil {
-		return nil, err
-	}
-	// The lock and the write are both keyed on the file this resolved to, so a
-	// ticket that ends up under another ID — a mutation that renamed it, or a
-	// file whose stored id disagrees with its own name — is refused rather than
-	// written to a file nothing locked.
-	if t.ID != resolved {
-		return nil, fmt.Errorf("%s reads as %s: a mutation writes the file it was read from, and these do not agree", resolved, t.ID)
-	}
-	// The checks Update makes before it writes. They run inside the lock here
-	// because the read they validate is inside it too.
-	if err := t.Validate(); err != nil {
-		return nil, fmt.Errorf("update: %w", err)
-	}
-	if err := ResolveParent(s, t); err != nil {
-		return nil, fmt.Errorf("update: %w", err)
-	}
-	if err := s.updateLocked(t); err != nil {
-		return nil, err
-	}
-	return t, nil
+	return result, nil
 }
 
 // mutate routes to the project store that owns the ticket, so the lock taken is

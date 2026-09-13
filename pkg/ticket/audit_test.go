@@ -39,12 +39,9 @@ func auditFixtureStore(t *testing.T) *countingStore {
 }
 
 func TestAuditorTicketReadsNothingAfterPreparation(t *testing.T) {
-	// The listing, the parent index and the children map are built once by
-	// NewAuditor, so answering a ticket touches the store not at all. The one
-	// read a ticket can still cost is parentLookup's fallback, for a parent no
-	// listed ticket matches — a single-ticket resolution the store-wide audit
-	// makes identically, which is why this store holds only parents the listing
-	// answers and TestAuditorPerTicketCostsWhatAuditCosts counts the rest.
+	// The snapshot is taken once by NewAuditor, so answering a ticket touches
+	// the store not at all: every parent resolves against it and nothing falls
+	// through to a store read.
 	fs := NewProjectFileStore(t.TempDir(), "proj")
 	writeLegacy(t, fs, mkEpic("epic-1111", StatusBacklog, ""))
 	writeLegacy(t, fs, mkWithParent("good-2222", StatusOpen, "epic-1111"))
@@ -244,6 +241,41 @@ func TestAuditorTicketTellsCleanFromUnevaluable(t *testing.T) {
 		if !findings.Empty() {
 			t.Errorf("ticket %s that could not be evaluated came back with %+v", id, findings)
 		}
+	}
+}
+
+func TestSingleProjectAuditAcceptsItsOwnQualifiedIDs(t *testing.T) {
+	// contextFor admits a ticket carrying the single context's own project, so
+	// the twin lookup has to key it as the snapshot does rather than prefixing
+	// the project a second time — which finds no twin, no children, and reports
+	// drift on an epic whose file and derivation agree.
+	s := NewProjectFileStore(t.TempDir(), "proj")
+	if err := s.Create(mkEpic("epic-1111", StatusBacklog, "")); err != nil {
+		t.Fatal(err)
+	}
+	auditor, err := NewAuditor(s)
+	if err != nil {
+		t.Fatalf("NewAuditor: %v", err)
+	}
+	qualified := mkEpic("proj/epic-1111", StatusOpen, "")
+	findings, err := auditor.Ticket(qualified)
+	if err != nil {
+		t.Fatalf("Ticket: %v", err)
+	}
+	if findings.EpicStatus != nil {
+		t.Errorf("a qualified ID against its own project's audit reported drift %+v, want the stored status found under proj/epic-1111", findings.EpicStatus)
+	}
+}
+
+func TestAuditLabelsAnUnreadableCatalog(t *testing.T) {
+	root, ms := centralFixture(t, false)
+	writeCatalog(t, root, "namespaces: [not, a, map]\n")
+	report, err := Audit(ms)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if len(report.Skipped) != 1 || report.Skipped[0].Project != "catalog" {
+		t.Fatalf("Skipped = %+v, want the catalog failure labelled catalog", report.Skipped)
 	}
 }
 
