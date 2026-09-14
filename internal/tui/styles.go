@@ -107,6 +107,7 @@ var (
 
 var (
 	StatusColors = map[ticket.Status]lipgloss.Color{
+		statusBlocked:        colorRed,
 		ticket.StatusBacklog: colorGray,
 		ticket.StatusReady:   colorCyan,
 		ticket.StatusOpen:    colorYellow,

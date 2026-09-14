@@ -39,6 +39,7 @@
 - `parent`, `branch`, `external-ref` and extra fields are written double-quoted when yaml would not read the plain form back as the same value — a newline, a ` #`, a `: `, a leading indicator, surrounding whitespace, a `1.0` or a `null`. The API already refuses such values; a file migrated from a repository's `.tickets/` never passed it, and a quoted extra like `memo: "text\nparent: x"` written back plain came back as a memo and a `parent` the boundary never validated. Values the API accepts, numbers and booleans included, are written as before.
 
 ### Fixed
+- The inbox STATUS column shows ready/open tickets with unfinished or unresolved dependencies as `blocked` in red, using the board's snapshot across projects. STATUS sorting uses that display value; stored statuses and other tabs are unchanged.
 - `tk show` no longer renders a done dependency in another project as `[unknown]` and a blocker: references are resolved off the graph relative to the ticket holding them, so a foreign dep that is done is not listed under Blockers, and a foreign parent gets its title. An ambiguous or unreadable reference stays unknown rather than being guessed.
 - Epic status and completion date no longer depend on which project the reader asked for: a child in another project counted for nothing, so a cross-project outcome could read done while foreign work was unfinished, and a project-local rollup could attach a child to a same-named epic in the wrong project.
 

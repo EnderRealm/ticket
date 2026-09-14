@@ -77,6 +77,23 @@ func (s *Snapshot) Get(id string) (*Ticket, bool) {
 	return t, ok
 }
 
+// IsBlocked answers the dependency rule for a qualified ticket ID using only
+// this snapshot. A missing or multiply claimed ticket is treated as blocked.
+func (s *Snapshot) IsBlocked(id string) bool {
+	t, ok := s.Get(id)
+	if !ok {
+		return true
+	}
+	return isBlocked(t, func(owner *Ticket, ref string) (*Ticket, error) {
+		depID := qualifyRef(namespaceOf(owner.ID), ref)
+		dep, ok := s.Get(depID)
+		if !ok {
+			return nil, fmt.Errorf("ticket %s not found", depID)
+		}
+		return dep, nil
+	})
+}
+
 // Children returns the tickets whose parent validly resolves to this epic,
 // across every namespace, in listing order.
 func (s *Snapshot) Children(epicID string) []*Ticket {

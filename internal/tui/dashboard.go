@@ -19,6 +19,9 @@ const (
 	desc
 )
 
+// statusBlocked is an inbox display value, never a stored lifecycle status.
+const statusBlocked ticket.Status = "blocked"
+
 // column describes one rendered column: its header, fixed width (0 = flexible,
 // used by TITLE), a row renderer, and an ascending comparison for sorting.
 type column struct {
@@ -242,7 +245,23 @@ func adaptiveSpan(t *ticket.Ticket) time.Duration {
 	return time.Since(t.Created)
 }
 
-// columnsFor returns the column set for a tab. m feeds the EPIC column and
+func inboxStatusColumn(m *dashboardModel) column {
+	statusOf := func(t *ticket.Ticket) ticket.Status {
+		if m != nil && m.snap != nil && (t.Status == ticket.StatusReady || t.Status == ticket.StatusOpen) && m.snap.IsBlocked(m.qid(t)) {
+			return statusBlocked
+		}
+		return t.Status
+	}
+	c := colStatus
+	c.render = func(t *ticket.Ticket, _ time.Time) string { return string(statusOf(t)) }
+	c.less = func(a, b *ticket.Ticket) bool {
+		// Keep lifecycle ordering; the display-only blocked value sorts last.
+		return ticket.StatusOrder(statusOf(a)) < ticket.StatusOrder(statusOf(b))
+	}
+	return c
+}
+
+// columnsFor returns the column set for a tab. m feeds the EPIC and inbox STATUS columns and
 // may be nil when only column names/widths matter.
 func columnsFor(tab tabID, m *dashboardModel) []column {
 	colEpic := epicColumn(m)
@@ -257,7 +276,7 @@ func columnsFor(tab tabID, m *dashboardModel) []column {
 		// under the epic it belongs to.
 		return []column{colID, colPri, colType, colStatus, colCreated, colModified, colAge, colTitle}
 	default: // inbox
-		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colAge, colTitle}
+		return []column{colID, colPri, colEpic, colType, inboxStatusColumn(m), colCreated, colModified, colAge, colTitle}
 	}
 }
 
@@ -724,7 +743,8 @@ func renderCell(c column, t *ticket.Ticket, now time.Time, selBg lipgloss.Style,
 	case "TYPE":
 		return padRightBg(typeBadge(t.Type, selected), c.width, bg)
 	case "STATUS":
-		return padRightBg(selBg.Foreground(StatusColors[t.Status]).Render(ticket.SanitizeControl(string(t.Status))), c.width, bg)
+		status := c.render(t, now)
+		return padRightBg(selBg.Foreground(StatusColors[ticket.Status(status)]).Render(ticket.SanitizeControl(status)), c.width, bg)
 	case "ID", "EPIC":
 		return padRightBg(selBg.Foreground(colorGray).Render(ticket.SanitizeControl(c.render(t, now))), c.width, bg)
 	case "TITLE":
@@ -774,8 +794,8 @@ func (m dashboardModel) renderRow(r row, selected bool) string {
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
 		line += m.epicRollup(t, selBg)
 	}
-	// On the inbox tab, a parked ticket carries the question it is blocked on —
-	// the row's status column still reads open, so the flag is what marks it.
+	// On the inbox tab, a parked ticket carries the question it is blocked on;
+	// the flag distinguishes it from a ticket waiting only on dependencies.
 	if m.activeTab == tabInbox && r.item.Action == ticket.ActionBlocked {
 		const flag = "  ⚑ "
 		label := flag + ticket.SanitizeControl(r.item.Detail)
