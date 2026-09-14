@@ -265,13 +265,20 @@ func TestSpawnRefusalPreventsInjectedCommand(t *testing.T) {
 	}
 }
 
+// fixedExecDir is the checkout resolver for a spawn test whose subject is the
+// template's interpolation rather than the resolution: every namespace runs
+// in dir.
+func fixedExecDir(dir string) func(string) (string, error) {
+	return func(string) (string, error) { return dir, nil }
+}
+
 func TestSpawnWorkRefusalNamesID(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "PWNED")
 	id := "x'; touch " + sentinel + "; echo '"
-	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", strings.Replace(defaultSpawnTemplate, "osascript", "true", 1), dir, false)
+	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", strings.Replace(defaultSpawnTemplate, "osascript", "true", 1), dir, false, fixedExecDir(dir))
 
-	msg := a.spawnWork(&ticket.Ticket{ID: id, Title: "Title"})()
+	msg := a.spawnWork(&ticket.Ticket{ID: id, Title: "Title"}, id)()
 	status, ok := msg.(statusMsg)
 	if !ok {
 		t.Fatalf("spawnWork returned %T, want statusMsg", msg)
@@ -319,9 +326,9 @@ func TestSpawnWorkRefusalNamesDir(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "PWNED")
 	workDir := dir + "'; touch " + sentinel + "; echo '"
-	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", strings.Replace(defaultSpawnTemplate, "osascript", "true", 1), workDir, false)
+	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", strings.Replace(defaultSpawnTemplate, "osascript", "true", 1), workDir, false, fixedExecDir(workDir))
 
-	msg := a.spawnWork(&ticket.Ticket{ID: "proj/tk-ui-set-a6d2", Title: "Title"})()
+	msg := a.spawnWork(&ticket.Ticket{ID: "proj/tk-ui-set-a6d2", Title: "Title"}, "proj/tk-ui-set-a6d2")()
 	status, ok := msg.(statusMsg)
 	if !ok {
 		t.Fatalf("spawnWork returned %T, want statusMsg", msg)
@@ -337,9 +344,9 @@ func TestSpawnWorkRefusalNamesDir(t *testing.T) {
 func TestSpawnWorkAcceptsApostropheTitle(t *testing.T) {
 	// Titles are free text: an apostrophe is sanitized, never a refusal.
 	dir := t.TempDir()
-	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", "true {id} {title}", dir, false)
+	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", "true {id} {title}", dir, false, fixedExecDir(dir))
 
-	msg := a.spawnWork(&ticket.Ticket{ID: "proj/tk-ui-set-a6d2", Title: "'tk ui' set title"})()
+	msg := a.spawnWork(&ticket.Ticket{ID: "proj/tk-ui-set-a6d2", Title: "'tk ui' set title"}, "proj/tk-ui-set-a6d2")()
 	status, ok := msg.(statusMsg)
 	if !ok {
 		t.Fatalf("spawnWork returned %T, want statusMsg", msg)
@@ -390,8 +397,9 @@ func TestSanitizeSpawnTextCoversControlAndFormat(t *testing.T) {
 }
 
 func TestNewStoresWorkDir(t *testing.T) {
-	// New stores the workDir resolved by the caller; spawn uses it verbatim.
-	a := New(filepath.Join(t.TempDir(), ".tickets"), "", "v0", "", "/repo/root", false)
+	// New stores the workDir resolved by the caller; the move picker lists
+	// targets beside it.
+	a := New(filepath.Join(t.TempDir(), ".tickets"), "", "v0", "", "/repo/root", false, nil)
 	if a.workDir != "/repo/root" {
 		t.Errorf("workDir = %q, want /repo/root", a.workDir)
 	}
@@ -400,7 +408,7 @@ func TestNewStoresWorkDir(t *testing.T) {
 func TestNewScopesStoreToProject(t *testing.T) {
 	// The project the caller resolved must reach the store, or TUI writes stop
 	// resolving namespaced parent/dep/link IDs from a central-store project.
-	a := New(t.TempDir(), "proj", "v0", "", "/repo/root", false)
+	a := New(t.TempDir(), "proj", "v0", "", "/repo/root", false, nil)
 	if a.store.Project != "proj" {
 		t.Errorf("store.Project = %q, want %q", a.store.Project, "proj")
 	}

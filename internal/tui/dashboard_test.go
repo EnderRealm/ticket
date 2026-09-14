@@ -410,19 +410,16 @@ func TestBacklogRollsUpBareAndNamespacedChildren(t *testing.T) {
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. Both roll up under the
 	// epic instead of showing as loose backlog rows.
-	tickets := []*ticket.Ticket{
-		{ID: "ep-0001", Title: "Epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
-		{ID: "ch-bare", Title: "Bare child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-0001", Created: time.Now()},
-		{ID: "ch-ns", Title: "Namespaced child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "proj/ep-0001", Created: time.Now()},
-	}
-	m := newDashboardModel(tickets, 80, 24)
-	m.activeTab = tabBacklog
-	m.buildItems()
+	m := boardModel(t, "proj", tabBacklog, 80, 24,
+		&ticket.Ticket{ID: "ep-0001", Title: "Epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
+		&ticket.Ticket{ID: "ch-bare", Title: "Bare child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-0001", Created: time.Now()},
+		&ticket.Ticket{ID: "ch-ns", Title: "Namespaced child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "proj/ep-0001", Created: time.Now()},
+	)
 
 	if got := itemIDs(m.items); len(got) != 1 || got[0] != "ep-0001" {
 		t.Errorf("backlog rows = %v, want only the epic ep-0001", got)
 	}
-	if n := len(m.children["ep-0001"]); n != 2 {
+	if n := len(m.epicChildren(boardTicket(t, m.all, "ep-0001"))); n != 2 {
 		t.Errorf("epic child count = %d, want 2", n)
 	}
 }
@@ -430,16 +427,13 @@ func TestBacklogRollsUpBareAndNamespacedChildren(t *testing.T) {
 func TestBacklogRollupAndEpicsTabAgreeOnChildren(t *testing.T) {
 	// One definition of an epic's children: the backlog rollup count and the
 	// epics tab's expansion must report the same set for the same epic.
-	tickets := []*ticket.Ticket{
-		{ID: "proj/ep-0001", Title: "Epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
-		{ID: "proj/ch-bare", Title: "Bare child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-0001", Created: time.Now()},
-		{ID: "proj/ch-ns", Title: "Namespaced child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "proj/ep-0001", Created: time.Now()},
-		{ID: "proj/loose", Title: "Loose", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Created: time.Now()},
-	}
-	m := newDashboardModel(tickets, 80, 24)
-	m.activeTab = tabBacklog
-	m.buildItems()
-	rolledUp := len(m.epicChildren(tickets[0]))
+	m := boardModel(t, "proj", tabBacklog, 80, 24,
+		&ticket.Ticket{ID: "ep-0001", Title: "Epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
+		&ticket.Ticket{ID: "ch-bare", Title: "Bare child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-0001", Created: time.Now()},
+		&ticket.Ticket{ID: "ch-ns", Title: "Namespaced child", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "proj/ep-0001", Created: time.Now()},
+		&ticket.Ticket{ID: "loose", Title: "Loose", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Created: time.Now()},
+	)
+	rolledUp := len(m.epicChildren(boardTicket(t, m.all, "ep-0001")))
 
 	m.activeTab = tabEpics
 	m.buildItems()
@@ -459,20 +453,17 @@ func TestBacklogKeepsTicketWhoseEpicIsGone(t *testing.T) {
 	// `tk delete <epic>` leaves its children with a parent that names nothing.
 	// The epics tab only builds children under epics that exist, so if the
 	// backlog hid these rows too they would be accounted for nowhere.
-	tickets := []*ticket.Ticket{
-		{ID: "orph-0001", Title: "Epic was deleted", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-9999", Created: time.Now()},
-		{ID: "notep-0002", Title: "Parent is a feature", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "orph-0001", Created: time.Now()},
-	}
-	m := newDashboardModel(tickets, 80, 24)
-	m.activeTab = tabBacklog
-	m.buildItems()
+	a := boardApp(t, "proj", tabBacklog, 80, 24,
+		&ticket.Ticket{ID: "orph-0001", Title: "Epic was deleted", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "ep-9999", Created: time.Now()},
+		&ticket.Ticket{ID: "notep-0002", Title: "Parent is a feature", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "orph-0001", Created: time.Now()},
+	)
+	m := a.dashboard
 
-	if got, want := itemIDs(m.items), []string{"orph-0001", "notep-0002"}; !slices.Equal(got, want) {
+	if got, want := itemIDs(m.items), []string{"notep-0002", "orph-0001"}; !slices.Equal(got, want) {
 		t.Errorf("backlog rows = %v, want %v (a parent that names no epic must not hide the row)", got, want)
 	}
 
 	// Counts have to agree with the rows they label.
-	a := App{tickets: tickets}
 	if got := a.tabCounts()[tabBacklog]; got != len(m.items) {
 		t.Errorf("backlog tab count = %d, want %d to match the rows shown", got, len(m.items))
 	}
@@ -482,40 +473,36 @@ func TestBacklogKeepsLegacySubEpicRollup(t *testing.T) {
 	// A store written before the one-level rule can hold an epic under an epic.
 	// Hiding the sub-epic as a child would take its own children with it —
 	// they roll up under a row that is no longer drawn — so it keeps its row.
-	tickets := []*ticket.Ticket{
-		{ID: "top-0001", Title: "Top epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
-		{ID: "sub-0002", Title: "Sub epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Parent: "top-0001", Created: time.Now()},
-		{ID: "ch-0003", Title: "Child one", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "sub-0002", Created: time.Now()},
-		{ID: "ch-0004", Title: "Child two", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "sub-0002", Created: time.Now()},
-	}
-	m := newDashboardModel(tickets, 80, 24)
-	m.activeTab = tabBacklog
-	m.buildItems()
+	a := boardApp(t, "proj", tabBacklog, 80, 24,
+		&ticket.Ticket{ID: "top-0001", Title: "Top epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: time.Now()},
+		&ticket.Ticket{ID: "sub-0002", Title: "Sub epic", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Parent: "top-0001", Created: time.Now()},
+		&ticket.Ticket{ID: "ch-0003", Title: "Child one", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "sub-0002", Created: time.Now()},
+		&ticket.Ticket{ID: "ch-0004", Title: "Child two", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Parent: "sub-0002", Created: time.Now()},
+	)
+	m := a.dashboard
 
-	if got, want := itemIDs(m.items), []string{"top-0001", "sub-0002"}; !slices.Equal(got, want) {
+	if got, want := itemIDs(m.items), []string{"sub-0002", "top-0001"}; !slices.Equal(got, want) {
 		t.Errorf("backlog rows = %v, want %v (a sub-epic keeps its own rollup row)", got, want)
 	}
-	if n := len(m.children["sub-0002"]); n != 2 {
+	if n := len(m.epicChildren(boardTicket(t, m.all, "sub-0002"))); n != 2 {
 		t.Errorf("sub-epic child count = %d, want 2", n)
 	}
 
-	a := App{tickets: tickets}
 	if got := a.tabCounts()[tabBacklog]; got != len(m.items) {
 		t.Errorf("backlog tab count = %d, want %d to match the rows shown", got, len(m.items))
 	}
 }
 
-func epicSortTestModel() dashboardModel {
+func epicSortTestModel(t *testing.T) dashboardModel {
+	t.Helper()
 	now := time.Now()
-	tickets := []*ticket.Ticket{
-		{ID: "ep-0001", Title: "Epic one", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
-		{ID: "ep-0002", Title: "Epic two", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
-		{ID: "b-000b", Title: "Under epic two", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0002", Created: now},
-		{ID: "a-000a", Title: "Under epic one", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001", Created: now},
-		{ID: "c-000c", Title: "Loose", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
-	}
-	m := newDashboardModel(tickets, 80, 24)
-	m.activeTab = tabInbox
+	m := boardModel(t, "proj", tabInbox, 80, 24,
+		&ticket.Ticket{ID: "ep-0001", Title: "Epic one", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
+		&ticket.Ticket{ID: "ep-0002", Title: "Epic two", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
+		&ticket.Ticket{ID: "b-000b", Title: "Under epic two", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0002", Created: now},
+		&ticket.Ticket{ID: "a-000a", Title: "Under epic one", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001", Created: now},
+		&ticket.Ticket{ID: "c-000c", Title: "Loose", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Created: now},
+	)
 	m.sortIdx = colIndex(tabInbox, "EPIC")
 	m.sortDir = asc
 	m.buildItems()
@@ -523,7 +510,7 @@ func epicSortTestModel() dashboardModel {
 }
 
 func TestDashboardSortByEpicPutsEpiclessLast(t *testing.T) {
-	m := epicSortTestModel()
+	m := epicSortTestModel(t)
 
 	if got, want := itemIDs(m.items), []string{"a-000a", "b-000b", "c-000c"}; !slices.Equal(got, want) {
 		t.Errorf("epic asc: got %v, want %v (epic-less last)", got, want)
@@ -537,7 +524,7 @@ func TestDashboardSortByEpicPutsEpiclessLast(t *testing.T) {
 }
 
 func TestDashboardEpicColumnRendersShortIDOrEmDash(t *testing.T) {
-	m := epicSortTestModel()
+	m := epicSortTestModel(t)
 
 	if !strings.Contains(m.view(), "EPIC") {
 		t.Errorf("inbox header should contain 'EPIC', got:\n%s", m.view())
@@ -582,27 +569,24 @@ func renderedRows(m dashboardModel) int {
 	return n
 }
 
-func countsTestApp() App {
+func countsTestApp(t *testing.T) App {
+	t.Helper()
 	now := time.Now()
-	tickets := []*ticket.Ticket{
-		{ID: "ep-0001", Title: "Epic alpha", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
-		{ID: "ep-0002", Title: "Epic beta", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: now},
-		{ID: "a-000a", Title: "alpha child", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001", Created: now},
-		{ID: "b-000b", Title: "alpha loose", Status: ticket.StatusReady, Type: ticket.TypeBug, Created: now},
-		{ID: "c-000c", Title: "beta child", Status: ticket.StatusBacklog, Type: ticket.TypeBug, Parent: "ep-0002", Created: now},
-		{ID: "d-000d", Title: "beta loose", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Created: now},
-		{ID: "e-000e", Title: "alpha shipped", Status: ticket.StatusDone, Type: ticket.TypeFeature, Created: now, Completed: now},
-		{ID: "f-000f", Title: "dropped epic", Status: ticket.StatusClosed, Type: ticket.TypeEpic, Created: now},
-		{ID: "g-000g", Title: "no status", Type: ticket.TypeFeature, Created: now},
-	}
-	a := App{tickets: tickets}
-	a.dashboard.all = tickets
-	a.dashboard.setSize(140, 30)
-	return a
+	return boardApp(t, "proj", tabInbox, 140, 30,
+		&ticket.Ticket{ID: "ep-0001", Title: "Epic alpha", Status: ticket.StatusOpen, Type: ticket.TypeEpic, Created: now},
+		&ticket.Ticket{ID: "ep-0002", Title: "Epic beta", Status: ticket.StatusBacklog, Type: ticket.TypeEpic, Created: now},
+		&ticket.Ticket{ID: "a-000a", Title: "alpha child", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ep-0001", Created: now},
+		&ticket.Ticket{ID: "b-000b", Title: "alpha loose", Status: ticket.StatusReady, Type: ticket.TypeBug, Created: now},
+		&ticket.Ticket{ID: "c-000c", Title: "beta child", Status: ticket.StatusBacklog, Type: ticket.TypeBug, Parent: "ep-0002", Created: now},
+		&ticket.Ticket{ID: "d-000d", Title: "beta loose", Status: ticket.StatusBacklog, Type: ticket.TypeFeature, Created: now},
+		&ticket.Ticket{ID: "e-000e", Title: "alpha shipped", Status: ticket.StatusDone, Type: ticket.TypeFeature, Created: now, Completed: now},
+		&ticket.Ticket{ID: "f-000f", Title: "dropped epic", Status: ticket.StatusClosed, Type: ticket.TypeEpic, Abandoned: true, Created: now},
+		&ticket.Ticket{ID: "g-000g", Title: "no status", Type: ticket.TypeFeature, Created: now},
+	)
 }
 
 func TestTabCountsMatchRenderedRows(t *testing.T) {
-	a := countsTestApp()
+	a := countsTestApp(t)
 
 	check := func(label string) {
 		t.Helper()

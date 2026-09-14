@@ -175,7 +175,8 @@ Setup:
   status                       Show tk system status and project overview
 
 Interactive:
-  ui                         Interactive ticket browser (TUI)
+  ui                         Interactive ticket browser (TUI); --project _root
+                             browses Root
   serve                      Start MCP server on stdio
 
 Journal:

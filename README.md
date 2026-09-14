@@ -109,11 +109,11 @@ tk no longer reads a `.tickets/` directory inside a repo. Nothing deletes or rew
 
 ### `spawn_command`
 
-The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the `spawn_command` template, executed with `sh -c`. Like `verify_allow`, it is read from `~/.ticket/config.yaml` only — a `spawn_command` in the shared config is ignored, and `TK_STORE_ROOT` does not relocate it — because the template *is* the code that runs as you. These placeholders are substituted:
+The TUI `w` keybinding (see below) launches a `/work <id>` session. The shell command it runs is configurable via the `spawn_command` template, executed with `sh -c`. Like `verify_allow`, it is read from `~/.ticket/config.yaml` only — a `spawn_command` in the shared config is ignored, and `TK_STORE_ROOT` does not relocate it — because the template *is* the code that runs as you. The command runs with the selected ticket's checkout as its working directory, so a template that never interpolates `{dir}` still lands there; `{dir}` is for a template that opens a new window or shell, which starts wherever that program decides and needs the `cd`. These placeholders are substituted:
 
-- `{dir}` — the ticket's project working directory (absolute path): the `path` recorded for the project in your local config, or the repo `tk ui` resolved the store from when it records none
+- `{dir}` — the checkout registered on this machine for the *selected ticket's* project (absolute path): the `path` recorded for that project in your local config, resolved per spawn through the same rule `tk verify` uses. It is never the board's directory: a child of another project reached through an epic's detail spawns in its own checkout. A Root ticket has no repository, and a project registered here without a path has no checkout, so the spawn is refused on the status line before any process is created
 - `{id}` — the namespaced ticket ID (e.g. `myproject/tk-...`)
-- `{project}` — the project name
+- `{project}` — the selected ticket's project name, not the board's
 - `{title}` — the ticket title, sanitized like `{wtitle}` (still caller-quoted, like `{dir}`)
 - `{wtitle}` — the computed window name `PROJECT -- ID4 -- TITLE` (uppercased project, the ticket's 4-char id suffix, and the title truncated to 20 characters; sanitized so it embeds without escaping)
 
@@ -121,7 +121,7 @@ The template runs through `sh -c`, and a ticket ID is a filename in the central 
 
 `{title}` and `{wtitle}` are free text — an apostrophe in a title is ordinary, not an attack — so they are sanitized rather than refused: quotes, backslashes, `$`, backticks, `!`, control characters and the invisible Unicode format characters become spaces, since `$` and a backtick would otherwise expand in the interactive shell the default template types its command into, `!` would trigger its history expansion (which double quotes do not suppress, and which kills the line outright when no history event matches), and a bidi override makes a title render as something other than what runs. Sanitizing removes what would break a *quoting layer*, not everything that is shell syntax — `;`, `&`, `|` and `>` survive in a title — so a custom template must still quote `{title}` where it interpolates it, exactly as it must `{dir}`.
 
-Watch which quotes you mean. In a `write text` payload the quotes you see are AppleScript's, not the shell's — the default's outer `"..."` is consumed by AppleScript, and what reaches the interactive shell is the escaped `\"...\"`. That is why the default's `{wtitle}` is safe inside `printf \"...\" \"{wtitle}\"` and a placeholder dropped into the visible outer quotes would not be. The default template uses only `{wtitle}`. `{dir}` and `{project}` come from project resolution rather than the shared store — your local config, the repo `tk ui` resolved the store from, or the override root's config under `TK_STORE_ROOT` — but nothing on the way in bounds what they may contain, so they are constrained here too: a value carrying `'`, `"`, `\`, `$`, a backtick, `!`, or a control or invisible format character refuses the spawn, naming the reason on the status line. Neither is ever rewritten to fit — replacing a character in a path changes which directory `cd` reaches, so the value passes through verbatim or not at all, and such a path has to be renamed rather than quoted around. The check sits at the boundary where the command is built, so a custom template does not lift it. Everything else, spaces included, passes as-is, and your template must still quote `{dir}` where it interpolates it.
+Watch which quotes you mean. In a `write text` payload the quotes you see are AppleScript's, not the shell's — the default's outer `"..."` is consumed by AppleScript, and what reaches the interactive shell is the escaped `\"...\"`. That is why the default's `{wtitle}` is safe inside `printf \"...\" \"{wtitle}\"` and a placeholder dropped into the visible outer quotes would not be. The default template uses only `{wtitle}`. `{dir}` and `{project}` come from project resolution rather than the shared store — your local config, or the override root's config under `TK_STORE_ROOT` — but nothing on the way in bounds what they may contain, so they are constrained here too: a value carrying `'`, `"`, `\`, `$`, a backtick, `!`, or a control or invisible format character refuses the spawn, naming the reason on the status line. Neither is ever rewritten to fit — replacing a character in a path changes which directory `cd` reaches, so the value passes through verbatim or not at all, and such a path has to be renamed rather than quoted around. The check sits at the boundary where the command is built, so a custom template does not lift it. Everything else, spaces included, passes as-is, and your template must still quote `{dir}` where it interpolates it.
 
 When unset, the default opens a new iTerm window (macOS), names it `{wtitle}`, cds to the project, and starts Claude Code on the ticket:
 
@@ -229,7 +229,7 @@ Global flags:
   --json                     Output in JSON format
 
 Interactive:
-  ui                         Terminal UI
+  ui                         Terminal UI (--project _root browses Root)
   serve                      MCP server for AI agent integration
 
 Journal:
@@ -247,7 +247,10 @@ The `tk ui` browser supports the usual navigation keys plus, in both the list an
 | Key | Action |
 |-----|--------|
 | `y` | Yank (copy) the ticket ID to the clipboard |
-| `w` | Spawn a `/work <id>` session in a new terminal (see `spawn_command`) |
+| `w` | Spawn a `/work <id>` session in a new terminal, in the selected ticket's own checkout (see `spawn_command`); refused for an epic, a Root ticket, or a project with no checkout registered here |
+| `u` | Open the parent epic's full detail — every child in every namespace, closed ones included, with the counts its status was derived from — whichever project the epic lives in |
+
+In an epic's detail, `enter` opens a picker over its children and opens the chosen one, foreign or not; `esc` returns to the detail it was opened from. A project board is a slice of a shared epic: the epics tab nests only the board's own children under it, and the group row carries the global count, done and closed separately, a `slice N of M local` marker when the board holds fewer than the epic has, and an `incomplete` marker when the store could not be read in full. `tk ui --project _root` browses Root without a checkout.
 
 In the list view, tab-specific status keys:
 

@@ -7,27 +7,23 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// childrenByParent groups tickets under their parent's bare ID. A map key can't
-// tolerate the namespace mismatch the way SameTicketID does, and the central
-// store records children with a namespaced parent while tickets written before
-// the namespacing rollout record it bare. The backlog rollup count and the
-// epics tab's expansion read the same map, so both report the same set.
-func childrenByParent(tickets []*ticket.Ticket) map[string][]*ticket.Ticket {
-	children := make(map[string][]*ticket.Ticket)
-	for _, t := range tickets {
-		if t.Parent == "" {
-			continue
+// epicChildren returns the board's own tickets among an epic's children: the
+// graph's membership — every child in every namespace, by exact qualified ID —
+// narrowed to this namespace and re-listed as the board's objects, so a child
+// row is the row the cursor and selection logic already know. A foreign child
+// is counted by epicProgress and listed by the epic's detail, never nested
+// here: the board is a slice of the epic, and the label says so.
+func (m dashboardModel) epicChildren(t *ticket.Ticket) []*ticket.Ticket {
+	if m.snap == nil {
+		return nil
+	}
+	var children []*ticket.Ticket
+	for _, child := range m.snap.Children(m.qid(t)) {
+		if local, ok := m.byQID[child.ID]; ok {
+			children = append(children, local)
 		}
-		_, parent := ticket.ParseNamespacedID(t.Parent)
-		children[parent] = append(children[parent], t)
 	}
 	return children
-}
-
-// epicChildren returns the tickets that name t as their parent.
-func (m dashboardModel) epicChildren(t *ticket.Ticket) []*ticket.Ticket {
-	_, bareID := ticket.ParseNamespacedID(t.ID)
-	return m.children[bareID]
 }
 
 // toggleExpand flips the expansion of the epic group at the cursor and reports
@@ -70,19 +66,46 @@ func expandIndicator(expanded bool) string {
 	return "▸"
 }
 
-// epicProgress renders an epic's completed-children ratio and bar, or "" when
-// it has no children.
+// progressMarkers is what qualifies an epic's global count on a board: a
+// slice marker when the board lists fewer children than the epic has, and an
+// incomplete marker when the graph could not be read in full — a total over a
+// partial read is a lower bound, and rendering it as a settled figure would
+// report an epic complete that may not be.
+func (m dashboardModel) progressMarkers(t *ticket.Ticket, p ticket.EpicProgress, selBg lipgloss.Style) string {
+	var out string
+	if local := len(m.epicChildren(t)); local != p.Total {
+		out += selBg.Foreground(colorSubtle).Render(fmt.Sprintf(" · slice %d of %d local", local, p.Total))
+	}
+	if !p.Complete {
+		out += selBg.Render(" · ") + selBg.Foreground(colorWarning).Render("incomplete")
+	}
+	return out
+}
+
+// epicRollup renders the backlog tab's "(N children)" beside an epic: the
+// global count, qualified by progressMarkers.
+func (m dashboardModel) epicRollup(t *ticket.Ticket, selBg lipgloss.Style) string {
+	if m.snap == nil {
+		return selBg.Foreground(colorSubtle).Render("  (0 children)")
+	}
+	p := m.snap.Progress(m.qid(t))
+	return selBg.Foreground(colorSubtle).Render(fmt.Sprintf("  (%d children)", p.Total)) + m.progressMarkers(t, p, selBg)
+}
+
+// epicProgress renders an epic's finished-children ratio and bar, or only
+// the markers when it has no children — an epic whose children all sit in
+// unreadable files still owes the incomplete marker. The figures are the
+// graph's, over every namespace, with done and closed told apart: a closed
+// child finishes the epic without the work having been done.
 func (m dashboardModel) epicProgress(t *ticket.Ticket, selBg lipgloss.Style) string {
-	children := m.epicChildren(t)
-	if len(children) == 0 {
+	if m.snap == nil {
 		return ""
 	}
-	done := 0
-	for _, child := range children {
-		if child.Status == ticket.StatusDone || child.Status == ticket.StatusClosed {
-			done++
-		}
+	p := m.snap.Progress(m.qid(t))
+	if p.Total == 0 {
+		return m.progressMarkers(t, p, selBg)
 	}
-	ratio := StyleDim.Render(fmt.Sprintf("%d/%d", done, len(children)))
-	return selBg.Render(fmt.Sprintf("  %s  %s", ratio, ProgressBar(done, len(children), 15)))
+	finished := p.Done + p.Closed
+	ratio := StyleDim.Render(fmt.Sprintf("%d/%d (%d done, %d closed)", finished, p.Total, p.Done, p.Closed))
+	return selBg.Render(fmt.Sprintf("  %s  %s", ratio, ProgressBar(finished, p.Total, 15))) + m.progressMarkers(t, p, selBg)
 }

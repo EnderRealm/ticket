@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Aliases to centralized styles (styles.go)
@@ -27,25 +29,41 @@ const (
 	inputNote
 	inputMove
 	inputMovePicker
+	inputChildPicker
 )
 
 const enterPathOption = "enter path..."
 
 type detailModel struct {
-	ticket       *ticket.Ticket
+	ticket *ticket.Ticket
+	// qid is the ticket's qualified ID, the key the graph and a mutation of
+	// a foreign ticket answer to; ns is its namespace, which its own
+	// references are read relative to.
+	qid          string
+	ns           string
+	snap         *ticket.Snapshot // the graph relationships are read off; nil renders the ticket alone
 	lines        []string
 	offset       int
 	width        int
 	height       int
 	input        inputMode
 	inputText    string
-	pickerItems  []string // repo paths for move picker
+	pickerItems  []string // repo paths for the move picker, child lines for the child picker
+	pickerIDs    []string // the child picker's qualified IDs, parallel to pickerItems
 	pickerCursor int
+	pickerOffset int // first picker item drawn; the list scrolls like the body does
 }
 
-func newDetailModel(t *ticket.Ticket, w, h int) detailModel {
+// newDetailModel builds the detail of t, whose qualified ID is qid. t.ID is
+// whatever the caller presents — bare for a board's own ticket, qualified for
+// a foreign one — and qid is always the graph's key.
+func newDetailModel(t *ticket.Ticket, qid string, snap *ticket.Snapshot, w, h int) detailModel {
+	ns, _ := ticket.ParseNamespacedID(qid)
 	m := detailModel{
 		ticket: t,
+		qid:    qid,
+		ns:     ns,
+		snap:   snap,
 		width:  w,
 		height: h,
 	}
@@ -53,9 +71,42 @@ func newDetailModel(t *ticket.Ticket, w, h int) detailModel {
 	return m
 }
 
+// children is the epic's children off the graph: every namespace, closed
+// included, in listing order. None without a graph.
+func (m detailModel) children() []*ticket.Ticket {
+	if m.snap == nil {
+		return nil
+	}
+	return m.snap.Children(m.qid)
+}
+
+// childLine is one child as the detail and the child picker list it.
+func childLine(t *ticket.Ticket) string {
+	return fmt.Sprintf("%s [%s] %s", ticket.SanitizeControl(t.ID), ticket.SanitizeControl(string(t.Status)), ticket.SanitizeControl(t.Title))
+}
+
+// startChildPicker opens the picker over the epic's children and reports
+// whether there were any to pick from.
+func (m *detailModel) startChildPicker() bool {
+	children := m.children()
+	if len(children) == 0 {
+		return false
+	}
+	m.pickerItems, m.pickerIDs = nil, nil
+	for _, c := range children {
+		m.pickerItems = append(m.pickerItems, childLine(c))
+		m.pickerIDs = append(m.pickerIDs, c.ID)
+	}
+	m.pickerCursor, m.pickerOffset = 0, 0
+	m.input = inputChildPicker
+	m.inputText = ""
+	return true
+}
+
 func (m *detailModel) setSize(w, h int) {
 	m.width = w
 	m.height = h
+	m.clampPickerOffset()
 }
 
 func (m detailModel) inputActive() bool {
@@ -71,7 +122,7 @@ func (m *detailModel) startMovePicker(repoRoot string) {
 	repos := discoverSiblingRepos(repoRoot)
 	repos = append(repos, enterPathOption)
 	m.pickerItems = repos
-	m.pickerCursor = 0
+	m.pickerCursor, m.pickerOffset = 0, 0
 	m.input = inputMovePicker
 	m.inputText = ""
 }
@@ -81,6 +132,11 @@ func (m *detailModel) startMovePicker(repoRoot string) {
 // project's tickets live under the store root, whose siblings are other
 // projects' ticket directories rather than repos.
 func discoverSiblingRepos(repoRoot string) []string {
+	// No repo, no siblings: the Root board has no checkout, and filepath.Dir
+	// of "" would be the process working directory's parent.
+	if repoRoot == "" {
+		return nil
+	}
 	parentDir := filepath.Dir(repoRoot) // /path/to/repo -> /path/to
 	repoName := filepath.Base(repoRoot)
 
@@ -106,20 +162,63 @@ func discoverSiblingRepos(repoRoot string) []string {
 // terminal shows every shortcut instead of clipping the trailing ones.
 func (m detailModel) helpLines() []string {
 	var help string
-	if m.input == inputMovePicker {
+	if m.input == inputMovePicker || m.input == inputChildPicker {
 		help = "↑↓ select  enter confirm  esc cancel"
 	} else if m.input != inputNone {
 		help = "enter confirm  esc cancel"
 	} else {
-		help = "↑↓/jk scroll  │  (e)dit (p)riority (n)ote (m)ove (y)ank (w)ork  │  esc back  (q)uit"
+		children := ""
+		if m.ticket != nil && m.ticket.Type == ticket.TypeEpic {
+			children = "enter children  "
+		}
+		help = "↑↓/jk scroll  │  " + children + "(e)dit (p)riority (n)ote (m)ove (y)ank (w)ork (u)p  │  esc back  (q)uit"
 	}
 	return wrapHelp(help, m.width)
 }
 
+// pickerRows is how many picker items the frame draws: what the height leaves
+// after the help bar, the label and one body row, so an epic with more
+// children than the terminal has rows scrolls inside the frame instead of
+// pushing the cursor and the help bar off it. Never fewer than three, so a
+// tiny terminal still shows the cursor with a neighbour either side.
+func (m detailModel) pickerRows() int {
+	rows := m.height - len(m.helpLines()) - 2
+	if rows < 3 {
+		rows = 3
+	}
+	if rows > len(m.pickerItems) {
+		rows = len(m.pickerItems)
+	}
+	return rows
+}
+
+// clampPickerOffset scrolls the picker window so the cursor is inside it.
+func (m *detailModel) clampPickerOffset() {
+	rows := m.pickerRows()
+	if rows == 0 {
+		m.pickerOffset = 0
+		return
+	}
+	if m.pickerCursor < m.pickerOffset {
+		m.pickerOffset = m.pickerCursor
+	}
+	if m.pickerCursor >= m.pickerOffset+rows {
+		m.pickerOffset = m.pickerCursor - rows + 1
+	}
+	// A resize can grow rows while the offset still sits near the end of
+	// the list; pull it back so the window never runs past the last item.
+	if maxOffset := len(m.pickerItems) - rows; m.pickerOffset > maxOffset {
+		m.pickerOffset = maxOffset
+	}
+	if m.pickerOffset < 0 {
+		m.pickerOffset = 0
+	}
+}
+
 func (m detailModel) visibleRows() int {
 	rows := m.height - len(m.helpLines())
-	if m.input == inputMovePicker {
-		rows -= len(m.pickerItems) + 1 // label + items
+	if m.input == inputMovePicker || m.input == inputChildPicker {
+		rows -= m.pickerRows() + 1 // label + items
 	} else if m.input != inputNone {
 		rows-- // input bar
 	}
@@ -132,7 +231,7 @@ func (m detailModel) visibleRows() int {
 func (m detailModel) update(msg tea.Msg) (detailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if m.input == inputMovePicker {
+		if m.input == inputMovePicker || m.input == inputChildPicker {
 			return m.updatePicker(msg)
 		}
 		if m.input != inputNone {
@@ -230,17 +329,26 @@ func (m detailModel) updatePicker(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.input = inputNone
-		m.pickerItems = nil
+		m.pickerItems, m.pickerIDs = nil, nil
 		return m, nil
 	case "up", "k":
 		if m.pickerCursor > 0 {
 			m.pickerCursor--
+			m.clampPickerOffset()
 		}
 	case "down", "j":
 		if m.pickerCursor < len(m.pickerItems)-1 {
 			m.pickerCursor++
+			m.clampPickerOffset()
 		}
 	case "enter":
+		if m.input == inputChildPicker {
+			qid := m.pickerIDs[m.pickerCursor]
+			m.input = inputNone
+			m.pickerItems, m.pickerIDs = nil, nil
+			m.pickerCursor = 0
+			return m, func() tea.Msg { return openTicketMsg{qid: qid} }
+		}
 		selected := m.pickerItems[m.pickerCursor]
 		m.pickerItems = nil
 		m.pickerCursor = 0
@@ -280,14 +388,28 @@ func (m detailModel) view() string {
 	}
 
 	// Input bar (if active).
-	if m.input == inputMovePicker {
-		b.WriteString(inputLabelStyle.Render("move to repo:") + "\n")
-		for i, item := range m.pickerItems {
-			prefix := "  "
+	if m.input == inputMovePicker || m.input == inputChildPicker {
+		label := "move to repo:"
+		if m.input == inputChildPicker {
+			label = "open child:"
+		}
+		b.WriteString(inputLabelStyle.Render(label) + "\n")
+		end := m.pickerOffset + m.pickerRows()
+		if end > len(m.pickerItems) {
+			end = len(m.pickerItems)
+		}
+		for i := m.pickerOffset; i < end; i++ {
+			line := "  " + m.pickerItems[i]
 			if i == m.pickerCursor {
-				prefix = "> "
+				line = "> " + m.pickerItems[i]
 			}
-			b.WriteString(prefix + item + "\n")
+			// Width 0 means the size isn't known yet — leave the line alone.
+			// A long title otherwise wraps onto a second row the frame did
+			// not budget for.
+			if m.width > 0 {
+				line = ansi.Truncate(line, m.width, "…")
+			}
+			b.WriteString(line + "\n")
 		}
 	} else if m.input != inputNone {
 		var label string
@@ -325,7 +447,13 @@ func (m detailModel) render() []string {
 	lines = append(lines, m.field("Priority", PriorityBadge(t.Priority)))
 
 	if t.Parent != "" {
-		lines = append(lines, m.field("Parent", ticket.SanitizeControl(t.Parent)))
+		parent := ticket.SanitizeControl(t.Parent)
+		if m.snap != nil {
+			if p, ok := m.snap.Get(ticket.QualifyRef(m.ns, t.Parent)); ok {
+				parent += "  # " + ticket.SanitizeControl(p.Title)
+			}
+		}
+		lines = append(lines, m.field("Parent", parent))
 	}
 	if len(t.Deps) > 0 {
 		lines = append(lines, m.field("Deps", ticket.SanitizeControl(strings.Join(t.Deps, ", "))))
@@ -384,6 +512,46 @@ func (m detailModel) render() []string {
 				lines = append(lines, pad+ticket.SanitizeControl(wl.text))
 			}
 			lines = append(lines, "")
+		}
+	}
+
+	// Relationships, as `tk show` prints them: an epic's complete membership
+	// and the counts its status was derived from, off the same graph; a leaf's
+	// reason for being no epic's child. Wrapped, so a diagnostic naming a path
+	// reaches the user whole.
+	if t.Type == ticket.TypeEpic && m.snap != nil {
+		if children := m.children(); len(children) > 0 {
+			lines = append(lines, pad+sectionStyle.Render("## Children"))
+			lines = append(lines, "")
+			for _, c := range children {
+				for _, wl := range wrapText(childLine(c), avail) {
+					lines = append(lines, pad+wl.text)
+				}
+			}
+			lines = append(lines, "")
+		}
+		p := m.snap.Progress(m.qid)
+		lines = append(lines, pad+sectionStyle.Render("## Progress"))
+		lines = append(lines, "")
+		counts := fmt.Sprintf("children: %d — done %d, closed %d, open %d, ready %d, backlog %d", p.Total, p.Done, p.Closed, p.Open, p.Ready, p.Backlog)
+		for _, wl := range wrapText(counts, avail) {
+			lines = append(lines, pad+wl.text)
+		}
+		if p.Complete {
+			lines = append(lines, pad+"complete: yes")
+		} else {
+			lines = append(lines, pad+StyleWarning.Render("complete: no"))
+			for _, d := range p.Diagnostics {
+				for _, wl := range wrapText(ticket.SanitizeControl(d), avail) {
+					lines = append(lines, pad+StyleWarning.Render(wl.text))
+				}
+			}
+		}
+	} else if issue := ticket.RelationshipIssue(t); issue != "" {
+		lines = append(lines, pad+sectionStyle.Render("## Relationship"))
+		lines = append(lines, "")
+		for _, wl := range wrapText(ticket.SanitizeControl(issue), avail) {
+			lines = append(lines, pad+StyleWarning.Render(wl.text))
 		}
 	}
 

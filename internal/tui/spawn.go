@@ -66,9 +66,9 @@ const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w 
 // {id} and {title} come from the central store, a git repo other machines push
 // to, so both are untrusted here. {project} and {dir} do not arrive that way —
 // mergeConfigs takes `path` from the local half alone, so {dir} is the machine
-// owner's own recorded path for the project (the override root's config under
-// TK_STORE_ROOT) or, when it records none, the repo the store was resolved from:
-// `--repo` if given, else the working directory. Provenance is not the bound it
+// owner's own recorded path for the ticket's project (project.ExecutionDir,
+// which spawnWork asks for the ticket's namespace and which refuses Root and a
+// project with no path recorded). Provenance is not the bound it
 // was read as, though. Neither value's character set is checked anywhere
 // upstream: project.ValidName rules on path joining, refusing a separator and
 // the dot segments and nothing else, and a name it passes may come from a git
@@ -259,19 +259,40 @@ func sanitizeSpawnText(s string) string {
 	}, s)
 }
 
-// spawnWork launches a new terminal session in the project working directory
-// running `/work <id>`. The command runs detached so the TUI is never blocked.
-func (a App) spawnWork(t *ticket.Ticket) tea.Cmd {
-	cmd, err := buildSpawnCommand(a.spawnCommand, a.workDir, t.ID, a.projectName, t.Title)
+// spawnWork launches a new terminal session running `/work <id>` in the
+// checkout registered for the ticket's own project. qid is the ticket's
+// qualified ID: its namespace, not the board's, is what execDir resolves, so a
+// foreign child reached through an epic's detail runs in its own repository
+// and a Root ticket — which has none — is refused, as is a namespace with no
+// checkout registered here. Every refusal lands before the command is built,
+// so nothing is exec'd. An epic is refused too: it is a container, and the
+// work is a child's. The command runs detached so the TUI is never blocked,
+// and with the resolved checkout as its working directory: a template that
+// does not interpolate {dir} — one that hands `/work` to a program directly —
+// would otherwise start the foreign ticket's session wherever `tk ui` was
+// launched, in a repository the eligibility check never approved.
+func (a App) spawnWork(t *ticket.Ticket, qid string) tea.Cmd {
+	refuse := func(reason string) tea.Cmd {
+		return func() tea.Msg { return statusMsg("error: refusing to spawn: " + reason) }
+	}
+	if t.Type == ticket.TypeEpic {
+		return refuse("an epic is not run; open a child")
+	}
+	ns, _ := ticket.ParseNamespacedID(qid)
+	dir, err := a.execDir(ns)
 	if err != nil {
-		return func() tea.Msg {
-			return statusMsg("error: refusing to spawn: " + err.Error())
-		}
+		return refuse(err.Error())
+	}
+	cmd, err := buildSpawnCommand(a.spawnCommand, dir, qid, ns, t.Title)
+	if err != nil {
+		return refuse(err.Error())
 	}
 	return func() tea.Msg {
-		if err := exec.Command("sh", "-c", cmd).Start(); err != nil {
+		c := exec.Command("sh", "-c", cmd)
+		c.Dir = dir
+		if err := c.Start(); err != nil {
 			return statusMsg("error: " + err.Error())
 		}
-		return statusMsg("Launching /work " + t.ID + "…")
+		return statusMsg("Launching /work " + qid + "…")
 	}
 }

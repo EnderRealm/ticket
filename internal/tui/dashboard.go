@@ -37,12 +37,13 @@ type row struct {
 
 type dashboardModel struct {
 	all            []*ticket.Ticket
-	items          []ticket.InboxItem          // the tab's rows, sorted; epic groups on the epics tab
-	rows           []row                       // rendered lines: items plus the children of expanded epics
-	epics          map[string]bool             // set of bare epic IDs, from bareEpicIDs
-	children       map[string][]*ticket.Ticket // bare parent ID -> children, from childrenByParent
-	expanded       map[string]bool             // epic ID -> expanded, epics tab
-	activeTab      tabID                       // set by app-level tab switching
+	snap           *ticket.Snapshot          // the graph the board's membership is decided off; nil before the first load
+	ns             string                    // the board's namespace: the one m.all's bare IDs live in
+	byQID          map[string]*ticket.Ticket // qualified ID -> the board's own ticket, so a child row is the row cursor logic knows
+	items          []ticket.InboxItem        // the tab's rows, sorted; epic groups on the epics tab
+	rows           []row                     // rendered lines: items plus the children of expanded epics
+	expanded       map[string]bool           // epic ID -> expanded, epics tab
+	activeTab      tabID                     // set by app-level tab switching
 	cursor         int
 	offset         int
 	width          int
@@ -130,59 +131,88 @@ var (
 	}
 )
 
-// bareEpicIDs is the set of epic IDs present, keyed bare. A map key can't
-// tolerate the namespace mismatch the way SameTicketID does, and the central
-// store records children with a namespaced parent while tickets written before
-// the namespacing rollout record it bare.
-func bareEpicIDs(tickets []*ticket.Ticket) map[string]bool {
-	epics := make(map[string]bool)
-	for _, t := range tickets {
-		if t.Type == ticket.TypeEpic {
-			_, bareID := ticket.ParseNamespacedID(t.ID)
-			epics[bareID] = true
-		}
-	}
-	return epics
+// qid is the qualified ID of a board ticket: the board lists bare IDs, the
+// graph answers to qualified ones.
+func (m dashboardModel) qid(t *ticket.Ticket) string {
+	return ticket.FormatNamespacedID(m.ns, t.ID)
 }
 
-// epicOf returns the bare ID of the epic a ticket belongs to, or "" when it
-// belongs to none. Parent names the epic directly — a set lookup, not a walk up
-// a chain. A parent that names no epic in the set reads as epic-less: `tk
-// delete` on an epic leaves its children pointing at nothing, and such a ticket
-// must stay visible on the backlog tab rather than rolling up under an epic
-// that the epics tab no longer shows.
-func epicOf(t *ticket.Ticket, epics map[string]bool) string {
-	if t.Parent == "" {
+// parentEpic returns the qualified ID of the epic a board ticket belongs to,
+// or "" when it belongs to none. Membership is the graph's: the parent is read
+// relative to the board's namespace by exact ID, so an epic in another project
+// with the same bare ID never claims it, and a parent that does not validly
+// make the ticket a child — deleted, not an epic, foreign before activation —
+// reads as epic-less, so the ticket stays visible on the backlog tab rather
+// than rolling up under a group no tab shows. Nil snapshot, no epics.
+func (m dashboardModel) parentEpic(t *ticket.Ticket) string {
+	if m.snap == nil || t.Parent == "" || ticket.RelationshipIssue(t) != "" {
 		return ""
 	}
-	_, bareID := ticket.ParseNamespacedID(t.Parent)
-	if !epics[bareID] {
+	parentID := ticket.QualifyRef(m.ns, t.Parent)
+	if parent, ok := m.snap.Get(parentID); !ok || parent.Type != ticket.TypeEpic {
 		return ""
 	}
-	return bareID
+	return parentID
+}
+
+// localEpic reports whether a qualified epic ID names an epic on this board —
+// one the epics tab groups under and the backlog tab rolls up into.
+func (m dashboardModel) localEpic(epicID string) bool {
+	if epicID == "" {
+		return false
+	}
+	ns, _ := ticket.ParseNamespacedID(epicID)
+	return ns == m.ns
+}
+
+// epicColumnWidth leaves room for a foreign epic's `ns/suffix` label beside
+// the header and sort arrow.
+const epicColumnWidth = 14
+
+// epicLabel is the EPIC cell for an epic's qualified ID: the suffix alone for
+// a local epic, `ns/suffix` for a foreign one. A long namespace is clipped
+// from its own end so the suffix — the half that identifies the epic — stays,
+// and the cell never outruns the column and wraps the row.
+func (m dashboardModel) epicLabel(epicID string) string {
+	ns, bare := ticket.ParseNamespacedID(epicID)
+	if ns == m.ns {
+		return IDSuffix(bare)
+	}
+	suffix := "/" + IDSuffix(bare)
+	room := epicColumnWidth - 1 - lipgloss.Width(suffix)
+	if lipgloss.Width(ns) > room {
+		ns = ansi.Truncate(ns, room, "…")
+	}
+	return ns + suffix
 }
 
 // epicColumn renders the epic the ticket belongs to, or an em-dash when it
-// belongs to none. It needs the epic set, so unlike the other columns it is
-// built per call; a nil set renders every row as epic-less, which is what
-// defaultSort's name-only lookup wants.
-func epicColumn(epics map[string]bool) column {
+// belongs to none. It needs the board's graph lookup, so unlike the other
+// columns it is built per call; a nil lookup renders every row as epic-less,
+// which is what defaultSort's name-only lookup wants.
+func epicColumn(m *dashboardModel) column {
+	epicOf := func(t *ticket.Ticket) string {
+		if m == nil {
+			return ""
+		}
+		return m.parentEpic(t)
+	}
 	return column{
-		name: "EPIC", width: 6,
+		name: "EPIC", width: epicColumnWidth,
 		render: func(t *ticket.Ticket, _ time.Time) string {
-			if epicID := epicOf(t, epics); epicID != "" {
-				return IDSuffix(epicID)
+			if epicID := epicOf(t); epicID != "" {
+				return m.epicLabel(epicID)
 			}
 			return emDash
 		},
 		less: func(a, b *ticket.Ticket) bool {
-			ea, eb := epicOf(a, epics), epicOf(b, epics)
+			ea, eb := epicOf(a), epicOf(b)
 			// Epic-less rows sort last ascending (and first descending, since
 			// sortItems inverts this comparator rather than the ordering).
 			if (ea == "") != (eb == "") {
 				return eb == ""
 			}
-			return IDSuffix(ea) < IDSuffix(eb)
+			return ea < eb
 		},
 	}
 }
@@ -212,10 +242,10 @@ func adaptiveSpan(t *ticket.Ticket) time.Duration {
 	return time.Since(t.Created)
 }
 
-// columnsFor returns the column set for a tab. epics feeds the EPIC column and
+// columnsFor returns the column set for a tab. m feeds the EPIC column and
 // may be nil when only column names/widths matter.
-func columnsFor(tab tabID, epics map[string]bool) []column {
-	colEpic := epicColumn(epics)
+func columnsFor(tab tabID, m *dashboardModel) []column {
+	colEpic := epicColumn(m)
 	switch tab {
 	case tabDone:
 		return []column{colID, colPri, colEpic, colType, colStatus, colCreated, colModified, colCompleted, colDuration, colTitle}
@@ -296,12 +326,14 @@ func (m *dashboardModel) buildItemsPreservingCursor() {
 }
 
 // refreshTickets updates the ticket data while preserving cursor position.
-func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
+// snap is the graph tickets were listed off, and decides epic membership.
+func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket, snap *ticket.Snapshot) {
 	var selectedID string
 	if t := m.selected(); t != nil {
 		selectedID = t.ID
 	}
 	m.all = tickets
+	m.snap = snap
 	m.buildItems()
 	if selectedID != "" {
 		for i, r := range m.rows {
@@ -334,7 +366,7 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket) {
 // expanding a group must not inflate the count. That is the agreed contract,
 // pinned by TestEpicsCountsGroupsNotExpandedChildren. A filter therefore
 // selects epics, and an expanded epic still shows all of its children.
-func tabShows(tab tabID, t *ticket.Ticket, epics map[string]bool, typeFilter ticket.TicketType, needle string) bool {
+func (m dashboardModel) tabShows(tab tabID, t *ticket.Ticket, typeFilter ticket.TicketType, needle string) bool {
 	if t.Status == "" {
 		return false
 	}
@@ -345,11 +377,12 @@ func tabShows(tab tabID, t *ticket.Ticket, epics map[string]bool, typeFilter tic
 		if t.Status != ticket.StatusBacklog {
 			return false
 		}
-		// Children roll up under their epic; hide them here. An epic is never
-		// hidden: a store written before the one-level rule can hold an epic
-		// under an epic, and hiding it would take its own children — which roll
-		// up under it — off the tab with it.
-		if !isEpic && epicOf(t, epics) != "" {
+		// Children roll up under their epic; hide them here. Only under a local
+		// epic: a foreign epic is no group this board shows, so its child keeps
+		// its row. An epic is never hidden: a store written before the one-level
+		// rule can hold an epic under an epic, and hiding it would take its own
+		// children — which roll up under it — off the tab with it.
+		if !isEpic && m.localEpic(m.parentEpic(t)) {
 			return false
 		}
 	case tabInbox:
@@ -389,13 +422,13 @@ func tabShows(tab tabID, t *ticket.Ticket, epics map[string]bool, typeFilter tic
 }
 
 // rowsFor returns the rows tab renders under the given filters, unordered:
-// buildItems sorts them. epics is the bareEpicIDs set for tickets.
-func rowsFor(tab tabID, tickets []*ticket.Ticket, epics map[string]bool, typeFilter ticket.TicketType, filterText string) []ticket.InboxItem {
+// buildItems sorts them.
+func (m dashboardModel) rowsFor(tab tabID, typeFilter ticket.TicketType, filterText string) []ticket.InboxItem {
 	needle := strings.ToLower(filterText)
 
 	var items []ticket.InboxItem
-	for _, t := range tickets {
-		if tabShows(tab, t, epics, typeFilter, needle) {
+	for _, t := range m.all {
+		if m.tabShows(tab, t, typeFilter, needle) {
 			items = append(items, ticket.NextAction(t))
 		}
 	}
@@ -403,11 +436,13 @@ func rowsFor(tab tabID, tickets []*ticket.Ticket, epics map[string]bool, typeFil
 }
 
 func (m *dashboardModel) buildItems() {
-	// The epic set decides membership and feeds the EPIC column; the child map
-	// feeds both the backlog rollup counts and the epics tab's expansion.
-	m.epics = bareEpicIDs(m.all)
-	m.children = childrenByParent(m.all)
-	m.items = rowsFor(m.activeTab, m.all, m.epics, m.typeFilter, m.filterText)
+	// The board's own objects by qualified ID: the graph hands back its own
+	// copies, and a child row has to be the row the cursor logic knows.
+	m.byQID = make(map[string]*ticket.Ticket, len(m.all))
+	for _, t := range m.all {
+		m.byQID[m.qid(t)] = t
+	}
+	m.items = m.rowsFor(m.activeTab, m.typeFilter, m.filterText)
 
 	m.sortItems()
 
@@ -437,7 +472,7 @@ func (m *dashboardModel) rebuildRows() {
 // Children follow their epic, so only the items are reordered; the rendered
 // rows are rebuilt from the new order before returning, so callers need not.
 func (m *dashboardModel) sortItems() {
-	cols := columnsFor(m.activeTab, m.epics)
+	cols := columnsFor(m.activeTab, m)
 	if m.sortIdx < 0 || m.sortIdx >= len(cols) {
 		m.sortIdx = 0
 	}
@@ -592,7 +627,7 @@ func (m dashboardModel) update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.filterActive = true
 			m.filterText = ""
 		case "s":
-			cols := columnsFor(m.activeTab, m.epics)
+			cols := columnsFor(m.activeTab, &m)
 			m.sortIdx = (m.sortIdx + 1) % len(cols)
 			m.sortDir = asc
 			m.sortItems()
@@ -641,7 +676,7 @@ func (m dashboardModel) view() string {
 
 	var b strings.Builder
 
-	b.WriteString(renderColumnHeader(columnsFor(m.activeTab, m.epics), m.sortIdx, m.sortDir))
+	b.WriteString(renderColumnHeader(columnsFor(m.activeTab, &m), m.sortIdx, m.sortDir))
 	b.WriteString("\n")
 
 	// Rows.
@@ -729,14 +764,15 @@ func (m dashboardModel) renderRow(r row, selected bool) string {
 		lead = selBg.Render(lead)
 	}
 	line := lead
-	for _, c := range columnsFor(m.activeTab, m.epics) {
+	for _, c := range columnsFor(m.activeTab, &m) {
 		line += renderCell(c, t, now, selBg, bg, selected)
 	}
 
-	// On the backlog tab, show "(N children)" next to epic rows so they act as rollups.
+	// On the backlog tab, show "(N children)" next to epic rows so they act as
+	// rollups: the global count, marked when this board holds only a slice of
+	// it or the graph could not be read in full.
 	if m.activeTab == tabBacklog && t.Type == ticket.TypeEpic {
-		label := fmt.Sprintf("  (%d children)", len(m.epicChildren(t)))
-		line += selBg.Foreground(colorSubtle).Render(label)
+		line += m.epicRollup(t, selBg)
 	}
 	// On the inbox tab, a parked ticket carries the question it is blocked on —
 	// the row's status column still reads open, so the flag is what marks it.

@@ -48,7 +48,7 @@ func statusKeyApp(t *testing.T, tab tabID, tk *ticket.Ticket) App {
 	}
 	a := App{store: store, activeTab: tab, width: 80, height: 24}
 	a.dashboard.activeTab = tab
-	a.dashboard.refreshTickets([]*ticket.Ticket{tk})
+	a.dashboard.refreshTickets([]*ticket.Ticket{tk}, nil)
 	return a
 }
 
@@ -159,7 +159,7 @@ func legacyParentApp(t *testing.T) (App, *ticket.Ticket) {
 
 	a := App{store: store, activeTab: tabInbox, width: 80, height: 24}
 	a.dashboard.activeTab = tabInbox
-	a.dashboard.refreshTickets([]*ticket.Ticket{child})
+	a.dashboard.refreshTickets([]*ticket.Ticket{child}, nil)
 	return a, child
 }
 
@@ -233,7 +233,7 @@ func TestSetStatusReportsTheChildrenAnAbandonClosed(t *testing.T) {
 	}
 	a := App{store: store, activeTab: tabAll, width: 80, height: 24}
 	a.dashboard.activeTab = tabAll
-	a.dashboard.refreshTickets([]*ticket.Ticket{epic})
+	a.dashboard.refreshTickets([]*ticket.Ticket{epic}, nil)
 
 	reported := statusLine(t, a.handleSetStatus("e-0001", ticket.StatusClosed))
 	if !strings.Contains(reported, "c-0002") || !strings.Contains(reported, "closed 1 child ticket(s)") {
@@ -302,7 +302,7 @@ func TestEditFormLeavesAnUntouchedStatusAlone(t *testing.T) {
 
 	a := App{store: store, activeTab: tabAll, width: 80, height: 24}
 	a.dashboard.activeTab = tabAll
-	a.dashboard.refreshTickets([]*ticket.Ticket{shown})
+	a.dashboard.refreshTickets([]*ticket.Ticket{shown}, nil)
 	form.fields[fieldTitle] = "Renamed"
 	msg := form.submit().(formSubmitMsg)
 	if msg.statusSet {

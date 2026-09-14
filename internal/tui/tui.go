@@ -2,11 +2,14 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/EnderRealm/ticket/v8/internal/project"
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -41,7 +44,10 @@ const (
 
 // App is the top-level bubbletea model.
 type App struct {
-	store        *ticket.FileStore
+	store *ticket.FileStore
+	// multi is the whole central store, for a write to a ticket the board
+	// does not own: an epic's foreign child opened from its detail.
+	multi        *ticket.MultiStore
 	ticketsDir   string
 	projectName  string
 	unregistered bool
@@ -49,14 +55,24 @@ type App struct {
 	cwd          string
 	workDir      string
 	spawnCommand string
-	tickets      []*ticket.Ticket
+	// execDir resolves the checkout a ticket in a namespace may run in, or
+	// the reason there is none; every spawn goes through it, never workDir.
+	execDir func(namespace string) (string, error)
+	tickets []*ticket.Ticket
+	// snap is the graph tickets were listed off: the board decides epic
+	// membership on it and a detail reads relationships and foreign tickets
+	// off it.
+	snap *ticket.Snapshot
 
 	// Views
 	activeTab tabID
 	overlay   overlayID
 	dashboard dashboardModel // every tab: the shared table
 	detail    detailModel
-	form      formModel
+	// detailStack is the details navigation left open beneath the current
+	// one — an epic behind the child opened from it — popped by esc.
+	detailStack []detailModel
+	form        formModel
 
 	// Command bar
 	cmdBar    textinput.Model
@@ -78,12 +94,19 @@ type App struct {
 // header and a spawned work session are given — deriving it a second time from
 // the tickets directory's basename produced the same string by construction.
 // workDir is the project's real repo directory (also resolved by the caller
-// from config), used to spawn `/work` sessions in the right place. unregistered
-// marks a central project with no `store: central` entry in config — an entry
-// carrying only a path is not a registration; the header carries it for the
-// whole session, since the alt screen hides a warning printed at startup.
-func New(ticketsDir, project, version, spawnCommand, workDir string, unregistered bool) App {
+// from config), which the move picker lists targets beside; "" on the Root
+// board, which has none. unregistered marks a central project with no `store:
+// central` entry in config — an entry carrying only a path is not a
+// registration; the header carries it for the whole session, since the alt
+// screen hides a warning printed at startup. execDir is the checkout resolver a
+// spawn asks for the selected ticket's own namespace; nil is replaced by one
+// that refuses, so a caller that wires none gets no spawn rather than a spawn
+// in a directory the ticket did not name.
+func New(ticketsDir, project, version, spawnCommand, workDir string, unregistered bool, execDir func(string) (string, error)) App {
 	store := ticket.NewProjectFileStore(ticketsDir, project)
+	if execDir == nil {
+		execDir = func(string) (string, error) { return "", errors.New("no checkout resolver") }
+	}
 
 	// Capture launch directory, abbreviating $HOME to ~.
 	cwd, _ := os.Getwd()
@@ -102,6 +125,7 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 
 	a := App{
 		store:        store,
+		multi:        ticket.NewMultiStore(filepath.Dir(ticketsDir)),
 		ticketsDir:   ticketsDir,
 		projectName:  project,
 		unregistered: unregistered,
@@ -109,17 +133,25 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 		cwd:          cwd,
 		workDir:      workDir,
 		spawnCommand: spawnCommand,
+		execDir:      execDir,
 		activeTab:    tabInbox,
 		cmdBar:       ti,
 	}
 	a.dashboard.activeTab = tabInbox
+	a.dashboard.ns = project
 	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(tabInbox)
 	return a
 }
 
 // ─── Messages ───────────────────────────────────────────────────────────────
 
-type ticketsLoadedMsg []*ticket.Ticket
+// ticketsLoadedMsg carries one reading of the store: the board's own tickets
+// and the graph they were listed off, so the rows and the membership they are
+// grouped by cannot come from two different instants.
+type ticketsLoadedMsg struct {
+	tickets []*ticket.Ticket
+	snap    *ticket.Snapshot
+}
 type errMsg error
 type statusMsg string
 type clearStatusMsg struct{}
@@ -150,14 +182,19 @@ type moveTicketMsg struct {
 	targetRepo string
 }
 
+// openTicketMsg opens a ticket's detail by qualified ID off the graph, on top
+// of the detail it was chosen from: the child picked in an epic's detail.
+type openTicketMsg struct{ qid string }
+
 func loadTickets(store *ticket.FileStore) tea.Cmd {
 	return func() tea.Msg {
-		tickets, err := store.List()
+		snap, err := store.Snapshot()
 		if err != nil {
 			return errMsg(err)
 		}
+		tickets := store.ListFromSnapshot(snap)
 		ticket.SortByStatusPriorityID(tickets)
-		return ticketsLoadedMsg(tickets)
+		return ticketsLoadedMsg{tickets: tickets, snap: snap}
 	}
 }
 
@@ -227,9 +264,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case ticketsLoadedMsg:
-		a.tickets = msg
+		a.tickets = msg.tickets
+		a.snap = msg.snap
 		a.dashboard.activeTab = a.activeTab
-		a.dashboard.refreshTickets(a.tickets)
+		a.dashboard.refreshTickets(a.tickets, a.snap)
 		if a.overlay == overlayDetail && a.detail.ticket != nil {
 			// If the user is mid-input (move picker, note entry, etc.), don't
 			// disturb them — a background refresh should never reset their
@@ -237,18 +275,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.detail.inputActive() {
 				return a, nil
 			}
-			found := false
-			for _, t := range a.tickets {
-				if t.ID == a.detail.ticket.ID {
-					prev := a.detail
-					a.detail = newDetailModel(t, a.width, a.contentHeight())
-					a.detail.offset = prev.offset
-					found = true
-					break
-				}
-			}
-			if !found {
+			// Off the graph by qualified ID rather than the board by bare ID:
+			// the detail may be a foreign ticket the board does not list.
+			if refreshed, ok := a.detailFor(a.detail.qid); ok {
+				refreshed.offset = a.detail.offset
+				a.detail = refreshed
+			} else {
 				a.overlay = overlayNone
+				a.detailStack = nil
 				a.status = "Ticket removed"
 			}
 		}
@@ -293,6 +327,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleDelete(msg.id)
 	case moveTicketMsg:
 		return a, a.handleMove(msg.id, msg.targetRepo)
+	case openTicketMsg:
+		return a, a.pushDetail(msg.qid)
 	case formCancelMsg:
 		a.overlay = overlayNone
 		return a, nil
@@ -350,7 +386,7 @@ func (a App) updateCommandBar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Search: apply filter to dashboard.
 		a.dashboard.filterText = val
-		a.dashboard.refreshTickets(a.tickets)
+		a.dashboard.refreshTickets(a.tickets, a.snap)
 		return a, nil
 	}
 
@@ -369,16 +405,34 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "esc":
+			if n := len(a.detailStack); n > 0 {
+				// Back to the detail this one was opened from, re-read off the
+				// graph so a write made here is reflected there.
+				prev := a.detailStack[n-1]
+				a.detailStack = a.detailStack[:n-1]
+				if refreshed, ok := a.detailFor(prev.qid); ok {
+					refreshed.offset = prev.offset
+					prev = refreshed
+				}
+				a.detail = prev
+				return a, nil
+			}
 			a.overlay = overlayNone
 			return a, nil
 		case "q":
 			return a, tea.Quit
 		case "p":
-			return a, func() tea.Msg { return cyclePriorityMsg{id: a.detail.ticket.ID} }
+			qid := a.detail.qid
+			return a, func() tea.Msg { return cyclePriorityMsg{id: qid} }
 		case "n":
 			a.detail.startInput(inputNote)
 			return a, nil
 		case "m":
+			// MoveTicket takes the source project store, and this board's is
+			// not the foreign ticket's.
+			if a.detail.ns != a.projectName {
+				return a, func() tea.Msg { return statusMsg("move from the ticket's own project board") }
+			}
 			a.detail.startMovePicker(a.workDir)
 			return a, nil
 		case "e":
@@ -388,7 +442,16 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			return a, yankID(a.detail.ticket.ID)
 		case "w":
-			return a, a.spawnWork(a.detail.ticket)
+			return a, a.spawnWork(a.detail.ticket, a.detail.qid)
+		case "u":
+			return a, a.openParent(a.detail.ticket, a.detail.ns)
+		case "enter":
+			if a.detail.ticket.Type == ticket.TypeEpic {
+				if !a.detail.startChildPicker() {
+					return a, func() tea.Msg { return statusMsg("No children") }
+				}
+				return a, nil
+			}
 		}
 
 	case overlayForm:
@@ -470,8 +533,9 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "m":
 		if t := a.dashboard.selected(); t != nil {
-			a.detail = newDetailModel(t, a.width, a.height)
+			a.detail = newDetailModel(t, a.dashboard.qid(t), a.snap, a.width, a.height)
 			a.detail.startMovePicker(a.workDir)
+			a.detailStack = nil
 			a.overlay = overlayDetail
 			return a, nil
 		}
@@ -509,7 +573,11 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "w":
 		if t := a.dashboard.selected(); t != nil {
-			return a, a.spawnWork(t)
+			return a, a.spawnWork(t, a.dashboard.qid(t))
+		}
+	case "u":
+		if t := a.dashboard.selected(); t != nil {
+			return a, a.openParent(t, a.projectName)
 		}
 	}
 
@@ -554,7 +622,7 @@ func (a App) View() string {
 	a.dashboard.setSize(a.width, contentH)
 
 	// Project name + tab bar on same line, with an info segment flush right.
-	name := lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(a.projectName)
+	name := lipgloss.NewStyle().Bold(true).Foreground(colorWhite).Render(a.displayName())
 	tabs := a.renderTabBar()
 	tail := "  " + StyleDim.Render("—") + "  " + tabs
 	left := " " + name + tail
@@ -687,17 +755,25 @@ var tabColors = []lipgloss.Color{
 // tabShows documents: on the epics tab a count is the number of epic groups,
 // so an expanded group renders more lines than it is counted as.
 func (a App) tabCounts() map[tabID]int {
-	epics := bareEpicIDs(a.tickets)
 	needle := strings.ToLower(a.dashboard.filterText)
 	counts := make(map[tabID]int)
 	for tab := tabInbox; tab < tabCount; tab++ {
 		for _, t := range a.tickets {
-			if tabShows(tab, t, epics, a.dashboard.typeFilter, needle) {
+			if a.dashboard.tabShows(tab, t, a.dashboard.typeFilter, needle) {
 				counts[tab]++
 			}
 		}
 	}
 	return counts
+}
+
+// displayName is the board's name as the header shows it: the reserved Root
+// namespace by its display name, any project by its own.
+func (a App) displayName() string {
+	if project.IsRoot(a.projectName) {
+		return "Root"
+	}
+	return a.projectName
 }
 
 func (a App) renderTabBar() string {
@@ -814,7 +890,7 @@ func (a App) helpText() string {
 	case tabInbox:
 		status = "(b)acklog (x)done "
 	}
-	return "↑↓ select  │  " + action + " (c)reate (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+	return "↑↓ select  │  " + action + " (c)reate (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (u)p (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 }
 
 func (a App) renderHelp() string {
@@ -913,8 +989,73 @@ func (a *App) openDashboardTicket(t *ticket.Ticket) {
 		a.dashboard.focusEpic(epicID)
 		return
 	}
-	a.detail = newDetailModel(t, a.width, a.height)
+	a.detail = newDetailModel(t, a.dashboard.qid(t), a.snap, a.width, a.height)
+	a.detailStack = nil
 	a.overlay = overlayDetail
+}
+
+// detailFor builds the detail of the ticket with this qualified ID off the
+// graph. The ID is presented bare when the ticket is the board's own, as the
+// board lists it, and qualified when it is foreign — the form the edit and
+// mutation paths resolve the store from.
+func (a App) detailFor(qid string) (detailModel, bool) {
+	if a.snap == nil {
+		return detailModel{}, false
+	}
+	t, ok := a.snap.Get(qid)
+	if !ok {
+		return detailModel{}, false
+	}
+	view := *t
+	if ns, bare := ticket.ParseNamespacedID(qid); ns == a.projectName {
+		view.ID = bare
+	}
+	return newDetailModel(&view, qid, a.snap, a.width, a.height), true
+}
+
+// pushDetail opens the ticket's detail over the current one, which esc
+// returns to. From the board — no detail open — it opens as the first.
+func (a *App) pushDetail(qid string) tea.Cmd {
+	next, ok := a.detailFor(qid)
+	if !ok {
+		return func() tea.Msg { return statusMsg(fmt.Sprintf("ticket %s does not resolve", qid)) }
+	}
+	if a.overlay == overlayDetail {
+		a.detailStack = append(a.detailStack, a.detail)
+	} else {
+		// A nested detail left through the edit form leaves its stack
+		// behind; the first detail from the board must not sit over it.
+		a.detailStack = nil
+	}
+	a.detail = next
+	a.overlay = overlayDetail
+	return nil
+}
+
+// openParent opens the full detail of the epic t belongs to, foreign or not,
+// with the parent read relative to ns — the namespace t itself lives in. A
+// parent that does not resolve is reported by the graph's own wording.
+func (a *App) openParent(t *ticket.Ticket, ns string) tea.Cmd {
+	if t.Parent == "" {
+		return func() tea.Msg { return statusMsg("No parent") }
+	}
+	if issue := ticket.RelationshipIssue(t); issue != "" {
+		return func() tea.Msg { return statusMsg(issue) }
+	}
+	return a.pushDetail(ticket.QualifyRef(ns, t.Parent))
+}
+
+// storeFor is the store a mutation of this ID writes through, and the ID
+// that store answers to: the board's own project store for a bare ID or one
+// qualified to the board's namespace, the whole central store for a foreign
+// one. Board rows pass bare IDs and a detail passes qualified ones, so both
+// forms resolve here rather than at every call site.
+func (a *App) storeFor(id string) (ticket.Store, string) {
+	ns, bare := ticket.ParseNamespacedID(id)
+	if ns == "" || ns == a.projectName {
+		return a.store, bare
+	}
+	return a.multi, id
 }
 
 // syncDashboardTab updates the dashboard's activeTab to match the app tab.
@@ -952,13 +1093,14 @@ func yankID(id string) tea.Cmd {
 // ─── Mutation Handlers ──────────────────────────────────────────────────────
 
 func (a *App) handleCyclePriority(id string) tea.Cmd {
-	t, err := a.store.Get(id)
+	store, id := a.storeFor(id)
+	t, err := store.Get(id)
 	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
 
 	t.Priority = (t.Priority + 1) % 5
-	if err := a.store.Update(t); err != nil {
+	if err := store.Update(t); err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
 
@@ -970,13 +1112,14 @@ func (a *App) handleCyclePriority(id string) tea.Cmd {
 }
 
 func (a *App) handleSetStatus(id string, status ticket.Status) tea.Cmd {
-	t, err := a.store.Get(id)
+	store, id := a.storeFor(id)
+	t, err := store.Get(id)
 	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
 
 	t.Status = status
-	closed, err := ticket.SaveEdit(a.store, t, true)
+	closed, err := ticket.SaveEdit(store, t, true)
 	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
@@ -993,7 +1136,8 @@ func (a *App) handleAddNote(id, text string) tea.Cmd {
 	// the ticket already holds, so a plain read-modify-write would drop notes an
 	// agent wrote while the TUI was open. The edits that set a field keep the
 	// plain Update, where a conflict is something the user has to see.
-	_, err := ticket.Mutate(a.store, id, func(t *ticket.Ticket) error {
+	store, id := a.storeFor(id)
+	_, err := ticket.Mutate(store, id, func(t *ticket.Ticket) error {
 		t.Notes = append(t.Notes, ticket.Note{
 			Timestamp: time.Now().UTC(),
 			Text:      text,
@@ -1048,7 +1192,8 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 }
 
 func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
-	t, err := a.store.Get(msg.editID)
+	store, id := a.storeFor(msg.editID)
+	t, err := store.Get(id)
 	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}
@@ -1082,7 +1227,7 @@ func (a *App) handleEditTicket(msg formSubmitMsg) tea.Cmd {
 		}
 	}
 
-	closed, err := ticket.SaveEdit(a.store, t, msg.statusSet)
+	closed, err := ticket.SaveEdit(store, t, msg.statusSet)
 	if err != nil {
 		return func() tea.Msg { return statusMsg("error: " + err.Error()) }
 	}

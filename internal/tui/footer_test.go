@@ -104,7 +104,7 @@ func detailTestModel(w, h int) detailModel {
 		Title:  "A ticket",
 		Status: ticket.StatusOpen,
 		Type:   ticket.TypeFeature,
-	}, w, h)
+	}, "test-abcd", nil, w, h)
 }
 
 func TestDetailFooterWrapsWhenNarrow(t *testing.T) {
@@ -156,7 +156,7 @@ func TestOverlaySuppressesDashboardFooter(t *testing.T) {
 	}
 
 	detail := newTestApp(w, h)
-	detail.detail = newDetailModel(tk, w, h)
+	detail.detail = newDetailModel(tk, tk.ID, nil, w, h)
 	detail.overlay = overlayDetail
 	if out := detail.View(); strings.Contains(out, "(/) search") {
 		t.Errorf("detail overlay leaked the dashboard footer:\n%s", out)

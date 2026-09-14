@@ -67,7 +67,7 @@ func TestHandleMoveLandsInTheTargetsCentralProject(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	a := New(srcDir, "tui-from", "v0", "", srcRepo, false)
+	a := New(srcDir, "tui-from", "v0", "", srcRepo, false, nil)
 	msg := a.handleMove("tui-move-0001", dstRepo)()
 	if status, ok := msg.(statusMsg); ok && strings.Contains(string(status), "error:") {
 		t.Fatalf("handleMove: %s", status)
@@ -119,7 +119,7 @@ func TestHandleMoveRefusesTheSourcesOwnProject(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	a := New(srcDir, "tui-self", "v0", "", srcRepo, false)
+	a := New(srcDir, "tui-self", "v0", "", srcRepo, false, nil)
 	msg := a.handleMove("tui-self-0001", srcRepo)()
 	status, ok := msg.(statusMsg)
 	if !ok {
@@ -187,7 +187,7 @@ func TestHandleMoveWarnsWhenTheTargetProjectIsUnregistered(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	a := New(srcDir, "tui-reg", "v0", "", srcRepo, false)
+	a := New(srcDir, "tui-reg", "v0", "", srcRepo, false, nil)
 	status := statusLine(t, a.handleMove("tui-stray-0001", dstRepo))
 	if strings.Contains(status, "error:") {
 		t.Fatalf("handleMove: %s", status)

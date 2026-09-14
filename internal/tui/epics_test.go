@@ -9,12 +9,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func epicsTabModel(tickets []*ticket.Ticket) dashboardModel {
-	m := newDashboardModel(tickets, 120, 24)
-	m.activeTab = tabEpics
-	m.sortIdx, m.sortDir = defaultSort(tabEpics)
-	m.buildItems()
-	return m
+func epicsTabModel(t *testing.T) dashboardModel {
+	t.Helper()
+	return boardModel(t, "proj", tabEpics, 120, 24, epicsTestTickets()...)
+}
+
+func epicsTabApp(t *testing.T, tab tabID) App {
+	t.Helper()
+	return boardApp(t, "proj", tab, 120, 24, epicsTestTickets()...)
 }
 
 func childIDs(m dashboardModel) []string {
@@ -35,13 +37,14 @@ func epicsTestTickets() []*ticket.Ticket {
 		{ID: "ch-ns", Title: "Namespaced child", Type: ticket.TypeFeature, Status: ticket.StatusDone, Parent: "proj/ep-0001", Created: now},
 		{ID: "ep-0002", Title: "Other epic", Type: ticket.TypeEpic, Status: ticket.StatusBacklog, Created: now},
 		{ID: "ep-0003", Title: "Shipped epic", Type: ticket.TypeEpic, Status: ticket.StatusDone, Created: now},
+		{ID: "ch-shipped", Title: "Shipped child", Type: ticket.TypeFeature, Status: ticket.StatusDone, Parent: "ep-0003", Created: now},
 	}
 }
 
 func TestEpicsGroupsBareAndNamespacedChildren(t *testing.T) {
 	// The central store records a child's parent namespaced; tickets written
 	// before the namespacing rollout record it bare. Both belong to the epic.
-	m := epicsTabModel(epicsTestTickets())
+	m := epicsTabModel(t)
 
 	if got := itemIDs(m.items); len(got) != 2 {
 		t.Fatalf("epic groups = %v, want ep-0001 and ep-0002 (done epics excluded)", got)
@@ -61,7 +64,7 @@ func TestEpicsGroupsBareAndNamespacedChildren(t *testing.T) {
 }
 
 func TestEpicsExpandCollapse(t *testing.T) {
-	m := epicsTabModel(epicsTestTickets())
+	m := epicsTabModel(t)
 	collapsed := len(m.rows)
 
 	m.focusEpic("ep-0001")
@@ -94,11 +97,7 @@ func TestEpicsCountsGroupsNotExpandedChildren(t *testing.T) {
 	// epics tab a count is the number of epic groups, because a child is nested
 	// under a group that is already counted, so expanding must not inflate the
 	// tab bar. See tabShows.
-	tickets := epicsTestTickets()
-	a := App{tickets: tickets, activeTab: tabEpics}
-	a.dashboard.all = tickets
-	a.dashboard.setSize(120, 24)
-	a.syncDashboardTab()
+	a := epicsTabApp(t, tabEpics)
 
 	want := a.tabCounts()[tabEpics]
 	if want != len(a.dashboard.items) {
@@ -112,7 +111,7 @@ func TestEpicsCountsGroupsNotExpandedChildren(t *testing.T) {
 }
 
 func TestEpicsRowShowsIndicatorAndProgress(t *testing.T) {
-	m := epicsTabModel(epicsTestTickets())
+	m := epicsTabModel(t)
 	m.focusEpic("ep-0001")
 
 	line := m.renderRow(m.rows[m.cursor], false)
@@ -130,13 +129,9 @@ func TestEpicsRowShowsIndicatorAndProgress(t *testing.T) {
 }
 
 func TestBacklogEpicOpensEpicsTabFocused(t *testing.T) {
-	tickets := epicsTestTickets()
-	a := App{tickets: tickets, activeTab: tabBacklog}
-	a.dashboard.all = tickets
-	a.dashboard.setSize(120, 24)
-	a.syncDashboardTab()
+	a := epicsTabApp(t, tabBacklog)
 
-	a.openDashboardTicket(tickets[3]) // ep-0002, a backlog rollup
+	a.openDashboardTicket(boardTicket(t, a.tickets, "ep-0002")) // a backlog rollup
 	if a.activeTab != tabEpics {
 		t.Fatalf("active tab = %s, want epics", tabNames[a.activeTab])
 	}
@@ -149,11 +144,7 @@ func TestBacklogEpicOpensEpicsTabFocused(t *testing.T) {
 }
 
 func TestEpicsSpaceTogglesFromApp(t *testing.T) {
-	tickets := epicsTestTickets()
-	a := App{tickets: tickets, activeTab: tabEpics}
-	a.dashboard.all = tickets
-	a.dashboard.setSize(120, 24)
-	a.syncDashboardTab()
+	a := epicsTabApp(t, tabEpics)
 	a.dashboard.focusEpic("ep-0001")
 	collapsed := len(a.dashboard.rows)
 

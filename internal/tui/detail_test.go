@@ -20,7 +20,7 @@ func TestDetailSanitizesStoredContent(t *testing.T) {
 		ExternalRef: "external\x1b[2J",
 		Notes:       []ticket.Note{{Text: "note \u202espoof"}},
 	}
-	out := strings.Join(newDetailModel(tk, 100, 30).lines, "\n")
+	out := strings.Join(newDetailModel(tk, tk.ID, nil, 100, 30).lines, "\n")
 
 	for _, r := range []rune{'\x1b', '\u202e', '\u2066', '\u2069'} {
 		if strings.ContainsRune(out, r) {

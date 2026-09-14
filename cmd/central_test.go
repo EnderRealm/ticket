@@ -503,7 +503,7 @@ func TestUIWorkDirFallsBackToTheResolvedRepo(t *testing.T) {
 	defer func() { repoFlag = "" }()
 
 	ticketsDir := filepath.Join(centralRoot, "tickets", "pathless")
-	if got := uiWorkDir(ticketsDir, cfg); got != repo {
+	if got := uiWorkDir(ticketsDir, "pathless", cfg); got != repo {
 		t.Errorf("uiWorkDir = %q, want the resolved repo %q", got, repo)
 	}
 }
