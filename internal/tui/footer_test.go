@@ -44,7 +44,7 @@ func TestAppFooterWrapsWhenNarrow(t *testing.T) {
 }
 
 func TestAppFooterSingleLineWhenWide(t *testing.T) {
-	const w, h = 200, 30
+	const w, h = 220, 30
 	a := newTestApp(w, h)
 
 	footer, lines := a.footerView()

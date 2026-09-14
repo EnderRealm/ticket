@@ -246,6 +246,7 @@ func TestSpawnRefusalPreventsInjectedCommand(t *testing.T) {
 	raw := strings.NewReplacer(
 		"{dir}", dir,
 		"{id}", inject(ungated),
+		"{command}", "/work "+inject(ungated),
 		"{wtitle}", spawnWindowTitle("proj", inject(ungated), "Title"),
 	).Replace(template)
 	exec.Command("sh", "-c", raw).Run()
@@ -304,6 +305,7 @@ func TestSpawnRefusalPreventsInjectedDir(t *testing.T) {
 	raw := strings.NewReplacer(
 		"{dir}", inject(ungated),
 		"{id}", "proj/tk-x",
+		"{command}", "/work proj/tk-x",
 		"{wtitle}", spawnWindowTitle("proj", "proj/tk-x", "Title"),
 	).Replace(template)
 	exec.Command("sh", "-c", raw).Run()

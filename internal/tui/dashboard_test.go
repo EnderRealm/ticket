@@ -299,7 +299,7 @@ func TestRenderHelpHidesInertKeysInSearch(t *testing.T) {
 	a.dashboard.activeTab = tabInbox
 
 	full := a.renderHelp()
-	for _, k := range []string{"(c)reate", "(e)dit", "(d)elete", "(s)ort"} {
+	for _, k := range []string{"(n)ew", "(c)apture", "(e)dit", "(d)elete", "(s)ort"} {
 		if !strings.Contains(full, k) {
 			t.Errorf("normal help should advertise %q, got:\n%s", k, full)
 		}
@@ -307,7 +307,7 @@ func TestRenderHelpHidesInertKeysInSearch(t *testing.T) {
 
 	a.dashboard.filterActive = true
 	search := a.renderHelp()
-	for _, k := range []string{"(c)reate", "(e)dit", "(d)elete", "(p)riority", "(m)ove", "(y)ank", "(s)ort"} {
+	for _, k := range []string{"(n)ew", "(c)apture", "(e)dit", "(d)elete", "(p)riority", "(m)ove", "(y)ank", "(s)ort"} {
 		if strings.Contains(search, k) {
 			t.Errorf("search-mode help should not advertise inert key %q, got:\n%s", k, search)
 		}

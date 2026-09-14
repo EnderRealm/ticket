@@ -171,7 +171,7 @@ func (m detailModel) helpLines() []string {
 		if m.ticket != nil && m.ticket.Type == ticket.TypeEpic {
 			children = "enter children  "
 		}
-		help = "↑↓/jk scroll  │  " + children + "(e)dit (p)riority (n)ote (m)ove (y)ank (w)ork (u)p  │  esc back  (q)uit"
+		help = "↑↓/jk scroll  │  " + children + "(e)dit (p)riority (n)ote (m)ove (y)ank (w)ork (c)apture (u)p  │  esc back  (q)uit"
 	}
 	return wrapHelp(help, m.width)
 }

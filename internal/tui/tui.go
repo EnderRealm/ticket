@@ -78,6 +78,13 @@ type App struct {
 	cmdBar    textinput.Model
 	cmdActive bool
 
+	// Capture prompt: the one-line idea `c` hands to a /capture spawn, and the
+	// namespace the spawn runs in — the board's from the list, the ticket's
+	// own from a detail.
+	captureBar    textinput.Model
+	captureActive bool
+	captureNS     string
+
 	// Layout
 	width  int
 	height int
@@ -123,6 +130,11 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 	ti.Placeholder = "Search or /command..."
 	ti.CharLimit = 256
 
+	// Initialize the capture prompt.
+	ci := textinput.New()
+	ci.Placeholder = "Describe the idea…"
+	ci.CharLimit = 256
+
 	a := App{
 		store:        store,
 		multi:        ticket.NewMultiStore(filepath.Dir(ticketsDir)),
@@ -136,6 +148,7 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 		execDir:      execDir,
 		activeTab:    tabInbox,
 		cmdBar:       ti,
+		captureBar:   ci,
 	}
 	a.dashboard.activeTab = tabInbox
 	a.dashboard.ns = project
@@ -338,6 +351,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.cmdActive {
 			return a.updateCommandBar(msg)
 		}
+		if a.captureActive {
+			return a.updateCapturePrompt(msg)
+		}
 
 		// Ctrl+K toggles command bar.
 		if msg.String() == "ctrl+k" {
@@ -395,6 +411,49 @@ func (a App) updateCommandBar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
+// ─── Capture Prompt ─────────────────────────────────────────────────────────
+
+// startCapture opens the capture prompt for a spawn into ns. A namespace
+// with no checkout — Root, or a project registered elsewhere — is refused
+// here, before the prompt opens, the way `w` refuses at the keypress: the
+// idea would otherwise be typed and then thrown away on the same refusal.
+// spawnCapture resolves the checkout again at the shell boundary; this one
+// only spares the typing.
+func (a App) startCapture(ns string) (App, tea.Cmd) {
+	if _, err := a.execDir(ns); err != nil {
+		return a, refuseSpawn(err.Error())
+	}
+	a.captureActive = true
+	a.captureNS = ns
+	return a, a.captureBar.Focus()
+}
+
+// updateCapturePrompt routes keys while the capture prompt is open: esc
+// cancels with nothing spawned, enter spawns on the idea unless it is blank.
+func (a App) updateCapturePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		a.captureActive = false
+		a.captureBar.Blur()
+		a.captureBar.SetValue("")
+		return a, nil
+	case "enter":
+		idea := strings.TrimSpace(a.captureBar.Value())
+		ns := a.captureNS
+		a.captureActive = false
+		a.captureBar.Blur()
+		a.captureBar.SetValue("")
+		if idea == "" {
+			return a, nil
+		}
+		return a, a.spawnCapture(ns, idea)
+	}
+
+	var cmd tea.Cmd
+	a.captureBar, cmd = a.captureBar.Update(msg)
+	return a, cmd
+}
+
 // ─── Overlay Updates ────────────────────────────────────────────────────────
 
 func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -443,6 +502,8 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, yankID(a.detail.ticket.ID)
 		case "w":
 			return a, a.spawnWork(a.detail.ticket, a.detail.qid)
+		case "c":
+			return a.startCapture(a.detail.ns)
 		case "u":
 			return a, a.openParent(a.detail.ticket, a.detail.ns)
 		case "enter":
@@ -498,10 +559,12 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.activeTab = (a.activeTab - 1 + tabCount) % tabCount
 		a.syncDashboardTab()
 		return a, nil
-	case "c":
+	case "n":
 		a.form = newFormModel(a.width, a.contentHeight())
 		a.overlay = overlayForm
 		return a, nil
+	case "c":
+		return a.startCapture(a.projectName)
 	}
 
 	// Epics tab: space and enter expand the epic group at the cursor. A child
@@ -607,6 +670,10 @@ func (a App) View() string {
 	// authoritative for layout; the Update-time contentHeight() only feeds the
 	// scroll math, which a stale-by-one footer state can never push to overflow.
 	footer, footerLines := a.footerView()
+	captureRow, captureLines := "", 0
+	if a.overlay != overlayNone && a.captureActive {
+		captureRow, captureLines = a.capturePromptView(), 1
+	}
 	statusRows, statusLines := "", 0
 	if a.overlay != overlayNone && a.status != "" {
 		statusRows, statusLines = a.statusView()
@@ -615,7 +682,7 @@ func (a App) View() string {
 	if a.warning != "" {
 		warnLines = 1
 	}
-	contentH := a.height - 3 - footerLines - statusLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + status + warning
+	contentH := a.height - 3 - footerLines - captureLines - statusLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + capture + status + warning
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -667,9 +734,14 @@ func (a App) View() string {
 	}
 
 	// An overlay renders its own footer, so footerView — the only site that
-	// renders a.status — never runs in that branch: a store rejection of a save
-	// would leave the form open with no feedback at all. Kept above the warning
-	// row so the warning keeps the frame's last line.
+	// renders the capture prompt and a.status — never runs in that branch: the
+	// prompt `c` opened from a detail would be invisible, and a store rejection
+	// of a save would leave the form open with no feedback at all. Kept above
+	// the warning row so the warning keeps the frame's last line.
+	if captureLines > 0 {
+		b.WriteString("\n")
+		b.WriteString(captureRow)
+	}
 	if statusLines > 0 {
 		b.WriteString("\n")
 		b.WriteString(statusRows)
@@ -850,6 +922,12 @@ func (a App) renderCommandBar() string {
 	return prompt + a.cmdBar.View()
 }
 
+// capturePromptView renders the capture prompt as one padded row.
+func (a App) capturePromptView() string {
+	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
+	return pad.Render(StyleInputLabel.Render("capture: ") + a.captureBar.View())
+}
+
 // filterInfoText returns the unstyled filter segment for the current state, so
 // footerView can combine it with the help text for wrapping.
 func (a App) filterInfoText() string {
@@ -890,7 +968,7 @@ func (a App) helpText() string {
 	case tabInbox:
 		status = "(b)acklog (x)done "
 	}
-	return "↑↓ select  │  " + action + " (c)reate (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (u)p (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
+	return "↑↓ select  │  " + action + " (n)ew (c)apture (e)dit  │  " + status + "(p)riority (m)ove (d)elete (y)ank (w)ork (u)p (s)ort (S)dir  │  tab/shift+tab  ctrl+k search  (q)uit"
 }
 
 func (a App) renderHelp() string {
@@ -905,6 +983,9 @@ func (a App) renderHelp() string {
 func (a App) footerView() (string, int) {
 	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
 
+	if a.captureActive {
+		return a.capturePromptView(), 1
+	}
 	if a.cmdActive {
 		return pad.Render(a.renderCommandBar()), 1
 	}

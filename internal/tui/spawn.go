@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -11,7 +12,8 @@ import (
 )
 
 // defaultSpawnTemplate opens a new iTerm window, names it {wtitle}, cds to
-// {dir}, and runs the work session. macOS/iTerm-specific.
+// {dir}, and runs the Claude session on {command} — `/work <id>` from the `w`
+// key, `/capture <idea>` from `c`. macOS/iTerm-specific.
 //
 // It creates the window with the default profile (which starts a normal
 // interactive shell), sets the session name to {wtitle}, and then `write text`s
@@ -44,10 +46,11 @@ import (
 // are double-quoted AppleScript strings with inner quotes escaped (\") and inner
 // backslashes doubled (\\033 → the literal \033 the shell's printf needs); and
 // {dir} is wrapped in shell single quotes (via the '"'"' idiom) so the
-// interactive shell handles paths containing spaces. {wtitle} and {title} are
-// pre-sanitized in Go (no quotes, backslashes, `$`, backticks or `!`) so they
-// embed in the AppleScript strings without escaping and survive the inner
-// shell's expansion and history expansion.
+// interactive shell handles paths containing spaces. {wtitle}, {title} and the
+// idea half of a capture {command} are pre-sanitized in Go (no quotes,
+// backslashes, `$`, backticks or `!`) so they embed in the AppleScript strings
+// without escaping and survive the inner shell's expansion and history
+// expansion; the id half of a work {command} passes the {id} shape gate.
 //
 // Limitation: a project path containing a literal single quote can't be
 // escaped inside the `osascript -e '...'` wrapper (that layer is itself
@@ -55,13 +58,17 @@ import (
 // emitting a command whose quoting it closes. The refusal sits at the shell
 // boundary, so a custom spawn_command does not lift it — such a path has to be
 // renamed. Spaces — the common case on macOS — work.
-const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w to (create window with default profile)' -e 'tell current session of w to set name to "{wtitle}"' -e 'tell current session of w to write text "cd '"'"'{dir}'"'"' && printf \"\\033]0;%s\\007\" \"{wtitle}\" && export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 && claude \"/work {id}\""' -e 'end tell'`
+const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w to (create window with default profile)' -e 'tell current session of w to set name to "{wtitle}"' -e 'tell current session of w to write text "cd '"'"'{dir}'"'"' && printf \"\\033]0;%s\\007\" \"{wtitle}\" && export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 && claude \"{command}\""' -e 'end tell'`
 
 // buildSpawnCommand substitutes the placeholders into the template (or the
 // default when template is empty) and returns the shell command to run.
 // Placeholders: {dir}, {id} (namespaced, used verbatim by /work), {project},
-// {title} (sanitized like {wtitle}), and {wtitle} (the
-// "PROJECT -- ID4 -- TITLE" window name).
+// {title} (sanitized like {wtitle}), {wtitle} (the "PROJECT -- ID4 -- TITLE"
+// window name) and {command} (`/work <id>`, the slash command the session
+// opens on). {command} is what lets one template serve both keys: a custom
+// template written before it existed hard-codes `/work {id}` and carries no
+// {command}, so nothing fires and it keeps working unchanged; only
+// buildCaptureCommand needs the placeholder present.
 //
 // {id} and {title} come from the central store, a git repo other machines push
 // to, so both are untrusted here. {project} and {dir} do not arrive that way —
@@ -97,7 +104,7 @@ const defaultSpawnTemplate = `osascript -e 'tell application "iTerm"' -e 'set w 
 // quotes you see. The default's outer "..." is consumed by AppleScript; what
 // reaches the inner shell is the escaped \"...\", which is why {wtitle} is safe
 // there and a title dropped into the visible quotes would not be. The default
-// template only uses {wtitle}.
+// template only uses {wtitle} and {command}, both inside the escaped quotes.
 func buildSpawnCommand(template, dir, id, project, title string) (string, error) {
 	if !validSpawnID(id) {
 		// Short by necessity: this reaches the TUI as a statusMsg, which
@@ -105,23 +112,64 @@ func buildSpawnCommand(template, dir, id, project, title string) (string, error)
 		// in the README rather than here, where it would wrap the frame.
 		return "", fmt.Errorf("ticket ID %q is not a plain ID; see spawn_command in the README", id)
 	}
+	if err := checkSpawnTarget(dir, project); err != nil {
+		return "", err
+	}
+	return interpolateSpawn(spawnTemplate(template), dir, id, project, sanitizeSpawnText(title), "/work "+id, spawnWindowTitle(project, id, title)), nil
+}
+
+// buildCaptureCommand is the `c` key's counterpart of buildSpawnCommand: the
+// session opens on `/capture <idea>` in the project's checkout, and there is
+// no ticket yet, so {id} is empty and {title} is the idea. The idea is typed
+// locally, but it lands inside the template's quoting all the same, so it is
+// sanitized exactly like a title — free text, never refused — while {dir} and
+// {project} take the same refusals as the work path. The template must carry
+// {command}: a hard-coded `/work {id}` has nowhere to put a capture, and
+// substituting into it anyway would open a work session on an empty id.
+func buildCaptureCommand(template, dir, project, idea string) (string, error) {
+	if err := checkSpawnTarget(dir, project); err != nil {
+		return "", err
+	}
+	template = spawnTemplate(template)
+	if !strings.Contains(template, "{command}") {
+		return "", errors.New("spawn_command has no {command} placeholder; see the README")
+	}
+	idea = sanitizeSpawnText(idea)
+	return interpolateSpawn(template, dir, "", project, idea, "/capture "+idea, windowTitle(project, "capture", idea)), nil
+}
+
+// checkSpawnTarget is the {dir}/{project} half of the refusals, shared by both
+// builders so a second spawn path cannot reach the interpolation without it.
+func checkSpawnTarget(dir, project string) error {
 	if !validSpawnLiteral(dir) {
-		return "", fmt.Errorf("working directory %q carries shell quoting characters; see spawn_command in the README", dir)
+		return fmt.Errorf("working directory %q carries shell quoting characters; see spawn_command in the README", dir)
 	}
 	if !validSpawnLiteral(project) {
-		return "", fmt.Errorf("project name %q carries shell quoting characters; see spawn_command in the README", project)
+		return fmt.Errorf("project name %q carries shell quoting characters; see spawn_command in the README", project)
 	}
+	return nil
+}
+
+// spawnTemplate returns the configured template, or the default when none is.
+func spawnTemplate(template string) string {
 	if strings.TrimSpace(template) == "" {
-		template = defaultSpawnTemplate
+		return defaultSpawnTemplate
 	}
+	return template
+}
+
+// interpolateSpawn substitutes the placeholders in one pass. title and wtitle
+// arrive sanitized; command carries whichever slash command the caller built.
+func interpolateSpawn(template, dir, id, project, title, command, wtitle string) string {
 	r := strings.NewReplacer(
 		"{dir}", dir,
 		"{id}", id,
 		"{project}", project,
-		"{title}", sanitizeSpawnText(title),
-		"{wtitle}", spawnWindowTitle(project, id, title),
+		"{title}", title,
+		"{wtitle}", wtitle,
+		"{command}", command,
 	)
-	return r.Replace(template), nil
+	return r.Replace(template)
 }
 
 // validSpawnID reports whether id can be interpolated into a spawn template
@@ -212,15 +260,22 @@ func validSpawnLiteral(s string) bool {
 // spawnWindowTitle builds the "PROJECT -- ID4 -- TITLE" window name: the
 // uppercased project, the ticket's short id suffix (the 4-char hash after the
 // last `-`, via IDSuffix — the full id slug just echoes the title, so it's
-// redundant here), and the title truncated to the first 20 runes. The whole
-// string is sanitized of characters that would break the osascript/AppleScript
-// quoting layers, so it embeds without escaping.
+// redundant here), and the title truncated to the first 20 runes.
 func spawnWindowTitle(project, id, title string) string {
-	r := []rune(title)
+	return windowTitle(project, IDSuffix(id), title)
+}
+
+// windowTitle builds the "PROJECT -- MID -- TEXT" window name with text
+// truncated to the first 20 runes; a capture puts the word `capture` where a
+// work session puts the id suffix. The whole string is sanitized of characters
+// that would break the osascript/AppleScript quoting layers, so it embeds
+// without escaping.
+func windowTitle(project, mid, text string) string {
+	r := []rune(text)
 	if len(r) > 20 {
 		r = r[:20]
 	}
-	return sanitizeSpawnText(strings.ToUpper(project) + " -- " + IDSuffix(id) + " -- " + string(r))
+	return sanitizeSpawnText(strings.ToUpper(project) + " -- " + mid + " -- " + string(r))
 }
 
 // sanitizeSpawnText replaces characters that would break the shell single-quote
@@ -272,27 +327,53 @@ func sanitizeSpawnText(s string) string {
 // would otherwise start the foreign ticket's session wherever `tk ui` was
 // launched, in a repository the eligibility check never approved.
 func (a App) spawnWork(t *ticket.Ticket, qid string) tea.Cmd {
-	refuse := func(reason string) tea.Cmd {
-		return func() tea.Msg { return statusMsg("error: refusing to spawn: " + reason) }
-	}
 	if t.Type == ticket.TypeEpic {
-		return refuse("an epic is not run; open a child")
+		return refuseSpawn("an epic is not run; open a child")
 	}
 	ns, _ := ticket.ParseNamespacedID(qid)
 	dir, err := a.execDir(ns)
 	if err != nil {
-		return refuse(err.Error())
+		return refuseSpawn(err.Error())
 	}
 	cmd, err := buildSpawnCommand(a.spawnCommand, dir, qid, ns, t.Title)
 	if err != nil {
-		return refuse(err.Error())
+		return refuseSpawn(err.Error())
 	}
+	return startSpawn(cmd, dir, "Launching /work "+qid+"…")
+}
+
+// spawnCapture launches a new terminal session running `/capture <idea>` in
+// the checkout registered for ns — the board's project from the list, the
+// ticket's own from a detail. The capture dialogue itself (duplicate check,
+// why/success gate) runs in that window; the TUI only seeds it with the idea.
+// The same refusals as spawnWork land before anything is exec'd: Root and an
+// unregistered project through execDir, quoting in {dir}/{project} and a
+// template with no {command} through buildCaptureCommand.
+func (a App) spawnCapture(ns, idea string) tea.Cmd {
+	dir, err := a.execDir(ns)
+	if err != nil {
+		return refuseSpawn(err.Error())
+	}
+	cmd, err := buildCaptureCommand(a.spawnCommand, dir, ns, idea)
+	if err != nil {
+		return refuseSpawn(err.Error())
+	}
+	return startSpawn(cmd, dir, "Launching /capture…")
+}
+
+func refuseSpawn(reason string) tea.Cmd {
+	return func() tea.Msg { return statusMsg("error: refusing to spawn: " + reason) }
+}
+
+// startSpawn runs cmd detached, with dir as its working directory, and
+// reports launched on success.
+func startSpawn(cmd, dir, launched string) tea.Cmd {
 	return func() tea.Msg {
 		c := exec.Command("sh", "-c", cmd)
 		c.Dir = dir
 		if err := c.Start(); err != nil {
 			return statusMsg("error: " + err.Error())
 		}
-		return statusMsg("Launching /work " + qid + "…")
+		return statusMsg(launched)
 	}
 }
