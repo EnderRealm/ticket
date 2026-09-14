@@ -10,6 +10,81 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestInboxBacklogQuestionLifecycle(t *testing.T) {
+	session := testServer(t)
+	created := callObject(t, session, "ticket_create", map[string]any{"title": "Parked grooming", "type": "feature"})
+	id := created["id"].(string)
+	ptr := func(s string) *string { return &s }
+	for _, step := range []struct {
+		name     string
+		status   string
+		question *string
+		action   string
+		detail   string
+	}{
+		{"absent", "backlog", nil, "", ""},
+		{"parked", "backlog", ptr("  Which store wins?  "), "blocked", "Which store wins?"},
+		{"blank", "backlog", ptr("   "), "", ""},
+		{"parked again", "backlog", ptr("Which store wins?"), "blocked", "Which store wins?"},
+		{"cleared", "backlog", ptr(""), "", ""},
+		{"done", "done", ptr("Stale?"), "", ""},
+		{"closed", "closed", ptr("Stale?"), "", ""},
+		{"ready", "ready", ptr(""), "work", "ready for work"},
+		{"ready parked", "ready", ptr("Which store wins?"), "blocked", "Which store wins?"},
+		{"open", "open", ptr(""), "work", "in progress"},
+		{"open parked", "open", ptr("Which store wins?"), "blocked", "Which store wins?"},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			args := map[string]any{"id": id, "status": step.status}
+			if step.question != nil {
+				args["set"] = map[string]any{ticket.QuestionField: *step.question}
+			}
+			callObject(t, session, "ticket_edit", args)
+			result := callTool(t, session, "ticket_inbox", map[string]any{})
+			if result.IsError {
+				t.Fatalf("inbox error: %v", result.Content)
+			}
+			var items []struct {
+				Ticket struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+				} `json:"ticket"`
+				Action string `json:"action"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &items); err != nil {
+				t.Fatal(err)
+			}
+			if step.action == "" {
+				if len(items) != 0 {
+					t.Errorf("inbox = %+v, want empty", items)
+				}
+			} else if len(items) != 1 {
+				t.Errorf("inbox = %+v, want one %s ticket", items, step.action)
+			} else if got := items[0]; got.Ticket.ID != id || got.Ticket.Status != step.status || got.Action != step.action || got.Detail != step.detail {
+				t.Errorf("inbox = %+v, want %s %s %q", got, step.status, step.action, step.detail)
+			}
+			shown := callObject(t, session, "ticket_show", map[string]any{"id": id})
+			if shown["status"] != step.status {
+				t.Errorf("stored status = %v, want %s", shown["status"], step.status)
+			}
+			if step.question != nil && *step.question == "" {
+				if _, exists := shown[ticket.QuestionField]; exists {
+					t.Error("cleared question still stored")
+				}
+			}
+			frontier := callObject(t, session, "ticket_frontier", map[string]any{})
+			rows, _ := frontier["tickets"].([]any)
+			if len(rows) != 0 && step.status != "ready" {
+				t.Errorf("frontier includes %s ticket: %v", step.status, rows)
+			}
+			if step.status == "ready" && (len(rows) != 1 || rows[0].(map[string]any)["id"] != id) {
+				t.Errorf("frontier lost ready ticket: %v", rows)
+			}
+		})
+	}
+}
+
 func TestInboxBlocked(t *testing.T) {
 	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	alpha := ticket.NewProjectFileStore(filepath.Join(root, "tickets", "alpha"), "alpha")

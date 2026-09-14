@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Backlog tickets carrying a nonblank question appear in the shared inbox, `ticket_inbox`, and TUI inbox with their question. Clearing it removes them from the inbox; their backlog status and exclusion from the ready-only execution frontier are unchanged.
+
 ### Fixed
 - `ticket_inbox` reports ready and open tickets with unfinished or missing dependencies as `blocked`, naming the blocking dependency IDs in the detail. Parked questions retain their detail, and stored statuses are unchanged. The shared `ticket.Inbox` calculation resolves dependencies from its existing listing.
 

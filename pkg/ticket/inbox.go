@@ -56,9 +56,10 @@ func NextAction(t *Ticket) InboxItem {
 	return item
 }
 
-// Inbox returns actionable tickets (ready or open), sorted by priority then
-// age. Tickets with unresolved dependencies or parked questions are kept as
-// blocked, with a parked question taking precedence in the detail.
+// Inbox returns ready and open tickets, plus backlog tickets with parked
+// questions, sorted by priority then age. Tickets with unresolved dependencies
+// or parked questions are kept as blocked, with a question taking precedence
+// in the detail.
 func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -68,7 +69,7 @@ func Inbox(store Store) ([]InboxItem, error) {
 	depOf := depLookup(store, tickets)
 	var items []InboxItem
 	for _, t := range tickets {
-		if t.Status == StatusDone || t.Status == StatusClosed || t.Status == StatusBacklog {
+		if t.Status == StatusDone || t.Status == StatusClosed {
 			continue
 		}
 		item := NextAction(t)

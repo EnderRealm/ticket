@@ -377,6 +377,8 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket, snap *ticket.S
 //	done     done, closed              shown             shown
 //	all      anything but done/closed  hidden            shown
 //
+// The inbox also shows backlog tickets carrying a nonblank parked question.
+//
 // A ticket with no status is a row on no tab.
 //
 // One divergence, on the epics tab: a child nested under an expanded epic
@@ -405,7 +407,8 @@ func (m dashboardModel) tabShows(tab tabID, t *ticket.Ticket, typeFilter ticket.
 			return false
 		}
 	case tabInbox:
-		if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady {
+		parkedBacklog := t.Status == ticket.StatusBacklog && strings.TrimSpace(t.Extra[ticket.QuestionField]) != ""
+		if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady && !parkedBacklog {
 			return false
 		}
 		if isEpic {

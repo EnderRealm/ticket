@@ -234,6 +234,68 @@ func TestInbox_ExcludesBacklog(t *testing.T) {
 	}
 }
 
+func TestInboxBacklogQuestion(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	now := time.Now()
+	for i, fixture := range []struct {
+		id     string
+		status Status
+		extra  map[string]string
+	}{
+		{"ready", StatusReady, nil},
+		{"parked", StatusBacklog, map[string]string{QuestionField: "  Which store wins?  "}},
+		{"open", StatusOpen, nil},
+		{"absent", StatusBacklog, nil},
+		{"empty", StatusBacklog, map[string]string{QuestionField: ""}},
+		{"blank", StatusBacklog, map[string]string{QuestionField: " \t\n"}},
+		{"done", StatusDone, map[string]string{QuestionField: "Stale?"}},
+		{"closed", StatusClosed, map[string]string{QuestionField: "Stale?"}},
+	} {
+		if err := store.Create(&Ticket{
+			ID: fixture.id, Title: fixture.id, Status: fixture.status, Type: TypeFeature,
+			Priority: 1, Created: now.Add(time.Duration(i) * time.Hour), Extra: fixture.extra,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := Inbox(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("inbox = %+v, want ready, parked, open", items)
+	}
+	for i, id := range []string{"ready", "parked", "open"} {
+		if items[i].Ticket.ID != id {
+			t.Errorf("inbox[%d] = %s, want %s", i, items[i].Ticket.ID, id)
+		}
+	}
+	if got := items[1]; got.Action != ActionBlocked || got.Detail != "Which store wins?" || got.Ticket.Status != StatusBacklog {
+		t.Errorf("parked inbox item = %+v", got)
+	}
+	parked, err := store.Get("parked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != StatusBacklog {
+		t.Fatalf("inbox changed stored status to %s", parked.Status)
+	}
+	delete(parked.Extra, QuestionField)
+	if err := store.Update(parked); err != nil {
+		t.Fatal(err)
+	}
+	items, err = Inbox(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Ticket.ID != "ready" || items[1].Ticket.ID != "open" {
+		t.Errorf("inbox after clearing question = %+v, want ready, open", items)
+	}
+	if got := statusOf(t, store, "parked"); got != StatusBacklog {
+		t.Errorf("clearing question changed stored status to %s", got)
+	}
+}
+
 func TestInbox_FiltersActionableStatuses(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 
