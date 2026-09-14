@@ -111,8 +111,19 @@ func syncLoop(ctx context.Context, storeRoot string, interval time.Duration) {
 	}
 }
 
-// syncCentralStore performs a single sync cycle: pull, stage, commit, push.
-// Returns a warning message on problems, or empty string on success/no-op.
+// syncCentralStore performs a single sync cycle: fetch, then under the store
+// lock pull, stage and commit, then push. Returns a warning message on
+// problems, or empty string on success/no-op.
+//
+// The cycle is split around the store lock. The network half — the fetch and
+// the push — runs outside it: either can hang on a remote for as long as the
+// transport allows, and a tk writer waiting on the lock behind it would time
+// out on a store nothing is changing. Everything that changes or reads the
+// working tree to commit it — the rebase pull, the unmerged-paths check,
+// staging, the conflict-marker scan and the commit — runs under the exclusive
+// lock (ticket.WithStoreLock), so no writer lands a ticket mid-rebase or
+// mid-commit and no reader snapshots a half-applied merge. The retry after a
+// rejected push re-enters the lock for its own rebase pull.
 //
 // Every git invocation runs with `-C storeRoot`, not with the repo toplevel
 // findGitRoot resolves. For a store root nested inside another repo — the
@@ -162,11 +173,105 @@ func syncCentralStore(storeRoot string) string {
 		return msg
 	}
 
-	// Pull remote changes first so the push branch never starts from a stale
-	// base. Runs every cycle regardless of local changes — without this, a
-	// machine with no outgoing commits never picks up incoming ones.
-	if msg := pullIfBehind(storeRoot); msg != "" {
+	// Fetch first, outside the lock, so the push branch never starts from a
+	// stale base. Runs every cycle regardless of local changes — without this,
+	// a machine with no outgoing commits never picks up incoming ones.
+	behind, msg := fetchBehind(storeRoot)
+	if msg != "" {
 		return msg
+	}
+
+	// A lock that cannot be taken is a skipped cycle, not a blocked marker: a
+	// writer stuck holding it is transient, and the next cycle tries again.
+	var merged, committed bool
+	if err := ticket.WithStoreLock(storeRoot, true, func() error {
+		merged, committed, msg = commitStoreTree(storeRoot, behind)
+		return nil
+	}); err != nil {
+		return fmt.Sprintf("sync skipped: store lock: %v", err)
+	}
+	// A merge is reported, never blocked on: git has nothing left to resolve,
+	// and the snapshot already keeps an epic over invalid state from reading
+	// done and such a leaf out of the frontier. The report rides on whatever
+	// the rest of the cycle returns — a commit the guards blocked included —
+	// so a clean success is never claimed over a merged store the graph
+	// refuses, and a merge is never reported as the block alone.
+	report := ""
+	if merged {
+		report = mergedStoreWarning(storeRoot)
+	}
+	withReport := func(msg string) string {
+		switch {
+		case report == "":
+			return msg
+		case msg == "":
+			return report
+		default:
+			return msg + "; " + report
+		}
+	}
+	if msg != "" {
+		return withReport(msg)
+	}
+	if !committed {
+		return withReport("")
+	}
+
+	// Check for remote
+	remotes, err := gitRemoteNames(storeRoot)
+	if err != nil || len(remotes) == 0 {
+		return withReport("") // no remote, commit-only mode
+	}
+
+	// Check for unpushed commits
+	if !hasUnpushedCommits(storeRoot) {
+		return withReport("")
+	}
+
+	// Push
+	pushOut, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput()
+	if err == nil {
+		clearSyncBlocked(storeRoot)
+		return withReport("")
+	}
+
+	// Push failed — pull --rebase --autostash and retry, handing down the push's
+	// own output. The retry runs on any push failure, not only a rejection, and
+	// the pull fixes none of the others — a branch with no upstream configured
+	// lands here too — so that output is the only account of why the push
+	// failed, and it is composed into the message and the marker there.
+	var moved bool
+	if err := ticket.WithStoreLock(storeRoot, true, func() error {
+		moved, msg = rebasePull(storeRoot, string(pushOut))
+		return nil
+	}); err != nil {
+		return withReport(fmt.Sprintf("sync skipped: store lock: %v", err))
+	}
+	if msg != "" {
+		return withReport(msg)
+	}
+	if moved && report == "" {
+		report = mergedStoreWarning(storeRoot)
+	}
+
+	if out, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput(); err != nil {
+		return withReport(fmt.Sprintf("git push failed after rebase (%s)", ticket.SanitizeControl(strings.TrimSpace(string(out)))))
+	}
+
+	clearSyncBlocked(storeRoot)
+	return withReport("")
+}
+
+// commitStoreTree is the half of a cycle that touches the working tree,
+// called with the exclusive store lock held: the rebase pull when the fetch
+// found the branch behind, the guards, staging and the commit. It reports
+// whether the pull moved HEAD — the tree now holds commits from elsewhere —
+// and whether a commit was made, or the warning that stopped it.
+func commitStoreTree(storeRoot string, behind bool) (merged, committed bool, msg string) {
+	if behind {
+		if merged, msg = rebasePull(storeRoot, ""); msg != "" {
+			return false, false, msg
+		}
 	}
 
 	// Refuse to proceed if the working tree has unmerged paths. `pull --rebase
@@ -175,7 +280,7 @@ func syncCentralStore(storeRoot string) string {
 	// verbatim with the conflict markers intact.
 	if msg := checkUnmergedPaths(storeRoot); msg != "" {
 		writeSyncBlocked(storeRoot, msg)
-		return msg
+		return merged, false, msg
 	}
 
 	// Stage only tk-managed paths (tickets directory and shared config), and
@@ -199,12 +304,12 @@ func syncCentralStore(storeRoot string) string {
 			}
 			msg := fmt.Sprintf("sync blocked: central store stat %s failed: %v", path, err)
 			writeSyncBlocked(storeRoot, msg)
-			return msg
+			return merged, false, msg
 		}
 		if out, err := exec.Command("git", "-C", storeRoot, "add", "--", path).CombinedOutput(); err != nil {
 			msg := fmt.Sprintf("sync blocked: git add %s failed: %v (%s)", path, err, ticket.SanitizeControl(strings.TrimSpace(string(out))))
 			writeSyncBlocked(storeRoot, msg)
-			return msg
+			return merged, false, msg
 		}
 		diff := exec.Command("git", "-C", storeRoot, "diff", "--cached", "--quiet", "--", path)
 		if err := diff.Run(); err != nil {
@@ -212,7 +317,7 @@ func syncCentralStore(storeRoot string) string {
 		}
 	}
 	if len(changed) == 0 {
-		return "" // nothing to commit
+		return merged, false, "" // nothing to commit
 	}
 
 	// Belt-and-braces: scan staged blobs for unresolved conflict markers
@@ -222,9 +327,9 @@ func syncCentralStore(storeRoot string) string {
 	// The scan reads the index (`git show :<name>`) while the commit below is a
 	// partial commit, which builds its tree from HEAD plus the *working tree*
 	// contents of the named paths, not those index entries. The add immediately
-	// above makes the two agree in practice, but a ticket rewritten in between —
-	// plausible, since `tk serve` writes tickets in the same process as this
-	// loop — is committed without having been scanned. The guard is a net, not a
+	// above makes the two agree in practice, and the store lock held across
+	// both keeps a tk writer from rewriting a ticket in between; a writer that
+	// bypasses the boundary is the remaining gap. The guard is a net, not a
 	// proof.
 	if msg := checkStagedConflictMarkers(storeRoot); msg != "" {
 		// Scoped like everything else here: a bare `git reset` would unstage the
@@ -232,49 +337,82 @@ func syncCentralStore(storeRoot string) string {
 		resetArgs := append([]string{"-C", storeRoot, "reset", "--"}, centralStorePaths...)
 		exec.Command("git", resetArgs...).Run()
 		writeSyncBlocked(storeRoot, msg)
-		return msg
+		return merged, false, msg
 	}
 
 	// Commit
-	msg := "tk: sync tickets"
-	commitArgs := append([]string{"-C", storeRoot, "commit", "-m", msg, "--"}, changed...)
+	commitArgs := append([]string{"-C", storeRoot, "commit", "-m", "tk: sync tickets", "--"}, changed...)
 	if out, err := exec.Command("git", commitArgs...).CombinedOutput(); err != nil {
-		return fmt.Sprintf("git commit failed: %v (%s)", err, ticket.SanitizeControl(strings.TrimSpace(string(out))))
+		return merged, false, fmt.Sprintf("git commit failed: %v (%s)", err, ticket.SanitizeControl(strings.TrimSpace(string(out))))
 	}
+	return merged, true, ""
+}
 
-	// Check for remote
-	remotes, err := gitRemoteNames(storeRoot)
-	if err != nil || len(remotes) == 0 {
-		return "" // no remote, commit-only mode
+// rebasePull runs pullRebaseAutostash and reports whether it moved HEAD —
+// the only sign, short of diffing trees, that commits from elsewhere landed
+// in the working tree and the store may now hold what another machine wrote.
+// Called with the store lock held, like the pull itself.
+func rebasePull(storeRoot, pushOut string) (moved bool, msg string) {
+	before := headRev(storeRoot)
+	if msg := pullRebaseAutostash(storeRoot, pushOut); msg != "" {
+		return false, msg
 	}
+	return headRev(storeRoot) != before, ""
+}
 
-	// Check for unpushed commits
-	if !hasUnpushedCommits(storeRoot) {
+// headRev is the commit HEAD names, or "" when git cannot say. Two unanswered
+// reads compare equal, so an unresolvable HEAD reports no merge rather than
+// one — the pull that would have moved it fails on its own account.
+func headRev(storeRoot string) string {
+	out, err := exec.Command("git", "-C", storeRoot, "rev-parse", "HEAD").Output()
+	if err != nil {
 		return ""
 	}
+	return strings.TrimSpace(string(out))
+}
 
-	// Push
-	pushOut, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput()
-	if err == nil {
-		clearSyncBlocked(storeRoot)
+// maxMergedStoreLines bounds the causes one merged-store warning carries; the
+// tail keeps the count honest, the way logForeignUnmergedPaths caps its list.
+const maxMergedStoreLines = 5
+
+// mergedStoreWarning reads the store a rebase pull just changed and reports
+// the invalid graph state the merge brought in: whatever the snapshot could
+// not read, and every ticket whose parent relationship the graph refuses. It
+// is a report and never a block — git has nothing left to resolve, and the
+// snapshot already keeps such an epic from reading done and such a leaf out
+// of the frontier — so the cycle carries on and the warning names what
+// `tk audit` will list.
+//
+// Read after the store lock is released, not under it: the snapshot takes the
+// shared lock itself and the lock is not reentrant (see ticket.WithStoreLock).
+// A write landing in between passed validation against this same merged
+// tree, so what the snapshot reports is still what the merge left.
+func mergedStoreWarning(storeRoot string) string {
+	snap, err := ticket.NewMultiStore(filepath.Join(storeRoot, "tickets")).Snapshot()
+	if err != nil {
+		return fmt.Sprintf("sync: merged store could not be read (%s) — run tk audit", ticket.SanitizeControl(err.Error()))
+	}
+	lines := snap.Diagnostics()
+	diagnostics := len(lines)
+	invalid := 0
+	for _, t := range snap.Tickets {
+		if issue := ticket.RelationshipIssue(t); issue != "" {
+			invalid++
+			lines = append(lines, issue)
+		}
+	}
+	if snap.Complete && invalid == 0 {
 		return ""
 	}
-
-	// Push failed — pull --rebase --autostash and retry, handing down the push's
-	// own output. The retry runs on any push failure, not only a rejection, and
-	// the pull fixes none of the others — a branch with no upstream configured
-	// lands here too — so that output is the only account of why the push
-	// failed, and it is composed into the message and the marker there.
-	if msg := pullRebaseAutostash(storeRoot, string(pushOut)); msg != "" {
-		return msg
+	if len(lines) > maxMergedStoreLines {
+		lines = append(lines[:maxMergedStoreLines], fmt.Sprintf("+%d more", len(lines)-maxMergedStoreLines))
 	}
-
-	if out, err := exec.Command("git", "-C", storeRoot, "push").CombinedOutput(); err != nil {
-		return fmt.Sprintf("git push failed after rebase (%s)", ticket.SanitizeControl(strings.TrimSpace(string(out))))
+	// Filenames and IDs in these lines arrived over git from other machines,
+	// and the warning reaches the serve log and `tk status`.
+	for i, line := range lines {
+		lines[i] = ticket.SanitizeControl(line)
 	}
-
-	clearSyncBlocked(storeRoot)
-	return ""
+	return fmt.Sprintf("sync: merged store has %d diagnostic(s) and %d invalid relationship(s); epics cannot certify completion and affected leaves are not runnable — run tk audit (%s)", diagnostics, invalid, strings.Join(lines, "; "))
 }
 
 // checkUnmergedPaths returns a non-empty warning when the store's paths have
@@ -367,32 +505,29 @@ func hasConflictMarker(content []byte) bool {
 	return false
 }
 
-// pullIfBehind fetches origin and rebases local commits onto upstream when
-// behind. Returns a warning (and writes the sync-blocked marker) on failure or
-// when the rebase pull is gated for a nested store — see pullRebaseAutostash —
-// or empty string on success / no remote / no upstream / already up to date.
-func pullIfBehind(storeRoot string) string {
+// fetchBehind fetches origin and reports whether the current branch is behind
+// its upstream, for the rebase pull the caller then runs under the store lock.
+// Returns a warning (and writes the sync-blocked marker) when the fetch fails,
+// or empty string on success / no remote / no upstream. Nothing here touches
+// the working tree, which is what lets it run outside the lock.
+func fetchBehind(storeRoot string) (behind bool, msg string) {
 	remotes, err := gitRemoteNames(storeRoot)
 	if err != nil || len(remotes) == 0 {
-		return ""
+		return false, ""
 	}
 
 	// Skip when no upstream is configured for the current branch.
 	if err := exec.Command("git", "-C", storeRoot, "rev-parse", "--abbrev-ref", "@{u}").Run(); err != nil {
-		return ""
+		return false, ""
 	}
 
 	if out, err := exec.Command("git", "-C", storeRoot, "fetch").CombinedOutput(); err != nil {
 		msg := fmt.Sprintf("sync blocked: git fetch failed (%s)", ticket.SanitizeControl(strings.TrimSpace(string(out))))
 		writeSyncBlocked(storeRoot, msg)
-		return msg
+		return false, msg
 	}
 
-	if !behindUpstream(storeRoot) {
-		return ""
-	}
-
-	return pullRebaseAutostash(storeRoot, "")
+	return behindUpstream(storeRoot), ""
 }
 
 // pullRebaseAutostash runs the rebase pull both the pre-flight pull and the

@@ -312,6 +312,138 @@ func (s *FileStore) createLocked(t *Ticket) (bool, error) {
 	return true, nil
 }
 
+// ImportAll writes a batch of tickets read from somewhere other than the
+// store — a repository's legacy .tickets/ directory, which `tk init` copies
+// into the central store — through the boundary, as one write. The batch is
+// validated as a whole against a snapshot that already holds it: a child whose
+// parent is the epic beside it in the batch resolves, and the cycle check sees
+// every edge the batch would add. Nothing is written until every ticket has
+// passed; the first refusal comes back naming its ticket, with the store as it
+// was.
+//
+// An ID the store already holds is the store's: the batch copy is skipped
+// rather than validated or written, since a legacy file re-imported over a
+// ticket the central store has since carried on with is stale by definition,
+// and this is what keeps `tk init` re-runnable. An epic in the batch is
+// stored with the status the merged snapshot derives for it — a stored epic
+// status is advisory and never read back, so a legacy value is corrected
+// rather than refused the way a create refuses one the caller chose. The IDs
+// come back bare, as the batch carried them.
+func (s *FileStore) ImportAll(tickets []*Ticket) (imported, skipped []string, err error) {
+	if err := s.guardWrite(); err != nil {
+		return nil, nil, fmt.Errorf("import: %w", err)
+	}
+	c := centralFor(s)
+	err = c.write(s.Project, func(o *op) error {
+		// The destination is bounded the way every other write's is: a
+		// symlinked namespace is left out of readSources, so the batch would
+		// see no target and the writes below would follow s.Dir to the
+		// link's target outside the store.
+		if _, err := c.store(s.Project); err != nil {
+			return fmt.Errorf("import: %w", err)
+		}
+		sources, crossProject, err := c.readSources()
+		if err != nil {
+			return err
+		}
+		existing := map[string]bool{}
+		target := -1
+		for i, src := range sources {
+			if src.name != s.Project {
+				continue
+			}
+			if src.err != "" {
+				return fmt.Errorf("import: namespace %q could not be read: %s", s.Project, src.err)
+			}
+			target = i
+			for _, t := range src.tickets {
+				existing[t.ID] = true
+			}
+		}
+		if target < 0 {
+			sources = append(sources, namespaceSource{name: s.Project})
+			target = len(sources) - 1
+		}
+		var pending []*Ticket
+		for _, t := range tickets {
+			if !existing[t.ID] {
+				pending = append(pending, t)
+			}
+		}
+		// merge is the store with the batch in it, built over copies:
+		// buildSnapshot qualifies IDs and derives epics in place, the sources
+		// are built from twice, and the batch is written under its bare IDs
+		// as the caller holds them.
+		merge := func() *Snapshot {
+			merged := make([]namespaceSource, len(sources))
+			for i, src := range sources {
+				merged[i] = src
+				merged[i].tickets = make([]*Ticket, 0, len(src.tickets)+len(pending))
+				for _, t := range src.tickets {
+					dup := *t
+					merged[i].tickets = append(merged[i].tickets, &dup)
+				}
+			}
+			for _, t := range pending {
+				dup := *t
+				merged[target].tickets = append(merged[target].tickets, &dup)
+			}
+			return buildSnapshot(merged, crossProject)
+		}
+		// Canonicalize first, validate second, each against a graph that holds
+		// the batch. A legacy parent spelled as a fragment does not place its
+		// child in the first graph, so a cycle running through two such
+		// children is invisible to a check made over it; once every parent is
+		// the exact epic it resolves to and every reference is qualified, the
+		// graph rebuilt from the batch holds every edge the write would add,
+		// and the cycle check sees all of them.
+		canon := &op{c: c, snap: merge()}
+		for _, t := range pending {
+			if err := canon.resolveParent(s.Project, nil, t); err != nil {
+				return fmt.Errorf("import %s: %w", t.ID, err)
+			}
+			qualifyRefs(s.Project, nil, t.Deps)
+			qualifyRefs(s.Project, nil, t.Links)
+			qualifyCargoKeys(s.Project, nil, t)
+		}
+		merged := merge()
+		batch := &op{c: c, snap: merged}
+		for _, t := range pending {
+			if err := batch.validate(s.Project, nil, t); err != nil {
+				return fmt.Errorf("import %s: %w", t.ID, err)
+			}
+			if t.Type == TypeEpic {
+				if twin, ok := merged.Get(FormatNamespacedID(s.Project, t.ID)); ok {
+					t.Status = twin.Status
+				}
+			}
+		}
+		if err := s.EnsureDir(); err != nil {
+			return err
+		}
+		for _, t := range tickets {
+			if existing[t.ID] {
+				skipped = append(skipped, t.ID)
+				continue
+			}
+			written, err := s.createLocked(t)
+			if err != nil {
+				return fmt.Errorf("import %s: %w", t.ID, err)
+			}
+			if written {
+				imported = append(imported, t.ID)
+			} else {
+				skipped = append(skipped, t.ID)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return imported, skipped, nil
+}
+
 // Get retrieves a ticket by exact or partial ID. An epic comes back with the
 // status and completion date its children imply — across every namespace,
 // off a snapshot taken under the shared store lock — so a single-ticket read
@@ -675,6 +807,20 @@ func (s *FileStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	return projectView(snap, s.Project), s.projectSkips(snap), nil
+}
+
+// ListFromSnapshot is List over a snapshot the caller already holds: the
+// project's tickets under bare IDs, the skips warned about as List warns
+// them. For a command that decides membership off the graph and lists the
+// rows off the same reading rather than a second one.
+func (s *FileStore) ListFromSnapshot(snap *Snapshot) []*Ticket {
+	warnSkips(s.projectSkips(snap))
+	return projectView(snap, s.Project)
+}
+
+// projectSkips is the skips a project listing carries, per ListWithSkips.
+func (s *FileStore) projectSkips(snap *Snapshot) []FileSkip {
 	var skips []FileSkip
 	for _, skip := range snap.Skips {
 		if !skip.Kind.DegradesEpicStatus() && skip.Project != s.Project {
@@ -682,7 +828,7 @@ func (s *FileStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
 		}
 		skips = append(skips, skip)
 	}
-	return projectView(snap, s.Project), skips, nil
+	return skips
 }
 
 // projectView is the snapshot's tickets in one namespace, their IDs stripped

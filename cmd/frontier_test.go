@@ -54,15 +54,20 @@ func frontierTicket(t *testing.T, store *ticket.FileStore, id string, status tic
 	}
 }
 
+// captureFrontier runs the frontier command. "project" among args sets the
+// persistent selector; any other name is a frontier flag.
 func captureFrontier(t *testing.T, args ...string) string {
 	t.Helper()
-	if err := frontierCmd.Flags().Set("project", ""); err != nil {
-		t.Fatal(err)
-	}
+	selectProject(t, "")
 	for i := 0; i+1 < len(args); i += 2 {
+		if args[i] == "project" {
+			projectFlag = args[i+1]
+			continue
+		}
 		if err := frontierCmd.Flags().Set(args[i], args[i+1]); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = frontierCmd.Flags().Set(args[i], "") })
 	}
 
 	oldStdout := os.Stdout
@@ -146,10 +151,7 @@ func TestFrontierUnknownProject(t *testing.T) {
 	stores := setupFrontierStore(t, "alpha")
 	frontierTicket(t, stores["alpha"], "fr-free", ticket.StatusReady)
 
-	if err := frontierCmd.Flags().Set("project", "nope"); err != nil {
-		t.Fatal(err)
-	}
-	defer frontierCmd.Flags().Set("project", "")
+	selectProject(t, "nope")
 
 	if err := runFrontier(frontierCmd, nil); err == nil {
 		t.Error("unknown --project should error, not report an empty frontier")

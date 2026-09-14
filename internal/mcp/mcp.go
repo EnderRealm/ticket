@@ -303,15 +303,18 @@ func envelopeFragmentResult(field, value string) *mcp.CallToolResult {
 // --- Tool registrations ---
 
 type listArgs struct {
-	Status   string   `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
-	Type     string   `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
-	Priority *FlexInt `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
-	Tag      string   `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Field    string   `json:"field,omitempty" jsonschema:"filter by extra field (key=value, substring match)"`
-	Parent   string   `json:"parent,omitempty" jsonschema:"filter by parent ticket ID"`
-	Project  string   `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
-	Offset   *FlexInt `json:"offset,omitempty" jsonschema:"number of results to skip (default 0)"`
-	Limit    *FlexInt `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
+	Status        string    `json:"status,omitempty" jsonschema:"filter by status: backlog, ready, open, done, closed"`
+	Type          string    `json:"type,omitempty" jsonschema:"filter by type: bug, feature, epic"`
+	Priority      *FlexInt  `json:"priority,omitempty" jsonschema:"filter by priority (0-4)"`
+	Tag           string    `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Field         string    `json:"field,omitempty" jsonschema:"filter by extra field (key=value, substring match)"`
+	Parent        string    `json:"parent,omitempty" jsonschema:"only the children of this epic, in every namespace: a qualified project/id, or a bare ID relative to project (or the default project)"`
+	Project       string    `json:"project,omitempty" jsonschema:"narrow the rows to one project (multi-project mode); never changes what a parent or status resolves to"`
+	AllProjects   *FlexBool `json:"all_projects,omitempty" jsonschema:"list every namespace, ignoring the server's default project; conflicts with project"`
+	IncludeClosed *FlexBool `json:"include_closed,omitempty" jsonschema:"keep closed tickets in the rows (dropped by default unless status is set)"`
+	Snapshot      string    `json:"snapshot,omitempty" jsonschema:"the snapshot token the first page returned; required on every page with offset > 0, and refused if the store has changed since, so pages of one listing never mix revisions"`
+	Offset        *FlexInt  `json:"offset,omitempty" jsonschema:"number of results to skip (default 0); an offset above 0 requires snapshot"`
+	Limit         *FlexInt  `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
 }
 
 const defaultListLimit = 50
@@ -321,6 +324,10 @@ type listResultJSON struct {
 	Total                int                 `json:"total"`
 	Offset               int                 `json:"offset"`
 	Limit                int                 `json:"limit"`
+	Snapshot             string              `json:"snapshot"`
+	Complete             bool                `json:"complete"`
+	Namespaces           []string            `json:"namespaces"`
+	Parent               *parentJSON         `json:"parent,omitempty"`
 	UnregisteredProjects []string            `json:"unregistered_projects,omitempty"`
 	SkippedFiles         []fileSkipJSON      `json:"skipped_files,omitempty"`
 }
@@ -374,17 +381,143 @@ type fileSkipJSON struct {
 	EpicStatusDegraded bool `json:"epic_status_degraded,omitempty"`
 }
 
-// listWithSkips lists a store's tickets and the files it did not read as
-// tickets. The store's own warning goes to stderr, which is discarded at both
-// ends of the MCP transport, so a skip only reaches an agent by riding on the
-// response. A store that cannot report skips answers with none.
-func listWithSkips(store ticket.Store) ([]*ticket.Ticket, []ticket.FileSkip, error) {
-	if l, ok := store.(ticket.SkipLister); ok {
-		return l.ListWithSkips()
-	}
-	tickets, err := store.List()
-	return tickets, nil, err
+// snapshotter is a store that hands out the graph it answers with. Both
+// stores the server is built over do; SnapshotOf covers any other by reading
+// its listing as one namespace.
+type snapshotter interface {
+	Snapshot() (*ticket.Snapshot, error)
 }
+
+// storeSnapshot is the one reading of the store a listing tool works from.
+// Everything the response carries — the rows, the skips, the revision token,
+// whether the read was complete, an epic's counts — is derived from it, so a
+// response never mixes two readings of the store. The store's own skip warning
+// goes to stderr, which is discarded at both ends of the MCP transport, so a
+// skip only reaches an agent by riding on the response.
+func storeSnapshot(store ticket.Store) (*ticket.Snapshot, error) {
+	if s, ok := store.(snapshotter); ok {
+		return s.Snapshot()
+	}
+	return ticket.SnapshotOf(store)
+}
+
+// scopeProject is the namespace a listing tool narrows its rows to: the
+// explicit project, else the server's default, else none. With all_projects
+// the default is set aside — the directory `tk serve` started in is not a
+// request — and an explicit project beside it is refused, since a call handed
+// both cannot honour either. The scope narrows rows only: lookup, membership
+// and status are answered off the whole store before it applies.
+func scopeProject(explicit string, allProjects *FlexBool, defaultProject string) (string, *mcp.CallToolResult) {
+	if allProjects != nil && bool(*allProjects) {
+		if explicit != "" {
+			r, _ := errResult("all_projects lists every namespace; drop project or all_projects")
+			return "", r
+		}
+		return "", nil
+	}
+	return resolveProject(explicit, defaultProject), nil
+}
+
+// resolveParentArg turns a parent argument into the exact qualified ID the
+// snapshot holds. A bare parent is relative to ns, the project the call is
+// scoped to; on a namespaced store with no scope it names nothing — no other
+// namespace is searched for a bare ID, since the central store holds identical
+// bare IDs in different projects — so it is refused with the remedy rather
+// than looked up. An unresolvable parent, or one that is not an epic, is a
+// refusal and never an empty listing.
+func resolveParentArg(store ticket.Store, snap *ticket.Snapshot, ns, parent string) (string, *mcp.CallToolResult) {
+	if _, multi := store.(*ticket.MultiStore); multi && ns == "" {
+		if p, _ := ticket.ParseNamespacedID(parent); p == "" {
+			r, _ := errResult("parent %q is bare and no project scopes it: name the epic qualified as project/id", parent)
+			return "", r
+		}
+	}
+	id, err := snap.Resolve(ns, parent)
+	if err != nil {
+		r, _ := errResult("parent: %v", err)
+		return "", r
+	}
+	if t, ok := snap.Get(id); ok && t.Type != ticket.TypeEpic {
+		r, _ := errResult("parent %s is type %s, not an epic", id, t.Type)
+		return "", r
+	}
+	return id, nil
+}
+
+// childrenOf keeps the tickets the snapshot places under the epic, by exact
+// qualified ID across every namespace: a suffix two IDs happen to share is not
+// membership.
+func childrenOf(snap *ticket.Snapshot, parentID string, tickets []*ticket.Ticket) []*ticket.Ticket {
+	member := map[string]bool{}
+	for _, c := range snap.Children(parentID) {
+		member[c.ID] = true
+	}
+	var kept []*ticket.Ticket
+	for _, t := range tickets {
+		if member[t.ID] {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// snapshotChangedResult refuses a page asked for against a token the store has
+// moved past. The caller's earlier pages were cut from a membership and a
+// total this reading no longer has, so serving the page would mix two
+// revisions into one listing; the new token is in the text so the caller can
+// restart from offset 0 without another call. Nil when no token was passed or
+// it still matches.
+func snapshotChangedResult(token, revision string) *mcp.CallToolResult {
+	if token == "" || token == revision {
+		return nil
+	}
+	r, _ := errResult("snapshot changed: the store was modified since %s was issued; restart from offset 0 with snapshot %s", token, revision)
+	return r
+}
+
+// statusCountsJSON is an epic's children counted by derived status.
+type statusCountsJSON struct {
+	Done    int `json:"done"`
+	Closed  int `json:"closed"`
+	Open    int `json:"open"`
+	Ready   int `json:"ready"`
+	Backlog int `json:"backlog"`
+}
+
+func countsJSON(p ticket.EpicProgress) statusCountsJSON {
+	return statusCountsJSON{Done: p.Done, Closed: p.Closed, Open: p.Open, Ready: p.Ready, Backlog: p.Backlog}
+}
+
+// parentJSON is the epic a parent-scoped listing was cut from, as the whole
+// graph holds it: children_total and counts cover every child in every
+// namespace, whatever the project scope or the closed filter left out of the
+// rows, so a consumer can tell a slice from the epic's whole. Status is the
+// one derived off the same snapshot as the counts.
+type parentJSON struct {
+	ID            string           `json:"id"`
+	Status        string           `json:"status"`
+	Type          string           `json:"type"`
+	Complete      bool             `json:"complete"`
+	ChildrenTotal int              `json:"children_total"`
+	Counts        statusCountsJSON `json:"counts"`
+}
+
+func parentOf(snap *ticket.Snapshot, parentID string) *parentJSON {
+	p := snap.Progress(parentID)
+	j := &parentJSON{ID: parentID, Complete: p.Complete, ChildrenTotal: p.Total, Counts: countsJSON(p)}
+	if t, ok := snap.Get(parentID); ok {
+		j.Status, j.Type = string(t.Status), string(t.Type)
+	}
+	return j
+}
+
+// snapshotDoc documents the fields every snapshot-backed listing carries, so
+// the tools cannot describe them differently.
+const snapshotDoc = " `snapshot` is the revision token of the store reading the response was cut from and `complete` says whether that reading saw the whole store." +
+	" `all_projects=true` lists every namespace and ignores the server's default project; it conflicts with `project`, which only narrows the rows — lookup, membership and status are answered off the whole store first."
+
+// parentDoc documents the parent argument shared by the tools that take it.
+const parentDoc = " `parent` keeps only the children the graph places under that epic, in every namespace: a qualified project/id, or a bare ID relative to `project` (or the default project); with neither, a bare parent is refused. The response then carries `parent` — the epic's derived `status`, `complete`, `children_total` and `counts` by status over every child in every namespace, whatever `project` or the closed filter hid from the rows."
 
 // skippedFilesJSON renders the skips a response carries. A skip that degrades
 // the epics is kept whatever project the response is scoped to: the derivation
@@ -414,18 +547,40 @@ const skippedFilesDoc = " `skipped_files` names every file in the projects read 
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default. Default limit is 50; use offset/limit to paginate. `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
+		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
-		tickets, skips, err := listWithSkips(store)
+		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
+		if r != nil {
+			return r, nil, nil
+		}
+		snap, err := storeSnapshot(store)
 		if err != nil {
 			r, _ := errResult("failed to list tickets: %v", err)
 			return r, nil, nil
+		}
+		revision := snap.Revision()
+		if r := snapshotChangedResult(args.Snapshot, revision); r != nil {
+			return r, nil, nil
+		}
+
+		// Membership before every filter: the graph places a child under its
+		// epic across namespaces, and the scope and status filters below only
+		// narrow what the membership already decided.
+		tickets := snap.Tickets
+		var parent *parentJSON
+		if args.Parent != "" {
+			parentID, r := resolveParentArg(store, snap, effectiveProject, args.Parent)
+			if r != nil {
+				return r, nil, nil
+			}
+			tickets = childrenOf(snap, parentID, tickets)
+			parent = parentOf(snap, parentID)
 		}
 
 		opts := ticket.DefaultListOptions()
 		if args.Status != "" {
 			opts.Status = ticket.Status(args.Status)
-		} else {
+		} else if args.IncludeClosed == nil || !bool(*args.IncludeClosed) {
 			var filtered []*ticket.Ticket
 			for _, t := range tickets {
 				if t.Status != ticket.StatusClosed {
@@ -443,9 +598,6 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		if args.Tag != "" {
 			opts.Tag = args.Tag
 		}
-		if args.Parent != "" {
-			opts.Parent = args.Parent
-		}
 		if args.Field != "" {
 			key, value, err := ticket.ParseFieldFilter(args.Field)
 			if err != nil {
@@ -457,7 +609,6 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		}
 
 		tickets = ticket.Filter(tickets, opts)
-		effectiveProject := resolveProject(args.Project, defaultProject)
 		if effectiveProject != "" {
 			tickets = filterByProject(tickets, effectiveProject)
 		}
@@ -473,6 +624,13 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 		offset := 0
 		if args.Offset != nil && int(*args.Offset) > 0 {
 			offset = int(*args.Offset)
+		}
+		// The token is what ties a later page to the reading the first page was
+		// cut from; without one there is nothing to compare the store against,
+		// and the page would be served off whatever revision is current.
+		if offset > 0 && args.Snapshot == "" {
+			r, _ := errResult("page at offset %d requires the snapshot token the first page returned; restart from offset 0", offset)
+			return r, nil, nil
 		}
 		limit := defaultListLimit
 		if args.Limit != nil {
@@ -492,16 +650,20 @@ func registerList(server *mcp.Server, store ticket.Store, defaultProject string)
 			items = append(items, toSummaryJSON(t))
 		}
 
-		r, err := jsonResult(listResultJSON{
+		r, err = jsonResult(listResultJSON{
 			Tickets:              items,
 			Total:                total,
 			Offset:               offset,
 			Limit:                limit,
+			Snapshot:             revision,
+			Complete:             snap.Complete,
+			Namespaces:           nonNil(snap.Namespaces()),
+			Parent:               parent,
 			UnregisteredProjects: unregistered,
 			// Reported over the whole store's skips, not the page: the file was
 			// never a row here — it is why a row may be missing — so paging it
 			// away would hide it exactly when the caller reads a short page.
-			SkippedFiles: skippedFilesJSON(skips, effectiveProject),
+			SkippedFiles: skippedFilesJSON(snap.Skips, effectiveProject),
 		})
 		return r, nil, err
 	})
@@ -517,11 +679,44 @@ type showArgs struct {
 const defaultShowNotesLimit = 20
 
 // showResultJSON wraps ticketJSON with note-paging metadata so a token-
-// conscious caller can tell whether there are more notes to fetch.
+// conscious caller can tell whether there are more notes to fetch, and with
+// what the graph says about the ticket beyond its own file.
 type showResultJSON struct {
 	ticketJSON
-	NotesTotal int `json:"notes_total"`
-	NotesShown int `json:"notes_shown"`
+	showExtras
+}
+
+// showExtras is everything ticket_show reports that is not the ticket's own
+// serialization. Namespace is the ticket's namespace half, "" on a single
+// store. An epic carries epicJSON; a leaf whose parent does not make it a
+// child carries the reason.
+type showExtras struct {
+	NotesTotal int    `json:"notes_total"`
+	NotesShown int    `json:"notes_shown"`
+	Namespace  string `json:"namespace"`
+	*epicJSON
+	RelationshipIssue string `json:"relationship_issue,omitempty"`
+}
+
+// epicJSON is an epic as the whole graph holds it: its children in every
+// namespace under their qualified IDs, and the counts its status was derived
+// from, off the same snapshot, so the two agree. Complete says whether that
+// snapshot saw the whole store; while it did not, Diagnostics names what it
+// could not read and the epic reads neither done nor closed.
+type epicJSON struct {
+	Children      []childJSON      `json:"children"`
+	ChildrenTotal int              `json:"children_total"`
+	Counts        statusCountsJSON `json:"counts"`
+	Complete      bool             `json:"complete"`
+	Diagnostics   []string         `json:"diagnostics,omitempty"`
+}
+
+type childJSON struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Type      string `json:"type"`
+	Namespace string `json:"namespace"`
 }
 
 func (s showResultJSON) MarshalJSON() ([]byte, error) {
@@ -533,17 +728,24 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(inner, &m); err != nil {
 		return nil, err
 	}
-	total, _ := json.Marshal(s.NotesTotal)
-	shown, _ := json.Marshal(s.NotesShown)
-	m["notes_total"] = total
-	m["notes_shown"] = shown
+	extras, err := json.Marshal(s.showExtras)
+	if err != nil {
+		return nil, err
+	}
+	var e map[string]json.RawMessage
+	if err := json.Unmarshal(extras, &e); err != nil {
+		return nil, err
+	}
+	for k, v := range e {
+		m[k] = v
+	}
 	return json.Marshal(m)
 }
 
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -557,6 +759,35 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 			}
 			r, _ := errResult("ticket not found: %v", err)
 			return r, nil, nil
+		}
+
+		ns, _ := ticket.ParseNamespacedID(t.ID)
+		extras := showExtras{Namespace: ns, RelationshipIssue: ticket.RelationshipIssue(t)}
+		// The graph is read only when the response needs it — an epic's
+		// children and counts, or a leaf's issue as the snapshot stamps it —
+		// so a plain leaf costs one file read.
+		if t.Type == ticket.TypeEpic || extras.RelationshipIssue != "" {
+			snap, err := storeSnapshot(store)
+			if err != nil {
+				r, _ := errResult("failed to read the store: %v", err)
+				return r, nil, nil
+			}
+			// Get derived the ticket off its own reading; the status and the
+			// issue reported here come off this one, so they cannot disagree
+			// with the children and counts beside them.
+			if cur, ok := snap.Get(t.ID); ok {
+				t.Status = cur.Status
+				extras.RelationshipIssue = ticket.RelationshipIssue(cur)
+			}
+			if t.Type == ticket.TypeEpic {
+				p := snap.Progress(t.ID)
+				epic := &epicJSON{Children: []childJSON{}, ChildrenTotal: p.Total, Counts: countsJSON(p), Complete: p.Complete, Diagnostics: p.Diagnostics}
+				for _, c := range snap.Children(t.ID) {
+					cns, _ := ticket.ParseNamespacedID(c.ID)
+					epic.Children = append(epic.Children, childJSON{ID: c.ID, Title: c.Title, Status: string(c.Status), Type: string(c.Type), Namespace: cns})
+				}
+				extras.epicJSON = epic
+			}
 		}
 
 		total := len(t.Notes)
@@ -591,12 +822,8 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 			t.Notes = t.Notes[start:end]
 		}
 
-		resp := showResultJSON{
-			ticketJSON: toJSON(t),
-			NotesTotal: total,
-			NotesShown: len(t.Notes),
-		}
-		r, err := jsonResult(resp)
+		extras.NotesTotal, extras.NotesShown = total, len(t.Notes)
+		r, err := jsonResult(showResultJSON{ticketJSON: toJSON(t), showExtras: extras})
 		return r, nil, err
 	})
 }
@@ -608,11 +835,11 @@ type createArgs struct {
 	Acceptance  string            `json:"acceptance,omitempty" jsonschema:"acceptance criteria"`
 	Type        string            `json:"type,omitempty" jsonschema:"ticket type: bug, feature, epic (default: feature)"`
 	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"priority 0-4, 0=highest (default: 2)"`
-	Parent      string            `json:"parent,omitempty" jsonschema:"parent epic ID; must name an epic in the same project"`
+	Parent      string            `json:"parent,omitempty" jsonschema:"parent epic ID: an epic in the same project, or a qualified project/id naming an epic in another namespace once the catalog requires cross-project-parents"`
 	Tags        string            `json:"tags,omitempty" jsonschema:"comma-separated tags"`
 	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
-	Project     string            `json:"project,omitempty" jsonschema:"project name for multi-project mode (namespaces the ticket ID)"`
+	Project     string            `json:"project,omitempty" jsonschema:"destination namespace in multi-project mode (namespaces the ticket ID): a registered project, or _root for an idea with no repository yet"`
 	Repo        string            `json:"repo,omitempty" jsonschema:"registered project name or path to repo root"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 	Source      string            `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
@@ -621,7 +848,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. Supports an optional repo parameter naming a registered project or repo path for cross-repo creation. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		if args.Title == "" {
 			r, _ := errResult("title is required")
@@ -763,9 +990,16 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 
 		// Not on the repo path: that one writes through a project FileStore,
 		// which takes bare IDs and refuses one carrying a separator, so it
-		// namespaces on the way out instead.
+		// namespaces on the way out instead. A central store with no
+		// destination named is refused here with the remedy, rather than by
+		// the store's own ID-format error: nothing infers where a write lands.
 		if repoProject == "" {
-			if proj := resolveProject(args.Project, defaultProject); proj != "" {
+			proj := resolveProject(args.Project, defaultProject)
+			if _, multi := store.(*ticket.MultiStore); multi && proj == "" {
+				r, _ := errResult("no destination: pass project (a registered project, or %s for an idea with no repository yet) or repo", project.RootNamespace)
+				return r, nil, nil
+			}
+			if proj != "" {
 				t.ID = ticket.FormatNamespacedID(proj, t.ID)
 			}
 		}
@@ -818,7 +1052,7 @@ type editArgs struct {
 	Status      string            `json:"status,omitempty" jsonschema:"status: backlog, ready, open, done, closed. An epic's status is derived from its children; the only one that can be set on an epic is closed, which closes its children too"`
 	Type        string            `json:"type,omitempty" jsonschema:"new type"`
 	Priority    *FlexInt          `json:"priority,omitempty" jsonschema:"new priority (0-4)"`
-	Parent      *string           `json:"parent,omitempty" jsonschema:"new parent epic ID; must name an epic in the same project. Pass an empty string to clear it"`
+	Parent      *string           `json:"parent,omitempty" jsonschema:"new parent epic ID: an epic in the same project, or a qualified project/id naming an epic in another namespace once the catalog requires cross-project-parents. Pass an empty string to clear it"`
 	Tags        string            `json:"tags,omitempty" jsonschema:"comma-separated tags (replaces existing)"`
 	ExternalRef string            `json:"external_ref,omitempty" jsonschema:"external reference"`
 	Branch      string            `json:"branch,omitempty" jsonschema:"git branch name"`
@@ -1135,15 +1369,24 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 }
 
 type readyArgs struct {
-	Tag     string `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Project string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+	Tag         string    `json:"tag,omitempty" jsonschema:"filter by tag"`
+	Project     string    `json:"project,omitempty" jsonschema:"narrow the rows to one project (multi-project mode); never changes what is ready or blocked"`
+	AllProjects *FlexBool `json:"all_projects,omitempty" jsonschema:"list every namespace, ignoring the server's default project; conflicts with project"`
 }
+
+// allProjectsDoc documents the scope arguments of the tools that narrow rows
+// but carry no snapshot fields.
+const allProjectsDoc = " `all_projects=true` lists every namespace and ignores the server's default project; it conflicts with `project`, which only narrows the rows — readiness, blocking and every relationship are answered off the whole store first."
 
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved and no terminal parent epic. Epics are never listed — an epic is a container, not a work item. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it.",
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved and no terminal parent epic. Epics are never listed — an epic is a container, not a work item. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it." + allProjectsDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
+		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
+		if r != nil {
+			return r, nil, nil
+		}
 		ready, err := ticket.ReadyTickets(store)
 		if err != nil {
 			r, _ := errResult("failed to get ready tickets: %v", err)
@@ -1165,7 +1408,7 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 			opts.Tag = args.Tag
 		}
 		ready = ticket.Filter(ready, opts)
-		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+		if proj != "" {
 			ready = filterByProject(ready, proj)
 		}
 		ticket.SortByStatusPriorityID(ready)
@@ -1175,9 +1418,14 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 			result = append(result, toSummaryJSON(t))
 		}
 
-		r, err := jsonResult(result)
+		r, err = jsonResult(result)
 		return r, nil, err
 	})
+}
+
+type frontierArgs struct {
+	readyArgs
+	Parent string `json:"parent,omitempty" jsonschema:"only the children of this epic, in every namespace: a qualified project/id, or a bare ID relative to project (or the default project)"`
 }
 
 // frontierResultJSON wraps the frontier so the response can also say which
@@ -1185,18 +1433,36 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 // to put that, and a frontier is exactly the answer a skipped file shortens.
 type frontierResultJSON struct {
 	Tickets      []ticketSummaryJSON `json:"tickets"`
+	Snapshot     string              `json:"snapshot"`
+	Complete     bool                `json:"complete"`
+	Parent       *parentJSON         `json:"parent,omitempty"`
 	SkippedFiles []fileSkipJSON      `json:"skipped_files,omitempty"`
 }
 
 func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_frontier",
-		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed. The parallel-safe set to start next. Returns an object with `tickets`." + skippedFilesDoc,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
-		frontier, skips, err := ticket.FrontierTicketsWithSkips(store)
+		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed. The parallel-safe set to start next. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + snapshotDoc + parentDoc + skippedFilesDoc,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args frontierArgs) (*mcp.CallToolResult, any, error) {
+		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
+		if r != nil {
+			return r, nil, nil
+		}
+		snap, err := storeSnapshot(store)
 		if err != nil {
 			r, _ := errResult("failed to get frontier tickets: %v", err)
 			return r, nil, nil
+		}
+		frontier := ticket.FrontierOf(store, snap.Tickets)
+
+		var parent *parentJSON
+		if args.Parent != "" {
+			parentID, r := resolveParentArg(store, snap, effectiveProject, args.Parent)
+			if r != nil {
+				return r, nil, nil
+			}
+			frontier = childrenOf(snap, parentID, frontier)
+			parent = parentOf(snap, parentID)
 		}
 
 		opts := ticket.DefaultListOptions()
@@ -1204,7 +1470,6 @@ func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject str
 			opts.Tag = args.Tag
 		}
 		frontier = ticket.Filter(frontier, opts)
-		effectiveProject := resolveProject(args.Project, defaultProject)
 		if effectiveProject != "" {
 			frontier = filterByProject(frontier, effectiveProject)
 		}
@@ -1215,9 +1480,12 @@ func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject str
 			result = append(result, toSummaryJSON(t))
 		}
 
-		r, err := jsonResult(frontierResultJSON{
+		r, err = jsonResult(frontierResultJSON{
 			Tickets:      result,
-			SkippedFiles: skippedFilesJSON(skips, effectiveProject),
+			Snapshot:     snap.Revision(),
+			Complete:     snap.Complete,
+			Parent:       parent,
+			SkippedFiles: skippedFilesJSON(snap.Skips, effectiveProject),
 		})
 		return r, nil, err
 	})
@@ -1226,8 +1494,12 @@ func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject str
 func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_blocked",
-		Description: "List tickets that are blocked by unresolved dependencies.",
+		Description: "List tickets that are blocked by unresolved dependencies." + allProjectsDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
+		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
+		if r != nil {
+			return r, nil, nil
+		}
 		blocked, err := ticket.BlockedTickets(store)
 		if err != nil {
 			r, _ := errResult("failed to get blocked tickets: %v", err)
@@ -1239,7 +1511,7 @@ func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject stri
 			opts.Tag = args.Tag
 		}
 		blocked = ticket.Filter(blocked, opts)
-		if proj := resolveProject(args.Project, defaultProject); proj != "" {
+		if proj != "" {
 			blocked = filterByProject(blocked, proj)
 		}
 		ticket.SortByPriorityID(blocked)
@@ -1249,7 +1521,7 @@ func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject stri
 			result = append(result, toSummaryJSON(t))
 		}
 
-		r, err := jsonResult(result)
+		r, err = jsonResult(result)
 		return r, nil, err
 	})
 }
@@ -1257,14 +1529,19 @@ func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject stri
 type emptyArgs struct{}
 
 type inboxArgs struct {
-	Project string `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
+	Project     string    `json:"project,omitempty" jsonschema:"narrow the rows to one project (multi-project mode)"`
+	AllProjects *FlexBool `json:"all_projects,omitempty" jsonschema:"list every namespace, ignoring the server's default project; conflicts with project"`
 }
 
 func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_inbox",
-		Description: "Show tickets needing human attention, sorted by priority then age.",
+		Description: "Show tickets needing human attention, sorted by priority then age." + allProjectsDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args inboxArgs) (*mcp.CallToolResult, any, error) {
+		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
+		if r != nil {
+			return r, nil, nil
+		}
 		items, err := ticket.Inbox(store)
 		if err != nil {
 			r, _ := errResult("inbox failed: %v", err)
@@ -1278,7 +1555,6 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 		}
 
 		var result []inboxItemJSON
-		effectiveProject := resolveProject(args.Project, defaultProject)
 		for _, item := range items {
 			if effectiveProject != "" {
 				proj, _ := ticket.ParseNamespacedID(item.Ticket.ID)
@@ -1299,9 +1575,10 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 }
 
 type searchArgs struct {
-	Query   string   `json:"query" jsonschema:"search query; ranked by relevance across title, body, and notes"`
-	Project string   `json:"project,omitempty" jsonschema:"filter by project name (multi-project mode)"`
-	Limit   *FlexInt `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
+	Query       string    `json:"query" jsonschema:"search query; ranked by relevance across title, body, and notes"`
+	Project     string    `json:"project,omitempty" jsonschema:"narrow the matches to one project (multi-project mode)"`
+	AllProjects *FlexBool `json:"all_projects,omitempty" jsonschema:"search every namespace, ignoring the server's default project; conflicts with project"`
+	Limit       *FlexInt  `json:"limit,omitempty" jsonschema:"max results to return (default 50, 0 for unlimited)"`
 }
 
 // searchMatchJSON wraps a ticket summary with the field the query matched and a
@@ -1335,21 +1612,27 @@ func (s searchMatchJSON) MarshalJSON() ([]byte, error) {
 type searchResultJSON struct {
 	Matches      []searchMatchJSON `json:"matches"`
 	Total        int               `json:"total"`
+	Snapshot     string            `json:"snapshot"`
+	Complete     bool              `json:"complete"`
 	SkippedFiles []fileSkipJSON    `json:"skipped_files,omitempty"`
 }
 
 func registerSearch(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_search",
-		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first, each with the match_field and a context snippet around the matched term." + skippedFilesDoc,
+		Description: "Search tickets by relevance across title, body, and notes. Use before creating a ticket to find similar or duplicate tickets. Returns matches ranked best-first, each with the match_field and a context snippet around the matched term. `snapshot` is the revision token of the store reading the matches came from and `complete` says whether that reading saw the whole store." + allProjectsDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args searchArgs) (*mcp.CallToolResult, any, error) {
-		tickets, skips, err := listWithSkips(store)
+		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
+		if r != nil {
+			return r, nil, nil
+		}
+		snap, err := storeSnapshot(store)
 		if err != nil {
 			r, _ := errResult("failed to list tickets: %v", err)
 			return r, nil, nil
 		}
 
-		effectiveProject := resolveProject(args.Project, defaultProject)
+		tickets := snap.Tickets
 		if effectiveProject != "" {
 			tickets = filterByProject(tickets, effectiveProject)
 		}
@@ -1378,10 +1661,12 @@ func registerSearch(server *mcp.Server, store ticket.Store, defaultProject strin
 			})
 		}
 
-		r, err := jsonResult(searchResultJSON{
+		r, err = jsonResult(searchResultJSON{
 			Matches:      items,
 			Total:        total,
-			SkippedFiles: skippedFilesJSON(skips, effectiveProject),
+			Snapshot:     snap.Revision(),
+			Complete:     snap.Complete,
+			SkippedFiles: skippedFilesJSON(snap.Skips, effectiveProject),
 		})
 		return r, nil, err
 	})
@@ -1394,7 +1679,7 @@ type verifyArgs struct {
 func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the ticket's project repo directory, as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every call, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project; a Root ticket, a project with no checkout registered here, and a registered checkout that is missing are each refused before anything runs, naming the reason, and nothing is recorded. Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every call, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -1408,11 +1693,34 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 
-		dir, timeout, timeoutErr, err := verifyWorkDir(t.ID, defaultProject)
-		if err != nil {
-			r, _ := errResult("cannot resolve project directory: %v", err)
+		// Eligibility before anything runs: only a checkout registered on this
+		// machine for the ticket's own project is somewhere its commands may
+		// execute. Root has none, an unregistered project has none here, and a
+		// checkout that is gone is not stood in for by the server's working
+		// directory or the store. A bare ID belongs to the server's default
+		// project, the one it was started in.
+		ns, _ := ticket.ParseNamespacedID(t.ID)
+		if ns == "" {
+			ns = defaultProject
+		}
+		if ns == "" {
+			r, _ := errResult("cannot resolve project directory: ticket ID %q has no project namespace", t.ID)
 			return r, nil, nil
 		}
+		cfg, err := project.Load()
+		if err != nil {
+			r, _ := errResult("cannot resolve project directory: load config: %v", err)
+			return r, nil, nil
+		}
+		dir, err := project.ExecutionDir(cfg, ns)
+		if err != nil {
+			r, _ := errResult("cannot run verify commands: %v", err)
+			return r, nil, nil
+		}
+		// An unusable verify_timeout is not a refusal here: it is refused per
+		// criterion the way an unreadable allow-list is, naming the key in the
+		// recorded output.
+		timeout, timeoutErr := project.VerifyTimeout(cfg, ns)
 
 		// The allow-list and the timeout come from machine-local config only — no
 		// tool argument carries either, so a caller cannot widen what runs or how
@@ -1445,32 +1753,6 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		r, err := jsonResult(report)
 		return r, nil, err
 	})
-}
-
-// verifyWorkDir resolves the repo directory a ticket's verify commands run in
-// from the project config, along with the project's verify_timeout bound and
-// the error an unusable value is. Verify must never run in an arbitrary
-// directory, so an unresolvable project path is an error; an unusable
-// verify_timeout is not, because it is refused per criterion the way an
-// unreadable allow-list is, naming the key in the recorded output.
-func verifyWorkDir(id, defaultProject string) (dir string, timeout time.Duration, timeoutErr, err error) {
-	proj, _ := ticket.ParseNamespacedID(id)
-	if proj == "" {
-		proj = defaultProject
-	}
-	if proj == "" {
-		return "", 0, nil, fmt.Errorf("ticket ID %q has no project namespace", id)
-	}
-	cfg, err := project.Load()
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("load config: %w", err)
-	}
-	p, ok := cfg.Projects[proj]
-	if !ok || p.Path == "" {
-		return "", 0, nil, fmt.Errorf("project %q has no configured path", proj)
-	}
-	timeout, timeoutErr = project.VerifyTimeout(cfg, proj)
-	return p.Path, timeout, timeoutErr, nil
 }
 
 func registerStoreInfo(server *mcp.Server, centralRoot string) {

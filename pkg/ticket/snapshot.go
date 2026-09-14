@@ -1,6 +1,9 @@
 package ticket
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -87,6 +90,13 @@ func (s *Snapshot) Inbound(id string) []InboundRef {
 	return s.inbound[id]
 }
 
+// Namespaces is every namespace the snapshot read in full, in the order they
+// were read, as a copy. A consumer reporting what a listing covered names
+// these; a namespace that could not be read is in Skips instead.
+func (s *Snapshot) Namespaces() []string {
+	return append([]string(nil), s.namespaces...)
+}
+
 // Diagnostics renders one line per skip, for a caller that reports why the
 // snapshot is incomplete rather than reasoning about kinds.
 func (s *Snapshot) Diagnostics() []string {
@@ -95,6 +105,138 @@ func (s *Snapshot) Diagnostics() []string {
 		lines = append(lines, skipLine(skip))
 	}
 	return lines
+}
+
+// Revision is a stable digest of the graph as it was read: every ticket's
+// qualified ID with the version of the file bytes it came from, in sorted ID
+// order, then every skip line in order, then the policy and the coverage the
+// graph was built under — whether cross-project parents were activated, which
+// namespaces were read in full and which could not be. Two snapshots of an
+// unchanged store carry the same revision; any file written, added or
+// removed, any change to what could not be read, and any catalog change that
+// moves a child into or out of an epic without touching a ticket file,
+// changes it. It is the token a paged consumer hands back so a page served
+// off a later snapshot can be told apart from one served off this one,
+// rather than mixed into the same membership.
+func (s *Snapshot) Revision() string {
+	entries := make([]string, 0, len(s.Tickets))
+	for _, t := range s.Tickets {
+		entries = append(entries, t.ID+"\x00"+t.version)
+	}
+	sort.Strings(entries)
+	h := sha256.New()
+	for _, e := range entries {
+		h.Write([]byte(e))
+		h.Write([]byte{'\n'})
+	}
+	for _, skip := range s.Skips {
+		h.Write([]byte(skipLine(skip)))
+		h.Write([]byte{'\n'})
+	}
+	fmt.Fprintf(h, "cross-project: %t\n", s.crossProject)
+	fmt.Fprintf(h, "namespaces: %s\n", strings.Join(s.namespaces, "\x00"))
+	failed := make([]string, 0, len(s.failed))
+	for ns := range s.failed {
+		failed = append(failed, ns)
+	}
+	sort.Strings(failed)
+	for _, ns := range failed {
+		fmt.Fprintf(h, "failed %s: %s\n", ns, s.failed[ns])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// EpicProgress is an epic's children counted by derived status, off the same
+// snapshot the epic's own status was derived from, so the counts and the
+// status cannot disagree. Complete is the snapshot's, and Diagnostics names
+// what it could not read when it is not: a total over a partial read is a
+// lower bound, not a count.
+type EpicProgress struct {
+	Total       int      `json:"total"`
+	Done        int      `json:"done"`
+	Closed      int      `json:"closed"`
+	Open        int      `json:"open"`
+	Ready       int      `json:"ready"`
+	Backlog     int      `json:"backlog"`
+	Complete    bool     `json:"complete"`
+	Diagnostics []string `json:"diagnostics,omitempty"`
+}
+
+// Progress counts the children of the epic with this qualified ID across
+// every namespace. An ID with no children — a leaf, or an epic nothing names
+// — counts zero of everything.
+func (s *Snapshot) Progress(epicID string) EpicProgress {
+	p := EpicProgress{Complete: s.Complete}
+	for _, c := range s.children[epicID] {
+		p.Total++
+		switch c.Status {
+		case StatusDone:
+			p.Done++
+		case StatusClosed:
+			p.Closed++
+		case StatusOpen:
+			p.Open++
+		case StatusReady:
+			p.Ready++
+		case StatusBacklog:
+			p.Backlog++
+		}
+	}
+	if !s.Complete {
+		p.Diagnostics = s.Diagnostics()
+	}
+	return p
+}
+
+// Resolve turns an ID as a caller typed it into the exact qualified ID the
+// snapshot holds. A qualified input has to exist exactly; a bare one names ns
+// — the namespace it was typed in — and matches a bare ID there exactly first,
+// then as a fragment the way FileStore.Resolve does, ambiguity refused. No
+// other namespace is ever searched for a bare input, for the reason qualifyRef
+// gives. An ID two files claim is nobody's and is refused as the duplicate it
+// is; a reference into a namespace that could not be read is reported as
+// such rather than as a ticket that does not exist. With no ns a bare input
+// is looked up as it is, which is the single-store case where nothing is
+// qualified.
+func (s *Snapshot) Resolve(ns, input string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	inputNS, fragment := ParseNamespacedID(input)
+	if inputNS == "" {
+		inputNS = ns
+	}
+	id := qualifyRef(ns, input)
+	if _, ok := s.byID[id]; ok {
+		return id, nil
+	}
+	if s.claims[id] > 1 {
+		return "", errors.New(duplicateIssue(id))
+	}
+	var matches []string
+	if namespaceOf(input) == "" {
+		seen := map[string]bool{}
+		for _, m := range s.partialMatches(ns, fragment) {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				matches = append(matches, m.ID)
+			}
+		}
+	}
+	switch len(matches) {
+	case 1:
+		if s.claims[matches[0]] > 1 {
+			return "", errors.New(duplicateIssue(matches[0]))
+		}
+		return matches[0], nil
+	case 0:
+		if reason, failed := s.failed[inputNS]; failed && inputNS != "" {
+			return "", fmt.Errorf("ticket %s is in namespace %q, which could not be read: %s", id, inputNS, reason)
+		}
+		return "", fmt.Errorf("ticket %s not found", id)
+	default:
+		return "", fmt.Errorf("ambiguous ID %q matches: %s", input, strings.Join(matches, ", "))
+	}
 }
 
 // skipLine is one skip as a single line of text. A namespace skip has no file,
@@ -110,6 +252,14 @@ func skipLine(skip FileSkip) string {
 	default:
 		return fmt.Sprintf("%q (%s): %s", skip.File, skip.Kind, skip.Error)
 	}
+}
+
+// QualifyRef is qualifyRef for a consumer outside the package that reads a
+// stored reference off a ticket it has in hand: ownerNS is the namespace of
+// the ticket holding the reference, and the result is the key Snapshot.Get
+// answers to. The rule lives in one place; nothing outside reimplements it.
+func QualifyRef(ownerNS, ref string) string {
+	return qualifyRef(ownerNS, ref)
 }
 
 // qualifyRef resolves a stored reference relative to the namespace of the

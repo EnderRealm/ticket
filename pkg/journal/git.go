@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EnderRealm/ticket/v8/internal/project"
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
@@ -63,11 +64,15 @@ func CollectCommits(repoPath, lastSHA, registeredAt string) ([]GitCommit, error)
 // A ref carries an optional single `project/` prefix: the central store
 // namespaces every ID it hands an agent, so `[warp/dashboard-foo-65c0]` is the
 // form most refs take in a commit subject. Bare IDs still match — the two
-// forms name the same ticket, and ResolveRef reconciles them.
+// forms name the same ticket, and ResolveRef reconciles them. The prefix is a
+// project name or the reserved Root namespace, the one name that starts with
+// an underscore: a commit naming a Root ticket is journalled as what it said
+// and refused by the auto-close, not silently unmatched.
 var (
-	refPattern         = regexp.MustCompile(`\[([A-Za-z0-9][A-Za-z0-9_-]*(?:/[A-Za-z0-9][A-Za-z0-9_-]*)?)\]`)
+	refBody            = `((?:(?:` + regexp.QuoteMeta(project.RootNamespace) + `|[A-Za-z0-9][A-Za-z0-9_-]*)/)?[A-Za-z0-9][A-Za-z0-9_-]*)`
+	refPattern         = regexp.MustCompile(`\[` + refBody + `\]`)
 	closePrefixPattern = regexp.MustCompile(`(?i)\b(?:closes|fixes)\s*:?\s*`)
-	leadingRefPattern  = regexp.MustCompile(`^\[([A-Za-z0-9][A-Za-z0-9_-]*(?:/[A-Za-z0-9][A-Za-z0-9_-]*)?)\]`)
+	leadingRefPattern  = regexp.MustCompile(`^\[` + refBody + `\]`)
 )
 
 // ExtractTicketActions parses a commit message and returns a map of ticket ID

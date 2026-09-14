@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	"github.com/spf13/cobra"
 )
 
@@ -130,8 +132,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(centralDir, 0o755); err != nil {
 		return err
 	}
+	var imported, skipped []string
 	if copyLocalToCentral {
-		if err := copyTicketFiles(localTicketsDir, centralDir); err != nil {
+		imported, skipped, err = importTicketFiles(localTicketsDir, ticket.NewProjectFileStore(centralDir, projectName))
+		if err != nil {
 			return err
 		}
 	}
@@ -178,7 +182,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  project:  %s\n", projectName)
 	fmt.Printf("  store:    central (%s)\n", centralDir)
 	if copyLocalToCentral {
-		fmt.Println("  migrated: tickets copied to central store")
+		fmt.Printf("  imported: %d ticket(s) from .tickets/\n", len(imported))
+		fmt.Printf("  skipped:  %d already in the central store\n", len(skipped))
 		fmt.Println("            original .tickets/ kept as backup")
 	}
 	fmt.Println()
@@ -265,29 +270,45 @@ func bootstrapCentralStoreGit(storeRoot string) error {
 	return nil
 }
 
-func copyTicketFiles(src, dst string) error {
+// importTicketFiles reads the tickets in a repository's legacy .tickets/
+// directory and writes them into the project's central store through
+// ImportAll: one validated write, so a child resolves against the epic beside
+// it in the batch, a batch the graph refuses leaves the store as it was, and
+// a catalog requiring a feature this binary lacks refuses the migration the
+// way it refuses every other write. A file that does not parse names itself
+// and stops the migration before anything is written; the originals are left
+// in place either way. Returns the bare IDs written and the ones the store
+// already held, which is what keeps a re-run harmless.
+func importTicketFiles(src string, store *ticket.FileStore) (imported, skipped []string, err error) {
 	entries, err := os.ReadDir(src)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-
+	var batch []*ticket.Ticket
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(src, entry.Name()))
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		if err := os.WriteFile(filepath.Join(dst, entry.Name()), raw, 0o644); err != nil {
-			return err
+		t, err := ticket.Parse(bytes.NewReader(raw))
+		if err != nil {
+			return nil, nil, fmt.Errorf("migrate .tickets: %s: %w", entry.Name(), err)
 		}
+		if t.ID == "" {
+			return nil, nil, fmt.Errorf("migrate .tickets: %s: ticket ID is required", entry.Name())
+		}
+		batch = append(batch, t)
 	}
-	return nil
+
+	imported, skipped, err = store.ImportAll(batch)
+	if err != nil {
+		return nil, nil, fmt.Errorf("migrate .tickets: %w", err)
+	}
+	return imported, skipped, nil
 }
 
 func dirExists(path string) bool {

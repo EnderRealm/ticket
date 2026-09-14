@@ -16,12 +16,12 @@ var searchCmd = &cobra.Command{
 }
 
 func init() {
+	searchCmd.Flags().Bool("all-projects", false, "search every namespace in the central store, IDs qualified")
 	rootCmd.AddCommand(searchCmd)
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
-	store := TicketStore()
-	tickets, err := store.List()
+	tickets, err := listingFor(cmd)
 	if err != nil {
 		return err
 	}

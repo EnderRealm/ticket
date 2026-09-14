@@ -405,8 +405,8 @@ func TestWatchCycle_ForeignNamespacedRef(t *testing.T) {
 	if result.Closed != 0 {
 		t.Errorf("Closed = %d, want 0 — the ref names another project", result.Closed)
 	}
-	if len(result.Warnings) != 1 {
-		t.Fatalf("warnings = %v, want the unresolvable ref named", result.Warnings)
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "a commit closes tickets in its own project only (other-project/"+tk.ID+" is in other-project)") {
+		t.Fatalf("warnings = %v, want the foreign ref refused by name", result.Warnings)
 	}
 
 	// The commit is still journalled, under the namespaced form it named: the
@@ -429,6 +429,88 @@ func TestWatchCycle_ForeignNamespacedRef(t *testing.T) {
 	}
 	if updated.Status != ticket.StatusOpen {
 		t.Errorf("ticket status = %q, want open", updated.Status)
+	}
+}
+
+// TestWatchCycle_RootRefNeverCloses holds a ref naming a Root ticket to the
+// warning path: Root has no repository, so no commit is the one that closes an
+// idea there, and the ref is refused by name rather than resolved against a
+// store that could not answer it anyway.
+func TestWatchCycle_RootRefNeverCloses(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "root-ref-test")
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+project.RootNamespace+"/idea-1234] Landed an idea")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle("root-ref-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 0 {
+		t.Errorf("Closed = %d, want 0 — a commit never closes a Root ticket", result.Closed)
+	}
+	want := "auto-close " + project.RootNamespace + "/idea-1234 skipped: Root tickets have no repository and are never closed by a commit"
+	if len(result.Warnings) != 1 || result.Warnings[0] != want {
+		t.Fatalf("warnings = %v, want [%q]", result.Warnings, want)
+	}
+	if result.Appended != 1 {
+		t.Errorf("Appended = %d, want 1 — the commit is journalled either way", result.Appended)
+	}
+	entries, err := ReadEntries("root-ref-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Ticket != project.RootNamespace+"/idea-1234" {
+		t.Errorf("entries = %+v, want one keyed under the Root ref as named", entries)
+	}
+}
+
+// TestWatchCycle_LocalCloseLandsOnce is the local close across cycles: the
+// bare ref reaches the project-scoped store, the close lands on the first
+// cycle, the journal keys it bare, and the second cycle — the commit now in
+// knownSHAs — neither re-closes nor re-journals it.
+func TestWatchCycle_LocalCloseLandsOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "once-test")
+	tk := mkTicket(t, store, "Local leaf", ticket.StatusOpen)
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] Land the leaf")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	first, err := RunWatchCycle("once-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Closed != 1 || first.Appended != 1 {
+		t.Fatalf("first cycle closed %d, appended %d, want 1 and 1: %v", first.Closed, first.Appended, first.Warnings)
+	}
+	second, err := RunWatchCycle("once-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Closed != 0 || second.Appended != 0 || len(second.Warnings) != 0 {
+		t.Errorf("second cycle closed %d, appended %d, warnings %v, want nothing", second.Closed, second.Appended, second.Warnings)
+	}
+
+	entries, err := ReadEntries("once-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Ticket != tk.ID || entries[0].Action != "close" {
+		t.Errorf("entries = %+v, want one close keyed by the bare %q", entries, tk.ID)
+	}
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("ticket status = %q, want done", updated.Status)
+	}
+	if len(updated.Notes) != 1 {
+		t.Errorf("notes = %v, want the one auto-close note", updated.Notes)
 	}
 }
 

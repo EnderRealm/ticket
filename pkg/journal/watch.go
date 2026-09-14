@@ -139,8 +139,23 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 			action := resolved[ticketID]
 
 			if action == "close" && cfg.AutoClose && store != nil {
-				t, err := store.Get(ticketID)
+				// A ref still qualified after ResolveRef names a namespace other
+				// than this project's, and it never reaches the store: a commit
+				// closes tickets in its own project only, so a foreign leaf and
+				// a Root idea are refused by name before any read, rather than
+				// by whatever the project-scoped store answers for a foreign
+				// prefix — a store that could resolve it would close it.
+				ns, _ := ticket.ParseNamespacedID(ticketID)
+				var t *ticket.Ticket
+				var err error
+				if ns == "" {
+					t, err = store.Get(ticketID)
+				}
 				switch {
+				case project.IsRoot(ns):
+					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s skipped: Root tickets have no repository and are never closed by a commit", ticketID))
+				case ns != "":
+					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s skipped: a commit closes tickets in its own project only (%s is in %s)", ticketID, ticketID, ns))
 				case err != nil:
 					result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
 				case t.ID != ticketID:

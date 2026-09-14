@@ -3,6 +3,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -160,5 +161,48 @@ func TestProjectFromDir(t *testing.T) {
 	}
 	if name == "" || name == "." || name == "/" {
 		t.Errorf("unexpected dirname: %q", name)
+	}
+}
+
+func TestExecutionDir(t *testing.T) {
+	checkout := t.TempDir()
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Projects: map[string]ProjectConfig{
+		"registered": {Path: checkout, Store: "central"},
+		"pathless":   {Store: "central"},
+		"unmarked":   {Path: checkout},
+		"gone":       {Path: filepath.Join(checkout, "missing"), Store: "central"},
+		"notadir":    {Path: file, Store: "central"},
+	}}
+	cases := []struct {
+		namespace, want, wantErr string
+	}{
+		{"registered", checkout, ""},
+		{RootNamespace, "", "Root has no repository"},
+		{"pathless", "", `project "pathless" has no checkout registered on this machine`},
+		{"unmarked", "", `project "unmarked" has no checkout registered on this machine`},
+		{"unknown", "", `project "unknown" has no checkout registered on this machine`},
+		{"gone", "", `project "gone" checkout ` + filepath.Join(checkout, "missing") + " is not a directory on this machine"},
+		{"notadir", "", `project "notadir" checkout ` + file + " is not a directory on this machine"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.namespace, func(t *testing.T) {
+			got, err := ExecutionDir(cfg, tc.namespace)
+			if tc.wantErr == "" {
+				if err != nil || got != tc.want {
+					t.Fatalf("ExecutionDir = %q, %v; want %q", got, err, tc.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ExecutionDir = %q, %v; want an error containing %q", got, err, tc.wantErr)
+			}
+			if got != "" {
+				t.Errorf("a refusal returned a directory %q", got)
+			}
+		})
 	}
 }

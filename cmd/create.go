@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EnderRealm/ticket/v8/internal/project"
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +24,7 @@ func init() {
 	f.StringP("type", "t", "feature", "ticket type (feature, bug, epic)")
 	f.StringP("priority", "p", "2", "priority (0-4)")
 	f.String("external-ref", "", "external reference")
-	f.String("parent", "", "parent epic ID (an epic in the same project)")
+	f.String("parent", "", "parent epic ID (an epic in the same project; a qualified project/id names an epic in another namespace, accepted once the catalog requires cross-project-parents)")
 	f.String("tags", "", "comma-separated tags")
 	f.StringArray("set", nil, "set extra field (key=value)")
 
@@ -31,6 +32,19 @@ func init() {
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
+	// A create names its destination. Reads fall back from the working
+	// directory to a git remote or a directory name, and warn; a write landing
+	// somewhere inferred is a ticket in a namespace nobody chose, so only a
+	// directory the config registers, or a selector, decides where it goes.
+	if projectFlag == "" && repoFlag == "" {
+		cfg, err := project.Load()
+		if err != nil {
+			return fmt.Errorf("load ticket config: %w", err)
+		}
+		if _, source := project.ResolveName(cfg, mustGetwd(), ""); source != "config" {
+			return fmt.Errorf("not inside a registered project: pass --project <namespace> to choose the destination (--project %s for an idea with no repository yet), or run tk init here", project.RootNamespace)
+		}
+	}
 	store := TicketStore()
 
 	var title string

@@ -107,6 +107,14 @@ func (m *MultiStore) ListWithSkips() ([]*Ticket, []FileSkip, error) {
 	return snap.Tickets, snap.Skips, nil
 }
 
+// ListFromSnapshot is List over a snapshot the caller already holds, the
+// skips warned about as List warns them: every ticket in every namespace,
+// off the same reading the caller decides membership on.
+func (m *MultiStore) ListFromSnapshot(snap *Snapshot) []*Ticket {
+	warnSkips(snap.Skips)
+	return snap.Tickets
+}
+
 // Snapshot is the graph of the whole central store, read under the shared
 // store lock. The public read of the graph for a consumer that needs
 // relationships rather than a listing.

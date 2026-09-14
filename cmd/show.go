@@ -55,14 +55,30 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		return nil
 	}
 
-	// Get all tickets for relationship display. References are resolved through
-	// the index rather than a plain map because a store holds both ID forms: MCP
-	// writes deps and links namespaced while `tk dep` writes them bare, so an
-	// exact-string lookup renders half of them as unknown. The index matches
-	// exactly first, falls back to the bare half, and refuses a bare half two
-	// listed tickets share — ambiguity stays unresolved rather than guessed.
-	allTickets, _ := store.List()
-	lookup := ticket.IndexByID(store, allTickets)
+	// Relationships come off the graph: every reference is resolved relative
+	// to the ticket holding it, by exact qualified ID, so a foreign parent gets
+	// its title and a done foreign dep is not a blocker — and an ambiguous or
+	// foreign reference the graph cannot answer stays unknown rather than
+	// being guessed.
+	snap, err := store.Snapshot()
+	if err != nil {
+		return err
+	}
+	ns := store.Project
+	qid := ticket.FormatNamespacedID(ns, t.ID)
+	resolve := func(ref string) (*ticket.Ticket, bool) {
+		return snap.Get(ticket.QualifyRef(ns, ref))
+	}
+	// The header comes off the same reading as everything under it: the
+	// snapshot's copy carries the derived status and the stamped relationship
+	// issue, so a child written between Get and the snapshot cannot make the
+	// status disagree with the counts. The ID stays the bare one a project
+	// store prints.
+	if cur, ok := snap.Get(qid); ok {
+		view := *cur
+		view.ID = t.ID
+		t = &view
+	}
 
 	// Serialize the base ticket content.
 	data, err := ticket.Serialize(t)
@@ -73,25 +89,13 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	// Render timestamps in local wall-clock time for human-facing output.
 	output := localizeTimestamps(string(data), t)
 
-	// Annotate parent line with title. The stored parent may be namespaced
-	// while the parent's own ID is bare, so match it the way Children does.
-	//
-	// Deliberately laxer than the `lookup` the reference sections use: this
-	// matches on the bare half alone, with no ambiguity or cross-project guard.
-	// Children below is the same rule for the same reason — it scans for tickets
-	// naming this one as parent, so it compares in the reverse direction and has
-	// no reference to resolve. The laxity costs nothing here because a parent
-	// naming another project is unwritable: ResolveParent requires the parent to
-	// be an epic in the same project, enforced on every write.
+	// Annotate parent line with title.
 	if t.Parent != "" {
-		for _, tk := range allTickets {
-			if ticket.SameTicketID(tk.ID, t.Parent) {
-				output = strings.Replace(output,
-					"parent: "+t.Parent,
-					"parent: "+t.Parent+"  # "+tk.Title,
-					1)
-				break
-			}
+		if parent, ok := resolve(t.Parent); ok {
+			output = strings.Replace(output,
+				"parent: "+t.Parent,
+				"parent: "+t.Parent+"  # "+parent.Title,
+				1)
 		}
 	}
 
@@ -123,10 +127,10 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		}
 	}
 
-	// Blockers: deps not at done status.
+	// Blockers: deps not at done status, shown as the ticket spells them.
 	var blockers []string
 	for _, depID := range t.Deps {
-		dep, ok := lookup(depID)
+		dep, ok := resolve(depID)
 		if !ok || dep.Status != ticket.StatusDone {
 			blockers = append(blockers, depID)
 		}
@@ -134,7 +138,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	if len(blockers) > 0 {
 		fmt.Print("\n## Blockers\n\n")
 		for _, id := range blockers {
-			if dep, ok := lookup(id); ok {
+			if dep, ok := resolve(id); ok {
 				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), dep.Status, ticket.SanitizeControl(dep.Title))
 			} else {
 				fmt.Printf("- %s [unknown]\n", ticket.SanitizeControl(id))
@@ -142,57 +146,69 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		}
 	}
 
-	// Blocking: tickets that depend on this one and aren't done.
-	var blocking []string
-	for _, tk := range allTickets {
+	// Blocking: tickets in any namespace that depend on this one and aren't
+	// done. Each dep is read relative to the ticket holding it, so a dep on
+	// this ID from another namespace counts and a same-suffix dep on another
+	// project's ticket does not.
+	var blocking []*ticket.Ticket
+	for _, tk := range snap.Tickets {
 		if tk.Status == ticket.StatusDone {
 			continue
 		}
+		tns, _ := ticket.ParseNamespacedID(tk.ID)
 		for _, depID := range tk.Deps {
-			// Resolve the dep through the index and compare the tickets, so a
-			// namespaced dep on this ticket is not silently dropped from the
-			// section — and a dep that resolves elsewhere is not counted here.
-			if dep, ok := lookup(depID); ok && dep.ID == t.ID {
-				blocking = append(blocking, tk.ID)
+			if ticket.QualifyRef(tns, depID) == qid {
+				blocking = append(blocking, tk)
 				break
 			}
 		}
 	}
 	if len(blocking) > 0 {
 		fmt.Print("\n## Blocking\n\n")
-		for _, id := range blocking {
-			if tk, ok := lookup(id); ok {
-				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), tk.Status, ticket.SanitizeControl(tk.Title))
-			}
+		for _, tk := range blocking {
+			fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(tk.ID), tk.Status, ticket.SanitizeControl(tk.Title))
 		}
 	}
 
-	// Children: tickets with this as parent.
-	var children []string
-	for _, tk := range allTickets {
-		if ticket.SameTicketID(tk.Parent, t.ID) {
-			children = append(children, tk.ID)
-		}
-	}
-	if len(children) > 0 {
+	// Children: the tickets the graph places under this epic, from every
+	// namespace, under their qualified IDs.
+	if children := snap.Children(qid); len(children) > 0 {
 		fmt.Print("\n## Children\n\n")
-		for _, id := range children {
-			if tk, ok := lookup(id); ok {
-				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), tk.Status, ticket.SanitizeControl(tk.Title))
-			}
+		for _, tk := range children {
+			fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(tk.ID), tk.Status, ticket.SanitizeControl(tk.Title))
 		}
 	}
 
-	// Links.
+	// Links, shown as the ticket spells them.
 	if len(t.Links) > 0 {
 		fmt.Print("\n## Linked\n\n")
 		for _, id := range t.Links {
-			if tk, ok := lookup(id); ok {
+			if tk, ok := resolve(id); ok {
 				fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(id), tk.Status, ticket.SanitizeControl(tk.Title))
 			} else {
 				fmt.Printf("- %s [unknown]\n", ticket.SanitizeControl(id))
 			}
 		}
+	}
+
+	// Progress: the counts the epic's status was derived from, off the same
+	// snapshot, and whether that snapshot saw the whole store.
+	if t.Type == ticket.TypeEpic {
+		p := snap.Progress(qid)
+		fmt.Print("\n## Progress\n\n")
+		fmt.Printf("children: %d — done %d, closed %d, open %d, ready %d, backlog %d\n", p.Total, p.Done, p.Closed, p.Open, p.Ready, p.Backlog)
+		if p.Complete {
+			fmt.Println("complete: yes")
+		} else {
+			fmt.Println("complete: no")
+			for _, d := range p.Diagnostics {
+				fmt.Printf("  %s\n", ticket.SanitizeControl(d))
+			}
+		}
+	} else if issue := ticket.RelationshipIssue(t); issue != "" {
+		// Why this leaf is no epic's child and never automatically runnable.
+		fmt.Print("\n## Relationship\n\n")
+		fmt.Println(ticket.SanitizeControl(issue))
 	}
 
 	return nil

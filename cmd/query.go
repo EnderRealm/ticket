@@ -18,6 +18,7 @@ var queryCmd = &cobra.Command{
 }
 
 func init() {
+	queryCmd.Flags().Bool("all-projects", false, "output every namespace in the central store, IDs qualified")
 	rootCmd.AddCommand(queryCmd)
 }
 
@@ -81,8 +82,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
-	store := TicketStore()
-	tickets, err := store.List()
+	tickets, err := listingFor(cmd)
 	if err != nil {
 		return err
 	}

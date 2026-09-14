@@ -1,6 +1,7 @@
 package project
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +52,30 @@ func ConfiguredRepoPath(cfg Config, name string) (string, bool) {
 		return "", false
 	}
 	return p.Path, true
+}
+
+// ExecutionDir is the directory a ticket in namespace may execute in — the
+// checkout registered for that project on this machine — or the reason there
+// is none. Root has no repository by definition; a namespace with no
+// registered checkout here has nowhere to run; a registered path that is not a
+// directory is a checkout this machine no longer has. Nothing else stands in:
+// not the process working directory, not HOME, not a parent epic's project
+// and not the ticket store, because each of those is a directory the ticket
+// did not name, and a verify command running in one runs somewhere its
+// author never saw.
+func ExecutionDir(cfg Config, namespace string) (string, error) {
+	if IsRoot(namespace) {
+		return "", fmt.Errorf("Root has no repository: a Root ticket is groomed and completed through edits and notes, never run")
+	}
+	path, ok := ConfiguredRepoPath(cfg, namespace)
+	if !ok {
+		return "", fmt.Errorf("project %q has no checkout registered on this machine — run `tk init` in its repository", namespace)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("project %q checkout %s is not a directory on this machine", namespace, path)
+	}
+	return path, nil
 }
 
 // DetectProjectPath returns git top-level directory if available; otherwise cwd.

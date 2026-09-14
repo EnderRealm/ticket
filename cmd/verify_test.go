@@ -226,24 +226,123 @@ func TestVerifyNoCriteria(t *testing.T) {
 	}
 }
 
-func TestVerifyWorkDirAcceptsConfiguredProjectName(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+// selectProject sets the persistent --project selector for one test, the way
+// resolveFor sets --repo.
+func selectProject(t *testing.T, ns string) {
+	t.Helper()
+	projectFlag = ns
+	t.Cleanup(func() { projectFlag = "" })
+}
+
+// verifyRoot is the central root a verify fixture's store sits in.
+func verifyRoot(store *ticket.FileStore) string {
+	return filepath.Dir(filepath.Dir(store.Dir))
+}
+
+func TestVerifyRunsInTheTicketsOwnCheckoutNotTheCwd(t *testing.T) {
+	// The process runs in this package's directory; the ticket's project is
+	// registered elsewhere, and that is where its commands run.
+	verifyStore(t, "vf-fixture", mixedCriteriaBody)
 	want := t.TempDir()
-	if err := project.Save(project.Config{
-		CentralRoot: t.TempDir(),
-		Projects: map[string]project.ProjectConfig{
-			"vf-name": {Path: want, Store: "central"},
-		},
-	}); err != nil {
-		t.Fatalf("Save config: %v", err)
+	if err := os.WriteFile(filepath.Join(want, "marker.txt"), []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	store := registerCentralProject(t, "vf-name", want)
+	mkVerifyTicket(t, store, "vf-there", "Description.\n\n## Acceptance Criteria\n\n- Runs in the checkout.\n  verify: /bin/sh -c 'test -f marker.txt'\n")
 
-	repoFlag = "vf-name"
-	defer func() { repoFlag = "" }()
+	selectProject(t, "vf-name")
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
 
-	if got, _, _ := verifyWorkDir(); got != want {
-		t.Errorf("verifyWorkDir = %q, want configured repo path %q", got, want)
+	out, err := captureVerify(t, "vf-there")
+	if err != nil {
+		t.Fatalf("verify in the registered checkout should pass: %v\n%s", err, out)
 	}
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, out)
+	}
+	if report.Dir != want {
+		t.Errorf("report dir = %q, want the project's configured path %q", report.Dir, want)
+	}
+	if report.Summary.Pass != 1 {
+		t.Errorf("summary = %+v, want the marker check to pass in the checkout", report.Summary)
+	}
+}
+
+// assertVerifyRefusedBeforeRunning checks that a verify refusal named its
+// reason, ran nothing and recorded nothing.
+func assertVerifyRefusedBeforeRunning(t *testing.T, store *ticket.FileStore, id, sentinel string, err error, want string) {
+	t.Helper()
+	if err == nil || !contains(err.Error(), want) {
+		t.Errorf("verify %s = %v, want a refusal containing %q", id, err, want)
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Errorf("verify %s ran the criterion's command", id)
+	}
+	tk, getErr := store.Get(id)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if contains(tk.Body, "## Test Results") {
+		t.Errorf("a refused verify recorded results:\n%s", tk.Body)
+	}
+}
+
+func sentinelBody(sentinel string) string {
+	return "Description.\n\n## Acceptance Criteria\n\n- Touches a sentinel.\n  verify: /bin/sh -c 'touch " + sentinel + "'\n"
+}
+
+func TestVerifyRefusesRootBeforeRunning(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	anchor := verifyStore(t, "vf-fixture", mixedCriteriaBody)
+	root := verifyRoot(anchor)
+	if err := os.WriteFile(ticket.CatalogPath(root), []byte("required_features: [root-namespace]\nnamespaces:\n  _root: {kind: root}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootDir := filepath.Join(root, "tickets", project.RootNamespace)
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := ticket.NewProjectFileStore(rootDir, project.RootNamespace)
+	mkVerifyTicket(t, store, "vf-root", sentinelBody(sentinel))
+	selectProject(t, project.RootNamespace)
+
+	_, err := captureVerify(t, "vf-root")
+	assertVerifyRefusedBeforeRunning(t, store, "vf-root", sentinel, err, "Root has no repository")
+
+	// --dir substitutes the directory of an eligible run; it does not make
+	// Root eligible.
+	setVerifyFlag(t, "dir", t.TempDir())
+	_, err = captureVerify(t, "vf-root")
+	assertVerifyRefusedBeforeRunning(t, store, "vf-root", sentinel, err, "Root has no repository")
+}
+
+func TestVerifyRefusesAnUnregisteredProject(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	anchor := verifyStore(t, "vf-fixture", mixedCriteriaBody)
+	strayDir := filepath.Join(verifyRoot(anchor), "tickets", "vf-stray")
+	if err := os.MkdirAll(strayDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := ticket.NewProjectFileStore(strayDir, "vf-stray")
+	mkVerifyTicket(t, store, "vf-nowhere", sentinelBody(sentinel))
+	selectProject(t, "vf-stray")
+
+	_, err := captureVerify(t, "vf-nowhere")
+	assertVerifyRefusedBeforeRunning(t, store, "vf-nowhere", sentinel, err, `project "vf-stray" has no checkout registered on this machine`)
+}
+
+func TestVerifyRefusesAMissingCheckout(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	verifyStore(t, "vf-fixture", mixedCriteriaBody)
+	gone := filepath.Join(t.TempDir(), "gone")
+	store := registerCentralProject(t, "vf-gone", gone)
+	mkVerifyTicket(t, store, "vf-lost", sentinelBody(sentinel))
+	selectProject(t, "vf-gone")
+
+	_, err := captureVerify(t, "vf-lost")
+	assertVerifyRefusedBeforeRunning(t, store, "vf-lost", sentinel, err, `project "vf-gone" checkout `+gone+" is not a directory on this machine")
 }
 
 // setVerifyTimeout writes verify_timeout onto the project entry a verify

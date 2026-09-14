@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,6 +54,20 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Eligibility before anything runs: the ticket's namespace is the store's,
+	// and only a registered checkout of that project is somewhere its commands
+	// may execute. Root has none, an unregistered project has none here, and
+	// a checkout that is gone is not stood in for by the process's working
+	// directory. --dir moves an eligible run; it does not make one eligible.
+	cfg, err := project.Load()
+	if err != nil {
+		return fmt.Errorf("load ticket config: %w", err)
+	}
+	dir, err := project.ExecutionDir(cfg, store.Project)
+	if err != nil {
+		return err
+	}
+
 	criteria := ticket.ParseCriteria(ticket.AcceptanceCriteria(t.Body))
 	if len(criteria) == 0 {
 		return fmt.Errorf("%s has no acceptance criteria", t.ID)
@@ -70,7 +83,6 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		criteria = criteria[verifyCriterion-1 : verifyCriterion]
 	}
 
-	dir, name, cfg := verifyWorkDir()
 	if cmd.Flags().Changed("dir") {
 		// Checked before anything runs, so a mistyped directory is a usage error
 		// rather than every criterion failing in the wrong tree. Keyed on the flag
@@ -88,10 +100,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// The allow-list and the timeout both come from machine-local config only —
 	// there is no flag for either, so nothing in a ticket or the synced store can
 	// widen what runs or how long it may run. --dir moves the directory alone:
-	// the bound still belongs to the project the working directory (or --repo)
-	// resolved to.
+	// the bound still belongs to the ticket's project.
 	allow, allowErr := project.VerifyAllow()
-	timeout, timeoutErr := project.VerifyTimeout(cfg, name)
+	timeout, timeoutErr := project.VerifyTimeout(cfg, store.Project)
 	policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
 	results, err := ticket.RunVerify(cmd.Context(), criteria, dir, policy)
 	if err != nil {
@@ -169,40 +180,4 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s of %d criteria", strings.Join(problems, " and "), len(criteria))
 	}
 	return nil
-}
-
-// verifyWorkDir returns the directory verify commands run in: the configured
-// path of the project the working directory (or --repo) belongs to, falling
-// back to that directory itself. Only a config-sourced project name is trusted
-// — ResolveName's git-remote and dirname inference can name a project the
-// directory isn't a checkout of, which would run commands in the wrong repo.
-//
-// It also returns that project name (empty when none resolved) and the config
-// it loaded, so the caller reads the project's verify_timeout from the same
-// resolution rather than loading config a second time.
-func verifyWorkDir() (dir, name string, cfg project.Config) {
-	dir = mustGetwd()
-	cfg, err := project.Load()
-	if repoFlag != "" {
-		repo := repoFlag
-		if err == nil {
-			if path, ok := project.ConfiguredRepoPath(cfg, repo); ok {
-				repo = path
-			}
-		}
-		if abs, err := filepath.Abs(repo); err == nil {
-			dir = abs
-		}
-	}
-	if err != nil {
-		return dir, "", cfg
-	}
-	name, source := project.ResolveName(cfg, dir, "")
-	if source != "config" {
-		return dir, "", cfg
-	}
-	if p, ok := cfg.Projects[name]; ok && p.Path != "" {
-		return p.Path, name, cfg
-	}
-	return dir, name, cfg
 }

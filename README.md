@@ -105,7 +105,7 @@ configured path first, before the value is treated as a filesystem path.
 
 Every command resolves one way: the repo — the configured path for a project name passed to `--repo`, a path passed to `--repo`, or else the working directory — to the project that repo owns in `<central_root>/tickets/<project>/`. There is no second kind of store. A repo that owns no project is an error naming it rather than a store minted on the spot, since a directory nothing else reads would orphan whatever landed there; `tk init` registers the project.
 
-tk no longer reads a `.tickets/` directory inside a repo. Nothing deletes or rewrites one — if a repo still has it, the error names that directory, and `tk init` copies the tickets into the central store and leaves the original in place as a backup.
+tk no longer reads a `.tickets/` directory inside a repo. Nothing deletes or rewrites one — if a repo still has it, the error names that directory, and `tk init` imports the tickets into the central store and leaves the original in place as a backup. The import goes through the same validating boundary every write passes, as one batch: a child resolves against the epic beside it, a file that does not parse names itself and stops the migration, a batch the graph refuses (a child naming a parent that exists nowhere) leaves the central store untouched, and a catalog requiring a feature this binary lacks refuses it like any other write. Tickets the central store already holds are skipped, so re-running `tk init` is harmless; the summary reports `imported:` and `skipped:` counts.
 
 ### `spawn_command`
 
@@ -155,11 +155,22 @@ Run `tk help` for the full command reference. Key commands:
 
 ```
 Viewing:
-  show <id> [--metadata]     Display ticket details
+  show <id> [--metadata]     Display ticket details. An epic ends with a
+                             Progress section (children counted by status
+                             across every namespace, and whether the count is
+                             complete); a leaf whose parent does not make it a
+                             child ends with a Relationship section saying why
   ls|list [filters]          List tickets (default: workflow grouped, done
                              and closed hidden; --all shows them)
-  frontier [--project=NAME]  List ready tickets with all deps done/closed
+    --all-projects           Every namespace in the central store, IDs qualified
+    --parent=ID              Children of an epic: membership is global, the
+                             listing is the selected project's (a "children of …"
+                             line on stderr counts the rest); --all keeps closed ones
+  frontier [--parent=ID]     List ready tickets with all deps done/closed,
+                             computed over the whole store; --parent keeps that
+                             epic's members, --project keeps one namespace's rows
   search <query>             Search tickets by relevance (best matches first)
+    --all-projects           Search every namespace, IDs qualified
   audit [cause] [--project=NAME]
                              Summarise findings by cause, one line each with the count and the
                              command that lists that cause's tickets: invalid parents, epics whose
@@ -169,13 +180,21 @@ Viewing:
                              whose id names another project. tk audit <cause> lists that cause's
                              tickets in full and nothing else; --json is the whole report either way
   verify <id>                Run the ticket's acceptance-criteria verify commands
-    --dir <path>             Run the commands in this directory instead of the project's
+                             in the checkout registered here for the ticket's own
+                             project; a Root ticket, a project with no checkout
+                             registered on this machine, and a missing checkout
+                             are refused before anything runs
+    --dir <path>             Run the commands in this directory instead of the
+                             project's (applies only to an eligible run)
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
                              20 refused or unverified
     --no-record              Skip writing the Test Results section
 
 Creating & Editing:
-  create [title] [options]   Create ticket
+  create [title] [options]   Create ticket. Outside a registered project the
+                             destination must be named: --project <namespace>
+                             (--project _root for an idea with no repository
+                             yet) or --repo
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
@@ -192,12 +211,22 @@ Dependencies & Links:
 
 Query:
   query [jq-filter]          Output tickets as JSONL (pipe to jq)
+    --all-projects           Every namespace, IDs qualified
 
 Setup:
   init [--project <name>] [--central-root <path>] [--yes]
-                               Initialize tk and register a project
+                               Initialize tk and register a project; a
+                               .tickets/ directory in the repo is imported
+                               through the validating store boundary
   sync                         Sync ticket changes to git
   status                       Show tk system status
+
+Global flags:
+  --project <ns>             Operate on a namespace in the central store by
+                             name (_root always selectable; unknown names
+                             refused); conflicts with --repo
+  --repo <name|path>         Operate on a registered project or repo
+  --json                     Output in JSON format
 
 Interactive:
   ui                         Terminal UI
@@ -417,7 +446,11 @@ A refusal is reported as `refused`, never as a failure, and counted separately i
 -P, --priority X  0 (critical) through 4 (backlog)
 -T, --tag X       Filter by tag
 --field key=val   Filter by extra field (substring match)
---parent X        Children of ticket X
+--parent X        Children of epic X (qualified project/id, or bare in the
+                  selected project); membership is global, the listing is
+                  the selected project's
+--all-projects    Every namespace in the central store, IDs qualified;
+                  conflicts with --project
 --group-by X      Group by: workflow | type | priority
 --flat            Flat list (no grouping)
 ```
@@ -494,11 +527,13 @@ tk sync
 
 If a push conflict occurs, tk attempts `pull --rebase`. If rebase fails, sync is blocked and a `.tk-sync-blocked` marker is written. Resolve the conflict manually, then sync resumes on the next cycle.
 
+A cycle is split around the store lock every ticket write takes. The fetch and the push run outside it — the network half never holds the store. The rebase pull, the guards, staging and the commit run under it, exclusively, so no writer lands a ticket mid-rebase or mid-commit and no reader snapshots a half-applied merge. A lock that cannot be taken skips the cycle with `sync skipped: store lock: …` and no marker — a stuck writer is transient. A rebase pull that moved HEAD is followed by a read of the merged store: a namespace or file it cannot read, or a ticket whose parent the graph refuses, is reported as `sync: merged store has N diagnostic(s) and M invalid relationship(s); epics cannot certify completion and affected leaves are not runnable — run tk audit`. It is a report, not a block — the commit and push still land, and the snapshot already keeps such an epic from reading done and such a leaf out of the frontier — so sync never claims a clean success over a merge the graph refuses.
+
 A store root nested inside a repo tk does not own is the exception: there the rebase would stash that repo owner's whole uncommitted worktree and rebase their current branch, so tk refuses it and blocks with a marker naming the repository instead. The refusal is on the rebase alone — commits and pushes are never gated by the nested topology, so the store keeps publishing on every cycle where the enclosing branch is not behind its upstream. Once it *is* behind, the cycle stops at the marker: nothing of the store's is committed or pushed until the divergence is reconciled by hand in the enclosing repository, and the cycle after that clears the marker and resumes.
 
 ### Commit Journal
 
-`tk watch` — and the same loop inside `tk serve` — reads each registered project's git history and appends one line per commit that names a ticket to `~/.ticket/state/<project>/commits.jsonl`. A commit names a ticket with a bracket ref in its message: `[<id>]` links the commit to the ticket, and `Closes:` or `Fixes:` before the ref also marks the ticket `done`. Both the bare `[slug-hash]` and the namespaced `[project/slug-hash]` form the central store hands agents are matched; a ref naming the project being journalled is recorded under its bare ID, and one naming another project is left for that project to resolve.
+`tk watch` — and the same loop inside `tk serve` — reads each registered project's git history and appends one line per commit that names a ticket to `~/.ticket/state/<project>/commits.jsonl`. A commit names a ticket with a bracket ref in its message: `[<id>]` links the commit to the ticket, and `Closes:` or `Fixes:` before the ref also marks the ticket `done`. Both the bare `[slug-hash]` and the namespaced `[project/slug-hash]` form the central store hands agents are matched; a ref naming the project being journalled is recorded under its bare ID, and one naming another project is left for that project to resolve. A commit closes tickets in its own project only: a `Closes:` ref naming another project's ticket, or a Root ticket (`_root/…`, which has no repository), is journalled as named and the close is warned and skipped — never resolved against the store.
 
 Two per-project flags in the shared config decide it: `auto_link` writes the journal entries, `auto_close` performs the auto-close. `tk init` sets both to `true`, and a project registered before that — the flags were hardcoded to `false` — is flipped to `true` once, the first time a watcher opens the store. The flip touches only projects with *both* flags off, since a mixed pair is a deliberate link-only or close-only choice; it runs once ever, recorded as `journal_defaults_migrated: true` in `<central_root>/config.yaml`, so turning journaling off afterwards sticks. Both flags stay written out per project, so either can be edited back.
 
@@ -523,9 +558,20 @@ Every ticket change is appended to `~/.ticket/state/<project>/mutations.jsonl`, 
 **Default project scoping:**
 - When run from inside a project repo, tools default to that project's tickets
 - When run outside any repo, tools return tickets from all projects
-- The `project` parameter on `ticket_list`, `ticket_create`, `ticket_ready`, and `ticket_inbox` overrides the default
+- The `project` parameter on `ticket_list`, `ticket_frontier`, `ticket_search`, `ticket_ready`, `ticket_blocked`, `ticket_inbox` and `ticket_create` overrides the default; `all_projects=true` on the listing tools sets the default aside and lists every namespace (passing both is refused)
 
 Other tools (`ticket_show`, `ticket_edit`, etc.) accept namespaced IDs directly — pass `forge/my-ticket-1234` to operate on a specific project's ticket.
+
+#### Global queries and Root
+
+Every listing is answered off the whole store first and narrowed afterwards. A `project` scope, and the closed filter, narrow the rows only: which epic a child belongs to, whether a ticket is ready or blocked, and what status an epic derives are all decided over every namespace before the scope applies, so a project view and the central view never disagree. This is the contract weft and warp consume; the CLI flags above are the same rules.
+
+- **Scope.** `all_projects` on `ticket_list`, `ticket_frontier`, `ticket_search`, `ticket_ready`, `ticket_blocked` and `ticket_inbox` lists every namespace and ignores the server's default project; it conflicts with `project`. `ticket_list` also takes `include_closed=true` to keep closed tickets in the rows (dropped by default unless `status` is set), so cancelled children of an epic are reachable.
+- **Parent.** `parent` on `ticket_list` and `ticket_frontier` keeps only the children the graph places under that epic, in every namespace: a qualified `project/id`, or a bare ID relative to `project` (or the default project) — with neither, a bare parent is refused rather than searched for, since identical bare IDs exist in different projects. A parent that does not resolve, or is not an epic, is a refusal and never an empty listing. The response then carries `parent`: the epic's `id`, derived `status`, `type`, `complete`, `children_total` and `counts` (`done`, `closed`, `open`, `ready`, `backlog`) over every child in every namespace, whatever `project` or the closed filter hid from the rows, so a consumer can tell a slice from the epic's whole.
+- **Snapshot.** `ticket_list`, `ticket_frontier` and `ticket_search` responses carry `snapshot`, the revision token of the one store reading the response was cut from, and `complete`, whether that reading saw the whole store; `ticket_list` also carries `namespaces`, the namespaces read in full. A paged `ticket_list` passes the first page's `snapshot` back on every later page: a page at an offset above 0 without it is refused, a store that changed in between is refused with `snapshot changed`, naming the new token, and the caller restarts from offset 0 — two revisions are never mixed into one membership or total.
+- **Show.** `ticket_show` carries `namespace` (the ticket's project, empty on a single store). An epic also carries `children` (`id`, `title`, `status`, `type`, `namespace` — every child in every namespace, IDs qualified), `children_total`, `counts` and `complete`, all off one reading so the derived status and the counts agree; while `complete` is false, `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. A done dependency in another project is not a blocker.
+- **Create.** `ticket_create`'s destination is `project` — a registered project, or `_root` for an idea with no repository yet, refused until the catalog requires `root-namespace` — or `repo`, or the server's default project; with none of the three the create is refused (`no destination: pass project … or repo`) rather than landing somewhere inferred. `parent` may name an epic in another namespace, qualified, once the catalog requires `cross-project-parents`.
+- **Verify.** `ticket_verify` runs commands only in the checkout registered on this machine for the ticket's own project. A Root ticket (Root has no repository), a project with no checkout registered here, and a registered checkout that is missing are each refused before anything runs, naming the reason, and nothing is recorded; the server's working directory, the store and a parent epic's project never stand in.
 
 ### Namespaces, Root and the catalog
 

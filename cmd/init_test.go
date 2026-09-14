@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // TestMain points the user cache directory at a temp tree, so the per-ticket
@@ -67,48 +68,160 @@ func TestInitBootstrapGit(t *testing.T) {
 	}
 }
 
-func TestInitCopyLocal(t *testing.T) {
+func TestInitImportsLocalTickets(t *testing.T) {
 	home := setupTestHome(t)
 
 	src := filepath.Join(home, "project", ".tickets")
 	os.MkdirAll(src, 0o755)
-	os.WriteFile(filepath.Join(src, "ticket-1234.md"), []byte("---\ntitle: Test\n---\n"), 0o644)
-	os.WriteFile(filepath.Join(src, "other-5678.md"), []byte("---\ntitle: Other\n---\n"), 0o644)
+	os.WriteFile(filepath.Join(src, "ticket-1234.md"), ticketFile("ticket-1234", "Test", ""), 0o644)
+	os.WriteFile(filepath.Join(src, "other-5678.md"), ticketFile("other-5678", "Other", ""), 0o644)
 	os.WriteFile(filepath.Join(src, "notamd.txt"), []byte("ignored"), 0o644)
 
-	dst := filepath.Join(home, ".tickets", "project")
-	err := copyTicketFiles(src, dst)
+	store := ticket.NewProjectFileStore(filepath.Join(home, ".tickets", "tickets", "project"), "project")
+	imported, skipped, err := importTicketFiles(src, store)
 	if err != nil {
-		t.Fatalf("copyTicketFiles: %v", err)
+		t.Fatalf("importTicketFiles: %v", err)
+	}
+	if len(imported) != 2 || len(skipped) != 0 {
+		t.Errorf("imported %v, skipped %v; want two imported and none skipped", imported, skipped)
 	}
 
-	// Verify .md files were copied
-	entries, _ := os.ReadDir(dst)
-	mdCount := 0
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".md" {
-			mdCount++
+	// The tickets land through the store, readable back as what the files
+	// said; the non-.md file was never a ticket.
+	for id, title := range map[string]string{"ticket-1234": "Test", "other-5678": "Other"} {
+		got, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get %s after import: %v", id, err)
+		}
+		if got.Title != title {
+			t.Errorf("%s title = %q, want %q", id, got.Title, title)
 		}
 	}
-	if mdCount != 2 {
-		t.Errorf("copied %d .md files, want 2", mdCount)
-	}
-
-	// Verify content is identical
-	original, _ := os.ReadFile(filepath.Join(src, "ticket-1234.md"))
-	copied, _ := os.ReadFile(filepath.Join(dst, "ticket-1234.md"))
-	if string(original) != string(copied) {
-		t.Error("copied file content differs from original")
-	}
-
-	// Verify non-.md files were not copied
-	if _, err := os.Stat(filepath.Join(dst, "notamd.txt")); !os.IsNotExist(err) {
-		t.Error("non-.md file should not be copied")
+	if _, err := os.Stat(filepath.Join(store.Dir, "notamd.txt")); !os.IsNotExist(err) {
+		t.Error("non-.md file should not be imported")
 	}
 
 	// Verify originals are preserved
 	if _, err := os.Stat(filepath.Join(src, "ticket-1234.md")); err != nil {
 		t.Error("original file should be preserved")
+	}
+
+	// A re-run skips what the store already holds rather than overwriting it.
+	imported, skipped, err = importTicketFiles(src, store)
+	if err != nil {
+		t.Fatalf("importTicketFiles again: %v", err)
+	}
+	if len(imported) != 0 || len(skipped) != 2 {
+		t.Errorf("re-run imported %v, skipped %v; want none imported and two skipped", imported, skipped)
+	}
+}
+
+// initWithLocalTickets registers a project whose repository holds a .tickets/
+// directory with the given files, running `tk init --yes` from inside it, and
+// returns the project's central directory and the error.
+func initWithLocalTickets(t *testing.T, name string, files map[string][]byte) (string, error) {
+	t.Helper()
+	home := setupTestHome(t)
+
+	centralRoot := filepath.Join(home, "central")
+	os.MkdirAll(centralRoot, 0o755)
+	project.Save(project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}})
+
+	projDir := filepath.Join(home, name)
+	os.MkdirAll(filepath.Join(projDir, ".tickets"), 0o755)
+	runGit(t, projDir, "init")
+	runGit(t, projDir, "config", "user.email", "test@test.com")
+	runGit(t, projDir, "config", "user.name", "test")
+	for file, content := range files {
+		os.WriteFile(filepath.Join(projDir, ".tickets", file), content, 0o644)
+	}
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(oldDir) })
+
+	initCmd.Flags().Set("yes", "true")
+	initCmd.Flags().Set("project", name)
+	t.Cleanup(func() {
+		initCmd.Flags().Set("yes", "false")
+		initCmd.Flags().Set("project", "")
+	})
+
+	return filepath.Join(centralRoot, "tickets", name), runInit(initCmd, nil)
+}
+
+// An epic and its child migrate together: the batch is validated as a whole,
+// so the child's bare parent resolves against the epic beside it rather than
+// against a store that does not hold it yet.
+func TestInitImportsAnEpicWithItsChild(t *testing.T) {
+	centralDir, err := initWithLocalTickets(t, "epicproject", map[string][]byte{
+		"epic-1111.md":  []byte("---\nid: epic-1111\nstatus: backlog\ntype: epic\npriority: 2\n---\n\n# Epic\n"),
+		"child-2222.md": ticketFile("child-2222", "Child", "epic-1111"),
+	})
+	if err != nil {
+		t.Fatalf("runInit with .tickets: %v", err)
+	}
+
+	store := ticket.NewProjectFileStore(centralDir, "epicproject")
+	child, err := store.Get("child-2222")
+	if err != nil {
+		t.Fatalf("Get child after import: %v", err)
+	}
+	if issue := ticket.RelationshipIssue(child); issue != "" {
+		t.Errorf("child's parent did not resolve: %s", issue)
+	}
+	snap, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := snap.Children("epicproject/epic-1111")
+	if len(children) != 1 || children[0].ID != "epicproject/child-2222" {
+		t.Errorf("epic's children = %v, want the imported child", children)
+	}
+}
+
+// A legacy file is parsed and written back through the store, and a quoted
+// extra holding a newline and `parent: ...` is one value to the parser: the
+// migrated ticket must carry that value and no parent, not a parent the
+// boundary never validated because the value was written back plain.
+func TestInitImportPreservesAQuotedExtraWithoutAcquiringAParent(t *testing.T) {
+	centralDir, err := initWithLocalTickets(t, "quoteproject", map[string][]byte{
+		"leaf-1111.md": ticketFile("leaf-1111", "Leaf", ""),
+		"memo-2222.md": []byte("---\nid: memo-2222\nstatus: ready\ntype: feature\npriority: 2\nmemo: \"text\\nparent: quoteproject/leaf-1111\"\n---\n\n# Memo\n"),
+	})
+	if err != nil {
+		t.Fatalf("runInit with .tickets: %v", err)
+	}
+
+	store := ticket.NewProjectFileStore(centralDir, "quoteproject")
+	memo, err := store.Get("memo-2222")
+	if err != nil {
+		t.Fatalf("Get memo after import: %v", err)
+	}
+	if memo.Parent != "" {
+		t.Errorf("imported ticket acquired parent %q from a quoted extra", memo.Parent)
+	}
+	if memo.Extra["memo"] != "text\nparent: quoteproject/leaf-1111" {
+		t.Errorf("Extra[memo] = %q, want the quoted value preserved", memo.Extra["memo"])
+	}
+}
+
+// A child naming a parent that exists nowhere refuses the whole migration
+// with nothing written: the legacy directory is imported through the same
+// boundary every write passes, not copied around it.
+func TestInitRefusesToImportAChildOfAMissingParent(t *testing.T) {
+	centralDir, err := initWithLocalTickets(t, "orphanproject", map[string][]byte{
+		"fine-1111.md":   ticketFile("fine-1111", "Fine", ""),
+		"orphan-2222.md": ticketFile("orphan-2222", "Orphan", "nope-9999"),
+	})
+	if err == nil || !contains(err.Error(), "migrate .tickets:") || !contains(err.Error(), "orphan-2222") {
+		t.Fatalf("runInit = %v, want the migration refused naming the orphan", err)
+	}
+	entries, _ := os.ReadDir(centralDir)
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".md" {
+			t.Errorf("refused migration wrote %s to the central store", e.Name())
+		}
 	}
 }
 

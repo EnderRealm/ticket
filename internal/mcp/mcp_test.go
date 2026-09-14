@@ -238,6 +238,44 @@ func TestCreateWithRepoOnCentralStoreUsesRepoProject(t *testing.T) {
 	}
 }
 
+// A child created through another repo's path under an epic elsewhere is the
+// epic's member once cross-project parents are activated: the repo route
+// lands in the repo's project and the parent is read qualified from there.
+func TestCreateWithRepoUnderAForeignEpic(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	activateCatalog(t, root, "alpha", "beta")
+	repoDir := t.TempDir()
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta": {Path: repoDir, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	epic := createTicketID(t, session, map[string]any{"title": "Alpha epic", "type": "epic", "project": "alpha"})
+	child := createTicketID(t, session, map[string]any{
+		"title":  "Beta child of alpha's epic",
+		"type":   "feature",
+		"repo":   repoDir,
+		"parent": epic,
+	})
+	if p, _ := ticket.ParseNamespacedID(child); p != "beta" {
+		t.Fatalf("child %q is not namespaced under the repo's project beta", child)
+	}
+
+	shown := showTicket(t, session, epic)
+	var members []string
+	for _, c := range shown["children"].([]any) {
+		members = append(members, c.(map[string]any)["id"].(string))
+	}
+	if len(members) != 1 || members[0] != child {
+		t.Errorf("epic children = %v, want the child created through the repo path", members)
+	}
+}
+
 func TestCreateWithRepoRefusesASymlinkedProjectDir(t *testing.T) {
 	// The central store is a git repo and git tracks symlinks, so a project
 	// directory can arrive as one from another committer. MultiStore.Create
@@ -1634,10 +1672,10 @@ func TestListPagination(t *testing.T) {
 		t.Errorf("limit = %v, want 2", resp["limit"])
 	}
 
-	// List with offset=3, limit=10.
+	// List with offset=3, limit=10, under the first page's token.
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "ticket_list",
-		Arguments: map[string]any{"offset": 3, "limit": 10, "status": "backlog"},
+		Arguments: map[string]any{"offset": 3, "limit": 10, "status": "backlog", "snapshot": resp["snapshot"]},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4209,5 +4247,439 @@ func TestCreateReportsBareAcceptanceCriteria(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ─── Root, foreign children and the global graph over MCP ──────────────────
+
+// activateCatalog writes the catalog that activates Root and cross-project
+// parents over the named projects, and makes Root's directory: a catalogued
+// namespace with no directory is one whose tickets are missing, which would
+// leave every snapshot incomplete.
+func activateCatalog(t *testing.T, root string, projects ...string) {
+	t.Helper()
+	body := "required_features: [root-namespace, cross-project-parents]\nnamespaces:\n  _root: {kind: root}\n"
+	for _, p := range projects {
+		body += "  " + p + ": {kind: project}\n"
+	}
+	if err := os.WriteFile(filepath.Join(root, "catalog.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "tickets", project.RootNamespace), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// callTool calls a tool and returns the result, failing on a transport error.
+func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+// callObject calls a tool expected to succeed and decodes its JSON object.
+func callObject(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) map[string]any {
+	t.Helper()
+	result := callTool(t, session, name, args)
+	if result.IsError {
+		t.Fatalf("%s error: %v", name, result.Content)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	return resp
+}
+
+// errorText returns the text of a result expected to be an error.
+func errorText(t *testing.T, result *mcp.CallToolResult, what string) string {
+	t.Helper()
+	if !result.IsError {
+		t.Fatalf("%s should have been refused: %v", what, result.Content)
+	}
+	return result.Content[0].(*mcp.TextContent).Text
+}
+
+func TestCreateIntoRootGatedOnActivation(t *testing.T) {
+	session, root := testCentralServer(t, "warp")
+
+	refused := callTool(t, session, "ticket_create", map[string]any{"title": "An idea", "type": "feature", "project": project.RootNamespace})
+	text := errorText(t, refused, "a create into Root before activation")
+	if !strings.Contains(text, ticket.FeatureRootNamespace) {
+		t.Errorf("refusal should name the activation marker %s, got: %s", ticket.FeatureRootNamespace, text)
+	}
+
+	activateCatalog(t, root, "warp")
+	id := createTicketID(t, session, map[string]any{"title": "An idea", "type": "feature", "project": project.RootNamespace})
+	if !strings.HasPrefix(id, project.RootNamespace+"/") {
+		t.Errorf("id = %q, want a Root ticket", id)
+	}
+}
+
+func TestCreateRefusesWithoutDestination(t *testing.T) {
+	session, _ := testCentralServer(t, "warp")
+
+	refused := callTool(t, session, "ticket_create", map[string]any{"title": "Nowhere", "type": "feature"})
+	text := errorText(t, refused, "a create with no project, no repo and no default")
+	if !strings.Contains(text, "no destination") || !strings.Contains(text, project.RootNamespace) {
+		t.Errorf("refusal should name the remedy, got: %s", text)
+	}
+}
+
+func TestListAllProjectsConflictsWithProject(t *testing.T) {
+	session, _ := testCentralServerWithDefault(t, "warp", "warp", "loom")
+
+	for _, tool := range []string{"ticket_list", "ticket_frontier", "ticket_ready", "ticket_blocked", "ticket_inbox"} {
+		refused := callTool(t, session, tool, map[string]any{"all_projects": true, "project": "warp"})
+		if text := errorText(t, refused, tool+" with all_projects and project"); !strings.Contains(text, "drop project or all_projects") {
+			t.Errorf("%s: refusal should name the conflict, got: %s", tool, text)
+		}
+	}
+	refused := callTool(t, session, "ticket_search", map[string]any{"query": "x", "all_projects": true, "project": "warp"})
+	if text := errorText(t, refused, "ticket_search with all_projects and project"); !strings.Contains(text, "drop project or all_projects") {
+		t.Errorf("ticket_search: refusal should name the conflict, got: %s", text)
+	}
+}
+
+// foreignEpicFixture is an epic in warp with a child in warp, an open child in
+// loom and a closed child in loom. Returns the epic's ID and the children by
+// name.
+func foreignEpicFixture(t *testing.T, session *mcp.ClientSession) (string, map[string]string) {
+	t.Helper()
+	epic := createTicketID(t, session, map[string]any{"title": "Cross-project epic", "type": "epic", "project": "warp"})
+	children := map[string]string{
+		"warp":   createTicketID(t, session, map[string]any{"title": "Warp child", "type": "feature", "project": "warp", "parent": epic}),
+		"loom":   createTicketID(t, session, map[string]any{"title": "Loom child", "type": "feature", "project": "loom", "parent": epic}),
+		"closed": createTicketID(t, session, map[string]any{"title": "Loom closed child", "type": "feature", "project": "loom", "parent": epic}),
+	}
+	editStatus(t, session, children["warp"], "open")
+	editStatus(t, session, children["closed"], "closed")
+	return epic, children
+}
+
+func parentOfResp(t *testing.T, resp map[string]any) (map[string]any, map[string]any) {
+	t.Helper()
+	parent, ok := resp["parent"].(map[string]any)
+	if !ok {
+		t.Fatalf("response carries no parent object: %v", resp)
+	}
+	counts, ok := parent["counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("parent carries no counts: %v", parent)
+	}
+	return parent, counts
+}
+
+func TestListForeignChildrenUnderParent(t *testing.T) {
+	session, root := testCentralServer(t, "warp", "loom")
+	activateCatalog(t, root, "warp", "loom")
+	epic, children := foreignEpicFixture(t, session)
+
+	// Every namespace: both open children are rows, the closed one is not,
+	// and the parent counts all three.
+	resp := callObject(t, session, "ticket_list", map[string]any{"parent": epic, "all_projects": true})
+	ids := listIDs(resp)
+	if len(ids) != 2 || !ids[children["warp"]] || !ids[children["loom"]] {
+		t.Errorf("all_projects rows = %v, want the warp and loom children", ids)
+	}
+	if resp["complete"] != true || resp["snapshot"] == "" {
+		t.Errorf("complete = %v, snapshot = %v, want true and a token", resp["complete"], resp["snapshot"])
+	}
+	namespaces := fmt.Sprint(resp["namespaces"])
+	for _, ns := range []string{"warp", "loom", project.RootNamespace} {
+		if !strings.Contains(namespaces, ns) {
+			t.Errorf("namespaces = %s, want %s read in full", namespaces, ns)
+		}
+	}
+	parent, counts := parentOfResp(t, resp)
+	if parent["id"] != epic || parent["type"] != "epic" || parent["status"] != "open" || parent["complete"] != true {
+		t.Errorf("parent = %v, want the open, complete epic", parent)
+	}
+	if parent["children_total"] != 3.0 || counts["open"] != 1.0 || counts["backlog"] != 1.0 || counts["closed"] != 1.0 {
+		t.Errorf("parent total = %v, counts = %v, want 3 children: 1 open, 1 backlog, 1 closed", parent["children_total"], counts)
+	}
+
+	// A project narrows the rows and nothing else: the parent still counts
+	// every child in every namespace.
+	resp = callObject(t, session, "ticket_list", map[string]any{"parent": epic, "project": "loom"})
+	if ids := listIDs(resp); len(ids) != 1 || !ids[children["loom"]] {
+		t.Errorf("project=loom rows = %v, want the open loom child alone", ids)
+	}
+	parent, counts = parentOfResp(t, resp)
+	if parent["children_total"] != 3.0 || counts["closed"] != 1.0 {
+		t.Errorf("project=loom parent total = %v, counts = %v, want the global 3 with 1 closed", parent["children_total"], counts)
+	}
+
+	// include_closed exposes the closed child the default hides; the parent's
+	// closed count is the same either way.
+	resp = callObject(t, session, "ticket_list", map[string]any{"parent": epic, "project": "loom", "include_closed": true})
+	if ids := listIDs(resp); len(ids) != 2 || !ids[children["closed"]] {
+		t.Errorf("include_closed rows = %v, want both loom children", ids)
+	}
+	if _, counts = parentOfResp(t, resp); counts["closed"] != 1.0 {
+		t.Errorf("include_closed parent counts = %v, want 1 closed", counts)
+	}
+
+	// A bare parent with no project to make it relative to is refused, and an
+	// unresolvable parent is a refusal rather than an empty list.
+	_, bare := ticket.ParseNamespacedID(epic)
+	refused := callTool(t, session, "ticket_list", map[string]any{"parent": bare})
+	if text := errorText(t, refused, "a bare parent with no project"); !strings.Contains(text, "name the epic qualified as project/id") {
+		t.Errorf("refusal should name the remedy, got: %s", text)
+	}
+	refused = callTool(t, session, "ticket_list", map[string]any{"parent": "warp/epic-nope-0000"})
+	if text := errorText(t, refused, "an unresolvable parent"); !strings.Contains(text, "not found") {
+		t.Errorf("refusal should say the parent was not found, got: %s", text)
+	}
+	// A bare parent is relative to the explicit project.
+	resp = callObject(t, session, "ticket_list", map[string]any{"parent": bare, "project": "warp"})
+	if ids := listIDs(resp); len(ids) != 1 || !ids[children["warp"]] {
+		t.Errorf("bare parent in project=warp rows = %v, want the warp child", ids)
+	}
+
+	// Show: the children come from every namespace, and the counts agree with
+	// the derived status off the same snapshot.
+	shown := showTicket(t, session, epic)
+	if shown["namespace"] != "warp" || shown["status"] != "open" || shown["complete"] != true {
+		t.Errorf("show namespace = %v, status = %v, complete = %v, want warp, open, true", shown["namespace"], shown["status"], shown["complete"])
+	}
+	if shown["children_total"] != 3.0 {
+		t.Errorf("children_total = %v, want 3", shown["children_total"])
+	}
+	counts, _ = shown["counts"].(map[string]any)
+	if counts["open"] != 1.0 || counts["backlog"] != 1.0 || counts["closed"] != 1.0 {
+		t.Errorf("show counts = %v, want 1 open, 1 backlog, 1 closed", counts)
+	}
+	byNS := map[string]int{}
+	for _, c := range shown["children"].([]any) {
+		child := c.(map[string]any)
+		byNS[child["namespace"].(string)]++
+		if child["id"] == children["closed"] && child["status"] != "closed" {
+			t.Errorf("closed child shown as %v", child["status"])
+		}
+	}
+	if byNS["warp"] != 1 || byNS["loom"] != 2 {
+		t.Errorf("children by namespace = %v, want 1 warp and 2 loom", byNS)
+	}
+	if _, present := shown["diagnostics"]; present {
+		t.Errorf("a complete show carries diagnostics: %v", shown["diagnostics"])
+	}
+
+	// A leaf's show names its namespace and no epic fields.
+	leaf := showTicket(t, session, children["loom"])
+	if leaf["namespace"] != "loom" {
+		t.Errorf("leaf namespace = %v, want loom", leaf["namespace"])
+	}
+	for _, field := range []string{"children", "children_total", "counts", "complete", "relationship_issue"} {
+		if _, present := leaf[field]; present {
+			t.Errorf("leaf show carries %s: %v", field, leaf[field])
+		}
+	}
+}
+
+func TestListAndShowReportForeignIncompleteness(t *testing.T) {
+	session, root := testCentralServer(t, "warp", "loom")
+	activateCatalog(t, root, "warp", "loom")
+	epic := createTicketID(t, session, map[string]any{"title": "Warp epic", "type": "epic", "project": "warp"})
+	child := createTicketID(t, session, map[string]any{"title": "Warp child", "type": "feature", "project": "warp", "parent": epic})
+	editStatus(t, session, child, "done")
+
+	if err := os.WriteFile(filepath.Join(root, "tickets", "loom", "bad.md"), []byte("---\nid: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := callObject(t, session, "ticket_list", map[string]any{"project": "warp"})
+	if resp["complete"] != false {
+		t.Errorf("complete = %v, want false with an unreadable file in another namespace", resp["complete"])
+	}
+	skipped := fmt.Sprint(resp["skipped_files"])
+	if !strings.Contains(skipped, "bad.md") || !strings.Contains(skipped, "loom") {
+		t.Errorf("skipped_files = %s, want the loom file kept in a project=warp view", skipped)
+	}
+
+	shown := showTicket(t, session, epic)
+	if shown["complete"] != false || shown["status"] == "done" {
+		t.Errorf("show complete = %v, status = %v, want false and not done over a partial read", shown["complete"], shown["status"])
+	}
+	diagnostics := fmt.Sprint(shown["diagnostics"])
+	if !strings.Contains(diagnostics, "bad.md") {
+		t.Errorf("diagnostics = %s, want the unreadable file named", diagnostics)
+	}
+	if counts, _ := shown["counts"].(map[string]any); counts["done"] != 1.0 {
+		t.Errorf("counts = %v, want the done child still counted", counts)
+	}
+}
+
+func TestListPaginationRejectsChangedSnapshot(t *testing.T) {
+	session, _ := testCentralServer(t, "warp")
+	var ids []string
+	for _, title := range []string{"One", "Two", "Three"} {
+		ids = append(ids, createTicketID(t, session, map[string]any{"title": title, "type": "feature", "project": "warp"}))
+	}
+
+	page1 := callObject(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2})
+	token, _ := page1["snapshot"].(string)
+	if len(token) != 64 {
+		t.Fatalf("snapshot = %q, want a revision token", token)
+	}
+	if len(page1["tickets"].([]any)) != 2 {
+		t.Fatalf("page 1 has %d rows, want 2", len(page1["tickets"].([]any)))
+	}
+
+	// The same token still serves while nothing changed.
+	page2 := callObject(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2, "offset": 2, "snapshot": token})
+	if page2["snapshot"] != token || len(page2["tickets"].([]any)) != 1 {
+		t.Errorf("page 2 = %v, want 1 row under the same token", page2)
+	}
+
+	editStatus(t, session, ids[0], "open")
+
+	refused := callTool(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2, "offset": 2, "snapshot": token})
+	text := errorText(t, refused, "page 2 against a changed store")
+	if !strings.Contains(text, "snapshot changed") || !strings.Contains(text, token) {
+		t.Errorf("refusal should name the change and the old token, got: %s", text)
+	}
+	marker := "restart from offset 0 with snapshot "
+	at := strings.Index(text, marker)
+	if at < 0 {
+		t.Fatalf("refusal should carry the new token, got: %s", text)
+	}
+	fresh := strings.TrimSpace(text[at+len(marker):])
+	if len(fresh) != 64 || fresh == token {
+		t.Fatalf("new token = %q, want a different revision", fresh)
+	}
+
+	restarted := callObject(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2, "snapshot": fresh})
+	if restarted["snapshot"] != fresh || restarted["total"] != 3.0 {
+		t.Errorf("restarted page = snapshot %v, total %v, want the new token and 3", restarted["snapshot"], restarted["total"])
+	}
+}
+
+// A later page carries the first page's token or it is refused: with no token
+// there is nothing to compare the store against, and the page would be cut
+// from whatever revision is current.
+func TestListPaginationRequiresSnapshotPastFirstPage(t *testing.T) {
+	session, _ := testCentralServer(t, "warp")
+	for _, title := range []string{"One", "Two", "Three"} {
+		createTicketID(t, session, map[string]any{"title": title, "type": "feature", "project": "warp"})
+	}
+
+	page1 := callObject(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2})
+	token, _ := page1["snapshot"].(string)
+	if len(token) != 64 || len(page1["tickets"].([]any)) != 2 {
+		t.Fatalf("page 1 = %v, want a token and 2 rows without one passed in", page1)
+	}
+
+	refused := callTool(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2, "offset": 2})
+	text := errorText(t, refused, "page 2 without a snapshot token")
+	if !strings.Contains(text, "offset 2 requires the snapshot token") || !strings.Contains(text, "restart from offset 0") {
+		t.Errorf("refusal should name the missing token and the restart, got: %s", text)
+	}
+
+	page2 := callObject(t, session, "ticket_list", map[string]any{"project": "warp", "limit": 2, "offset": 2, "snapshot": token})
+	if page2["snapshot"] != token || len(page2["tickets"].([]any)) != 1 {
+		t.Errorf("page 2 = %v, want 1 row under the first page's token", page2)
+	}
+}
+
+// Activating cross-project parents between two pages changes no ticket file,
+// yet it moves the foreign children into the epic: the second page must be
+// refused rather than served over a membership and a total the first page
+// did not have.
+func TestListPaginationRejectsActivationChangedBetweenPages(t *testing.T) {
+	session, root := testCentralServer(t, "warp", "loom")
+	activateCatalog(t, root, "warp", "loom")
+	epic, _ := foreignEpicFixture(t, session)
+	// Same catalog minus the one feature line, so the flip below is the only
+	// thing that changes between the pages.
+	unactivated := "required_features: [root-namespace]\nnamespaces:\n  _root: {kind: root}\n  warp: {kind: project}\n  loom: {kind: project}\n"
+	if err := os.WriteFile(filepath.Join(root, "catalog.yaml"), []byte(unactivated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	page1 := callObject(t, session, "ticket_list", map[string]any{"parent": epic, "all_projects": true, "include_closed": true, "limit": 1})
+	token, _ := page1["snapshot"].(string)
+	if len(token) != 64 || page1["total"] != 1.0 {
+		t.Fatalf("page 1 = snapshot %q, total %v; want a token and the local child alone", token, page1["total"])
+	}
+
+	activateCatalog(t, root, "warp", "loom")
+
+	refused := callTool(t, session, "ticket_list", map[string]any{"parent": epic, "all_projects": true, "include_closed": true, "limit": 1, "offset": 1, "snapshot": token})
+	text := errorText(t, refused, "page 2 after cross-project parents were activated")
+	if !strings.Contains(text, "snapshot changed") || !strings.Contains(text, token) {
+		t.Errorf("refusal should name the change and the old token, got: %s", text)
+	}
+}
+
+func TestFrontierParentAcrossProjects(t *testing.T) {
+	session, root := testCentralServer(t, "warp", "loom")
+	activateCatalog(t, root, "warp", "loom")
+	epic := createTicketID(t, session, map[string]any{"title": "Frontier epic", "type": "epic", "project": "warp"})
+	warpChild := createTicketID(t, session, map[string]any{"title": "Warp ready", "type": "feature", "project": "warp", "parent": epic})
+	loomChild := createTicketID(t, session, map[string]any{"title": "Loom ready", "type": "feature", "project": "loom", "parent": epic})
+	stray := createTicketID(t, session, map[string]any{"title": "Loom stray", "type": "feature", "project": "loom"})
+	for _, id := range []string{warpChild, loomChild, stray} {
+		editStatus(t, session, id, "ready")
+	}
+
+	resp := callObject(t, session, "ticket_frontier", map[string]any{"parent": epic, "all_projects": true})
+	ids := listIDs(resp)
+	if len(ids) != 2 || !ids[warpChild] || !ids[loomChild] {
+		t.Errorf("frontier rows = %v, want the two children and not the stray", ids)
+	}
+	if resp["complete"] != true || len(fmt.Sprint(resp["snapshot"])) != 64 {
+		t.Errorf("complete = %v, snapshot = %v, want true and a token", resp["complete"], resp["snapshot"])
+	}
+	parent, counts := parentOfResp(t, resp)
+	if parent["id"] != epic || parent["children_total"] != 2.0 || counts["ready"] != 2.0 {
+		t.Errorf("parent = %v, want 2 ready children", parent)
+	}
+
+	resp = callObject(t, session, "ticket_frontier", map[string]any{"parent": epic, "project": "loom"})
+	if ids := listIDs(resp); len(ids) != 1 || !ids[loomChild] {
+		t.Errorf("project=loom frontier rows = %v, want the loom child alone", ids)
+	}
+	if parent, _ := parentOfResp(t, resp); parent["children_total"] != 2.0 {
+		t.Errorf("project=loom parent total = %v, want the global 2", parent["children_total"])
+	}
+
+	// all_projects sets the default project aside for every listing tool.
+	withDefault, defaultRoot := testCentralServerWithDefault(t, "warp", "warp", "loom")
+	activateCatalog(t, defaultRoot, "warp", "loom")
+	loomReady := createTicketID(t, withDefault, map[string]any{"title": "Loom ready", "type": "feature", "project": "loom"})
+	editStatus(t, withDefault, loomReady, "ready")
+	if ids := frontierIDs(t, withDefault, map[string]any{}); len(ids) != 0 {
+		t.Errorf("default-scoped frontier = %v, want none in warp", ids)
+	}
+	if ids := frontierIDs(t, withDefault, map[string]any{"all_projects": true}); len(ids) != 1 || ids[0] != loomReady {
+		t.Errorf("all_projects frontier = %v, want the loom ticket", ids)
+	}
+	if ids := readyIDs(t, withDefault, map[string]any{"all_projects": true}); len(ids) != 1 || ids[0] != loomReady {
+		t.Errorf("all_projects ready = %v, want the loom ticket", ids)
+	}
+}
+
+func TestVerifyRefusesRootAndMissingCheckout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	session, root := testCentralServer(t, "alpha")
+	activateCatalog(t, root, "alpha")
+	acceptance := "- Passing check.\n  verify: /bin/echo ok\n"
+
+	for _, tc := range []struct{ project, want string }{
+		{project.RootNamespace, "Root has no repository"},
+		{"alpha", "has no checkout registered on this machine"},
+	} {
+		id := createTicketID(t, session, map[string]any{"title": "Verify " + tc.project, "type": "feature", "project": tc.project, "acceptance": acceptance})
+		refused := callTool(t, session, "ticket_verify", map[string]any{"id": id})
+		if text := errorText(t, refused, "ticket_verify on "+id); !strings.Contains(text, tc.want) {
+			t.Errorf("%s: refusal = %s, want it to say %q", id, text, tc.want)
+		}
+		if shown := showTicket(t, session, id); shown["test_results"] != nil {
+			t.Errorf("%s: a refused verify recorded results: %v", id, shown["test_results"])
+		}
 	}
 }

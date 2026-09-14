@@ -14,7 +14,19 @@ import (
 	"time"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
+
+// ticketFile is a ticket file the snapshot reads as a ticket: the fixtures
+// that only exercise git can carry any bytes, but a cycle that merges reads
+// the store back and reports what it cannot place.
+func ticketFile(id, title, parent string) []byte {
+	front := "---\nid: " + id + "\nstatus: ready\ntype: feature\npriority: 2\n"
+	if parent != "" {
+		front += "parent: " + parent + "\n"
+	}
+	return []byte(front + "---\n\n# " + title + "\n")
+}
 
 func setupGitRepo(t *testing.T) string {
 	t.Helper()
@@ -271,6 +283,7 @@ func pushFromOtherClone(t *testing.T, bare, name, content string) {
 	runGit(t, other, "clone", bare, ".")
 	runGit(t, other, "config", "user.email", "other@test.com")
 	runGit(t, other, "config", "user.name", "other")
+	os.MkdirAll(filepath.Dir(filepath.Join(other, name)), 0o755)
 	os.WriteFile(filepath.Join(other, name), []byte(content), 0o644)
 	runGit(t, other, "add", "-A")
 	runGit(t, other, "commit", "-m", "from other")
@@ -417,7 +430,7 @@ func TestPullRebaseAutostashRefusesNestedStore(t *testing.T) {
 	assertEnclosingRepoUntouched(t, parent, branch, head)
 }
 
-func TestPullIfBehindSanitizesFetchFailure(t *testing.T) {
+func TestFetchBehindSanitizesFetchFailure(t *testing.T) {
 	bare := t.TempDir()
 	runGit(t, bare, "init", "--bare")
 
@@ -431,7 +444,7 @@ func TestPullIfBehindSanitizesFetchFailure(t *testing.T) {
 		t.Fatalf("rename bare remote: %v", err)
 	}
 
-	msg := pullIfBehind(dir)
+	_, msg := fetchBehind(dir)
 	if !contains(msg, "git fetch failed") {
 		t.Fatalf("expected the fetch failure, got %q", msg)
 	}
@@ -521,7 +534,7 @@ func TestSyncLogsAutostashPopConflictOutsideStore(t *testing.T) {
 	storeRoot := setupGitRepo(t)
 	os.MkdirAll(filepath.Join(storeRoot, "tickets", "proj"), 0o755)
 	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\nl2\nl3\n"), 0o644)
-	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "seed.md"), []byte("---\ntitle: Seed\n---\n"), 0o644)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "seed.md"), ticketFile("seed", "Seed", ""), 0o644)
 	runGit(t, storeRoot, "add", "-A")
 	runGit(t, storeRoot, "commit", "-m", "seed")
 	runGit(t, storeRoot, "remote", "add", "origin", bare)
@@ -532,7 +545,7 @@ func TestSyncLogsAutostashPopConflictOutsideStore(t *testing.T) {
 	// `pull --rebase --autostash` still exits 0.
 	pushFromOtherClone(t, bare, "notes.md", "l1\nfrom other\nl3\n")
 	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\nlocal\nl3\n"), 0o644)
-	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "new.md"), []byte("---\ntitle: New\n---\n"), 0o644)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "new.md"), ticketFile("new", "New", ""), 0o644)
 
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -1036,6 +1049,175 @@ func TestSyncAutoPull(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(repoA, "tickets", "from-b.md")); err != nil {
 		t.Errorf("expected from-b.md to be pulled into repoA, got %v", err)
+	}
+}
+
+// syncedStore is a store root that is its own repository with a bare upstream,
+// holding one committed and pushed ticket, so a cycle has a remote to fetch
+// from and something behind it to merge.
+func syncedStore(t *testing.T) (storeRoot, bare string) {
+	t.Helper()
+	bare = t.TempDir()
+	runGit(t, bare, "init", "--bare")
+	storeRoot = setupGitRepo(t)
+	os.MkdirAll(filepath.Join(storeRoot, "tickets", "proj"), 0o755)
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "seed.md"), ticketFile("seed", "Seed", ""), 0o644)
+	runGit(t, storeRoot, "add", "-A")
+	runGit(t, storeRoot, "commit", "-m", "seed")
+	runGit(t, storeRoot, "remote", "add", "origin", bare)
+	runGit(t, storeRoot, "push", "-u", "origin", "HEAD")
+	return storeRoot, bare
+}
+
+// The fetch is the network half and runs outside the store lock; the rebase
+// pull and the commit are the tree half and wait for it. Holding the lock
+// exclusively from another goroutine, the cycle's fetch is observed landing in
+// the remote-tracking ref while nothing in the working tree has moved, and
+// the pull and the commit land only once the hold is released.
+func TestSyncFetchesOutsideTheStoreLockAndAppliesTheTreeUnderIt(t *testing.T) {
+	storeRoot, bare := syncedStore(t)
+	pushFromOtherClone(t, bare, "tickets/proj/other.md", string(ticketFile("other", "Other", "")))
+	remoteHead, _ := execCommand("git", "-C", bare, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "local.md"), ticketFile("local", "Local", ""), 0o644)
+	before, _ := execCommand("git", "-C", storeRoot, "rev-parse", "HEAD")
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	holder := make(chan error, 1)
+	go func() {
+		holder <- ticket.WithStoreLock(storeRoot, true, func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+
+	result := make(chan string, 1)
+	go func() { result <- syncCentralStore(storeRoot) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if upstream, _ := execCommand("git", "-C", storeRoot, "rev-parse", "@{u}"); trimNL(upstream) == trimNL(remoteHead) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the cycle's fetch did not land while the store lock was held")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Fetched, and blocked on the lock: nothing has touched the tree.
+	if head, _ := execCommand("git", "-C", storeRoot, "rev-parse", "HEAD"); head != before {
+		t.Errorf("HEAD moved to %s while the store lock was held elsewhere", head)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "tickets", "proj", "other.md")); err == nil {
+		t.Error("the rebase pull ran while the store lock was held elsewhere")
+	}
+	select {
+	case warning := <-result:
+		t.Fatalf("cycle finished while the store lock was held elsewhere: %q", warning)
+	default:
+	}
+
+	close(release)
+	if err := <-holder; err != nil {
+		t.Fatalf("WithStoreLock: %v", err)
+	}
+	var warning string
+	select {
+	case warning = <-result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cycle did not finish after the store lock was released")
+	}
+	if warning != "" {
+		t.Fatalf("syncCentralStore returned warning: %s", warning)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "tickets", "proj", "other.md")); err != nil {
+		t.Errorf("other.md not pulled after the lock was released: %v", err)
+	}
+	if logOut, _ := execCommand("git", "-C", bare, "log", "--oneline", "-1"); !contains(logOut, "tk: sync tickets") {
+		t.Errorf("bare repo HEAD = %q, want the sync commit", logOut)
+	}
+}
+
+// A lock that cannot be taken skips the cycle with a warning and no marker: a
+// stuck writer is transient, and a marker would hold `tk status` at blocked
+// over it. The lock directory is made unusable here, the one cause that
+// surfaces without waiting out the lock's timeout.
+func TestSyncSkipsTheCycleWhenTheStoreLockIsUnusable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(cache, "tk"), 0o755)
+	os.WriteFile(filepath.Join(cache, "tk", "locks"), []byte("not a directory\n"), 0o644)
+
+	dir := setupGitRepo(t)
+	os.MkdirAll(filepath.Join(dir, "tickets", "proj"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tickets", "proj", "local.md"), ticketFile("local", "Local", ""), 0o644)
+	before, _ := execCommand("git", "-C", dir, "rev-list", "--count", "HEAD")
+
+	warning := syncCentralStore(dir)
+	if !contains(warning, "sync skipped: store lock:") {
+		t.Fatalf("expected the skipped cycle, got %q", warning)
+	}
+	if blocked := readSyncBlocked(dir); blocked != "" {
+		t.Errorf("a skipped cycle wrote the blocked marker: %q", blocked)
+	}
+	if after, _ := execCommand("git", "-C", dir, "rev-list", "--count", "HEAD"); after != before {
+		t.Errorf("a skipped cycle committed (before=%s after=%s)", before, after)
+	}
+}
+
+// A merge that brings in a leaf whose parent does not exist is reported, and
+// the cycle still commits and pushes: git has nothing to resolve, and the
+// snapshot already keeps the leaf out of the frontier. The report is for the
+// cycle that merged it — the next one, with nothing new to merge, is quiet.
+func TestSyncReportsInvalidGraphStateAMergeBroughtIn(t *testing.T) {
+	storeRoot, bare := syncedStore(t)
+	pushFromOtherClone(t, bare, "tickets/proj/orphan.md", string(ticketFile("orphan", "Orphan", "nope-1234")))
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "local.md"), ticketFile("local", "Local", ""), 0o644)
+
+	warning := syncCentralStore(storeRoot)
+	if !contains(warning, "sync: merged store has 0 diagnostic(s) and 1 invalid relationship(s)") {
+		t.Fatalf("expected the merged-store report, got %q", warning)
+	}
+	if !contains(warning, "run tk audit") || !contains(warning, "parent proj/nope-1234 does not resolve") {
+		t.Errorf("report does not name the remedy and the cause: %q", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); blocked != "" {
+		t.Errorf("a report wrote the blocked marker: %q", blocked)
+	}
+	if logOut, _ := execCommand("git", "-C", bare, "log", "--oneline", "-1"); !contains(logOut, "tk: sync tickets") {
+		t.Errorf("bare repo HEAD = %q, want the sync commit landed despite the report", logOut)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "tickets", "proj", "orphan.md")); err != nil {
+		t.Errorf("orphan.md not merged: %v", err)
+	}
+
+	if again := syncCentralStore(storeRoot); again != "" {
+		t.Errorf("second cycle = %q, want the report not repeated over an unchanged tree", again)
+	}
+}
+
+// A merge followed by a commit the guards block reports both: the block is
+// what stopped the cycle, and the merged store's invalid state is already in
+// the tree whether or not the commit landed.
+func TestSyncReportsMergedStoreStateBesideABlockedCommit(t *testing.T) {
+	storeRoot, bare := syncedStore(t)
+	pushFromOtherClone(t, bare, "tickets/proj/orphan.md", string(ticketFile("orphan", "Orphan", "nope-1234")))
+	conflicted := string(ticketFile("local", "Local", "")) + "\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> theirs\n"
+	os.WriteFile(filepath.Join(storeRoot, "tickets", "proj", "local.md"), []byte(conflicted), 0o644)
+
+	warning := syncCentralStore(storeRoot)
+	if !contains(warning, "sync blocked") || !contains(warning, "conflict marker") {
+		t.Fatalf("expected the blocked commit, got %q", warning)
+	}
+	if !contains(warning, "sync: merged store has") || !contains(warning, "parent proj/nope-1234 does not resolve") {
+		t.Errorf("blocked cycle dropped the merged-store report: %q", warning)
 	}
 }
 

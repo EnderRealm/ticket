@@ -1304,6 +1304,68 @@ func TestExtra_LeadingIndicatorGoodValuesRoundTrip(t *testing.T) {
 	}
 }
 
+// A value the API would refuse can still arrive in a file — a repository's
+// legacy .tickets/ is parsed and reserialized on migration — and written
+// plain, a quoted multiline extra that parsed as one value comes back as that
+// value and a top-level `parent` the boundary never saw. The serializer has
+// to write it back as the string it was.
+func TestSerialize_QuotesValuesThatWouldNotReadBackAsThemselves(t *testing.T) {
+	input := "---\nid: t-quote\nstatus: ready\ntype: feature\npriority: 2\ncreated: 2026-01-01T00:00:00Z\nmemo: \"text\\nparent: proj/leaf\"\n---\n# Quoted\n"
+	tk, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if tk.Parent != "" || tk.Extra["memo"] != "text\nparent: proj/leaf" {
+		t.Fatalf("Parent = %q, Extra[memo] = %q; want no parent and the two-line memo", tk.Parent, tk.Extra["memo"])
+	}
+
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	if !strings.Contains(string(data), "\nmemo: \"text\\nparent: proj/leaf\"\n") || strings.Contains(string(data), "\nparent: ") {
+		t.Fatalf("Serialize wrote the memo plain:\n%s", data)
+	}
+	again, err := Parse(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("Parse after Serialize: %v\n%s", err, data)
+	}
+	if again.Parent != "" {
+		t.Errorf("Parent = %q after the round trip, want none", again.Parent)
+	}
+	if again.Extra["memo"] != tk.Extra["memo"] {
+		t.Errorf("Extra[memo] = %q after the round trip, want %q", again.Extra["memo"], tk.Extra["memo"])
+	}
+
+	// Every shape yaml would read as something other than the string is
+	// quoted; the plain shapes the API accepts stay plain.
+	for _, val := range []string{"a #comment", "a: b", "- item", " lead", "trail ", "1.0", "0x1f", "null", "", "[a, b]", "'single'", "|", "@at", "2026-01-01T00:00:00Z"} {
+		tk.Extra["memo"] = val
+		tk.Parent = val
+		data, err := Serialize(tk)
+		if err != nil {
+			t.Fatalf("Serialize(%q): %v", val, err)
+		}
+		again, err := Parse(strings.NewReader(string(data)))
+		if err != nil {
+			t.Fatalf("Parse after Serialize(%q): %v\n%s", val, err, data)
+		}
+		if again.Extra["memo"] != val || again.Parent != val {
+			t.Errorf("round trip of %q: Extra[memo] = %q, Parent = %q\n%s", val, again.Extra["memo"], again.Parent, data)
+		}
+	}
+	for _, val := range append(leadingIndicatorGoodValues, "simple value", "path/to/file", "v2.0 (beta)", "1+2=3", "http://x/y", "warp/epic-0001", "2", "1.5", "true") {
+		tk.Extra["memo"] = val
+		data, err := Serialize(tk)
+		if err != nil {
+			t.Fatalf("Serialize(%q): %v", val, err)
+		}
+		if !strings.Contains(string(data), "\nmemo: "+val+"\n") {
+			t.Errorf("plain-safe %q was not written plain:\n%s", val, data)
+		}
+	}
+}
+
 func TestUpdateSection_ReplacesExisting(t *testing.T) {
 	body := "\nOriginal description.\n\n## Acceptance Criteria\n\nOld criteria\n"
 	updated := UpdateSection(body, "Acceptance Criteria", "New criteria")

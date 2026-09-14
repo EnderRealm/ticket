@@ -88,6 +88,44 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 	return NewProjectFileStore(dir, name), true, true, nil
 }
 
+// ResolveStoreForNamespace opens the store a namespace selected by name holds
+// in the central store, for a caller that named the destination rather than a
+// repository: `tk --project <ns>`. No repository is resolved and none has to
+// exist. The name has to be one the store knows: Root is always selectable —
+// whether a write to it is allowed is the catalog guard's call, which every
+// write makes — and any other name has to be registered in config, hold a
+// directory under <root>/tickets, or be catalogued; anything else is a name
+// that would otherwise conjure a namespace out of a typo. A directory that is
+// not one refuses here as CentralStoreForRepo refuses it, since the store this
+// returns is written through.
+func ResolveStoreForNamespace(ns string) (*FileStore, error) {
+	cfg, err := project.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load ticket config: %w", err)
+	}
+	dir, err := project.CentralProjectDir(ns)
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Dir(dir)
+	missing, err := lstatProjectDir(root, ns)
+	if err != nil {
+		return nil, err
+	}
+	known := project.IsRoot(ns) || project.CentralRegistered(cfg, ns) || !missing
+	if !known {
+		cat, err := LoadCatalog(filepath.Dir(root))
+		if err != nil {
+			return nil, err
+		}
+		_, known = cat.entry(ns)
+	}
+	if !known {
+		return nil, fmt.Errorf("namespace %q is not in the central store (registered projects, catalogued namespaces and %s are selectable)", ns, project.RootNamespace)
+	}
+	return NewProjectFileStore(dir, ns), nil
+}
+
 // noStoreError is the one error a repo resolving to no central project is. Every
 // resolution reports it — the CLI's own, `tk move`'s destination, and
 // ticket_create's repo argument — so the state reads the same way wherever it is

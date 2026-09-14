@@ -197,6 +197,17 @@ func TestWatchCycle_RetrospectFiresOnceOnClose(t *testing.T) {
 	if got := loomInvocations(t, argv, 1); len(got) != 1 {
 		t.Errorf("loom invocations = %v, want the one", got)
 	}
+
+	// The ledger is keyed by the bare ID the project store lists, as every
+	// marker written before namespaced IDs was: a marker keyed qualified would
+	// be a second identity, and the close would fire again under it.
+	markers := retrospectMarkers(t, "retro-fire")
+	if !strings.Contains(markers, `"ticket_id":"`+tk.ID+`"`) {
+		t.Errorf("markers %q do not record the bare %s", markers, tk.ID)
+	}
+	if strings.Contains(markers, "retro-fire/") {
+		t.Errorf("markers %q carry a qualified ID", markers)
+	}
 }
 
 // A ticket closed by hand between cycles — `tk edit`, the TUI, an MCP write —

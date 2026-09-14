@@ -444,6 +444,43 @@ func (c *central) write(ns string, fn func(*op) error) error {
 	return fn(&op{c: c, snap: snap})
 }
 
+// WithStoreLock runs fn holding the store lock of the central store at
+// centralRoot — the lock every snapshot and every write through this package
+// takes — shared or exclusive. It is for a caller that changes the store's
+// files by a route other than a ticket write and has to keep every reader and
+// writer out while it does: `tk sync` applying a fetched git tree under the
+// boundary, so no snapshot reads a half-applied merge and no write lands
+// between the tree change and the commit.
+//
+// fn must not call back into a store entry point that takes the lock — a
+// Create, an Update, a Mutate, a List, a Get of an epic — because the lock is
+// not reentrant: the nested acquisition waits on the hold its own caller has
+// and fails with ErrStoreLockTimeout, as acquireStoreLock says.
+func WithStoreLock(centralRoot string, exclusive bool, fn func() error) error {
+	c := &central{root: centralRoot, ticketsDir: filepath.Join(centralRoot, ticketsDirName)}
+	path, err := c.lockPath()
+	if err != nil {
+		return err
+	}
+	release, err := acquireStoreLock(path, exclusive)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
+// SnapshotOf is the graph a Store answers with, for a consumer that holds the
+// Store interface rather than one of the stores this package owns — the MCP
+// server, which derives a listing, its skips, its revision and its
+// completeness from one reading so a response never mixes two. Through the
+// boundary for a FileStore or a MultiStore; from the listing for any other
+// implementation, which has no lock and no catalog and is read as one
+// namespace, the way the audit falls back.
+func SnapshotOf(store Store) (*Snapshot, error) {
+	return snapshotOf(store)
+}
+
 // snapshotOf is the graph a Store answers with: through its boundary for the
 // stores this package owns, and from its listing for any other implementation,
 // which has no lock and no catalog and is read as one namespace.

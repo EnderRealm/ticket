@@ -595,6 +595,14 @@ func FrontierTicketsWithSkips(store Store) ([]*Ticket, []FileSkip, error) {
 	return frontierOf(store, tickets), skips, nil
 }
 
+// FrontierOf is the frontier over a listing the caller already holds — a
+// snapshot's tickets — for a consumer that reports the snapshot's revision and
+// completeness beside the frontier and has to compute all of them off one
+// reading of the store. The rule is frontierOf's; nothing outside restates it.
+func FrontierOf(store Store, tickets []*Ticket) []*Ticket {
+	return frontierOf(store, tickets)
+}
+
 // frontierOf filters a listing down to the schedulable set. Shared by both
 // entry points so the two cannot disagree about what the frontier is. A leaf
 // whose parent relationship is invalid is left out: it is not automatically

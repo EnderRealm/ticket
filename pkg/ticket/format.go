@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -262,13 +263,13 @@ func Serialize(t *Ticket) ([]byte, error) {
 	writeField(&buf, "type", string(t.Type))
 	writeField(&buf, "priority", fmt.Sprintf("%d", t.Priority))
 	if t.ExternalRef != "" {
-		writeField(&buf, "external-ref", t.ExternalRef)
+		writeStringField(&buf, "external-ref", t.ExternalRef)
 	}
 	if t.Branch != "" {
-		writeField(&buf, "branch", t.Branch)
+		writeStringField(&buf, "branch", t.Branch)
 	}
 	if t.Parent != "" {
-		writeField(&buf, "parent", t.Parent)
+		writeStringField(&buf, "parent", t.Parent)
 	}
 	if len(t.Tags) > 0 {
 		writeFlowArray(&buf, "tags", t.Tags)
@@ -280,7 +281,7 @@ func Serialize(t *Ticket) ([]byte, error) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			writeField(&buf, k, t.Extra[k])
+			writeStringField(&buf, k, t.Extra[k])
 		}
 	}
 	if len(t.Outputs) > 0 {
@@ -732,8 +733,45 @@ func parseTimeValue(v interface{}) time.Time {
 	return time.Time{}
 }
 
+// writeField emits a value tk formatted itself — an ID, a status, a date, a
+// number — plain, exactly as given.
 func writeField(buf *bytes.Buffer, key, value string) {
 	buf.WriteString(key + ": " + value + "\n")
+}
+
+// writeStringField emits a string the caller chose — a parent, a branch, an
+// external ref, an extra — plain when yaml reads it back as that same string
+// and double-quoted otherwise. The API validates such values before a write,
+// but a file migrated from a repository was never validated by it, and a value
+// written plain is read as whatever yaml makes of it: a newline turns the rest
+// of the value into a field of its own — `memo: "text\nparent: x"` parses as
+// a memo and no parent, and written plain it would come back as a memo and a
+// parent the boundary never checked — and ` #` starts a comment, `: ` a
+// mapping, a leading indicator a sequence or a block, and `1.0` or `null` a
+// value of another type. Quoting keeps every such value the string it was.
+func writeStringField(buf *bytes.Buffer, key, value string) {
+	buf.WriteString(key + ": " + yamlScalar(value) + "\n")
+}
+
+// yamlScalar is value as a YAML scalar that parses back to value: plain when
+// yaml.v3 — the parser Parse reads with — decodes `key: value` to one scalar
+// that prints as exactly that text, which is the reading Parse gives an extra,
+// and double-quoted with escapes otherwise. A number or a bool stays plain
+// (`estimate: 3` has always read back as "3"); a `1.0` or a `0x1f` that would
+// print differently, a null, a collection, a comment, a second key or a parse
+// error is quoted. Go's quoting is a subset of YAML's double-quoted escapes,
+// so the quoted form needs no second parser.
+func yamlScalar(value string) string {
+	var m map[string]any
+	if err := yaml.Unmarshal([]byte("v: "+value+"\n"), &m); err == nil && len(m) == 1 {
+		switch m["v"].(type) {
+		case string, bool, int, int64, uint64, float64:
+			if fmt.Sprint(m["v"]) == value {
+				return value
+			}
+		}
+	}
+	return strconv.Quote(value)
 }
 
 // writeYAMLBlock emits a nested block under key, encoding the value through

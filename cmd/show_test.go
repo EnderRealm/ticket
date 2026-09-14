@@ -337,7 +337,8 @@ func TestShowListsNamespacedDependentAsBlocking(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("show output missing Blocking section:\n%s", out)
 	}
-	if !contains(out[idx:], "- sb-dependent-0002 [ready] Dependent") {
+	// Dependents come from any namespace, so they are listed qualified.
+	if !contains(out[idx:], "- proj/sb-dependent-0002 [ready] Dependent") {
 		t.Errorf("Blocking section missing the namespaced dependent:\n%s", out[idx:])
 	}
 }

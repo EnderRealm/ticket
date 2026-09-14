@@ -217,7 +217,7 @@ func checkWrite(centralRoot, namespace string) error {
 	}
 	if project.IsRoot(namespace) && !cat.RootActivated() {
 		if cat == nil {
-			return fmt.Errorf("%w: %s has no catalog, so nothing has activated it", ErrRootNotActivated, centralRoot)
+			return fmt.Errorf("%w: %s has no catalog, so nothing has activated it (a catalog requiring %s does)", ErrRootNotActivated, centralRoot, FeatureRootNamespace)
 		}
 		return fmt.Errorf("%w: catalog %s does not require %s, which activation writes", ErrRootNotActivated, CatalogPath(centralRoot), FeatureRootNamespace)
 	}

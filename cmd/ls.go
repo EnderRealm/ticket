@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -20,7 +21,8 @@ func init() {
 	addFilterFlags(lsCmd)
 	lsCmd.Flags().String("status", "", "filter by status")
 	lsCmd.Flags().Bool("all", false, "include done and closed tickets (hidden by default; ignored with --status)")
-	lsCmd.Flags().String("parent", "", "filter by parent ticket ID")
+	lsCmd.Flags().String("parent", "", "children of this epic (qualified project/id, or bare in the selected project); membership is global, the listing is the selected project's")
+	lsCmd.Flags().Bool("all-projects", false, "list every namespace in the central store, IDs qualified")
 	lsCmd.Flags().String("field", "", "filter by extra field (key=value, substring match)")
 	lsCmd.Flags().String("group-by", "", "group by: workflow | type | priority")
 	lsCmd.Flags().Bool("group", false, "shorthand for --group-by=workflow")
@@ -30,9 +32,39 @@ func init() {
 }
 
 func runLs(cmd *cobra.Command, args []string) error {
-	store := TicketStore()
-	tickets, err := store.List()
-	if err != nil {
+	// The listing is one namespace's or every namespace's; the parent filter
+	// below is answered off the whole graph either way.
+	var store ticket.Store
+	var snapshot func() (*ticket.Snapshot, error)
+	var listFrom func(*ticket.Snapshot) []*ticket.Ticket
+	ns := ""
+	allProjects, _ := cmd.Flags().GetBool("all-projects")
+	if allProjects {
+		ms, err := allProjectsStore()
+		if err != nil {
+			return err
+		}
+		store, snapshot, listFrom = ms, ms.Snapshot, ms.ListFromSnapshot
+	} else {
+		fs := TicketStore()
+		store, snapshot, listFrom, ns = fs, fs.Snapshot, fs.ListFromSnapshot, fs.Project
+	}
+	parentArg, _ := cmd.Flags().GetString("parent")
+	if p, _ := ticket.ParseNamespacedID(parentArg); parentArg != "" && allProjects && p == "" {
+		return fmt.Errorf("--parent %q must be qualified (project/id) with --all-projects", parentArg)
+	}
+	// With a parent, the rows come off the same snapshot that decides the
+	// membership below, so the two cannot disagree about a child written in
+	// between.
+	var tickets []*ticket.Ticket
+	var snap *ticket.Snapshot
+	var err error
+	if parentArg != "" {
+		if snap, err = snapshot(); err != nil {
+			return err
+		}
+		tickets = listFrom(snap)
+	} else if tickets, err = store.List(); err != nil {
 		return err
 	}
 	// Built from the whole listing, before the filters narrow it: the workflow
@@ -43,6 +75,35 @@ func runLs(cmd *cobra.Command, args []string) error {
 	opts, err := parseFilterFlags(cmd)
 	if err != nil {
 		return err
+	}
+
+	// Membership is decided by the snapshot, which places a child under its
+	// epic across namespaces by exact qualified ID — never by a suffix the
+	// listing happens to share. The listing only narrows what is shown, and
+	// says so when the narrowing hides a child.
+	if parentArg != "" {
+		parentID, err := snap.Resolve(ns, parentArg)
+		if err != nil {
+			return err
+		}
+		if p, ok := snap.Get(parentID); ok && p.Type != ticket.TypeEpic {
+			return fmt.Errorf("--parent %s is type %s, not an epic", parentID, p.Type)
+		}
+		children := snap.Children(parentID)
+		member := make(map[string]bool, len(children))
+		for _, c := range children {
+			member[c.ID] = true
+		}
+		var kept []*ticket.Ticket
+		for _, t := range tickets {
+			if member[ticket.FormatNamespacedID(ns, t.ID)] {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) < len(children) {
+			fmt.Fprintf(os.Stderr, "children of %s: %d across namespaces, %d in %s (--all-projects lists them all)\n", parentID, len(children), len(kept), ns)
+		}
+		tickets = kept
 	}
 
 	flat, _ := cmd.Flags().GetBool("flat")
@@ -70,10 +131,6 @@ func runLs(cmd *cobra.Command, args []string) error {
 	// Default to workflow grouping unless flat or explicit group-by.
 	if groupBy == "" && !flat && statusFilter == "" {
 		groupBy = "workflow"
-	}
-
-	if v, _ := cmd.Flags().GetString("parent"); v != "" {
-		opts.Parent = v
 	}
 
 	tickets = ticket.Filter(tickets, opts)

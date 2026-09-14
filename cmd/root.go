@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	jsonOutput bool
-	repoFlag   string
+	jsonOutput  bool
+	repoFlag    string
+	projectFlag string
 )
 
 var helpText = `tk - ticket management CLI
@@ -22,11 +23,28 @@ var helpText = `tk - ticket management CLI
 Usage: tk <command> [args]
 
 Viewing:
-  show <id> [--metadata]     Display ticket details
+  show <id> [--metadata]     Display ticket details. An epic ends with a
+                             Progress section: its children counted by status
+                             across every namespace and whether that count is
+                             complete (the store read in full); a leaf whose
+                             parent does not make it a child ends with a
+                             Relationship section saying why. Children and
+                             Blocking list tickets from any namespace, qualified
   ls|list [filters]          List tickets (default: workflow grouped, done
                              and closed hidden; --all shows them)
-  frontier [--project=NAME]  List ready tickets with all deps done/closed
+    --all-projects           Every namespace in the central store, IDs qualified
+    --parent=ID              Children of an epic. Membership is global — the
+                             epic's children in any namespace — and the listing
+                             is the selected project's, so a child elsewhere is
+                             counted in the "children of …" line on stderr and
+                             shown with --all-projects; --all keeps closed ones
+  frontier [--parent=ID]     List ready tickets with all deps done/closed,
+                             computed over the whole store; --parent keeps the
+                             members of that epic (qualified project/id, or bare
+                             with --project) and --project keeps one namespace's
+                             rows without changing what is ready
   search <query>             Search tickets by relevance (best matches first)
+    --all-projects           Search every namespace, IDs qualified
   audit [cause] [--project=NAME]
                              Summarise findings by cause, one line each with the count and the
                              command that lists that cause's tickets: invalid parents, epics whose
@@ -52,7 +70,15 @@ Viewing:
   A criterion carrying neither line is reported on stderr by tk create
   when the ticket is written; the ticket is still created.
 
-  Each command runs in the project directory, execed as argv and never
+  Each command runs in the checkout registered on this machine for the
+  ticket's own project, and only there. Eligibility is decided before
+  anything runs: a Root ticket is refused (Root has no repository), so is
+  a ticket in a project with no checkout registered on this machine, and
+  so is one whose registered checkout is not a directory here — the
+  working directory, HOME, a parent epic's project and the ticket store
+  never stand in, and nothing is recorded for a refused run. --dir moves
+  an eligible run and applies only after that check; it makes nothing
+  eligible. Commands are execed as argv and never
   through a shell: quotes group arguments, everything else
   (; | && $() backticks ~) is literal text. A command runs only if its
   program exactly matches an entry in verify_allow in ~/.ticket/config.yaml;
@@ -94,7 +120,12 @@ Viewing:
   widen nothing for it. None of them widens verify_allow.
 
 Creating & Editing:
-  create [title] [options]   Create ticket
+  create [title] [options]   Create ticket. Outside a directory the config
+                             registers as a project, the destination must be
+                             named: --project <namespace> (--project _root for
+                             an idea with no repository yet) or --repo; a
+                             namespace inferred from a git remote or a
+                             directory name is a read fallback, never a write
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
@@ -129,6 +160,7 @@ Query (JSON):
   tk query '.status == "open"'                     # filter by field
   tk query '.type == "bug" and .priority <= 1'    # compound filter
   tk query '.title | test("deploy"; "i")'         # regex search
+  tk query --all-projects                         # every namespace, IDs qualified
 
   JSON fields: id, status, type, priority, title, description,
     design, acceptance_criteria, deps[], links[], tags[],
@@ -162,7 +194,11 @@ Filter flags for ls:
   -P, --priority=X   0 (critical) through 4 (backlog)
   -T, --tag=X        Filter by tag
   --field=key=value  Filter by extra field (substring match)
-  --parent=X         Children of ticket X
+  --parent=X         Children of epic X (qualified project/id, or bare in the
+                     selected project); membership is global, the listing is
+                     the selected project's — see ls above
+  --all-projects     Every namespace in the central store, IDs qualified;
+                     conflicts with --project
   --group-by=X       Group by: workflow | type | priority
   --flat             Flat list (no grouping)
 
@@ -173,7 +209,9 @@ Create & edit options:
   --status             Ticket status (edit only)
   --title              New title (edit only)
   --parent             Parent epic ID (an epic in the same project; an epic
-                       itself cannot have a parent)
+                       itself cannot have a parent). A qualified project/id
+                       names an epic in another namespace, accepted once
+                       the catalog requires cross-project-parents
   --tags               Comma-separated (e.g., --tags ui,backend)
   --external-ref       External reference (e.g., gh-123)
   --branch             Git branch name (edit only)
@@ -200,6 +238,13 @@ Statuses: backlog, ready, open, done, closed
 
 Global flags:
   --repo <name|path>  Operate on a different registered project or repo
+  --project <ns>   Operate on a namespace in the central store by name; no
+                   repository is resolved and none has to exist. _root is
+                   always selectable (writing to it is still the catalog's
+                   call); any other name must be a registered project, a
+                   directory under <central_root>/tickets, or catalogued —
+                   an unknown one is refused rather than conjured. A
+                   selector: --project and --repo together are refused
   --json           Output in JSON format
 
 Namespaces:
@@ -300,6 +345,7 @@ var gateExempt = map[string]bool{
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "registered project name or path to repo root")
+	rootCmd.PersistentFlags().StringVar(&projectFlag, "project", "", "namespace in the central store to operate on (_root for Root); no repo is resolved")
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
 		fmt.Println(helpText)
 	})
@@ -425,6 +471,16 @@ func mustResolveTicketsDir() (string, string, bool) {
 // a write cannot land tickets in a directory this one would never read back, and
 // a config that fails to load is named as itself rather than sent to `tk init`.
 func resolveTicketsDir() (string, string, bool, error) {
+	if projectFlag != "" {
+		if repoFlag != "" {
+			return "", "", false, fmt.Errorf("--project and --repo are both selectors; pass one")
+		}
+		store, err := ticket.ResolveStoreForNamespace(projectFlag)
+		if err != nil {
+			return "", "", false, err
+		}
+		return store.Dir, store.Project, false, nil
+	}
 	repo, err := repoDir()
 	if err != nil {
 		return "", "", false, err
@@ -437,6 +493,33 @@ func resolveTicketsDir() (string, string, bool, error) {
 		fmt.Fprintln(os.Stderr, ticket.UnregisteredWarning(store))
 	}
 	return store.Dir, store.Project, unregistered, nil
+}
+
+// allProjectsStore is the store over every namespace, for the listings that
+// take --all-projects. It conflicts with --project: one selects a namespace,
+// the other refuses to, and a command handed both cannot honour either.
+func allProjectsStore() (*ticket.MultiStore, error) {
+	if projectFlag != "" {
+		return nil, fmt.Errorf("--all-projects and --project conflict; pass one")
+	}
+	root, err := project.CentralStoreRoot()
+	if err != nil {
+		return nil, err
+	}
+	return ticket.NewMultiStore(filepath.Join(root, "tickets")), nil
+}
+
+// listingFor is the listing a read-only command works over: every namespace
+// with --all-projects, else the selected project's.
+func listingFor(cmd *cobra.Command) ([]*ticket.Ticket, error) {
+	if allProjects, _ := cmd.Flags().GetBool("all-projects"); allProjects {
+		ms, err := allProjectsStore()
+		if err != nil {
+			return nil, err
+		}
+		return ms.List()
+	}
+	return TicketStore().List()
 }
 
 // repoDir is the repo tk operates on: --repo when given, else the working
