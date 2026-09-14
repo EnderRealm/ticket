@@ -1536,7 +1536,7 @@ type inboxArgs struct {
 func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_inbox",
-		Description: "Show tickets needing human attention, sorted by priority then age." + allProjectsDoc,
+		Description: "Show tickets needing human attention, sorted by priority then age. An action of blocked means unresolved dependencies (named in detail) or a parked question (which takes precedence in detail)." + allProjectsDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args inboxArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {

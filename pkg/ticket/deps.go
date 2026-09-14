@@ -364,7 +364,11 @@ func BlockedFunc(store Store, tickets []*Ticket) func(*Ticket) bool {
 // BlockingDeps returns the IDs of dependencies that are not done/closed, as
 // the ticket spells them.
 func BlockingDeps(store Store, t *Ticket) []string {
-	depOf := storeLookup(store)
+	return blockingDeps(t, storeLookup(store))
+}
+
+// blockingDeps answers BlockingDeps with the caller's existing dep lookup.
+func blockingDeps(t *Ticket, depOf depResolver) []string {
 	var blocking []string
 	for _, depID := range t.Deps {
 		dep, err := depOf(t, depID)

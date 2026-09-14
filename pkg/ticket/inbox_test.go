@@ -1,9 +1,101 @@
 package ticket
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestInboxBlocked(t *testing.T) {
+	for _, status := range []Status{StatusReady, StatusOpen} {
+		for _, tc := range []struct {
+			name     string
+			deps     []string
+			question string
+			blocking []string
+		}{
+			{name: "no deps"},
+			{name: "terminal deps", deps: []string{"dep-done", "dep-closed"}},
+			{name: "unfinished deps", deps: []string{"dep-done", "dep-open", "dep-backlog", "dep-ready", "dep-closed"}, blocking: []string{"dep-open", "dep-backlog", "dep-ready"}},
+			{name: "missing dep", deps: []string{"dep-missing"}, blocking: []string{"dep-missing"}},
+			{name: "question wins", deps: []string{"dep-open"}, question: "Which store wins?", blocking: []string{"dep-open"}},
+		} {
+			t.Run(string(status)+"/"+tc.name, func(t *testing.T) {
+				item := mk("item-0001", status, tc.deps...)
+				item.Extra = map[string]string{QuestionField: tc.question}
+				store := depStore(t,
+					mk("dep-done", StatusDone), mk("dep-closed", StatusClosed),
+					mk("dep-open", StatusOpen), mk("dep-backlog", StatusBacklog), mk("dep-ready", StatusReady), item,
+				)
+				items, err := Inbox(store)
+				if err != nil {
+					t.Fatal(err)
+				}
+				byID := map[string]InboxItem{}
+				for _, got := range items {
+					byID[got.Ticket.ID] = got
+				}
+				got, ok := byID[item.ID]
+				if !ok {
+					t.Fatal("ticket missing from inbox")
+				}
+				wantAction := ActionWork
+				wantDetail := NextAction(item).Detail
+				if len(tc.blocking) > 0 {
+					wantAction = ActionBlocked
+					wantDetail = "blocked on " + strings.Join(tc.blocking, ", ")
+				}
+				if tc.question != "" {
+					wantDetail = tc.question
+				}
+				if got.Action != wantAction || got.Detail != wantDetail {
+					t.Errorf("inbox = %s, %q; want %s, %q", got.Action, got.Detail, wantAction, wantDetail)
+				}
+				if got.Ticket.Status != status || statusOf(t, store, item.ID) != status {
+					t.Error("inbox changed the ticket status")
+				}
+				blocked, err := BlockedTickets(store)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, tk := range blocked {
+					if byID[tk.ID].Action == ActionWork {
+						t.Errorf("blocked ticket %s is work in inbox", tk.ID)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestInboxBlockedUsesOneListing(t *testing.T) {
+	store := &countingStore{FileStore: depStore(t,
+		mkEpic("dep-epic", StatusBacklog, ""),
+		mkWithParent("dep-child", StatusDone, "dep-epic"),
+		mk("item-0001", StatusReady, "dep-epic"),
+		mk("item-0002", StatusOpen, "dep-epic", "dep-open"),
+		mk("dep-open", StatusOpen),
+	)}
+	items, err := Inbox(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.lists != 1 || store.gets != 0 {
+		t.Errorf("inbox used %d listings and %d individual reads, want 1 and 0", store.lists, store.gets)
+	}
+	for _, item := range items {
+		switch item.Ticket.ID {
+		case "item-0001":
+			if item.Action != ActionWork {
+				t.Error("finished epic dependency should leave ticket actionable")
+			}
+		case "item-0002":
+			if item.Action != ActionBlocked || item.Detail != "blocked on dep-open" {
+				t.Errorf("inbox = %s, %q; want blocked on dep-open", item.Action, item.Detail)
+			}
+		}
+	}
+}
 
 func TestNextAction_Ready(t *testing.T) {
 	tk := &Ticket{

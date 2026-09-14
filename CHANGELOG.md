@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `ticket_inbox` reports ready and open tickets with unfinished or missing dependencies as `blocked`, naming the blocking dependency IDs in the detail. Parked questions retain their detail, and stored statuses are unchanged. The shared `ticket.Inbox` calculation resolves dependencies from its existing listing.
+
 ## [8.6.0] - 2026-09-14
 
 ### Added

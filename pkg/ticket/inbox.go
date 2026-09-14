@@ -57,20 +57,27 @@ func NextAction(t *Ticket) InboxItem {
 }
 
 // Inbox returns actionable tickets (ready or open), sorted by priority then
-// age. A parked ticket is blocked rather than work, and is kept: it is the one
-// the human most needs to see.
+// age. Tickets with unresolved dependencies or parked questions are kept as
+// blocked, with a parked question taking precedence in the detail.
 func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
 	}
 
+	depOf := depLookup(store, tickets)
 	var items []InboxItem
 	for _, t := range tickets {
 		if t.Status == StatusDone || t.Status == StatusClosed || t.Status == StatusBacklog {
 			continue
 		}
 		item := NextAction(t)
+		if item.Action == ActionWork {
+			if deps := blockingDeps(t, depOf); len(deps) > 0 {
+				item.Action = ActionBlocked
+				item.Detail = "blocked on " + strings.Join(deps, ", ")
+			}
+		}
 		if item.Action == ActionWork || item.Action == ActionBlocked {
 			items = append(items, item)
 		}
