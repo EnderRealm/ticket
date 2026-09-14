@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.6.0] - 2026-09-14
 
 ### Added
 - `tk ui` shows a ticket's dependency tree in its detail view, with one status-and-title line per dependency, indentation for transitive dependencies, resolved markers for done and closed tickets, and a visible root-blocker marker on unresolved leaves. Missing dependencies render as unknown, and legacy cycles terminate instead of recursing indefinitely.
