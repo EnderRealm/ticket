@@ -455,9 +455,6 @@ func (m detailModel) render() []string {
 		}
 		lines = append(lines, m.field("Parent", parent))
 	}
-	if len(t.Deps) > 0 {
-		lines = append(lines, m.field("Deps", ticket.SanitizeControl(strings.Join(t.Deps, ", "))))
-	}
 	if len(t.Links) > 0 {
 		lines = append(lines, m.field("Links", ticket.SanitizeControl(strings.Join(t.Links, ", "))))
 	}
@@ -487,6 +484,39 @@ func (m detailModel) render() []string {
 	avail := m.width - len(pad)
 	if avail < 20 {
 		avail = 20
+	}
+	if len(t.Deps) > 0 {
+		lines = append(lines, pad+sectionStyle.Render("## Dependencies"))
+		lines = append(lines, "")
+		deps := m.dependencyTree()
+		for _, dep := range deps {
+			status := string(dep.Status)
+			if dep.Unknown {
+				status = "unknown"
+			}
+			status = ticket.SanitizeControl(status)
+			marker := "✗"
+			if dep.Status == ticket.StatusDone || dep.Status == ticket.StatusClosed {
+				marker = "✓"
+			}
+			line := fmt.Sprintf("%s %s [%s] %s", marker, ticket.SanitizeControl(dep.ID), status, ticket.SanitizeControl(dep.Title))
+			if dep.RootBlocker {
+				line += " ← root blocker"
+			}
+			if dep.Repeated {
+				line += " (dependencies shown above)"
+			}
+			width := m.width
+			if width <= 0 {
+				width = avail + len(pad)
+			}
+			indentWidth := min(len(pad)+2*dep.Depth, max(0, width-20))
+			indent := strings.Repeat(" ", indentWidth)
+			for _, wl := range strings.Split(ansi.Wrap(line, width-indentWidth, ""), "\n") {
+				lines = append(lines, indent+wl)
+			}
+		}
+		lines = append(lines, "")
 	}
 	body := t.Body
 	if body != "" {
@@ -556,6 +586,17 @@ func (m detailModel) render() []string {
 	}
 
 	return lines
+}
+
+func (m detailModel) dependencyTree() []ticket.DepNode {
+	if m.snap != nil {
+		return m.snap.DependencyTree(m.qid)
+	}
+	nodes := make([]ticket.DepNode, 0, len(m.ticket.Deps))
+	for _, id := range m.ticket.Deps {
+		nodes = append(nodes, ticket.DepNode{ID: id, Title: "(not found)", Unknown: true, RootBlocker: true})
+	}
+	return nodes
 }
 
 func (m detailModel) field(key, val string) string {

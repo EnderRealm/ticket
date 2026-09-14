@@ -7,13 +7,79 @@ import (
 
 // DepNode represents one entry in a dependency tree.
 type DepNode struct {
-	ID     string
-	Title  string
-	Status Status
-	Depth  int
+	ID          string
+	Title       string
+	Status      Status
+	Depth       int
+	Unknown     bool
+	RootBlocker bool
+	Repeated    bool
 	// Cargo is what flows across the edge from the parent node to this one.
 	// Empty for the root (no incoming edge) and for unannotated edges.
 	Cargo string
+}
+
+// DependencyTree returns the ticket's transitive dependencies in walk order.
+// Depth zero is a direct dependency. Missing dependencies are included as
+// unknown root blockers. A ticket can appear beneath more than one parent;
+// only an edge back into the current path is skipped, so a legacy dependency
+// cycle cannot make the walk recurse forever. Each ticket's subtree expands
+// once; subsequent occurrences are marked Repeated references to it. This
+// bounds output by the graph's edges without hiding unique dependencies.
+func (s *Snapshot) DependencyTree(id string) []DepNode {
+	root, ok := s.Get(id)
+	if !ok {
+		return nil
+	}
+
+	var nodes []DepNode
+	expanded := map[string]bool{}
+	path := map[string]bool{id: true}
+	var walk func(*Ticket, int)
+	walk = func(owner *Ticket, depth int) {
+		for _, ref := range owner.Deps {
+			depID := qualifyRef(namespaceOf(owner.ID), ref)
+			if path[depID] {
+				continue
+			}
+
+			dep, ok := s.Get(depID)
+			if !ok {
+				nodes = append(nodes, DepNode{
+					ID:          ref,
+					Title:       "(not found)",
+					Depth:       depth,
+					Unknown:     true,
+					RootBlocker: true,
+				})
+				continue
+			}
+
+			node := DepNode{ID: ref, Title: dep.Title, Status: dep.Status, Depth: depth}
+			if !isTerminal(dep) {
+				node.RootBlocker = true
+				for _, childRef := range dep.Deps {
+					child, ok := s.Get(qualifyRef(namespaceOf(dep.ID), childRef))
+					if !ok || !isTerminal(child) {
+						node.RootBlocker = false
+						break
+					}
+				}
+			}
+			node.Repeated = expanded[depID] && len(dep.Deps) > 0
+			nodes = append(nodes, node)
+			if expanded[depID] {
+				continue
+			}
+			expanded[depID] = true
+			path[depID] = true
+			walk(dep, depth+1)
+			delete(path, depID)
+		}
+	}
+
+	walk(root, 0)
+	return nodes
 }
 
 // DepTree walks the dependency graph for the given ticket ID.
