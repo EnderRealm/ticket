@@ -3019,6 +3019,12 @@ func TestStoreInfoEmpty(t *testing.T) {
 // Returns the session and that repo directory.
 func verifyServer(t *testing.T) (*mcp.ClientSession, string) {
 	t.Helper()
+	server, dir := verifyTestServer(t)
+	return connectVerifyServer(t, server), dir
+}
+
+func verifyTestServer(t *testing.T) (*ticketmcp.Server, string) {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 
 	root := t.TempDir()
@@ -3040,9 +3046,15 @@ func verifyServer(t *testing.T) (*mcp.ClientSession, string) {
 	store := ticket.NewMultiStore(filepath.Join(root, "tickets"))
 	server := ticketmcp.NewServer(store, "alpha", root)
 
+	t.Cleanup(server.Shutdown)
+	return server, repoDir
+}
+
+func connectVerifyServer(t *testing.T, server *ticketmcp.Server) *mcp.ClientSession {
+	t.Helper()
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
-	go server.Run(ctx, st)
+	go server.Server.Run(ctx, st)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
@@ -3050,7 +3062,7 @@ func verifyServer(t *testing.T) (*mcp.ClientSession, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return session, repoDir
+	return session
 }
 
 func TestVerifyRunsCriterionCommands(t *testing.T) {
@@ -3133,6 +3145,21 @@ func TestVerifyRunsCriterionCommands(t *testing.T) {
 	}
 	if !strings.HasPrefix(testResults, "verify 20") {
 		t.Errorf("test_results should start with a timestamped verify header, got:\n%s", testResults)
+	}
+	// A quick report remains retrievable with every non-passing criterion.
+	status := callObject(t, session, "ticket_verify_status", map[string]any{"id": id})
+	if status["state"] != "completed" {
+		t.Fatalf("status = %#v", status)
+	}
+	raw, _ := json.Marshal(status["report"])
+	var retrieved ticket.VerifyReport
+	if err := json.Unmarshal(raw, &retrieved); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(report)
+	got, _ := json.Marshal(retrieved)
+	if string(got) != string(want) {
+		t.Fatalf("poll report differs: %s vs %s", got, want)
 	}
 }
 

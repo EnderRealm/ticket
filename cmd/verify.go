@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
@@ -104,7 +106,14 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	allow, allowErr := project.VerifyAllow()
 	timeout, timeoutErr := project.VerifyTimeout(cfg, store.Project)
 	policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
-	results, err := ticket.RunVerify(cmd.Context(), criteria, dir, policy)
+	// Verification children have their own process group. Forward CLI shutdown
+	// through the runner's context and drain that group before leaving.
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	results, err := ticket.RunVerify(ctx, criteria, dir, policy)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
 		return err
 	}

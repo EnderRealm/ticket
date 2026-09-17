@@ -114,6 +114,10 @@ Viewing:
   or refusal.
   --dir, --criterion and --no-record are CLI-only: the ticket_verify MCP
   tool still resolves its directory from project config and still records.
+  MCP verification waits up to 10 seconds, then returns a job ID for
+  ticket_verify_status polling. Request timeouts do not cancel commands;
+  ticket_verify_cancel or session disconnect does. Status recovers a lost
+  start response by ticket ID without running the commands again.
   An MCP caller's arguments are shaped by ticket content, and a sandboxed
   client with no shell would gain reach it does not otherwise have; a CLI
   caller already has a shell and can run anything anywhere, so the flags

@@ -3,9 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- MCP verification hands long runs back as session-owned jobs after a 10-second wait. `ticket_verify_status` retrieves results or recovers a lost start response by ticket ID; `ticket_verify_cancel` stops a run explicitly. Quick checks retain the existing report shape, and command policy remains host-local.
 - Backlog tickets carrying a nonblank question appear in the shared inbox, `ticket_inbox`, and TUI inbox with their question. Clearing it removes them from the inbox; their backlog status and exclusion from the ready-only execution frontier are unchanged.
 
 ### Fixed
+- A canceled MCP request no longer kills verification commands and records the remaining criteria as failures. Explicit job cancellation or session disconnect stops work without replacing prior Test Results with a partial record; duplicate starts join the active job. `tk serve` drains these workers before exiting so command supervision cannot be abandoned at stdio disconnect. Cancellation and timeout stop the process group on macOS/Linux, and CLI interrupts forward to that cleanup.
 - `ticket_inbox` reports ready and open tickets with unfinished or missing dependencies as `blocked`, naming the blocking dependency IDs in the detail. Parked questions retain their detail, and stored statuses are unchanged. The shared `ticket.Inbox` calculation resolves dependencies from its existing listing.
 
 ## [8.6.0] - 2026-09-14

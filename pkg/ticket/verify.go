@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -406,6 +407,19 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.WaitDelay = verifyWaitDelay
+	// Build tools spawn children. Killing only the direct process leaves those
+	// checks running after cancellation, possibly alongside the next run. The
+	// supported hosts (macOS and Linux) give each verification its own group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
 	out, err := cmd.CombinedOutput()
 
 	// The command's own output is capped here, before the notes below are

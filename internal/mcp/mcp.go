@@ -17,10 +17,29 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Server owns both MCP sessions and their background verification workers.
+// Callers using Connect directly must call Shutdown before leaving the host
+// process. Run drains workers automatically when its transport closes.
+type Server struct {
+	*mcp.Server
+	verify *verifyJobs
+}
+
+func (s *Server) Run(ctx context.Context, transport mcp.Transport) error {
+	defer s.Shutdown()
+	return s.Server.Run(ctx, transport)
+}
+
+// Shutdown refuses new verification jobs, cancels running commands, and waits
+// for workers (including a complete result already being recorded) to exit.
+func (s *Server) Shutdown() {
+	s.verify.shutdown()
+}
+
 // NewServer creates an MCP server with all ticket management tools registered.
 // defaultProject scopes tools to a specific project when the caller doesn't
 // provide an explicit project parameter. Empty string means no default (all projects).
-func NewServer(store ticket.Store, defaultProject string, centralRoot string) *mcp.Server {
+func NewServer(store ticket.Store, defaultProject string, centralRoot string) *Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "tk", Version: "0.1.0"},
 		nil,
@@ -39,12 +58,12 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *m
 	registerBlocked(server, store, defaultProject)
 	registerInbox(server, store, defaultProject)
 	registerSearch(server, store, defaultProject)
-	registerVerify(server, store, defaultProject)
+	jobs := registerVerify(server, store, defaultProject)
 	registerVerdictRecord(server, store)
 	registerVerdictCurrent(server, store)
 	registerStoreInfo(server, centralRoot)
 
-	return server
+	return &Server{Server: server, verify: jobs}
 }
 
 // Summary representation for list responses — metadata only, no body content.
@@ -1676,10 +1695,12 @@ type verifyArgs struct {
 	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
 }
 
-func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) {
+func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) *verifyJobs {
+	jobs := newVerifyJobs()
+	registerVerifyLifecycle(server, store, jobs)
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project; a Root ticket, a project with no checkout registered here, and a registered checkout that is missing are each refused before anything runs, naming the reason, and nothing is recorded. Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every call, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project; a Root ticket, a project with no checkout registered here, and a registered checkout that is missing are each refused before anything runs, naming the reason, and nothing is recorded. Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start joins an active run; after completion it starts a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -1727,32 +1748,27 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		// long it may run.
 		allow, allowErr := project.VerifyAllow()
 		policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
-		results, err := ticket.RunVerify(ctx, criteria, dir, policy)
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		job, err := jobs.start(req.Session, t.ID, func(ctx context.Context) (ticket.VerifyReport, string, error) {
+			results, err := ticket.RunVerify(ctx, criteria, dir, policy)
+			return ticket.NewVerifyReport(t.ID, dir, results), ticket.FormatVerifyRecord(results, time.Now().UTC()), err
+		}, func(record string) error {
+			// Mutate the current body: edits made during the run must survive.
+			_, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, "")), t.ID, func(t *ticket.Ticket) error {
+				t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
+				return nil
+			})
+			return err
+		})
 		if err != nil {
-			r, _ := errResult("cannot run verify commands: %v", err)
+			r, _ := errResult("cannot start verification: %v", err)
 			return r, nil, nil
 		}
-		report := ticket.NewVerifyReport(t.ID, dir, results)
-
-		// Record after the run so a store failure degrades to a reported
-		// warning instead of discarding the results. Through Mutate, because a
-		// verify run is long enough for the ticket to have been edited
-		// meanwhile: the record lands in the body as it stands now rather than
-		// in the copy read before the run.
-		record := ticket.FormatVerifyRecord(results, time.Now().UTC())
-		// Attributed to the caller like every other write over MCP. No source
-		// argument of its own: what lands on the ticket is the run's output, not
-		// a change the caller composed.
-		if _, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, "")), t.ID, func(t *ticket.Ticket) error {
-			t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
-			return nil
-		}); err != nil {
-			report.RecordError = fmt.Sprintf("failed to record verify results: %v", err)
-		}
-
-		r, err := jsonResult(report)
-		return r, nil, err
+		return job.response(ctx, true)
 	})
+	return jobs
 }
 
 func registerStoreInfo(server *mcp.Server, centralRoot string) {

@@ -376,7 +376,17 @@ verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 0 refused, 1 unverified
 - UNVERIFIED: The TUI redraws cleanly at 40 columns.
 ```
 
-`tk verify --json` and the `ticket_verify` MCP tool return the same results structured, including each command's exit code and captured output (capped at 4KB per criterion). The MCP tool executes the commands on the server host and requires the ticket's project to have a configured path.
+`tk verify --json` and a completed `ticket_verify` MCP call return the same structured report, including each command's exit code and captured output (capped at 4KB per criterion). The MCP tool executes commands on the server host in the checkout registered for the ticket's project.
+
+#### Long-running MCP verification
+
+`ticket_verify` waits up to 10 seconds for commands. A quick run returns the existing report. A longer run returns `id`, `verification_id`, and `state: "running"` (or `"recording"` while saving a complete result). This is a pending job, not a verification result. Call `ticket_verify_status` with `verification_id` until terminal; each poll waits at most 10 seconds and never starts commands. On `state: "completed"`, its `report` is the exact report the quick path returns, including criterion failures, refusals, unverified criteria and any `record_error`. The ticket's Test Results contains the corresponding counts and criterion statuses. `completed` describes execution, not a passing contract: inspect the report.
+
+A client request timeout or cancellation does not cancel the commands. If the start response was lost, recover this session's latest job with `ticket_verify_status` and the ticket `id`. Repeating `ticket_verify` while that ticket is active joins the job; after it finishes, a new `ticket_verify` intentionally starts another run. Use status for retrieval. Another session cannot join, inspect or cancel the job, or start the same ticket while it is active in this server.
+
+`ticket_verify_cancel` accepts either `verification_id` or ticket `id` and returns immediately. Poll status while `cancelling`; `cancelled` has no report and leaves the previous Test Results unchanged. Once `recording` begins, the commands have finished and cancellation cannot retract their record. A runner error is terminal `failed` with an `error`, also without a report or ticket record. Repeated cancellation is safe. Neither status nor cancel accepts a directory, command, allow-list or timeout override.
+
+Jobs belong to the MCP session, not to one request. Disconnect cancels running jobs and releases their results; restarting the server loses them too. `tk serve` drains verification workers before it exits, so their command supervision and any complete result being recorded finish before shutdown. The server holds at most 128 jobs and evicts the oldest finished ones when needed. Unknown, expired or foreign IDs return an error and never replay commands. The ticket's recorded Test Results remains durable, but captured command output and job lookup are session-local. Host-local command permissions, per-command timeouts and registered-checkout checks still apply at the start of each new run. On macOS and Linux, cancellation and timeout stop the verification process group, including ordinary child processes of build tools; the CLI forwards interrupt/termination signals to the same cleanup and leaves the previous record intact.
 
 #### Running one criterion from a harness
 
