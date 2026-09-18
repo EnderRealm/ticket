@@ -13,7 +13,7 @@ import (
 
 // defaultSpawnTemplate opens a new iTerm window, names it {wtitle}, cds to
 // {dir}, and runs the Claude session on {command} — `/work <id>` from the `w`
-// key, `/capture <idea>` from `c`. macOS/iTerm-specific.
+// key, `/brainstorm <idea>` from `c`. macOS/iTerm-specific.
 //
 // It creates the window with the default profile (which starts a normal
 // interactive shell), sets the session name to {wtitle}, and then `write text`s
@@ -119,13 +119,15 @@ func buildSpawnCommand(template, dir, id, project, title string) (string, error)
 }
 
 // buildCaptureCommand is the `c` key's counterpart of buildSpawnCommand: the
-// session opens on `/capture <idea>` in the project's checkout, and there is
-// no ticket yet, so {id} is empty and {title} is the idea. The idea is typed
-// locally, but it lands inside the template's quoting all the same, so it is
-// sanitized exactly like a title — free text, never refused — while {dir} and
-// {project} take the same refusals as the work path. The template must carry
-// {command}: a hard-coded `/work {id}` has nowhere to put a capture, and
-// substituting into it anyway would open a work session on an empty id.
+// session opens on `/brainstorm <idea>` in the project's checkout — the
+// brainstorm refines the one-line idea and hands off to `/capture` itself when
+// the dialogue is done — and there is no ticket yet, so {id} is empty and
+// {title} is the idea. The idea is typed locally, but it lands inside the
+// template's quoting all the same, so it is sanitized exactly like a title —
+// free text, never refused — while {dir} and {project} take the same refusals
+// as the work path. The template must carry {command}: a hard-coded `/work
+// {id}` has nowhere to put a capture, and substituting into it anyway would
+// open a work session on an empty id.
 func buildCaptureCommand(template, dir, project, idea string) (string, error) {
 	if err := checkSpawnTarget(dir, project); err != nil {
 		return "", err
@@ -135,7 +137,7 @@ func buildCaptureCommand(template, dir, project, idea string) (string, error) {
 		return "", errors.New("spawn_command has no {command} placeholder; see the README")
 	}
 	idea = sanitizeSpawnText(idea)
-	return interpolateSpawn(template, dir, "", project, idea, "/capture "+idea, windowTitle(project, "capture", idea)), nil
+	return interpolateSpawn(template, dir, "", project, idea, "/brainstorm "+idea, windowTitle(project, "capture", idea)), nil
 }
 
 // checkSpawnTarget is the {dir}/{project} half of the refusals, shared by both
@@ -342,10 +344,11 @@ func (a App) spawnWork(t *ticket.Ticket, qid string) tea.Cmd {
 	return startSpawn(cmd, dir, "Launching /work "+qid+"…")
 }
 
-// spawnCapture launches a new terminal session running `/capture <idea>` in
-// the checkout registered for ns — the board's project from the list, the
-// ticket's own from a detail. The capture dialogue itself (duplicate check,
-// why/success gate) runs in that window; the TUI only seeds it with the idea.
+// spawnCapture launches a new terminal session running `/brainstorm <idea>`
+// in the checkout registered for ns — the board's project from the list, the
+// ticket's own from a detail. The brainstorm dialogue runs in that window and
+// hands off to `/capture` (duplicate check, why/success gate) when the human
+// is done; the TUI only seeds it with the idea.
 // The same refusals as spawnWork land before anything is exec'd: Root and an
 // unregistered project through execDir, quoting in {dir}/{project} and a
 // template with no {command} through buildCaptureCommand.
@@ -358,7 +361,7 @@ func (a App) spawnCapture(ns, idea string) tea.Cmd {
 	if err != nil {
 		return refuseSpawn(err.Error())
 	}
-	return startSpawn(cmd, dir, "Launching /capture…")
+	return startSpawn(cmd, dir, "Launching /brainstorm…")
 }
 
 func refuseSpawn(reason string) tea.Cmd {

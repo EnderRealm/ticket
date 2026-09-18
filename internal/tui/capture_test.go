@@ -166,7 +166,7 @@ func TestCaptureEnterSpawnsTheIdea(t *testing.T) {
 	if !ok {
 		t.Fatalf("spawn returned %T, want statusMsg", status)
 	}
-	if !strings.HasPrefix(string(status), "Launching /capture") {
+	if !strings.HasPrefix(string(status), "Launching /brainstorm") {
 		t.Errorf("expected a launch, got %q", string(status))
 	}
 	if a.captureBar.Value() != "" {
@@ -196,7 +196,7 @@ func TestCaptureRefusedOnRootBoard(t *testing.T) {
 
 func TestCaptureBuildSubstitutesCommand(t *testing.T) {
 	got := mustBuildCaptureCommand(t, "true {dir} {project} {command}", "/some/dir", "proj", "an idea")
-	want := "true /some/dir proj /capture an idea"
+	want := "true /some/dir proj /brainstorm an idea"
 	if got != want {
 		t.Errorf("buildCaptureCommand = %q, want %q", got, want)
 	}
@@ -206,7 +206,7 @@ func TestCaptureBuildSanitizesIdea(t *testing.T) {
 	// The idea is free text: what would break a quoting layer or expand in the
 	// interactive shell becomes a space, in {command} and in {title} alike.
 	got := mustBuildCaptureCommand(t, "{command}|{title}|{wtitle}|{id}", "/some/dir", "proj", "a'b\"c$d`e!f")
-	want := "/capture a b c d e f|a b c d e f|PROJ -- capture -- a b c d e f|"
+	want := "/brainstorm a b c d e f|a b c d e f|PROJ -- capture -- a b c d e f|"
 	if got != want {
 		t.Errorf("buildCaptureCommand = %q, want %q", got, want)
 	}
@@ -214,7 +214,7 @@ func TestCaptureBuildSanitizesIdea(t *testing.T) {
 
 func TestCaptureWindowTitleTruncatesTo20Runes(t *testing.T) {
 	got := mustBuildCaptureCommand(t, "{command} {wtitle}", "/some/dir", "proj", "0123456789abcdefghijKLMNOP")
-	want := "/capture 0123456789abcdefghijKLMNOP PROJ -- capture -- 0123456789abcdefghij"
+	want := "/brainstorm 0123456789abcdefghijKLMNOP PROJ -- capture -- 0123456789abcdefghij"
 	if got != want {
 		t.Errorf("capture window title = %q, want %q", got, want)
 	}
@@ -222,7 +222,7 @@ func TestCaptureWindowTitleTruncatesTo20Runes(t *testing.T) {
 
 func TestCaptureBuildDefault(t *testing.T) {
 	got := mustBuildCaptureCommand(t, "", "/some/dir", "proj", "an idea")
-	for _, want := range []string{"/some/dir", "/capture an idea", "iTerm", "claude", "write text", "PROJ -- capture -- an idea"} {
+	for _, want := range []string{"/some/dir", "/brainstorm an idea", "iTerm", "claude", "write text", "PROJ -- capture -- an idea"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("default capture command %q missing %q", got, want)
 		}
@@ -302,7 +302,7 @@ func TestCaptureInjectionThroughIdeaDoesNotRun(t *testing.T) {
 
 	a := New(filepath.Join(dir, ".tickets"), "proj", "v0", harmlessTemplate(), dir, false, fixedExecDir(dir))
 	status, ok := a.spawnCapture("proj", idea)().(statusMsg)
-	if !ok || !strings.HasPrefix(string(status), "Launching /capture") {
+	if !ok || !strings.HasPrefix(string(status), "Launching /brainstorm") {
 		t.Errorf("spawnCapture with the sanitized idea should launch, got %q", status)
 	}
 	if _, err := os.Stat(sentinel); err == nil {

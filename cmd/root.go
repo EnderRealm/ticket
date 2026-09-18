@@ -180,8 +180,8 @@ Setup:
 
 Interactive:
   ui                         Interactive ticket browser (TUI); --project _root
-                             browses Root; c captures an idea through Claude
-                             (/capture), n opens the create form
+                             browses Root; c refines an idea through Claude
+                             (/brainstorm, then /capture), n opens the create form
   serve                      Start MCP server on stdio
 
 Journal:

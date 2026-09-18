@@ -78,7 +78,7 @@ type App struct {
 	cmdBar    textinput.Model
 	cmdActive bool
 
-	// Capture prompt: the one-line idea `c` hands to a /capture spawn, and the
+	// Capture prompt: the one-line idea `c` hands to a /brainstorm spawn, and the
 	// namespace the spawn runs in — the board's from the list, the ticket's
 	// own from a detail.
 	captureBar    textinput.Model
