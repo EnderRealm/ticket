@@ -159,6 +159,10 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		// ticket had there, so they say nothing about the copy landing in this one
 		// and do not travel with it. The closed source ticket keeps the record.
 		newTicket.Verdicts = nil
+		// Receipts are keyed to the ticket and the project they were recorded
+		// in: an action ID names the source ticket, and a finding key is scoped
+		// to the source project. Neither answers for the copy.
+		newTicket.Actions = nil
 		newTicket.Notes = append(copyNotes(t.Notes), Note{
 			Timestamp: now,
 			Text:      fmt.Sprintf("Moved from %s in %s", t.ID, srcWhere),

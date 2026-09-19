@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Observer action protocol: `ticket_apply_action` appends an evidence note, optionally reopens the ticket and records a receipt in one write, held against the opaque `precondition` `ticket_show` now reports; `ticket_discover` creates a ticket under a project-scoped `finding_key` or returns the one the key already created. Replays under the same `action_id` or key return the recorded outcome with `replayed: true`, a changed ticket is refused with `precondition conflict:`, and changed content under a used id or key with `action conflict:`. Receipts live in the ticket file's append-only `actions` block. Library: `ticket.ApplyAction`, `ticket.CreateDiscovery`, `Ticket.Precondition`.
 - MCP verification hands long runs back as session-owned jobs after a 10-second wait. `ticket_verify_status` retrieves results or recovers a lost start response by ticket ID; `ticket_verify_cancel` stops a run explicitly. Quick checks retain the existing report shape, and command policy remains host-local.
 - Backlog tickets carrying a nonblank question appear in the shared inbox, `ticket_inbox`, and TUI inbox with their question. Clearing it removes them from the inbox; their backlog status and exclusion from the ready-only execution frontier are unchanged.
 

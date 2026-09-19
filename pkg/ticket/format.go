@@ -100,6 +100,15 @@ func Parse(r io.Reader) (*Ticket, error) {
 	if structErr != nil && (rawErr != nil || lostLoadBearing(&t, raw)) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", structErr)
 	}
+	// Independent of the tolerance above: a damaged receipt can decode without
+	// a type error, and it is refused either way. The type error, when there
+	// was one, names the line and is the better report.
+	if err := damagedActions(&t, raw); err != nil {
+		if structErr != nil {
+			err = structErr
+		}
+		return nil, fmt.Errorf("parsing frontmatter: %w: %w", errDamagedActions, err)
+	}
 	if rawErr == nil {
 		t.Extra = map[string]string{}
 		for k, v := range raw {
@@ -217,6 +226,53 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
 	return false
 }
 
+// damagedActions reports the action receipts as unreadable when the block
+// does not hold what a writer recorded. The receipts are append-only on the
+// verdicts' terms above, and a tolerated decode loss would be replayed by the
+// next write-back the same way — so the three shapes of loss are refused the
+// same way. But a receipt is also the record a replay is judged by, and a
+// damaged one that decodes cleanly disables the protection without a type
+// error to catch it: a row with its `kind` or `id` dropped by a merge decodes
+// to a receipt findReceipt never matches, so a retry applies the action
+// again or creates a second ticket. Every field is required on write
+// (ValidateActionReceipt), so every decoded receipt is held to that, whatever
+// the decode reported.
+func damagedActions(t *Ticket, raw map[string]interface{}) error {
+	if v, ok := raw["actions"]; ok && !emptyYAMLValue(v) {
+		if len(t.Actions) == 0 {
+			return fmt.Errorf("actions block did not decode")
+		}
+		if rows, ok := v.([]interface{}); ok && len(rows) != len(t.Actions) {
+			return fmt.Errorf("actions block holds %d rows and %d decoded", len(rows), len(t.Actions))
+		}
+	}
+	for i, r := range t.Actions {
+		if err := ValidateActionReceipt(r); err != nil {
+			return fmt.Errorf("actions[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// carriesReceipts reports whether a ticket file's frontmatter holds a
+// non-empty `actions` block, read from the raw map alone so the answer does
+// not depend on whether the rest of the file decodes. It is what updateLocked
+// asks of a prior Parse refused: the refusal may be a fault in any field, and
+// the receipts behind it are still the record a replay is judged by. An error
+// means the frontmatter could not be split or decoded at all, so the question
+// has no answer.
+func carriesReceipts(data []byte) (bool, error) {
+	front, _, err := splitFrontmatter(bytes.NewReader(data))
+	if err != nil {
+		return false, err
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(front, &raw); err != nil {
+		return false, err
+	}
+	return !emptyYAMLValue(raw["actions"]), nil
+}
+
 // emptyYAMLValue reports whether a frontmatter value carries nothing — the
 // forms a writer uses to say a field has no value. Anything else is content the
 // decode was meant to produce something from.
@@ -305,6 +361,12 @@ func Serialize(t *Ticket) ([]byte, error) {
 		// when it carries punctuation. yaml.v3 preserves struct field order, so
 		// the output is deterministic.
 		if err := writeYAMLBlock(&buf, "verdicts", t.Verdicts); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.Actions) > 0 {
+		// Deterministic for the reason the verdicts block is.
+		if err := writeYAMLBlock(&buf, "actions", t.Actions); err != nil {
 			return nil, err
 		}
 	}

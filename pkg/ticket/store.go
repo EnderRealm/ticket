@@ -633,8 +633,26 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 	// file's current bytes rather than on the CAS, so it holds for the
 	// version-less unconditional write too. A prior that does not parse is
 	// skipped, the same tolerance logUpdate applies: there is nothing to compare
-	// against.
-	if prior, err := Parse(bytes.NewReader(current)); err == nil {
+	// against — unless the prior carries action receipts. Those are what a
+	// replay is judged by, and a version-less write over a file Parse refused
+	// would replace them with whatever the caller rebuilt, so the next retry
+	// applies the action again. Whether the file holds any is read from the
+	// raw frontmatter, independent of the field that failed — a malformed
+	// `deps:` returns from Parse before the actions block is looked at — and
+	// the write is refused until the file is repaired. A frontmatter that
+	// cannot be decoded at all leaves the question unanswerable, and is refused
+	// on the same terms.
+	prior, err := Parse(bytes.NewReader(current))
+	if err != nil {
+		receipts, rawErr := carriesReceipts(current)
+		if rawErr != nil {
+			return fmt.Errorf("update %s: %w; whether the file holds action receipts cannot be established, and this write would replace any it holds; repair %s by hand so it parses, then retry", t.ID, err, path)
+		}
+		if receipts {
+			return fmt.Errorf("update %s: %w; the file's actions block holds receipts this write would replace; repair %s by hand so it parses, then retry", t.ID, err, path)
+		}
+	}
+	if err == nil {
 		if !verdictsAppendOnly(prior.Verdicts, t.Verdicts) {
 			return fmt.Errorf("update %s: verdict rows are append-only — a correction is a new row, and this write would drop or rewrite recorded rows", t.ID)
 		}
@@ -643,6 +661,15 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 		// unwritable, since append-only requires every write to preserve it.
 		for _, row := range t.Verdicts[len(prior.Verdicts):] {
 			if err := ValidateVerdictRow(row); err != nil {
+				return fmt.Errorf("update %s: %w", t.ID, err)
+			}
+		}
+		// The action receipts, on the same terms.
+		if !actionsAppendOnly(prior.Actions, t.Actions) {
+			return fmt.Errorf("update %s: action receipts are append-only — this write would drop or rewrite recorded receipts", t.ID)
+		}
+		for _, receipt := range t.Actions[len(prior.Actions):] {
+			if err := ValidateActionReceipt(receipt); err != nil {
 				return fmt.Errorf("update %s: %w", t.ID, err)
 			}
 		}

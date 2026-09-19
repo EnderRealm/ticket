@@ -118,11 +118,17 @@ func (s *FileStore) logMutation(id string, op MutationOp, fields []string) {
 // it is set, then the source the caller wrapped the store with (an MCP client
 // name, the journal watcher), then the human at the terminal.
 func (s *FileStore) mutationSource() string {
+	return attributedSource(s.Source)
+}
+
+// attributedSource is mutationSource for a declared source held outside a
+// FileStore — a MultiStore's, before the write reaches the project store.
+func attributedSource(declared string) string {
 	if env := strings.TrimSpace(os.Getenv(SourceEnv)); env != "" {
 		return env
 	}
-	if s.Source != "" {
-		return s.Source
+	if declared != "" {
+		return declared
 	}
 	return SourceHuman
 }
@@ -185,6 +191,7 @@ func changedFields(prior, next *Ticket) []string {
 	add("extra", !maps.Equal(prior.Extra, next.Extra))
 	add("branch", prior.Branch != next.Branch)
 	add("external_ref", prior.ExternalRef != next.ExternalRef)
+	add("actions", !slices.Equal(prior.Actions, next.Actions))
 	// Trimmed on both sides: the parser normalizes a body's surrounding
 	// whitespace and a caller that built one by hand has not.
 	add("body", strings.TrimSpace(prior.Body) != strings.TrimSpace(next.Body))

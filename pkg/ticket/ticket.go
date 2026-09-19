@@ -138,6 +138,13 @@ type Ticket struct {
 	// never edited — updateLocked refuses a write that drops or rewrites one.
 	Verdicts []VerdictRow `yaml:"verdicts,omitempty"`
 
+	// The append-only observer action receipts (action.go): one row per
+	// action applied to this ticket, or the discovery that created it.
+	// Serialized as a nested block in format.go. Rows are appended through
+	// ApplyAction and CreateDiscovery and never edited — updateLocked refuses
+	// a write that drops or rewrites one.
+	Actions []ActionReceipt `yaml:"actions,omitempty"`
+
 	// Custom key/value pairs, handled manually in format.go.
 	Extra map[string]string `yaml:"-"`
 
@@ -219,7 +226,7 @@ var reservedKeys = map[string]bool{
 	"id": true, "status": true, "abandoned": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
-	"dep-cargo": true, "verdicts": true,
+	"dep-cargo": true, "verdicts": true, "actions": true,
 	// JSON output fields derived from body sections and markdown heading.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,

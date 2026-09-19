@@ -61,6 +61,8 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *S
 	jobs := registerVerify(server, store, defaultProject)
 	registerVerdictRecord(server, store)
 	registerVerdictCurrent(server, store)
+	registerApplyAction(server, store)
+	registerDiscover(server, store, defaultProject)
 	registerStoreInfo(server, centralRoot)
 
 	return &Server{Server: server, verify: jobs}
@@ -143,7 +145,10 @@ type ticketJSON struct {
 	// not answered here — that needs the head to judge against, which
 	// ticket_verdict_current takes.
 	Verdicts []ticket.VerdictRow `json:"verdicts,omitempty"`
-	Extra    map[string]string   `json:"-"`
+	// The ticket's observer action receipts, in record order (see
+	// ticket_apply_action and ticket_discover).
+	Actions []ticket.ActionReceipt `json:"actions,omitempty"`
+	Extra   map[string]string      `json:"-"`
 	// ClosedChildren names the children an edit that abandoned an epic closed
 	// along with it. Set by ticket_edit alone — every other tool leaves it
 	// empty, and it is omitted from the response then.
@@ -217,6 +222,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		Outputs:     t.Outputs,
 		DepCargo:    t.DepCargo,
 		Verdicts:    t.Verdicts,
+		Actions:     t.Actions,
 	}
 
 	j.Extra = t.Extra
@@ -713,6 +719,10 @@ type showExtras struct {
 	NotesTotal int    `json:"notes_total"`
 	NotesShown int    `json:"notes_shown"`
 	Namespace  string `json:"namespace"`
+	// Precondition is the opaque token ticket_apply_action holds a write
+	// against: it identifies the state this response was read from, and an
+	// action carrying it is refused once the ticket has changed.
+	Precondition string `json:"precondition"`
 	*epicJSON
 	RelationshipIssue string `json:"relationship_issue,omitempty"`
 }
@@ -764,7 +774,7 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -781,7 +791,7 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 		}
 
 		ns, _ := ticket.ParseNamespacedID(t.ID)
-		extras := showExtras{Namespace: ns, RelationshipIssue: ticket.RelationshipIssue(t)}
+		extras := showExtras{Namespace: ns, Precondition: t.Precondition(), RelationshipIssue: ticket.RelationshipIssue(t)}
 		// The graph is read only when the response needs it — an epic's
 		// children and counts, or a leaf's issue as the snapshot stamps it —
 		// so a plain leaf costs one file read.
@@ -869,112 +879,31 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		Name:        "ticket_create",
 		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when a description was given with no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
-		if args.Title == "" {
-			r, _ := errResult("title is required")
+		content := ticketContent{
+			Title:       args.Title,
+			Description: args.Description,
+			Design:      args.Design,
+			Acceptance:  args.Acceptance,
+			Type:        args.Type,
+			Priority:    args.Priority,
+			Parent:      args.Parent,
+			Tags:        args.Tags,
+		}
+		if r := content.refusal(); r != nil {
 			return r, nil, nil
 		}
-		for _, f := range []struct{ name, value string }{
-			{"description", args.Description},
-			{"design", args.Design},
-			{"acceptance", args.Acceptance},
-		} {
-			if r := envelopeFragmentResult(f.name, f.value); r != nil {
-				return r, nil, nil
-			}
+
+		dst, r := resolveDestination(store, sourceFor(req, args.Source), args.Repo, args.Project)
+		if r != nil {
+			return r, nil, nil
 		}
 
-		source := sourceFor(req, args.Source)
-		targetStore := ticket.WithSource(store, source)
-		unregisteredWarning := ""
-		// The project the repo argument resolved to, empty when no repo was
-		// given. It stands in for args.Project on that path: the repo names the
-		// project itself, so nothing else gets to decide the namespace.
-		repoProject := ""
-		if args.Repo != "" {
-			repo := args.Repo
-			cfg, err := project.Load()
-			if err != nil {
-				r, _ := errResult("load ticket config: %v", err)
-				return r, nil, nil
-			}
-			path, configured := project.ConfiguredRepoPath(cfg, repo)
-			if configured {
-				repo = path
-			} else {
-				abs, err := filepath.Abs(repo)
-				if err != nil {
-					r, _ := errResult("invalid repo path: %v", err)
-					return r, nil, nil
-				}
-				info, err := os.Stat(abs)
-				if err != nil {
-					r, _ := errResult("repo %q is neither a registered project name nor a directory: %v", args.Repo, err)
-					return r, nil, nil
-				}
-				if !info.IsDir() {
-					r, _ := errResult("repo %q is neither a registered project name nor a directory", args.Repo)
-					return r, nil, nil
-				}
-				repo = abs
-			}
-			// The resolution the CLI's own store and `tk move`'s destination read
-			// through, so a repo resolves to one store and one error whichever
-			// surface names it — including the project-name bound that keeps a
-			// config key crafted on another machine from steering this write
-			// outside the central root.
-			dst, unregistered, err := ticket.ResolveStoreForRepo(repo)
-			if err != nil {
-				r, _ := errResult("%v", err)
-				return r, nil, nil
-			}
-			if unregistered {
-				// Carried on the response rather than written to stderr, which is
-				// the server's log and not something the calling agent reads: the
-				// project is one MultiStore.Create refuses to write to, so a
-				// create into it puts a ticket where nothing else will.
-				unregisteredWarning = ticket.UnregisteredWarning(dst)
-			}
-			// Only an explicitly passed project conflicts: the CWD-derived
-			// defaultProject is not a request for a destination, and a server
-			// started in one repo is exactly the case repo exists to escape.
-			if args.Project != "" && args.Project != dst.Project {
-				r, _ := errResult("repo %q resolves to project %q but project %q was also given — pass one or the other", args.Repo, dst.Project, args.Project)
-				return r, nil, nil
-			}
-			repoProject = dst.Project
-			targetStore = ticket.WithSource(dst, source)
-		}
-
-		t := &ticket.Ticket{
-			ID:       ticket.GenerateID(args.Title),
-			Title:    args.Title,
-			Status:   ticket.StatusBacklog,
-			Priority: 2,
-			Created:  time.Now().UTC(),
-		}
-
-		if args.Type != "" {
-			t.Type = ticket.TicketType(args.Type)
-		} else {
-			t.Type = ticket.TypeFeature
-		}
-		if args.Priority != nil {
-			t.Priority = int(*args.Priority)
-		}
-		if args.Parent != "" {
-			t.Parent = args.Parent
-		}
+		t := content.ticket()
 		if args.ExternalRef != "" {
 			t.ExternalRef = args.ExternalRef
 		}
 		if args.Branch != "" {
 			t.Branch = args.Branch
-		}
-		if args.Tags != "" {
-			t.Tags = strings.Split(args.Tags, ",")
-			for i := range t.Tags {
-				t.Tags[i] = strings.TrimSpace(t.Tags[i])
-			}
 		}
 
 		if len(args.Set) > 0 {
@@ -994,75 +923,238 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			}
 		}
 
-		// Build body.
-		var body strings.Builder
-		if args.Description != "" {
-			body.WriteString(args.Description + "\n")
-		}
-		if args.Design != "" {
-			body.WriteString("\n## Design\n\n" + args.Design + "\n")
-		}
-		if args.Acceptance != "" {
-			body.WriteString("\n## Acceptance Criteria\n\n" + args.Acceptance + "\n")
-		}
-		t.Body = body.String()
-
-		// Not on the repo path: that one writes through a project FileStore,
-		// which takes bare IDs and refuses one carrying a separator, so it
-		// namespaces on the way out instead. A central store with no
-		// destination named is refused here with the remedy, rather than by
-		// the store's own ID-format error: nothing infers where a write lands.
-		if repoProject == "" {
-			proj := resolveProject(args.Project, defaultProject)
-			if _, multi := store.(*ticket.MultiStore); multi && proj == "" {
-				r, _ := errResult("no destination: pass project (a registered project, or %s for an idea with no repository yet) or repo", project.RootNamespace)
-				return r, nil, nil
-			}
-			if proj != "" {
-				t.ID = ticket.FormatNamespacedID(proj, t.ID)
-			}
-		}
-
-		if err := targetStore.Create(t); err != nil {
-			if repoProject != "" {
-				// A project FileStore names a bare ID and not the project that
-				// refused it, so the failure is framed the way
-				// MultiStore.Create frames its own — a cross-repo create names
-				// the same destination whichever argument chose it.
-				err = fmt.Errorf("project %s: %w", repoProject, err)
-			}
-			r, _ := errResult("failed to create ticket: %v", err)
+		if r := dst.qualify(t, store, args.Project, defaultProject); r != nil {
 			return r, nil, nil
 		}
-		// The ID went in bare, and only now is it settled: a hash collision
-		// makes Create regenerate it, and the one it kept is the one to prefix.
-		// Everything downstream — the JSON, and the empty_acceptance_warning
-		// naming an ID for ticket_edit — reads t.ID.
-		if repoProject != "" {
-			t.ID = ticket.FormatNamespacedID(repoProject, t.ID)
+
+		if err := dst.store.Create(t); err != nil {
+			r, _ := errResult("failed to create ticket: %v", dst.frame(err))
+			return r, nil, nil
 		}
+		dst.settle(t)
 
 		j := toJSON(t)
-		j.UnregisteredWarning = unregisteredWarning
-		// Epics are exempt on the same grounds tk audit exempts them: a container
-		// holds children that each carry their own contract.
-		// Compared trimmed, because the audit classifies the same ticket off
-		// BodySections' trimmed output: an acceptance of " " is stored as none,
-		// so it has to warn here too or the two surfaces disagree.
-		if t.Type != ticket.TypeEpic && strings.TrimSpace(args.Description) != "" && strings.TrimSpace(args.Acceptance) == "" {
-			j.EmptyAcceptanceWarning = fmt.Sprintf("ticket %s has a description but no acceptance criteria: nothing states what done means, and the workflow gates on that contract. "+
-				"Add it with ticket_edit on %s and an `acceptance` argument.", t.ID, t.ID)
-		}
-		// Read off the stored body, not args.Acceptance, so the CLI — which has
-		// no acceptance argument, only a description carrying the section —
-		// reaches the same helper. No type exemption: unlike an empty contract,
-		// which is expected on a container, a criterion that was written but
-		// cannot be checked is a gap whatever the type.
-		j.BareAcceptanceCriteria = ticket.BareCriteria(t.Body)
-		j.BareAcceptanceWarning = ticket.BareAcceptanceWarning(t.ID, j.BareAcceptanceCriteria)
+		j.UnregisteredWarning = dst.unregisteredWarning
+		content.warn(&j, t)
 		r, err := jsonResult(j)
 		return r, nil, err
 	})
+}
+
+// ticketContent is the content of a new ticket as ticket_create and
+// ticket_discover both take it: the fields the ticket is built from, and — for
+// a discovery — the fields its finding key is digested over.
+type ticketContent struct {
+	Title       string
+	Description string
+	Design      string
+	Acceptance  string
+	Type        string
+	Priority    *FlexInt
+	Parent      string
+	Tags        string
+}
+
+// refusal is the check every new ticket's content passes before a store is
+// touched: a title, and no body field ending in a tool-call envelope
+// fragment. Nil when the content is clean.
+func (c ticketContent) refusal() *mcp.CallToolResult {
+	if c.Title == "" {
+		r, _ := errResult("title is required")
+		return r
+	}
+	for _, f := range []struct{ name, value string }{
+		{"description", c.Description},
+		{"design", c.Design},
+		{"acceptance", c.Acceptance},
+	} {
+		if r := envelopeFragmentResult(f.name, f.value); r != nil {
+			return r
+		}
+	}
+	return nil
+}
+
+// ticket builds the new ticket, its ID generated from the title and bare
+// until the destination qualifies it.
+func (c ticketContent) ticket() *ticket.Ticket {
+	t := &ticket.Ticket{
+		ID:       ticket.GenerateID(c.Title),
+		Title:    c.Title,
+		Status:   ticket.StatusBacklog,
+		Priority: 2,
+		Created:  time.Now().UTC(),
+	}
+
+	if c.Type != "" {
+		t.Type = ticket.TicketType(c.Type)
+	} else {
+		t.Type = ticket.TypeFeature
+	}
+	if c.Priority != nil {
+		t.Priority = int(*c.Priority)
+	}
+	if c.Parent != "" {
+		t.Parent = c.Parent
+	}
+	if c.Tags != "" {
+		t.Tags = strings.Split(c.Tags, ",")
+		for i := range t.Tags {
+			t.Tags[i] = strings.TrimSpace(t.Tags[i])
+		}
+	}
+
+	// Build body.
+	var body strings.Builder
+	if c.Description != "" {
+		body.WriteString(c.Description + "\n")
+	}
+	if c.Design != "" {
+		body.WriteString("\n## Design\n\n" + c.Design + "\n")
+	}
+	if c.Acceptance != "" {
+		body.WriteString("\n## Acceptance Criteria\n\n" + c.Acceptance + "\n")
+	}
+	t.Body = body.String()
+	return t
+}
+
+// warn stamps the acceptance warnings a created ticket's response carries.
+func (c ticketContent) warn(j *ticketJSON, t *ticket.Ticket) {
+	// Epics are exempt on the same grounds tk audit exempts them: a container
+	// holds children that each carry their own contract.
+	// Compared trimmed, because the audit classifies the same ticket off
+	// BodySections' trimmed output: an acceptance of " " is stored as none,
+	// so it has to warn here too or the two surfaces disagree.
+	if t.Type != ticket.TypeEpic && strings.TrimSpace(c.Description) != "" && strings.TrimSpace(c.Acceptance) == "" {
+		j.EmptyAcceptanceWarning = fmt.Sprintf("ticket %s has a description but no acceptance criteria: nothing states what done means, and the workflow gates on that contract. "+
+			"Add it with ticket_edit on %s and an `acceptance` argument.", t.ID, t.ID)
+	}
+	// Read off the stored body, not c.Acceptance, so the CLI — which has no
+	// acceptance argument, only a description carrying the section — reaches
+	// the same helper. No type exemption: unlike an empty contract, which is
+	// expected on a container, a criterion that was written but cannot be
+	// checked is a gap whatever the type.
+	j.BareAcceptanceCriteria = ticket.BareCriteria(t.Body)
+	j.BareAcceptanceWarning = ticket.BareAcceptanceWarning(t.ID, j.BareAcceptanceCriteria)
+}
+
+// destination is where a new ticket lands, resolved from the `repo` and
+// `project` arguments ticket_create and ticket_discover share.
+type destination struct {
+	// store is the store the write goes through, attributed to the caller.
+	store ticket.Store
+	// repoProject is the project the repo argument resolved to, empty when no
+	// repo was given. It stands in for the project argument on that path: the
+	// repo names the project itself, so nothing else gets to decide the
+	// namespace.
+	repoProject         string
+	unregisteredWarning string
+}
+
+// resolveDestination resolves the store a new ticket is written to. With a
+// repo argument, that repo's store; otherwise the server's own, and qualify
+// decides the namespace. A refusal comes back as the tool result to return.
+func resolveDestination(store ticket.Store, source, repoArg, projectArg string) (*destination, *mcp.CallToolResult) {
+	dst := &destination{store: ticket.WithSource(store, source)}
+	if repoArg == "" {
+		return dst, nil
+	}
+	repo := repoArg
+	cfg, err := project.Load()
+	if err != nil {
+		r, _ := errResult("load ticket config: %v", err)
+		return nil, r
+	}
+	path, configured := project.ConfiguredRepoPath(cfg, repo)
+	if configured {
+		repo = path
+	} else {
+		abs, err := filepath.Abs(repo)
+		if err != nil {
+			r, _ := errResult("invalid repo path: %v", err)
+			return nil, r
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			r, _ := errResult("repo %q is neither a registered project name nor a directory: %v", repoArg, err)
+			return nil, r
+		}
+		if !info.IsDir() {
+			r, _ := errResult("repo %q is neither a registered project name nor a directory", repoArg)
+			return nil, r
+		}
+		repo = abs
+	}
+	// The resolution the CLI's own store and `tk move`'s destination read
+	// through, so a repo resolves to one store and one error whichever
+	// surface names it — including the project-name bound that keeps a
+	// config key crafted on another machine from steering this write
+	// outside the central root.
+	resolved, unregistered, err := ticket.ResolveStoreForRepo(repo)
+	if err != nil {
+		r, _ := errResult("%v", err)
+		return nil, r
+	}
+	if unregistered {
+		// Carried on the response rather than written to stderr, which is
+		// the server's log and not something the calling agent reads: the
+		// project is one MultiStore.Create refuses to write to, so a create
+		// into it puts a ticket where nothing else will.
+		dst.unregisteredWarning = ticket.UnregisteredWarning(resolved)
+	}
+	// Only an explicitly passed project conflicts: the CWD-derived
+	// defaultProject is not a request for a destination, and a server
+	// started in one repo is exactly the case repo exists to escape.
+	if projectArg != "" && projectArg != resolved.Project {
+		r, _ := errResult("repo %q resolves to project %q but project %q was also given — pass one or the other", repoArg, resolved.Project, projectArg)
+		return nil, r
+	}
+	dst.repoProject = resolved.Project
+	dst.store = ticket.WithSource(resolved, source)
+	return dst, nil
+}
+
+// qualify namespaces the new ticket's ID for the server's own store. Not on
+// the repo path: that one writes through a project FileStore, which takes
+// bare IDs and refuses one carrying a separator, so settle namespaces on the
+// way out instead. A central store with no destination named is refused here
+// with the remedy, rather than by the store's own ID-format error: nothing
+// infers where a write lands.
+func (d *destination) qualify(t *ticket.Ticket, store ticket.Store, projectArg, defaultProject string) *mcp.CallToolResult {
+	if d.repoProject != "" {
+		return nil
+	}
+	proj := resolveProject(projectArg, defaultProject)
+	if _, multi := store.(*ticket.MultiStore); multi && proj == "" {
+		r, _ := errResult("no destination: pass project (a registered project, or %s for an idea with no repository yet) or repo", project.RootNamespace)
+		return r
+	}
+	if proj != "" {
+		t.ID = ticket.FormatNamespacedID(proj, t.ID)
+	}
+	return nil
+}
+
+// frame names the destination in a write's failure. A project FileStore
+// names a bare ID and not the project that refused it, so the failure is
+// framed the way MultiStore.Create frames its own — a cross-repo create names
+// the same destination whichever argument chose it.
+func (d *destination) frame(err error) error {
+	if d.repoProject != "" {
+		return fmt.Errorf("project %s: %w", d.repoProject, err)
+	}
+	return err
+}
+
+// settle prefixes the ID a repo-path write settled on. The ID went in bare,
+// and only now is it final: a hash collision makes Create regenerate it, and
+// the one it kept is the one to prefix. Everything downstream — the JSON, and
+// the empty_acceptance_warning naming an ID for ticket_edit — reads t.ID.
+func (d *destination) settle(t *ticket.Ticket) {
+	if d.repoProject != "" {
+		t.ID = ticket.FormatNamespacedID(d.repoProject, t.ID)
+	}
 }
 
 type editArgs struct {

@@ -138,13 +138,31 @@ func (m *MultiStore) Create(t *Ticket) error {
 	if proj == "" {
 		return fmt.Errorf("project is required for MultiStore.Create — use project/ticket-id format")
 	}
-	store, err := m.storeFor(proj)
+	store, err := m.createStore(proj)
 	if err != nil {
 		return err
 	}
+	t.ID = ticketID
+	if err := store.Create(t); err != nil {
+		t.ID = FormatNamespacedID(proj, t.ID)
+		return fmt.Errorf("project %s: %w", proj, err)
+	}
+	t.ID = FormatNamespacedID(proj, t.ID)
+	return nil
+}
+
+// createStore is the project store a new ticket may be created in: the
+// project has to exist as a directory under the root or as a central-store
+// entry in config, on the terms Create documents. Shared by Create and
+// createDiscovery so a discovery lands where a create would.
+func (m *MultiStore) createStore(proj string) (*FileStore, error) {
+	store, err := m.storeFor(proj)
+	if err != nil {
+		return nil, err
+	}
 	missing, err := lstatProjectDir(m.rootDir, proj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Root is built in rather than registered, so no config entry stands in
 	// for its directory: whether a write to it is allowed at all is the
@@ -154,19 +172,13 @@ func (m *MultiStore) Create(t *Ticket) error {
 		// Registration is the authority the directory only stands in for.
 		cfg, err := project.Load()
 		if err != nil {
-			return fmt.Errorf("load ticket config: %w", err)
+			return nil, fmt.Errorf("load ticket config: %w", err)
 		}
 		if !project.CentralRegistered(cfg, proj) {
-			return fmt.Errorf("project %q has no ticket directory in %s — run `tk init` in that project's repo to create it", proj, m.rootDir)
+			return nil, fmt.Errorf("project %q has no ticket directory in %s — run `tk init` in that project's repo to create it", proj, m.rootDir)
 		}
 	}
-	t.ID = ticketID
-	if err := store.Create(t); err != nil {
-		t.ID = FormatNamespacedID(proj, t.ID)
-		return fmt.Errorf("project %s: %w", proj, err)
-	}
-	t.ID = FormatNamespacedID(proj, t.ID)
-	return nil
+	return store, nil
 }
 
 // Update writes a ticket back to disk. Accepts namespaced or bare IDs.

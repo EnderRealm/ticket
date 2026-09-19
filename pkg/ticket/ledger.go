@@ -118,21 +118,23 @@ func ValidateVerdictSHA(sha string) (string, error) {
 	return s, nil
 }
 
-// validateVerdictText checks that an evidence pointer or a verifier identity is
+// validateLedgerText checks that a free-text field of a ledger row — a
+// verdict's evidence pointer or identity, an action's ID or outcome — is
 // storable, on the same rules as a dep cargo annotation: the block is
 // serialized through yaml.v3, which quotes what needs it, so punctuation is
 // fine and only empty values, non-printable characters and surrounding
-// whitespace are rejected.
-func validateVerdictText(kind, value string) error {
+// whitespace are rejected. noun names the ledger in the message, kind the
+// field.
+func validateLedgerText(noun, kind, value string) error {
 	if strings.TrimSpace(value) == "" {
-		return fmt.Errorf("verdict %s must not be empty", kind)
+		return fmt.Errorf("%s %s must not be empty", noun, kind)
 	}
 	if value != strings.TrimSpace(value) {
-		return fmt.Errorf("verdict %s %q has leading or trailing whitespace", kind, value)
+		return fmt.Errorf("%s %s %q has leading or trailing whitespace", noun, kind, value)
 	}
 	for _, c := range value {
 		if !unicode.IsPrint(c) {
-			return fmt.Errorf("verdict %s contains non-printable character %q", kind, string(c))
+			return fmt.Errorf("%s %s contains non-printable character %q", noun, kind, string(c))
 		}
 	}
 	return nil
@@ -159,10 +161,10 @@ func ValidateVerdictRow(r VerdictRow) error {
 	if normalized != r.SHA {
 		return fmt.Errorf("verdict sha %q is not normalized", r.SHA)
 	}
-	if err := validateVerdictText("evidence", r.Evidence); err != nil {
+	if err := validateLedgerText("verdict", "evidence", r.Evidence); err != nil {
 		return err
 	}
-	if err := validateVerdictText("identity", r.By); err != nil {
+	if err := validateLedgerText("verdict", "identity", r.By); err != nil {
 		return err
 	}
 	if _, err := time.Parse(time.RFC3339, r.At); err != nil {
@@ -199,10 +201,10 @@ func RecordVerdict(store Store, id, sha string, class VerdictClass, role Verdict
 	// row built anywhere else is judged as it stands.
 	evidence = strings.TrimSpace(evidence)
 	by = strings.TrimSpace(by)
-	if err := validateVerdictText("evidence", evidence); err != nil {
+	if err := validateLedgerText("verdict", "evidence", evidence); err != nil {
 		return nil, VerdictRow{}, err
 	}
-	if err := validateVerdictText("identity", by); err != nil {
+	if err := validateLedgerText("verdict", "identity", by); err != nil {
 		return nil, VerdictRow{}, err
 	}
 
