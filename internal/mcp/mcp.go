@@ -1785,14 +1785,61 @@ func registerSearch(server *mcp.Server, store ticket.Store, defaultProject strin
 
 type verifyArgs struct {
 	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+	// Dir is a pointer so an omitted dir and an explicit empty string stay
+	// distinguishable: the empty case is refused, as `tk verify --dir ""` is,
+	// rather than read as the default.
+	Dir          *string `json:"dir,omitempty" jsonschema:"directory to run the commands in: the project's configured checkout or a linked git worktree of it; anything else is refused. Omit to run in the configured checkout"`
+	AcceptanceID string  `json:"acceptance_id,omitempty" jsonschema:"acceptance_id returned by ticket_criteria; the run is refused before anything executes if the ticket's criteria no longer match it"`
+	Candidate    string  `json:"candidate,omitempty" jsonschema:"your name for what is under test (a commit, a worktree, a run ID), recorded with the result as provenance, not as approval"`
+}
+
+type criteriaArgs struct {
+	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
+}
+
+type criterionJSON struct {
+	Index              int    `json:"index"`
+	Text               string `json:"text"`
+	Command            string `json:"command,omitempty"`
+	Unverifiable       bool   `json:"unverifiable"`
+	UnverifiableReason string `json:"unverifiable_reason,omitempty"`
+}
+
+type criteriaJSON struct {
+	ID           string          `json:"id"`
+	AcceptanceID string          `json:"acceptance_id"`
+	Criteria     []criterionJSON `json:"criteria"`
 }
 
 func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) *verifyJobs {
 	jobs := newVerifyJobs()
 	registerVerifyLifecycle(server, store, jobs)
 	addFlexTool(server, &mcp.Tool{
+		Name:        "ticket_criteria",
+		Description: "Return a ticket's acceptance criteria exactly as ticket_verify parses them — index (1-based, the same index tk verify --criterion uses), text, verify command if any, and whether it is declared unverifiable and why — with acceptance_id, the identity of that contract. Pass acceptance_id back to ticket_verify to have the run refused if the criteria change in between. Runs nothing. A ticket with no criteria returns an empty list, not an error.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args criteriaArgs) (*mcp.CallToolResult, any, error) {
+		t, err := store.Get(args.ID)
+		if err != nil {
+			r, _ := errResult("ticket not found: %v", err)
+			return r, nil, nil
+		}
+		criteria := ticket.ParseCriteria(ticket.AcceptanceCriteria(t.Body))
+		out := criteriaJSON{ID: t.ID, AcceptanceID: ticket.CriteriaIdentity(criteria), Criteria: []criterionJSON{}}
+		for i, c := range criteria {
+			out.Criteria = append(out.Criteria, criterionJSON{
+				Index:              i + 1,
+				Text:               ticket.SanitizeControl(c.Text),
+				Command:            ticket.SanitizeControl(c.Command),
+				Unverifiable:       c.Unverifiable,
+				UnverifiableReason: ticket.SanitizeControl(c.UnverifiableReason),
+			})
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project; a Root ticket, a project with no checkout registered here, and a registered checkout that is missing are each refused before anything runs, naming the reason, and nothing is recorded. Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start joins an active run; after completion it starts a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project, or, with dir, in a linked git worktree of that checkout; a Root ticket, a project with no checkout registered here, a registered checkout that is missing, and a dir that is not the configured checkout or a worktree root sharing its repository (a subdirectory, an unrelated or nested repository, a non-git directory, a missing path, an empty string, or a symlink resolving to any of those) are each refused before anything runs, naming the reason, and nothing is recorded. Pass acceptance_id from ticket_criteria to have the run refused before anything executes if the criteria changed since you read them; the report and the ticket's Test Results name the directory the commands ran in, the acceptance_id of the criteria that ran, and candidate (your name for what was under test, recorded as provenance only) if given. If the criteria change while commands are running, the result is returned but not recorded (record_error says so). Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the project's verify_timeout in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start with the same dir, acceptance_id and candidate joins the active run; one that differs in any of the three is refused, naming the active run, and starts nothing; after completion a start begins a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -1803,6 +1850,13 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		criteria := ticket.ParseCriteria(ticket.AcceptanceCriteria(t.Body))
 		if len(criteria) == 0 {
 			r, _ := errResult("%s has no acceptance criteria", t.ID)
+			return r, nil, nil
+		}
+		// The contract under test is the one the caller read, or it is not run:
+		// a check decided before any directory is resolved or command started.
+		acceptanceID := ticket.CriteriaIdentity(criteria)
+		if args.AcceptanceID != "" && args.AcceptanceID != acceptanceID {
+			r, _ := errResult("acceptance criteria of %s changed: you read %s, the ticket now has %s; call ticket_criteria again and verify what it returns", t.ID, ticket.SanitizeControl(args.AcceptanceID), acceptanceID)
 			return r, nil, nil
 		}
 
@@ -1830,6 +1884,19 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 			r, _ := errResult("cannot run verify commands: %v", err)
 			return r, nil, nil
 		}
+		// dir moves an eligible run within the ticket's own repository; it does
+		// not make one eligible, and it cannot reach a directory that repository
+		// does not own. The policy below is still the project's: a worktree
+		// changes where the commands run, not what may run or for how long.
+		if args.Dir != nil {
+			dir, err = project.ValidateExecutionDir(dir, *args.Dir)
+			if err != nil {
+				// The refusal echoes the caller's path; sanitized like the
+				// acceptance_id refusal above.
+				r, _ := errResult("cannot run verify commands: %s", ticket.SanitizeControl(err.Error()))
+				return r, nil, nil
+			}
+		}
 		// An unusable verify_timeout is not a refusal here: it is refused per
 		// criterion the way an unreadable allow-list is, naming the key in the
 		// recorded output.
@@ -1843,16 +1910,14 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		job, err := jobs.start(req.Session, t.ID, func(ctx context.Context) (ticket.VerifyReport, string, error) {
+		prov := ticket.VerifyProvenance{Dir: dir, AcceptanceID: acceptanceID, Candidate: args.Candidate}
+		job, err := jobs.start(req.Session, t.ID, prov, func(ctx context.Context) (ticket.VerifyReport, string, error) {
 			results, err := ticket.RunVerify(ctx, criteria, dir, policy)
-			return ticket.NewVerifyReport(t.ID, dir, results), ticket.FormatVerifyRecord(results, time.Now().UTC()), err
+			return ticket.NewVerifyReport(t.ID, prov, results), ticket.FormatVerifyRecord(results, prov, time.Now().UTC()), err
 		}, func(record string) error {
-			// Mutate the current body: edits made during the run must survive.
-			_, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, "")), t.ID, func(t *ticket.Ticket) error {
-				t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
-				return nil
-			})
-			return err
+			// The current body, so edits made during the run survive — unless
+			// the criteria themselves changed, which RecordVerify refuses.
+			return ticket.RecordVerify(ticket.WithSource(store, sourceFor(req, "")), t.ID, record, acceptanceID)
 		})
 		if err != nil {
 			r, _ := errResult("cannot start verification: %v", err)

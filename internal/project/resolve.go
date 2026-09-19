@@ -78,6 +78,73 @@ func ExecutionDir(cfg Config, namespace string) (string, error) {
 	return path, nil
 }
 
+// ValidateExecutionDir decides whether requested is somewhere a ticket whose
+// project is registered at configured may execute, and returns it canonical
+// (absolute, symlinks resolved) when it is. The configured checkout itself is
+// always accepted. Anything else must be the root of a git worktree that
+// shares the configured checkout's git common dir — a linked worktree of that
+// repository, which is where a harness verifies a candidate without disturbing
+// the main checkout. A subdirectory, a nested or unrelated repository, a
+// directory that is not a git worktree, a path that does not exist, and a
+// symlink alias resolving to any of those are each refused naming why. The
+// check is over the resolved path, so an alias inside the checkout that points
+// out of the repository is judged by where it lands.
+func ValidateExecutionDir(configured, requested string) (string, error) {
+	if strings.TrimSpace(requested) == "" {
+		return "", fmt.Errorf("dir is empty")
+	}
+	dir := canonicalPath(requested)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("dir %s: not an existing directory: %w", requested, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("dir %s: not an existing directory", requested)
+	}
+	if dir == canonicalPath(configured) {
+		return dir, nil
+	}
+	top, ok := gitRoot(dir)
+	if !ok {
+		return "", fmt.Errorf("dir %s is not a git worktree of the configured checkout %s", dir, configured)
+	}
+	if canonicalPath(top) != dir {
+		return "", fmt.Errorf("dir %s is not a worktree root: it is inside the worktree at %s", dir, top)
+	}
+	common, err := gitCommonDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("dir %s: %w", dir, err)
+	}
+	configuredCommon, err := gitCommonDir(configured)
+	if err != nil {
+		return "", fmt.Errorf("configured checkout %s: %w", configured, err)
+	}
+	if common != configuredCommon {
+		return "", fmt.Errorf("dir %s is not a worktree of the configured checkout %s: it belongs to another repository", dir, configured)
+	}
+	return dir, nil
+}
+
+// gitCommonDir is the canonical path of the git directory the worktree at dir
+// shares with every other worktree of its repository: the one thing a linked
+// worktree and its main checkout have in common on disk. git prints it
+// relative to dir for the main worktree and absolute for a linked one, so it
+// is resolved against dir before canonicalizing.
+func gitCommonDir(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository")
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return "", fmt.Errorf("not a git repository")
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	return canonicalPath(common), nil
+}
+
 // DetectProjectPath returns git top-level directory if available; otherwise cwd.
 func DetectProjectPath(cwd string) string {
 	if root, ok := gitRoot(cwd); ok {

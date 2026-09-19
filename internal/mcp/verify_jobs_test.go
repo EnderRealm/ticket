@@ -29,7 +29,7 @@ func verifyJobSession(t *testing.T) *mcp.ServerSession {
 
 func TestVerifyJobRunnerErrorDoesNotRecord(t *testing.T) {
 	jobs := newVerifyJobs()
-	j, err := jobs.start(verifyJobSession(t), "alpha/example", func(context.Context) (ticket.VerifyReport, string, error) {
+	j, err := jobs.start(verifyJobSession(t), "alpha/example", ticket.VerifyProvenance{}, func(context.Context) (ticket.VerifyReport, string, error) {
 		return ticket.VerifyReport{}, "", errors.New("checkout disappeared")
 	}, func(string) error {
 		t.Error("runner failure must not record results")
@@ -48,7 +48,7 @@ func TestVerifyJobRunnerErrorDoesNotRecord(t *testing.T) {
 func TestVerifyCancelAfterCommandsFinishKeepsRecording(t *testing.T) {
 	jobs := newVerifyJobs()
 	recording, release := make(chan struct{}), make(chan struct{})
-	j, err := jobs.start(verifyJobSession(t), "alpha/example", func(context.Context) (ticket.VerifyReport, string, error) {
+	j, err := jobs.start(verifyJobSession(t), "alpha/example", ticket.VerifyProvenance{}, func(context.Context) (ticket.VerifyReport, string, error) {
 		return ticket.VerifyReport{ID: "alpha/example", OK: true}, "full result", nil
 	}, func(record string) error {
 		close(recording)
@@ -80,7 +80,7 @@ func TestVerifyJobRetentionEvictsFinishedResultsWithoutReplay(t *testing.T) {
 	var first, last *verifyJob
 	for range verifyJobLimit + 1 {
 		var err error
-		last, err = jobs.start(owner, "alpha/example", func(context.Context) (ticket.VerifyReport, string, error) {
+		last, err = jobs.start(owner, "alpha/example", ticket.VerifyProvenance{}, func(context.Context) (ticket.VerifyReport, string, error) {
 			runs++
 			return ticket.VerifyReport{}, "", nil
 		}, func(string) error { return nil })

@@ -28,6 +28,10 @@ type verifyJob struct {
 	mu     sync.Mutex
 	result verifyJobResult
 	owner  *mcp.ServerSession
+	// prov is what the job was started to verify: the directory, the contract
+	// and the candidate. A repeated start joins the job only with the same
+	// three, since its report answers for those and no others.
+	prov   ticket.VerifyProvenance
 	seq    uint64
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -86,7 +90,7 @@ func newVerifyJobs() *verifyJobs {
 	}
 }
 
-func (v *verifyJobs) start(owner *mcp.ServerSession, id string,
+func (v *verifyJobs) start(owner *mcp.ServerSession, id string, prov ticket.VerifyProvenance,
 	run func(context.Context) (ticket.VerifyReport, string, error), record func(string) error,
 ) (*verifyJob, error) {
 	v.mu.Lock()
@@ -97,6 +101,10 @@ func (v *verifyJobs) start(owner *mcp.ServerSession, id string,
 	if j := v.active[id]; j != nil {
 		if j.owner != owner {
 			return nil, fmt.Errorf("%s already has a verification in another MCP session", id)
+		}
+		if j.prov != prov {
+			return nil, fmt.Errorf("%s already has a verification running in %s (acceptance %s, candidate %q); wait for it or cancel it",
+				id, j.prov.Dir, j.prov.AcceptanceID, ticket.SanitizeControl(j.prov.Candidate))
 		}
 		return j, nil
 	}
@@ -122,7 +130,7 @@ func (v *verifyJobs) start(owner *mcp.ServerSession, id string,
 	v.seq++
 	j := &verifyJob{
 		result: verifyJobResult{ID: id, VerificationID: rand.Text(), State: "running"},
-		owner:  owner, seq: v.seq, cancel: cancel, done: make(chan struct{}),
+		owner:  owner, prov: prov, seq: v.seq, cancel: cancel, done: make(chan struct{}),
 	}
 	v.jobs[j.result.VerificationID] = j
 	v.active[id] = j

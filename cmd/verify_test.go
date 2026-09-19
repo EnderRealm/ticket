@@ -143,6 +143,60 @@ func TestVerifyJSON(t *testing.T) {
 	if report.Results[1].Status != string(ticket.VerifyFail) || report.Results[1].ExitCode != 3 {
 		t.Errorf("second result = %+v, want fail with exit 3", report.Results[1])
 	}
+	// The CLI names the contract it ran and no candidate: it has no flag for one.
+	if !strings.HasPrefix(report.AcceptanceID, "sha256:") || report.Candidate != "" {
+		t.Errorf("provenance = %q %q, want the identity and no candidate", report.AcceptanceID, report.Candidate)
+	}
+}
+
+func TestVerifyDoesNotRecordAChangedContract(t *testing.T) {
+	// The criterion's own command rewrites the ticket's criteria while the run
+	// is in flight — the one edit the record must not land on top of.
+	store := verifyStore(t, "vf-placeholder", mixedCriteriaBody)
+	path := filepath.Join(store.Dir, "vf-moved.md")
+	changed := filepath.Join(t.TempDir(), "changed.md")
+	body := "Description.\n\n## Acceptance Criteria\n\n" +
+		fmt.Sprintf("- Moves the contract.\n  verify: /bin/sh -c 'cp \"%s\" \"%s\"'\n", changed, path)
+	mkVerifyTicket(t, store, "vf-moved", body)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := strings.Replace(string(original), "Moves the contract.", "Moved the contract.", 1)
+	if moved == string(original) {
+		t.Fatal("fixture did not change the criterion")
+	}
+	if err := os.WriteFile(changed, []byte(moved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ran := ticket.CriteriaIdentity(ticket.ParseCriteria(ticket.AcceptanceCriteria(body)))
+	now := ticket.CriteriaIdentity(ticket.ParseCriteria(ticket.AcceptanceCriteria(moved)))
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+	out, err := captureVerify(t, "vf-moved")
+	if err != nil {
+		t.Fatalf("the command itself passed, so the run should not fail: %v", err)
+	}
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, out)
+	}
+	if !report.OK || report.AcceptanceID != ran {
+		t.Errorf("report = %+v, want a pass under the contract that ran", report)
+	}
+	for _, want := range []string{"changed during verification", ran, now, "not recorded"} {
+		if !strings.Contains(report.RecordError, want) {
+			t.Errorf("record_error = %q, want it to say %q", report.RecordError, want)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != moved {
+		t.Errorf("a run against the old contract was recorded on the new one:\n%s", after)
+	}
 }
 
 func TestVerifyAllPassingExitsZero(t *testing.T) {

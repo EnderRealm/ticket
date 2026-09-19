@@ -2,6 +2,8 @@ package ticket
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -144,6 +146,24 @@ func ParseCriteria(section string) []Criterion {
 		}
 	}
 	return criteria
+}
+
+// CriteriaIdentity is the identity of a parsed acceptance contract: a sha256
+// over every criterion's text, command, unverifiable claim and reason, in
+// order, as ParseCriteria produced them. Whitespace and markdown ParseCriteria
+// already discards do not move it; any change to what would run, or to what a
+// criterion says, does. A caller that read the criteria through ticket_criteria
+// hands the identity back to ticket_verify so the run is refused if the
+// contract moved in between, and the recorded result names which contract was
+// verified. Each field is length-prefixed so two contracts cannot serialize to
+// the same bytes by sharing a boundary.
+func CriteriaIdentity(criteria []Criterion) string {
+	h := sha256.New()
+	for _, c := range criteria {
+		fmt.Fprintf(h, "%d:%s\n%d:%s\n%t\n%d:%s\n", len(c.Text), c.Text, len(c.Command), c.Command,
+			c.Unverifiable, len(c.UnverifiableReason), c.UnverifiableReason)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // BareCriteria returns the text of every acceptance criterion in body that
@@ -461,14 +481,48 @@ func capOutput(s string) string {
 	return s[:cut] + "\n... output truncated"
 }
 
+// VerifyProvenance is what a verify run is evidence about: the directory the
+// commands actually ran in, the identity of the acceptance contract they were
+// run against (CriteriaIdentity of the criteria that ran), and the caller's
+// name for what was under test — a commit, a worktree, a run ID — if it gave
+// one. Candidate is provenance and nothing more: it records what the caller
+// said it was verifying, not that anyone approved it.
+type VerifyProvenance struct {
+	Dir          string
+	AcceptanceID string
+	Candidate    string
+}
+
+// maxCandidate bounds the caller-supplied candidate so it cannot swell the
+// record or the report; a commit hash, a path or a run ID all fit with room.
+const maxCandidate = 256
+
+// cleanCandidate applies the record's line rule to the one caller-supplied
+// string the record carries and bounds its length.
+func cleanCandidate(s string) string {
+	s = SanitizeControl(strings.TrimSpace(s))
+	if r := []rune(s); len(r) > maxCandidate {
+		s = string(r[:maxCandidate])
+	}
+	return s
+}
+
 // FormatVerifyRecord renders a verify run as ticket Test Results content. The
 // criterion text and command are written as RunVerify produced them, already
 // stripped of control characters — the record is replayed by every later read.
-func FormatVerifyRecord(results []VerifyResult, at time.Time) string {
+// The first line's shape is fixed; the provenance line after it names where the
+// commands ran, which contract they ran against and, when the caller named one,
+// the candidate — so the record says what was verified, not only how it went.
+func FormatVerifyRecord(results []VerifyResult, prov VerifyProvenance, at time.Time) string {
 	counts := countVerify(results)
 	var b strings.Builder
 	fmt.Fprintf(&b, "verify %s: %d pass, %d fail, %d refused, %d unverified\n",
 		at.UTC().Format(time.RFC3339), counts.Pass, counts.Fail, counts.Refused, counts.Unverified)
+	fmt.Fprintf(&b, "checkout %s; acceptance %s", SanitizeControl(prov.Dir), SanitizeControl(prov.AcceptanceID))
+	if candidate := cleanCandidate(prov.Candidate); candidate != "" {
+		fmt.Fprintf(&b, "; candidate %s", candidate)
+	}
+	b.WriteString("\n")
 	for _, r := range results {
 		if r.Status == VerifyUnverified {
 			fmt.Fprintf(&b, "- UNVERIFIED: %s\n", r.Criterion.Text)
@@ -485,14 +539,37 @@ func FormatVerifyRecord(results []VerifyResult, at time.Time) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
+// RecordVerify writes record as the ticket's Test Results section, through
+// Mutate so edits made while the commands ran survive — except an edit to the
+// criteria themselves. acceptanceID is the CriteriaIdentity of the criteria
+// that ran; if the body's criteria no longer hash to it the record is not
+// written and the error names both identities, because a record filed under a
+// contract no command was run against would read as evidence for it. Both the
+// CLI and the MCP tool record through here so the two cannot disagree.
+func RecordVerify(store Store, id, record, acceptanceID string) error {
+	_, err := Mutate(store, id, func(t *Ticket) error {
+		if now := CriteriaIdentity(ParseCriteria(AcceptanceCriteria(t.Body))); now != acceptanceID {
+			return fmt.Errorf("acceptance criteria of %s changed during verification (ran %s, ticket now has %s); results not recorded", t.ID, acceptanceID, now)
+		}
+		t.Body = UpdateSection(t.Body, "Test Results", record)
+		return nil
+	})
+	return err
+}
+
 // VerifyReport is the structured result of a verify run, shared by the CLI's
-// --json output and the ticket_verify MCP tool.
+// --json output and the ticket_verify MCP tool. Dir is the directory the
+// commands actually ran in, AcceptanceID the CriteriaIdentity of the criteria
+// that ran, and Candidate the caller's name for what was under test, absent
+// when it gave none — the same provenance the Test Results record carries.
 type VerifyReport struct {
-	ID      string             `json:"id"`
-	Dir     string             `json:"dir"`
-	Summary VerifyCounts       `json:"summary"`
-	OK      bool               `json:"ok"`
-	Results []VerifyResultJSON `json:"results"`
+	ID           string             `json:"id"`
+	Dir          string             `json:"dir"`
+	AcceptanceID string             `json:"acceptance_id"`
+	Candidate    string             `json:"candidate,omitempty"`
+	Summary      VerifyCounts       `json:"summary"`
+	OK           bool               `json:"ok"`
+	Results      []VerifyResultJSON `json:"results"`
 	// RecordError reports a failure to write the results back to the ticket.
 	// The results themselves are still valid.
 	RecordError string `json:"record_error,omitempty"`
@@ -516,12 +593,14 @@ type VerifyResultJSON struct {
 }
 
 // NewVerifyReport builds the structured report for a verify run.
-func NewVerifyReport(id, dir string, results []VerifyResult) VerifyReport {
+func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) VerifyReport {
 	counts := countVerify(results)
 	report := VerifyReport{
-		ID:      id,
-		Dir:     dir,
-		Summary: counts,
+		ID:           id,
+		Dir:          prov.Dir,
+		AcceptanceID: prov.AcceptanceID,
+		Candidate:    cleanCandidate(prov.Candidate),
+		Summary:      counts,
 		// A refusal leaves the criterion unchecked, so the run is not ok.
 		OK:      counts.Fail == 0 && counts.Refused == 0,
 		Results: []VerifyResultJSON{},

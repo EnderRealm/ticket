@@ -74,6 +74,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if len(criteria) == 0 {
 		return fmt.Errorf("%s has no acceptance criteria", t.ID)
 	}
+	// The identity is of the whole contract, taken before --criterion narrows
+	// the run: a single-criterion record still says which contract it belongs to.
+	acceptanceID := ticket.CriteriaIdentity(criteria)
 
 	// --criterion selects by position in ParseCriteria order, the order --json
 	// reports, so a harness re-running one check names the index it read there.
@@ -117,18 +120,16 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	report := ticket.NewVerifyReport(t.ID, dir, results)
+	prov := ticket.VerifyProvenance{Dir: dir, AcceptanceID: acceptanceID}
+	report := ticket.NewVerifyReport(t.ID, prov, results)
 
 	// Record after the run so a store failure degrades to a warning instead of
-	// discarding the results. Through Mutate, because a verify run is long
-	// enough for the ticket to have been edited meanwhile: the record lands in
-	// the body as it stands now rather than in the copy read before the run.
+	// discarding the results. RecordVerify lands the record in the body as it
+	// stands now rather than in the copy read before the run, and refuses to
+	// land it at all if the criteria changed meanwhile.
 	if !verifyNoRecord {
-		record := ticket.FormatVerifyRecord(results, time.Now().UTC())
-		if _, err := ticket.Mutate(store, t.ID, func(t *ticket.Ticket) error {
-			t.Body = ticket.UpdateSection(t.Body, "Test Results", record)
-			return nil
-		}); err != nil {
+		record := ticket.FormatVerifyRecord(results, prov, time.Now().UTC())
+		if err := ticket.RecordVerify(store, t.ID, record, acceptanceID); err != nil {
 			report.RecordError = err.Error()
 		}
 	}

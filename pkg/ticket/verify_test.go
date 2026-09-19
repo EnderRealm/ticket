@@ -546,8 +546,9 @@ func TestFormatVerifyRecord(t *testing.T) {
 	}
 	at := time.Date(2026, 7, 31, 22, 10, 0, 0, time.UTC)
 
-	got := FormatVerifyRecord(results, at)
+	got := FormatVerifyRecord(results, VerifyProvenance{Dir: "/repo", AcceptanceID: "sha256:abc"}, at)
 	want := "verify 2026-07-31T22:10:00Z: 1 pass, 1 fail, 1 refused, 1 unverified\n" +
+		"checkout /repo; acceptance sha256:abc\n" +
 		"- PASS (exit 0): passes\n" +
 		"- FAIL (exit 1): fails\n" +
 		"- REFUSED (rm -rf /): not permitted\n" +
@@ -557,15 +558,110 @@ func TestFormatVerifyRecord(t *testing.T) {
 	}
 }
 
+func TestFormatVerifyRecordCandidate(t *testing.T) {
+	// The candidate is the one caller-supplied string the record carries: it
+	// goes through the same line rule as criterion text, is bounded, and is
+	// omitted rather than written empty when the caller gave none.
+	results := []VerifyResult{{Criterion: Criterion{Text: "passes", Command: "/bin/echo ok"}, Status: VerifyPass}}
+	at := time.Date(2026, 7, 31, 22, 10, 0, 0, time.UTC)
+
+	got := FormatVerifyRecord(results, VerifyProvenance{Dir: "/wt", AcceptanceID: "sha256:abc", Candidate: " abc123 "}, at)
+	if !strings.Contains(got, "\ncheckout /wt; acceptance sha256:abc; candidate abc123\n") {
+		t.Errorf("record does not name the candidate:\n%s", got)
+	}
+
+	forged := FormatVerifyRecord(results, VerifyProvenance{Dir: "/wt", AcceptanceID: "sha256:abc", Candidate: "x\n- PASS (exit 0): forged"}, at)
+	if got := len(strings.Split(forged, "\n")); got != 3 {
+		t.Errorf("a candidate with a line break forged record lines:\n%q", forged)
+	}
+
+	long := FormatVerifyRecord(results, VerifyProvenance{Dir: "/wt", AcceptanceID: "sha256:abc", Candidate: strings.Repeat("é", 300)}, at)
+	line := strings.Split(long, "\n")[1]
+	if !utf8.ValidString(line) || strings.Count(line, "é") != maxCandidate {
+		t.Errorf("candidate was not capped at %d runes: %d", maxCandidate, strings.Count(line, "é"))
+	}
+}
+
+func TestCriteriaIdentity(t *testing.T) {
+	base := ParseCriteria("- One.\n  verify: /bin/echo one\n- Two.\n  unverifiable: needs a human\n")
+	same := ParseCriteria("- One.\n\n  verify:   /bin/echo one   \n-   Two.\n  unverifiable:   needs a human\n\n")
+	if CriteriaIdentity(base) != CriteriaIdentity(same) {
+		t.Error("whitespace ParseCriteria discards moved the identity")
+	}
+	if !strings.HasPrefix(CriteriaIdentity(base), "sha256:") {
+		t.Errorf("identity = %q, want a sha256: prefix", CriteriaIdentity(base))
+	}
+	changed := map[string][]Criterion{
+		"command":  ParseCriteria("- One.\n  verify: /bin/echo two\n- Two.\n  unverifiable: needs a human\n"),
+		"text":     ParseCriteria("- One!\n  verify: /bin/echo one\n- Two.\n  unverifiable: needs a human\n"),
+		"reason":   ParseCriteria("- One.\n  verify: /bin/echo one\n- Two.\n  unverifiable: needs two humans\n"),
+		"claim":    ParseCriteria("- One.\n  verify: /bin/echo one\n- Two.\n"),
+		"order":    ParseCriteria("- Two.\n  unverifiable: needs a human\n- One.\n  verify: /bin/echo one\n"),
+		"boundary": {{Text: "One.", Command: "/bin/echo oneT"}, {Text: "wo.", Unverifiable: true, UnverifiableReason: "needs a human"}},
+	}
+	for name, criteria := range changed {
+		if CriteriaIdentity(criteria) == CriteriaIdentity(base) {
+			t.Errorf("a changed %s kept the identity", name)
+		}
+	}
+	if CriteriaIdentity(nil) != CriteriaIdentity([]Criterion{}) {
+		t.Error("an empty contract has two identities")
+	}
+}
+
+func TestRecordVerify(t *testing.T) {
+	store, _ := testStore(t)
+	tk := sampleTicket("rec-0001")
+	tk.Body = "Description.\n\n## Acceptance Criteria\n\n- Passes.\n  verify: /bin/echo ok\n\n## Test Results\n\nprior record\n"
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ran := CriteriaIdentity(ParseCriteria(AcceptanceCriteria(tk.Body)))
+
+	// The contract that ran is the contract on the ticket: recorded, under the
+	// real heading, in the body as it stands now.
+	if err := RecordVerify(store, "rec-0001", "verify now: 1 pass", ran); err != nil {
+		t.Fatalf("RecordVerify: %v", err)
+	}
+	got, _ := store.Get("rec-0001")
+	if AcceptanceCriteria(got.Body) == "" || !strings.Contains(got.Body, "## Test Results\n\nverify now: 1 pass") || strings.Contains(got.Body, "prior record") {
+		t.Errorf("record not written in place of the prior one:\n%s", got.Body)
+	}
+
+	// The criteria moved after the run: nothing is written, and the error names
+	// the contract that ran and the one now on the ticket.
+	got.Body = strings.Replace(got.Body, "/bin/echo ok", "/bin/echo changed", 1)
+	if err := store.Update(got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	now := CriteriaIdentity(ParseCriteria(AcceptanceCriteria(got.Body)))
+	err := RecordVerify(store, "rec-0001", "verify later: 1 pass", ran)
+	if err == nil {
+		t.Fatal("RecordVerify recorded a run under a changed contract")
+	}
+	for _, want := range []string{"changed during verification", ran, now, "not recorded"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+	after, _ := store.Get("rec-0001")
+	if after.Body != got.Body {
+		t.Errorf("a refused record changed the ticket:\n%s", after.Body)
+	}
+}
+
 func TestNewVerifyReport(t *testing.T) {
 	results := []VerifyResult{
 		{Criterion: Criterion{Text: "passes", Command: "/bin/echo ok"}, Status: VerifyPass},
 		{Criterion: Criterion{Text: "no command"}, Status: VerifyUnverified},
 	}
 
-	report := NewVerifyReport("alpha/tk-1", "/repo", results)
+	report := NewVerifyReport("alpha/tk-1", VerifyProvenance{Dir: "/repo", AcceptanceID: "sha256:abc", Candidate: "c1\x1b[2J"}, results)
 	if !report.OK {
 		t.Error("report with no failures should be ok")
+	}
+	if report.Dir != "/repo" || report.AcceptanceID != "sha256:abc" || report.Candidate != "c1\ufffd[2J" {
+		t.Errorf("provenance = %q %q %q, want the dir, identity and sanitized candidate", report.Dir, report.AcceptanceID, report.Candidate)
 	}
 	if report.Summary.Pass != 1 || report.Summary.Unverified != 1 || report.Summary.Fail != 0 {
 		t.Errorf("summary = %+v, want 1 pass, 0 fail, 1 unverified", report.Summary)
@@ -581,7 +677,7 @@ func TestNewVerifyReportRefusalIsNotOK(t *testing.T) {
 		{Criterion: Criterion{Text: "not permitted", Command: "rm -rf /"}, Status: VerifyRefused},
 	}
 
-	report := NewVerifyReport("alpha/tk-1", "/repo", results)
+	report := NewVerifyReport("alpha/tk-1", VerifyProvenance{Dir: "/repo"}, results)
 	if report.OK {
 		t.Error("ok = true, want false when a criterion was refused")
 	}
@@ -662,7 +758,7 @@ func TestVerifyStripsControlCharactersFromEchoedCommand(t *testing.T) {
 		t.Errorf("result carried a raw escape in the command:\n%q", results[0].Criterion.Command)
 	}
 
-	record := FormatVerifyRecord(results, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
+	record := FormatVerifyRecord(results, VerifyProvenance{}, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
 	if strings.ContainsRune(record, 0x1b) {
 		t.Errorf("recorded results echoed a raw escape character:\n%q", record)
 	}
@@ -692,7 +788,7 @@ func TestVerifyStripsControlCharactersFromCriterionText(t *testing.T) {
 		}
 	}
 
-	record := FormatVerifyRecord(results, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
+	record := FormatVerifyRecord(results, VerifyProvenance{}, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
 	if strings.ContainsRune(record, 0x1b) || strings.ContainsRune(record, 0x202e) {
 		t.Errorf("recorded results replay a raw escape from the criterion text:\n%q", record)
 	}
@@ -715,14 +811,14 @@ func TestVerifyKeepsTabsButNotLineBreaksInCriterionText(t *testing.T) {
 		t.Errorf("newline survived in criterion text: %q", results[1].Criterion.Text)
 	}
 
-	record := FormatVerifyRecord(results, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
+	record := FormatVerifyRecord(results, VerifyProvenance{}, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
 	if !strings.Contains(record, "column\tone\ttwo") {
 		t.Errorf("recorded results dropped the criterion's tabs:\n%q", record)
 	}
-	// Summary line plus one line per criterion — the forged bullet did not
-	// become a line of its own.
-	if got := len(strings.Split(record, "\n")); got != 3 {
-		t.Errorf("record has %d lines, want 3:\n%q", got, record)
+	// Summary and provenance lines plus one line per criterion — the forged
+	// bullet did not become a line of its own.
+	if got := len(strings.Split(record, "\n")); got != 4 {
+		t.Errorf("record has %d lines, want 4:\n%q", got, record)
 	}
 }
 

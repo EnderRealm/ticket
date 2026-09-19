@@ -2,6 +2,7 @@ package project
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -204,5 +205,115 @@ func TestExecutionDir(t *testing.T) {
 				t.Errorf("a refusal returned a directory %q", got)
 			}
 		})
+	}
+}
+
+// gitRepo initializes a repository at dir with one commit, so `git worktree
+// add` has a HEAD to branch from.
+func gitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, argv := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.email=tk@test", "-c", "user.name=tk", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, argv...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", argv, err, out)
+		}
+	}
+}
+
+func TestValidateExecutionDir(t *testing.T) {
+	// t.TempDir is under a symlinked path on macOS, so every accepted answer is
+	// compared canonical: the point of the check is where a path lands.
+	canon := func(p string) string {
+		eval, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return eval
+	}
+	base := t.TempDir()
+	checkout := filepath.Join(base, "main")
+	worktree := filepath.Join(base, "wt")
+	unrelated := filepath.Join(base, "other")
+	plain := filepath.Join(base, "plain")
+	for _, d := range []string{checkout, unrelated, plain, filepath.Join(checkout, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRepo(t, checkout)
+	gitRepo(t, unrelated)
+	if out, err := exec.Command("git", "-C", checkout, "worktree", "add", "-q", worktree).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	// A nested repository inside the checkout has its own common dir.
+	nested := filepath.Join(checkout, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRepo(t, nested)
+	// Aliases: one inside the checkout pointing at the worktree, one pointing
+	// out of the repository entirely.
+	toWorktree := filepath.Join(checkout, "link-wt")
+	toUnrelated := filepath.Join(checkout, "link-other")
+	if err := os.Symlink(worktree, toWorktree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unrelated, toUnrelated); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, requested, want, wantErr string
+	}{
+		{"configured checkout", checkout, canon(checkout), ""},
+		{"linked worktree", worktree, canon(worktree), ""},
+		{"symlink to the worktree", toWorktree, canon(worktree), ""},
+		{"unclean spelling", worktree + string(os.PathSeparator) + ".", canon(worktree), ""},
+		{"subdirectory", filepath.Join(checkout, "sub"), "", "not a worktree root"},
+		{"unrelated repository", unrelated, "", "belongs to another repository"},
+		{"nested repository", nested, "", "belongs to another repository"},
+		{"symlink out of the repository", toUnrelated, "", "belongs to another repository"},
+		{"not a git worktree", plain, "", "not a git worktree"},
+		{"missing", filepath.Join(base, "missing"), "", "not an existing directory"},
+		{"a file", file, "", "not an existing directory"},
+		{"empty", "", "", "dir is empty"},
+		{"blank", "  ", "", "dir is empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ValidateExecutionDir(checkout, tc.requested)
+			if tc.wantErr == "" {
+				if err != nil || got != tc.want {
+					t.Fatalf("ValidateExecutionDir = %q, %v; want %q", got, err, tc.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateExecutionDir = %q, %v; want an error containing %q", got, err, tc.wantErr)
+			}
+			if got != "" {
+				t.Errorf("a refusal returned a directory %q", got)
+			}
+		})
+	}
+}
+
+func TestValidateExecutionDirWithoutGitCheckout(t *testing.T) {
+	// A configured checkout that is not a repository still accepts itself; it
+	// has no worktrees, so any other directory is refused.
+	checkout := t.TempDir()
+	other := t.TempDir()
+	gitRepo(t, other)
+	if got, err := ValidateExecutionDir(checkout, checkout); err != nil || got != canonicalPath(checkout) {
+		t.Fatalf("ValidateExecutionDir(self) = %q, %v", got, err)
+	}
+	if got, err := ValidateExecutionDir(checkout, other); err == nil || !strings.Contains(err.Error(), "configured checkout") {
+		t.Fatalf("ValidateExecutionDir(other) = %q, %v; want a refusal naming the configured checkout", got, err)
 	}
 }

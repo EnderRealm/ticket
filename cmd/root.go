@@ -112,16 +112,23 @@ Viewing:
   Criteria with no command are reported unverified. Results are recorded
   in the ticket's Test Results section; exit is non-zero on any failure
   or refusal.
-  --dir, --criterion and --no-record are CLI-only: the ticket_verify MCP
-  tool still resolves its directory from project config and still records.
+  --criterion and --no-record are CLI-only, and the ticket_verify MCP
+  tool's dir is narrower than --dir: it accepts only the project's
+  configured checkout or a linked git worktree of that repository, refuses
+  anything else before running, and always records. An MCP caller's
+  arguments are shaped by ticket content, and a sandboxed client with no
+  shell would gain reach it does not otherwise have; a CLI caller already
+  has a shell and can run anything anywhere, so --dir is used as given
+  and widens nothing for it. Nothing widens verify_allow.
+  ticket_criteria returns the parsed criteria with acceptance_id, the
+  contract's identity; ticket_verify refuses a stale acceptance_id before
+  running and does not record a run whose criteria changed meanwhile. The
+  report and the Test Results record name the directory the commands ran
+  in, the acceptance_id and the caller's candidate.
   MCP verification waits up to 10 seconds, then returns a job ID for
   ticket_verify_status polling. Request timeouts do not cancel commands;
   ticket_verify_cancel or session disconnect does. Status recovers a lost
   start response by ticket ID without running the commands again.
-  An MCP caller's arguments are shaped by ticket content, and a sandboxed
-  client with no shell would gain reach it does not otherwise have; a CLI
-  caller already has a shell and can run anything anywhere, so the flags
-  widen nothing for it. None of them widens verify_allow.
 
 Creating & Editing:
   create [title] [options]   Create ticket. Outside a directory the config
