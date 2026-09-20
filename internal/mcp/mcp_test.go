@@ -3,11 +3,13 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	ticketmcp "github.com/EnderRealm/ticket/v8/internal/mcp"
 	"github.com/EnderRealm/ticket/v8/internal/project"
@@ -50,7 +52,7 @@ func testServerDir(t *testing.T) (*mcp.ClientSession, string) {
 	st, ct := mcp.NewInMemoryTransports()
 
 	ctx := context.Background()
-	go server.Run(ctx, st)
+	runServer(t, server.Run, st)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
@@ -59,6 +61,38 @@ func testServerDir(t *testing.T) (*mcp.ClientSession, string) {
 	}
 	t.Cleanup(func() { session.Close() })
 	return session, dir
+}
+
+// runServer starts run — a server's Run method — over st on a context the test
+// owns, and joins the goroutine before the test returns: cancel only signals,
+// and a goroutine still live once t.TempDir()'s RemoveAll starts can write into
+// the tree being removed. The join is registered before the session's Close
+// cleanup so LIFO cancels after the client is gone. Callers must create any
+// t.TempDir() before calling runServer, so this cleanup runs before their
+// removals.
+func runServer(t *testing.T, run func(context.Context, mcp.Transport) error, st mcp.Transport) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		runErr = run(ctx, st)
+		close(done)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+			// runErr is written before close(done), so this read is ordered.
+			// It is not read on the timeout path, where the goroutine lives on.
+			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+				t.Errorf("runServer: server.Run: %v", runErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("runServer: server.Run did not return after context cancel")
+		}
+	})
 }
 
 func TestCreateTicket(t *testing.T) {
@@ -191,8 +225,8 @@ func TestCreateWithRepoOnCentralStoreUsesRepoProject(t *testing.T) {
 	// a different project, and the store it resolves to takes bare IDs, so the
 	// default's namespace must not reach the write.
 	t.Setenv("HOME", t.TempDir())
-	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	repoDir := t.TempDir()
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	if err := project.Save(project.Config{
 		CentralRoot: root,
 		Projects: map[string]project.ProjectConfig{
@@ -243,9 +277,9 @@ func TestCreateWithRepoOnCentralStoreUsesRepoProject(t *testing.T) {
 // lands in the repo's project and the parent is read qualified from there.
 func TestCreateWithRepoUnderAForeignEpic(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	repoDir := t.TempDir()
 	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	activateCatalog(t, root, "alpha", "beta")
-	repoDir := t.TempDir()
 	if err := project.Save(project.Config{
 		CentralRoot: root,
 		Projects: map[string]project.ProjectConfig{
@@ -283,12 +317,12 @@ func TestCreateWithRepoRefusesASymlinkedProjectDir(t *testing.T) {
 	// unlistable — and the repo argument, which resolves straight to a
 	// FileStore, has to give the same answer as the same call by project.
 	t.Setenv("HOME", t.TempDir())
-	session, root := testCentralServerWithDefault(t, "alpha", "alpha")
 	outside := t.TempDir()
+	repoDir := t.TempDir()
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha")
 	if err := os.Symlink(outside, filepath.Join(root, "tickets", "beta")); err != nil {
 		t.Fatal(err)
 	}
-	repoDir := t.TempDir()
 	if err := project.Save(project.Config{
 		CentralRoot: root,
 		Projects: map[string]project.ProjectConfig{
@@ -332,8 +366,8 @@ func TestCreateWithRepoRefusesASymlinkedProjectDir(t *testing.T) {
 
 func TestCreateWithRepoRejectsConflictingProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	repoDir := t.TempDir()
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
 	if err := project.Save(project.Config{
 		CentralRoot: root,
 		Projects: map[string]project.ProjectConfig{
@@ -2650,7 +2684,7 @@ func testCentralServerWithDefault(t *testing.T, defaultProject string, projects 
 
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
-	go server.Run(ctx, st)
+	runServer(t, server.Run, st)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
@@ -3054,7 +3088,7 @@ func connectVerifyServer(t *testing.T, server *ticketmcp.Server) *mcp.ClientSess
 	t.Helper()
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
-	go server.Server.Run(ctx, st)
+	runServer(t, server.Server.Run, st)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
@@ -3185,12 +3219,13 @@ func TestVerifyUnresolvableProject(t *testing.T) {
 	}
 }
 
-// verifyRefusalCase creates a sentinel file and a ticket whose only criterion
-// tries to delete it, then runs ticket_verify. Returns the tool result and the
-// sentinel path so a caller can prove the command never ran.
-func verifyRefusalCase(t *testing.T, session *mcp.ClientSession) (*mcp.CallToolResult, string, string) {
+// verifyRefusalCase creates a sentinel file in sentinelDir and a ticket whose
+// only criterion tries to delete it, then runs ticket_verify. Returns the tool
+// result and the sentinel path so a caller can prove the command never ran.
+// sentinelDir is the caller's t.TempDir(), created before its server.
+func verifyRefusalCase(t *testing.T, session *mcp.ClientSession, sentinelDir string) (*mcp.CallToolResult, string, string) {
 	t.Helper()
-	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	sentinel := filepath.Join(sentinelDir, "sentinel.txt")
 	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3212,9 +3247,10 @@ func verifyRefusalCase(t *testing.T, session *mcp.ClientSession) (*mcp.CallToolR
 }
 
 func TestVerifyRefusesCommandOutsideAllowList(t *testing.T) {
+	sentinelDir := t.TempDir()
 	session, _ := verifyServer(t)
 
-	result, sentinel, id := verifyRefusalCase(t, session)
+	result, sentinel, id := verifyRefusalCase(t, session, sentinelDir)
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("ticket content deleted the sentinel: %v", err)
 	}
@@ -3371,6 +3407,7 @@ func TestVerifyAllowEditAppliesWithoutServerRestart(t *testing.T) {
 // before a policy is built and before VerifyAllow is consulted, so this is not
 // coverage of the per-criterion AllowErr refusal.
 func TestVerifyRefusesWhenConfigBecomesUnreadable(t *testing.T) {
+	sentinelDir := t.TempDir()
 	session, _ := verifyServer(t)
 
 	path, err := project.ConfigPath()
@@ -3381,7 +3418,7 @@ func TestVerifyRefusesWhenConfigBecomesUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, sentinel, _ := verifyRefusalCase(t, session)
+	result, sentinel, _ := verifyRefusalCase(t, session, sentinelDir)
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("a command ran while the config was unreadable: %v", err)
 	}
@@ -3412,6 +3449,7 @@ func TestVerifyRefusesEverythingOnBadProjectTimeout(t *testing.T) {
 }
 
 func TestVerifySharedConfigCannotWidenAllowList(t *testing.T) {
+	sentinelDir := t.TempDir()
 	session, _ := verifyServer(t)
 
 	// The shared config lives in the synced tickets repo, so it is reachable by
@@ -3428,7 +3466,7 @@ func TestVerifySharedConfigCannotWidenAllowList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, sentinel, _ := verifyRefusalCase(t, session)
+	result, sentinel, _ := verifyRefusalCase(t, session, sentinelDir)
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("an allow-list planted in the shared config widened what runs: %v", err)
 	}
@@ -3443,8 +3481,8 @@ func TestVerifySharedConfigCannotWidenAllowList(t *testing.T) {
 }
 
 func TestVerifyTicketContentCannotWidenAllowList(t *testing.T) {
-	session, _ := verifyServer(t)
 	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	session, _ := verifyServer(t)
 	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3494,8 +3532,8 @@ func TestVerifyTicketContentCannotWidenAllowList(t *testing.T) {
 }
 
 func TestVerifyToolArgumentCannotWidenAllowList(t *testing.T) {
-	session, _ := verifyServer(t)
 	sentinel := filepath.Join(t.TempDir(), "sentinel.txt")
+	session, _ := verifyServer(t)
 	if err := os.WriteFile(sentinel, []byte("present"), 0o644); err != nil {
 		t.Fatal(err)
 	}
