@@ -14,6 +14,7 @@
 ### Fixed
 - A canceled MCP request no longer kills verification commands and records the remaining criteria as failures. Explicit job cancellation or session disconnect stops work without replacing prior Test Results with a partial record; duplicate starts join the active job. `tk serve` drains these workers before exiting so command supervision cannot be abandoned at stdio disconnect. Cancellation and timeout stop the process group on macOS/Linux, and CLI interrupts forward to that cleanup.
 - `ticket_inbox` reports ready and open tickets with unfinished or missing dependencies as `blocked`, naming the blocking dependency IDs in the detail. Parked questions retain their detail, and stored statuses are unchanged. The shared `ticket.Inbox` calculation resolves dependencies from its existing listing.
+- The `internal/mcp` mutation and action tests join their in-process `server.Run` goroutine before the test's temp store is removed, matching the rest of the package, so a server still writing at cleanup cannot fail `TempDir` removal under another test's name.
 
 ## [8.6.0] - 2026-09-14
 

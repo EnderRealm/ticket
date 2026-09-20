@@ -24,7 +24,7 @@ func serverOver(t *testing.T, dir string) *mcp.ClientSession {
 	server := ticketmcp.NewServer(ticket.NewFileStore(dir), "", "")
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
-	go server.Run(ctx, st)
+	runServer(t, server.Run, st)
 	client := mcp.NewClient(&mcp.Implementation{Name: "restarted", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
 	if err != nil {

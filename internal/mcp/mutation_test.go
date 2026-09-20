@@ -38,7 +38,7 @@ func projectServer(t *testing.T) *mcp.ClientSession {
 
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
-	go server.Run(ctx, st)
+	runServer(t, server.Run, st)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, ct, nil)
