@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -330,5 +331,45 @@ func TestEpicStatusDriftIsIndependentOfHowTheEpicWasRead(t *testing.T) {
 		if !reflect.DeepEqual(findings, want) {
 			t.Errorf("epic read through %s audited to\n%+v\nbut the same epic read stored audits to\n%+v", name, findings, want)
 		}
+	}
+}
+
+func TestAuditorAnswersANamespacedTicketOverEitherSnapshot(t *testing.T) {
+	// The routing by namespace is what a central store's audit does with a
+	// qualified ID; a ticket that is there is answered with its findings, not
+	// only refused when it is not. And a caller holding the store's snapshot
+	// already gets the same audit off it as one that lets the auditor take
+	// its own.
+	ms, dir := testMultiStore(t, "proj")
+	fs := NewProjectFileStore(filepath.Join(dir, "proj"), "proj")
+	writeLegacy(t, fs, mk("leaf-1111", StatusOpen))
+	writeLegacy(t, fs, mkWithParent("notepic-2222", StatusOpen, "leaf-1111"))
+
+	fresh, err := NewAuditor(ms)
+	if err != nil {
+		t.Fatalf("NewAuditor: %v", err)
+	}
+	snap, err := ms.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	over := AuditorOver(ms, snap)
+	tk, err := ms.Get("proj/notepic-2222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := fresh.Ticket(tk)
+	if err != nil {
+		t.Fatalf("NewAuditor.Ticket: %v", err)
+	}
+	got, err := over.Ticket(tk)
+	if err != nil {
+		t.Fatalf("AuditorOver.Ticket: %v", err)
+	}
+	if want.Parent == nil || want.Parent.Kind != ViolationParentNotEpic || want.Parent.ID != "proj/notepic-2222" {
+		t.Errorf("findings = %+v, want a parent-not-epic violation on proj/notepic-2222", want)
+	}
+	if want.Empty() || !reflect.DeepEqual(got, want) {
+		t.Errorf("AuditorOver answered\n%+v\nbut NewAuditor answered\n%+v", got, want)
 	}
 }

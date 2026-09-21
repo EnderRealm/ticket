@@ -4,8 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -154,5 +160,224 @@ func TestShow_MetadataOnlyAsString(t *testing.T) {
 	})
 	if _, ok := out["notes"]; ok {
 		t.Errorf("notes should be omitted with metadata_only=\"true\"")
+	}
+}
+
+const bareAcceptance = "- Something happens.\n"
+
+const checkedAcceptance = "- Something happens.\n  verify: /bin/true\n"
+
+// createFlagged creates a ticket whose only acceptance criterion carries no
+// check, which is the one finding the write path warns about and stores.
+func createFlagged(t *testing.T, session *mcp.ClientSession, args map[string]any) string {
+	t.Helper()
+	full := map[string]any{"title": "Flagged", "description": "A description.", "acceptance": bareAcceptance}
+	for k, v := range args {
+		full[k] = v
+	}
+	return createTicketID(t, session, full)
+}
+
+// auditContent is the audit.content list of a show response, failing the test
+// when the response carries no audit.
+func auditContent(t *testing.T, out map[string]any) []any {
+	t.Helper()
+	audit, ok := out["audit"].(map[string]any)
+	if !ok {
+		t.Fatalf("show carries no audit: %v", out)
+	}
+	content, _ := audit["content"].([]any)
+	return content
+}
+
+// plantParent rewrites a stored ticket's frontmatter to name parent, which the
+// write path refuses for a non-epic parent.
+func plantParent(t *testing.T, path, parent string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), "---\n", "---\nparent: "+parent+"\n", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShow_AuditReportsBareAcceptance(t *testing.T) {
+	session := testServer(t)
+	id := createFlagged(t, session, nil)
+
+	content := auditContent(t, showResult(t, session, map[string]any{"id": id}))
+	if len(content) != 1 {
+		t.Fatalf("audit.content = %v, want one entry", content)
+	}
+	entry, _ := content[0].(map[string]any)
+	if entry["kind"] != "bare-acceptance" || entry["bare"] != 1.0 || entry["id"] != id {
+		t.Errorf("audit.content[0] = %v, want kind bare-acceptance, bare 1, id %s", entry, id)
+	}
+}
+
+func TestShow_AuditOmittedWhenClean(t *testing.T) {
+	session := testServer(t)
+	id := createTicketID(t, session, map[string]any{"title": "Clean", "description": "A description.", "acceptance": checkedAcceptance})
+
+	out := showResult(t, session, map[string]any{"id": id})
+	if _, present := out["audit"]; present {
+		t.Errorf("a clean ticket carries audit: %v", out["audit"])
+	}
+}
+
+func TestShow_AuditSurvivesMetadataOnly(t *testing.T) {
+	session := testServer(t)
+	id := createFlagged(t, session, nil)
+
+	out := showResult(t, session, map[string]any{"id": id, "metadata_only": true})
+	if _, present := out["notes"]; present {
+		t.Errorf("notes should be omitted with metadata_only, got %v", out["notes"])
+	}
+	if content := auditContent(t, out); len(content) != 1 {
+		t.Errorf("audit.content under metadata_only = %v, want one entry", content)
+	}
+}
+
+func TestShow_AuditSurvivesTerminalStatus(t *testing.T) {
+	session := testServer(t)
+	id := createFlagged(t, session, nil)
+
+	for _, status := range []string{"done", "closed"} {
+		editStatus(t, session, id, status)
+		out := showResult(t, session, map[string]any{"id": id})
+		if out["status"] != status {
+			t.Fatalf("status = %v, want %s", out["status"], status)
+		}
+		if content := auditContent(t, out); len(content) != 1 {
+			t.Errorf("audit.content at %s = %v, want one entry", status, content)
+		}
+	}
+}
+
+func TestShow_AuditReportsParentNotEpic(t *testing.T) {
+	session, dir := testServerDir(t)
+	parent := createTicketID(t, session, map[string]any{"title": "Not an epic", "type": "feature"})
+	child := createTicketID(t, session, map[string]any{"title": "Child", "type": "feature"})
+	plantParent(t, filepath.Join(dir, child+".md"), parent)
+
+	out := showResult(t, session, map[string]any{"id": child})
+	if issue, _ := out["relationship_issue"].(string); issue == "" {
+		t.Errorf("relationship_issue absent from a leaf whose parent is not an epic: %v", out)
+	}
+	audit, _ := out["audit"].(map[string]any)
+	violation, _ := audit["parent"].(map[string]any)
+	if violation["kind"] != "parent-not-epic" {
+		t.Fatalf("audit.parent = %v, want kind parent-not-epic", violation)
+	}
+	if detail, _ := violation["detail"].(string); detail == "" {
+		t.Errorf("audit.parent carries no detail: %v", violation)
+	}
+}
+
+// auditJSON marshals a finding the way `tk audit --json` does and reads it back
+// as the generic map a show response decodes to.
+func auditJSON(t *testing.T, v any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestShow_AuditMatchesAuditJSONShape(t *testing.T) {
+	session, dir := testServerDir(t)
+	flagged := createFlagged(t, session, nil)
+	parent := createTicketID(t, session, map[string]any{"title": "Not an epic", "type": "feature"})
+	child := createTicketID(t, session, map[string]any{"title": "Child", "type": "feature"})
+	plantParent(t, filepath.Join(dir, child+".md"), parent)
+
+	report, err := ticket.Audit(ticket.NewFileStore(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Content) != 1 || len(report.Violations) != 1 {
+		t.Fatalf("audit report = %+v, want one content issue and one violation", report)
+	}
+
+	content := auditContent(t, showResult(t, session, map[string]any{"id": flagged}))
+	if !reflect.DeepEqual(content[0], auditJSON(t, report.Content[0])) {
+		t.Errorf("show audit.content[0] = %v, tk audit --json reports %v", content[0], auditJSON(t, report.Content[0]))
+	}
+
+	audit, _ := showResult(t, session, map[string]any{"id": child})["audit"].(map[string]any)
+	if !reflect.DeepEqual(audit["parent"], auditJSON(t, report.Violations[0])) {
+		t.Errorf("show audit.parent = %v, tk audit --json reports %v", audit["parent"], auditJSON(t, report.Violations[0]))
+	}
+}
+
+var statusLine = regexp.MustCompile(`(?m)^status: .*$`)
+
+// plantStatus rewrites a stored ticket's frontmatter status, which for an epic
+// the write path would derive from the children instead.
+func plantStatus(t *testing.T, path, status string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, statusLine.ReplaceAll(raw, []byte("status: "+status)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShow_AuditReportsEpicStatusDrift(t *testing.T) {
+	session, dir := testServerDir(t)
+	epic := createTicketID(t, session, map[string]any{"title": "Epic", "type": "epic"})
+	createTicketID(t, session, map[string]any{"title": "Child", "type": "feature", "parent": epic})
+	plantStatus(t, filepath.Join(dir, epic+".md"), "done")
+
+	report, err := ticket.Audit(ticket.NewFileStore(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.EpicStatus) != 1 {
+		t.Fatalf("audit report = %+v, want one epic status drift", report)
+	}
+
+	audit, _ := showResult(t, session, map[string]any{"id": epic})["audit"].(map[string]any)
+	drift, _ := audit["epic_status"].(map[string]any)
+	if drift["kind"] != string(ticket.EpicDriftStale) {
+		t.Fatalf("audit.epic_status = %v, want kind %s", drift, ticket.EpicDriftStale)
+	}
+	if !reflect.DeepEqual(audit["epic_status"], auditJSON(t, report.EpicStatus[0])) {
+		t.Errorf("show audit.epic_status = %v, tk audit --json reports %v", audit["epic_status"], auditJSON(t, report.EpicStatus[0]))
+	}
+}
+
+func TestShow_AuditLeavesExistingFieldsInPlace(t *testing.T) {
+	session := testServer(t)
+	id := createFlagged(t, session, nil)
+
+	out := showResult(t, session, map[string]any{"id": id})
+	for _, field := range []string{"id", "status", "notes_total", "notes_shown", "namespace", "precondition"} {
+		if _, present := out[field]; !present {
+			t.Errorf("show no longer carries %s: %v", field, out)
+		}
+	}
+}
+
+func TestShow_AuditNamespacesIDsOnACentralStore(t *testing.T) {
+	session, _ := testCentralServer(t, "proj")
+	id := createFlagged(t, session, map[string]any{"project": "proj"})
+
+	content := auditContent(t, showResult(t, session, map[string]any{"id": id}))
+	if len(content) != 1 {
+		t.Fatalf("audit.content = %v, want one entry", content)
+	}
+	entry, _ := content[0].(map[string]any)
+	if !strings.HasPrefix(id, "proj/") || entry["id"] != id {
+		t.Errorf("audit.content[0].id = %v, want the namespaced %s", entry["id"], id)
 	}
 }

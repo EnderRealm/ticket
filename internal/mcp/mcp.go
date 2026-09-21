@@ -725,6 +725,10 @@ type showExtras struct {
 	Precondition string `json:"precondition"`
 	*epicJSON
 	RelationshipIssue string `json:"relationship_issue,omitempty"`
+	// Audit is what the audit finds wrong with the ticket, in the shape
+	// `tk audit --json` reports it; absent when the checks ran and found
+	// nothing, so a caller cannot read absence as unchecked.
+	Audit *ticket.Findings `json:"audit,omitempty"`
 }
 
 // epicJSON is an epic as the whole graph holds it: its children in every
@@ -774,7 +778,7 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `bare-acceptance`, `empty-acceptance`, `envelope-fragment`, `legacy-review-log`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -795,8 +799,9 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 		// The graph is read only when the response needs it — an epic's
 		// children and counts, or a leaf's issue as the snapshot stamps it —
 		// so a plain leaf costs one file read.
+		var snap *ticket.Snapshot
 		if t.Type == ticket.TypeEpic || extras.RelationshipIssue != "" {
-			snap, err := storeSnapshot(store)
+			snap, err = storeSnapshot(store)
 			if err != nil {
 				r, _ := errResult("failed to read the store: %v", err)
 				return r, nil, nil
@@ -817,6 +822,24 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 				}
 				extras.epicJSON = epic
 			}
+		}
+
+		// The audit answers off the snapshot the response already needed, and
+		// off the ticket's own body where the response needed none, so it adds
+		// no store read. A parented leaf's pre-rule parent cycle is the one
+		// class the body-only path does not reach; `tk audit` lists it.
+		var findings ticket.Findings
+		if snap != nil {
+			findings, err = ticket.AuditorOver(store, snap).Ticket(t)
+			if err != nil {
+				r, _ := errResult("failed to audit the ticket: %v", err)
+				return r, nil, nil
+			}
+		} else {
+			findings = ticket.BodyFindings(t)
+		}
+		if !findings.Empty() {
+			extras.Audit = &findings
 		}
 
 		total := len(t.Notes)

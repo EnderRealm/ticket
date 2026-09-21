@@ -89,6 +89,18 @@ func NewAuditor(store Store) (*Auditor, error) {
 	if err != nil {
 		return nil, err
 	}
+	return AuditorOver(store, snap), nil
+}
+
+// AuditorOver is NewAuditor over a snapshot the caller already holds, for a
+// caller that read the store once for its own answer and wants the audit off
+// that same reading rather than a second one — the MCP ticket_show handler,
+// whose response for an epic or a mis-parented leaf is already derived from a
+// snapshot. The store supplies only what the snapshot does not carry: whether
+// it is a central store, whose report namespaces every ID, and for a single
+// project's store its project name, which is the namespace its bare IDs
+// resolve in. Nothing is read from it.
+func AuditorOver(store Store, snap *Snapshot) *Auditor {
 	_, multi := store.(*MultiStore)
 	a := &Auditor{multi: multi, snap: snap, byProject: map[string]*auditContext{}}
 	for _, skip := range snap.Skips {
@@ -106,7 +118,7 @@ func NewAuditor(store Store) (*Auditor, error) {
 	if !multi {
 		project := storeProject(store)
 		a.contexts = []*auditContext{{snap: snap, project: project, tickets: projectView(snap, project), bare: true}}
-		return a, nil
+		return a
 	}
 	byNS := map[string][]*Ticket{}
 	for _, t := range snap.Tickets {
@@ -118,7 +130,7 @@ func NewAuditor(store Store) (*Auditor, error) {
 		a.contexts = append(a.contexts, ctx)
 		a.byProject[ns] = ctx
 	}
-	return a, nil
+	return a
 }
 
 // Ticket reports what the audit finds wrong with one ticket. Nothing is listed
@@ -303,6 +315,19 @@ func (c *auditContext) epicStatusDrift(t *Ticket) *EpicStatusDrift {
 		kind = EpicDriftStoredClosed
 	}
 	return &EpicStatusDrift{ID: t.ID, Stored: stored, Derived: derived, Kind: kind}
+}
+
+// BodyFindings is the audit of a ticket's own body and nothing else, for a
+// caller holding no snapshot that does not want to take one. Of the three
+// checks it runs only the one that reads no store. That is the audit's whole
+// answer for a non-epic with no parent: the parent check is nil with no
+// parent, the drift check is nil for a non-epic. For a non-epic whose parent
+// resolved to an epic it omits only the cycle class the parent check can
+// reach, which exists only in a store written before the one-level rule. An
+// epic, or a leaf whose parent did not resolve to an epic, is not answered in
+// full here; audit it over a snapshot.
+func BodyFindings(t *Ticket) Findings {
+	return Findings{Content: contentIssues(t)}
 }
 
 // contentIssues reports what a ticket's stored body is missing, in the two
