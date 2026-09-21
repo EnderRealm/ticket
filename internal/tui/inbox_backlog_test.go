@@ -23,7 +23,7 @@ func TestInboxBacklogQuestion(t *testing.T) {
 		&ticket.Ticket{ID: "epic-0009", Type: ticket.TypeEpic, Status: ticket.StatusBacklog, Extra: question},
 	)
 	listed, snap := loadBoardFixture(t, "proj", dir)
-	a := boardAppOver("proj", tabInbox, 160, 40, listed, snap)
+	a := boardAppOver("proj", dir, tabInbox, 160, 40, listed, snap)
 	want := []string{"ready-0001", "parked-0002", "open-0003"}
 	if got := itemIDs(a.dashboard.items); !slices.Equal(got, want) {
 		t.Fatalf("inbox rows = %v, want %v", got, want)

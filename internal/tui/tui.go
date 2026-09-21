@@ -596,7 +596,9 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "m":
 		if t := a.dashboard.selected(); t != nil {
-			a.detail = newDetailModel(t, a.dashboard.qid(t), a.snap, a.width, a.height)
+			qid := a.dashboard.qid(t)
+			findings, auditErr := a.auditOf(t, qid)
+			a.detail = newDetailModel(t, qid, a.snap, findings, auditErr, a.width, a.height)
 			a.detail.startMovePicker(a.workDir)
 			a.detailStack = nil
 			a.overlay = overlayDetail
@@ -1070,7 +1072,9 @@ func (a *App) openDashboardTicket(t *ticket.Ticket) {
 		a.dashboard.focusEpic(epicID)
 		return
 	}
-	a.detail = newDetailModel(t, a.dashboard.qid(t), a.snap, a.width, a.height)
+	qid := a.dashboard.qid(t)
+	findings, auditErr := a.auditOf(t, qid)
+	a.detail = newDetailModel(t, qid, a.snap, findings, auditErr, a.width, a.height)
 	a.detailStack = nil
 	a.overlay = overlayDetail
 }
@@ -1091,7 +1095,25 @@ func (a App) detailFor(qid string) (detailModel, bool) {
 	if ns, bare := ticket.ParseNamespacedID(qid); ns == a.projectName {
 		view.ID = bare
 	}
-	return newDetailModel(&view, qid, a.snap, a.width, a.height), true
+	findings, auditErr := a.auditOf(&view, qid)
+	return newDetailModel(&view, qid, a.snap, findings, auditErr, a.width, a.height), true
+}
+
+// auditOf is what the audit holds against the ticket with this qualified ID,
+// for its detail. It is judged through the store a write to it goes through
+// — the board's own for its own ticket, the central store for a foreign one,
+// each handed the ID form it resolves — so the detail flags exactly what a
+// save from it would refuse. Without a graph only the body can be checked.
+// The error is the audit's own: a ticket it could not evaluate, which the
+// detail reports rather than presenting as clean.
+func (a App) auditOf(t *ticket.Ticket, qid string) (ticket.Findings, error) {
+	if a.snap == nil {
+		return ticket.BodyFindings(t), nil
+	}
+	store, id := a.storeFor(qid)
+	view := *t
+	view.ID = id
+	return ticket.AuditorOver(store, a.snap).Ticket(&view)
 }
 
 // pushDetail opens the ticket's detail over the current one, which esc

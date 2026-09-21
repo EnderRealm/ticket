@@ -39,9 +39,13 @@ type detailModel struct {
 	// qid is the ticket's qualified ID, the key the graph and a mutation of
 	// a foreign ticket answer to; ns is its namespace, which its own
 	// references are read relative to.
-	qid          string
-	ns           string
-	snap         *ticket.Snapshot // the graph relationships are read off; nil renders the ticket alone
+	qid  string
+	ns   string
+	snap *ticket.Snapshot // the graph relationships are read off; nil renders the ticket alone
+	// findings is what the audit holds against the ticket; auditErr is why it
+	// could not be checked, which is never presented as clean.
+	findings     ticket.Findings
+	auditErr     error
 	lines        []string
 	offset       int
 	width        int
@@ -56,16 +60,20 @@ type detailModel struct {
 
 // newDetailModel builds the detail of t, whose qualified ID is qid. t.ID is
 // whatever the caller presents — bare for a board's own ticket, qualified for
-// a foreign one — and qid is always the graph's key.
-func newDetailModel(t *ticket.Ticket, qid string, snap *ticket.Snapshot, w, h int) detailModel {
+// a foreign one — and qid is always the graph's key. findings and auditErr
+// are the audit's answer for t, computed by the caller through the store a
+// write to t goes through.
+func newDetailModel(t *ticket.Ticket, qid string, snap *ticket.Snapshot, findings ticket.Findings, auditErr error, w, h int) detailModel {
 	ns, _ := ticket.ParseNamespacedID(qid)
 	m := detailModel{
-		ticket: t,
-		qid:    qid,
-		ns:     ns,
-		snap:   snap,
-		width:  w,
-		height: h,
+		ticket:   t,
+		qid:      qid,
+		ns:       ns,
+		snap:     snap,
+		findings: findings,
+		auditErr: auditErr,
+		width:    w,
+		height:   h,
 	}
 	m.lines = m.render()
 	return m
@@ -585,7 +593,60 @@ func (m detailModel) render() []string {
 		}
 	}
 
+	// Findings: what `tk audit` holds against the ticket, so an invalid
+	// parent is visible here before an edit is refused for it. The section
+	// joins the lines like the others: the view clips them to the frame and
+	// the scroll bound is computed over all of them.
+	if findings := findingLines(m.findings, m.auditErr); len(findings) > 0 {
+		if lines[len(lines)-1] != "" {
+			lines = append(lines, "")
+		}
+		lines = append(lines, pad+sectionStyle.Render("## Findings"))
+		lines = append(lines, "")
+		for _, line := range findings {
+			for _, wl := range wrapText(line, avail) {
+				lines = append(lines, pad+StyleWarning.Render(wl.text))
+			}
+		}
+	}
+
 	return lines
+}
+
+// findingLines is one line per finding in the vocabulary `tk audit` and `tk
+// show` print them, without the ID — the reader is looking at that ticket.
+// The kinds are ours and print bare; everything read off the store is
+// sanitized before it reaches the terminal, and a stored status that is not
+// one of ours is quoted the way the audit quotes it. An audit that failed is
+// one line saying so, since an unchecked ticket must not read as clean.
+func findingLines(f ticket.Findings, auditErr error) []string {
+	var out []string
+	if v := f.Parent; v != nil {
+		out = append(out, fmt.Sprintf("%s  parent: %s  (%s)", v.Kind, ticket.SanitizeControl(v.Parent), ticket.SanitizeControl(v.Detail)))
+	}
+	if d := f.EpicStatus; d != nil {
+		stored := ticket.SanitizeControl(string(d.Stored))
+		if ticket.ValidateStatus(d.Stored) != nil {
+			stored = fmt.Sprintf("%q", stored)
+		}
+		out = append(out, fmt.Sprintf("%s  stored: %s  reads: %s", d.Kind, stored, d.Derived))
+	}
+	for _, c := range f.Content {
+		switch c.Kind {
+		case ticket.ContentEnvelopeFragment:
+			out = append(out, fmt.Sprintf("%s  %s: %q", c.Kind, ticket.SanitizeControl(c.Field), ticket.SanitizeControl(c.Detail)))
+		case ticket.ContentBareAcceptance:
+			out = append(out, fmt.Sprintf("%s  %d bare criterion(s)", c.Kind, c.Bare))
+		case ticket.ContentLegacyReviewLog:
+			out = append(out, fmt.Sprintf("%s  %d bytes", c.Kind, c.Bytes))
+		default:
+			out = append(out, string(c.Kind))
+		}
+	}
+	if auditErr != nil {
+		out = append(out, "not checked: "+ticket.SanitizeControl(auditErr.Error()))
+	}
+	return out
 }
 
 func (m detailModel) dependencyTree() []ticket.DepNode {

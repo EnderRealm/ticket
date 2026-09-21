@@ -29,6 +29,14 @@ func boardFixture(t *testing.T, ns string, tickets ...*ticket.Ticket) ([]*ticket
 func writeBoardFixture(t *testing.T, ns string, tickets ...*ticket.Ticket) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "central", "tickets", ns)
+	writeTicketFiles(t, dir, tickets...)
+	return dir
+}
+
+// writeTicketFiles writes the tickets as files into dir, creating it, past
+// the write boundary.
+func writeTicketFiles(t *testing.T, dir string, tickets ...*ticket.Ticket) {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -41,7 +49,6 @@ func writeBoardFixture(t *testing.T, ns string, tickets ...*ticket.Ticket) strin
 			t.Fatalf("write %s: %v", tk.ID, err)
 		}
 	}
-	return dir
 }
 
 // loadBoardFixture is the board's view of a project directory.
@@ -70,13 +77,24 @@ func boardModel(t *testing.T, ns string, tab tabID, w, h int, tickets ...*ticket
 // boardApp is an App on tab over boardFixture's view.
 func boardApp(t *testing.T, ns string, tab tabID, w, h int, tickets ...*ticket.Ticket) App {
 	t.Helper()
-	listed, snap := boardFixture(t, ns, tickets...)
-	return boardAppOver(ns, tab, w, h, listed, snap)
+	dir := writeBoardFixture(t, ns, tickets...)
+	listed, snap := loadBoardFixture(t, ns, dir)
+	return boardAppOver(ns, dir, tab, w, h, listed, snap)
 }
 
-// boardAppOver is an App on tab over an already loaded view.
-func boardAppOver(ns string, tab tabID, w, h int, listed []*ticket.Ticket, snap *ticket.Snapshot) App {
-	a := App{projectName: ns, tickets: listed, snap: snap, activeTab: tab, width: w, height: h}
+// boardAppOver is an App on tab over an already loaded view of the project
+// directory dir, with the stores New would wire over it.
+func boardAppOver(ns, dir string, tab tabID, w, h int, listed []*ticket.Ticket, snap *ticket.Snapshot) App {
+	a := App{
+		store:       ticket.NewProjectFileStore(dir, ns),
+		multi:       ticket.NewMultiStore(filepath.Dir(dir)),
+		projectName: ns,
+		tickets:     listed,
+		snap:        snap,
+		activeTab:   tab,
+		width:       w,
+		height:      h,
+	}
 	a.dashboard.ns = ns
 	a.dashboard.setSize(w, h)
 	a.dashboard.refreshTickets(listed, snap)
@@ -153,7 +171,7 @@ func TestEpicChildrenSanitizeStoredStatus(t *testing.T) {
 		t.Fatalf("write ch-0002: %v", err)
 	}
 	listed, snap := loadBoardFixture(t, "proj", dir)
-	a := onTab(t, boardAppOver("proj", tabAll, 120, 24, listed, snap), tabAll, "ch-0002")
+	a := onTab(t, boardAppOver("proj", dir, tabAll, 120, 24, listed, snap), tabAll, "ch-0002")
 	a = press(t, a, "u")
 	if a.overlay != overlayDetail || a.detail.qid != "proj/ep-0001" {
 		t.Fatalf("u on the child opened overlay %v detail %q, want the epic", a.overlay, a.detail.qid)

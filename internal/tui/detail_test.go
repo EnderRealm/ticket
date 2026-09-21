@@ -22,7 +22,7 @@ func TestDetailSanitizesStoredContent(t *testing.T) {
 		ExternalRef: "external\x1b[2J",
 		Notes:       []ticket.Note{{Text: "note \u202espoof"}},
 	}
-	out := strings.Join(newDetailModel(tk, tk.ID, nil, 100, 30).lines, "\n")
+	out := strings.Join(newDetailModel(tk, tk.ID, nil, ticket.Findings{}, nil, 100, 30).lines, "\n")
 
 	for _, r := range []rune{'\x1b', '\u202e', '\u2066', '\u2069'} {
 		if strings.ContainsRune(out, r) {
@@ -48,7 +48,7 @@ func TestDetailDeps(t *testing.T) {
 		}
 		listed, snap := boardFixture(t, "proj", tickets...)
 		for _, width := range []int{36, 20} {
-			lines := newDetailModel(boardTicket(t, listed, "chain-0000"), "proj/chain-0000", snap, width, 30).lines
+			lines := newDetailModel(boardTicket(t, listed, "chain-0000"), "proj/chain-0000", snap, ticket.Findings{}, nil, width, 30).lines
 			inDeps := false
 			for _, line := range lines {
 				if strings.Contains(ansi.Strip(line), "## Dependencies") {
@@ -79,7 +79,7 @@ func TestDetailDeps(t *testing.T) {
 			&ticket.Ticket{ID: "leaf-0031", Title: "Unique blocker", Status: ticket.StatusReady, Type: ticket.TypeFeature},
 		)
 		listed, snap := boardFixture(t, "proj", tickets...)
-		out := ansi.Strip(strings.Join(newDetailModel(boardTicket(t, listed, subject.ID), "proj/subject-0001", snap, 100, 30).lines, "\n"))
+		out := ansi.Strip(strings.Join(newDetailModel(boardTicket(t, listed, subject.ID), "proj/subject-0001", snap, ticket.Findings{}, nil, 100, 30).lines, "\n"))
 		nodes := snap.DependencyTree("proj/subject-0001")
 		if len(nodes) > 121 {
 			t.Errorf("layered graph produced %d nodes, want at most one per edge", len(nodes))
@@ -108,7 +108,7 @@ func TestDetailDeps(t *testing.T) {
 			&ticket.Ticket{ID: "leaf-0005", Title: "Leaf dependency", Status: ticket.StatusReady, Type: ticket.TypeFeature},
 		)
 		subject := boardTicket(t, listed, "subject-0001")
-		out := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, 100, 30).lines, "\n"))
+		out := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, ticket.Findings{}, nil, 100, 30).lines, "\n"))
 
 		for _, want := range []string{
 			"## Dependencies",
@@ -122,7 +122,7 @@ func TestDetailDeps(t *testing.T) {
 			}
 		}
 
-		narrow := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, 36, 30).lines, "\n"))
+		narrow := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, ticket.Findings{}, nil, 36, 30).lines, "\n"))
 		narrowLines := strings.Split(narrow, "\n")
 		for i, line := range narrowLines {
 			if !strings.Contains(line, "leaf-0005") || i+1 >= len(narrowLines) {
@@ -141,7 +141,7 @@ func TestDetailDeps(t *testing.T) {
 			&ticket.Ticket{ID: "cycle-b-0003", Title: "Cycle B", Status: ticket.StatusReady, Type: ticket.TypeFeature, Deps: []string{"cycle-a-0002"}},
 		)
 		subject := boardTicket(t, listed, "subject-0001")
-		out := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, 100, 30).lines, "\n"))
+		out := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, ticket.Findings{}, nil, 100, 30).lines, "\n"))
 
 		if want := "  ✗ missing-9999 [unknown] (not found) ← root blocker"; !strings.Contains(out, want) {
 			t.Errorf("detail missing %q:\n%s", want, out)
@@ -161,7 +161,7 @@ func TestDetailDeps(t *testing.T) {
 			&ticket.Ticket{ID: "leaf-0004", Title: "Shared leaf", Status: ticket.StatusReady, Type: ticket.TypeFeature},
 		)
 		subject := boardTicket(t, listed, "subject-0001")
-		out := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, 100, 30).lines, "\n"))
+		out := ansi.Strip(strings.Join(newDetailModel(subject, "proj/subject-0001", snap, ticket.Findings{}, nil, 100, 30).lines, "\n"))
 
 		if got := strings.Count(out, "b-0003"); got != 2 {
 			t.Errorf("detail contains b-0003 %d times, want once beneath each parent:\n%s", got, out)
@@ -186,7 +186,7 @@ func TestDetailDeps(t *testing.T) {
 			&ticket.Ticket{ID: "dep-0002", Title: "Dependency", Status: ticket.Status("open\x1b[2J\u202erepaint"), Type: ticket.TypeFeature},
 		)
 		subject := boardTicket(t, listed, "subject-0001")
-		out := strings.Join(newDetailModel(subject, "proj/subject-0001", snap, 100, 30).lines, "\n")
+		out := strings.Join(newDetailModel(subject, "proj/subject-0001", snap, ticket.Findings{}, nil, 100, 30).lines, "\n")
 
 		for _, r := range []rune{'\x1b', '\u202e'} {
 			if strings.ContainsRune(out, r) {
