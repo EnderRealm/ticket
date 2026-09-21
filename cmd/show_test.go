@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -540,6 +541,176 @@ func TestShowLeavesAForeignNamespacedNamesakeUnknown(t *testing.T) {
 	}
 }
 
+// findingsFixture writes a feature and a leaf parented to it — a
+// parent-not-epic violation the write path refuses, so it goes in as a legacy
+// file — with acceptance criteria nothing can check. The subject's status is
+// the caller's, so a finished ticket can be checked to report the same.
+func findingsFixture(t *testing.T, store *ticket.FileStore, status ticket.Status) {
+	t.Helper()
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: "sf-leaf-0001", Status: ticket.StatusOpen, Type: ticket.TypeFeature,
+		Created: time.Now(), Title: "Leaf", Body: "\n",
+	})
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: "sf-subject-0002", Status: status, Type: ticket.TypeFeature, Parent: "sf-leaf-0001",
+		Created: time.Now(), Title: "Subject",
+		Body: "\nA description.\n\n## Acceptance Criteria\n\n- Something happens.\n- Something else happens.\n",
+	})
+}
+
+func TestShowReportsFindings(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	findingsFixture(t, store, ticket.StatusOpen)
+
+	out := captureShow(t, store, "sf-subject-0002", false)
+	idx := strings.Index(out, "## Findings")
+	if idx < 0 {
+		t.Fatalf("show output missing Findings section:\n%s", out)
+	}
+	findings := out[idx:]
+	for _, w := range []string{
+		"- " + string(ticket.ViolationParentNotEpic) + "  parent: sf-leaf-0001  (",
+		"- " + string(ticket.ContentBareAcceptance) + "  2 bare criterion(s)",
+	} {
+		if !contains(findings, w) {
+			t.Errorf("Findings section missing %q:\n%s", w, findings)
+		}
+	}
+}
+
+func TestShowRendersNoFindingsSectionOnACleanTicket(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	createShowTicket(t, store, "sc-clean-0001", ticket.StatusOpen)
+
+	out := captureShow(t, store, "sc-clean-0001", false)
+	if contains(out, "## Findings") {
+		t.Errorf("a clean ticket rendered a Findings section:\n%s", out)
+	}
+}
+
+func TestShowReportsFindingsOnAFinishedTicket(t *testing.T) {
+	for _, status := range []ticket.Status{ticket.StatusDone, ticket.StatusClosed} {
+		dir := t.TempDir()
+		store := ticket.NewProjectFileStore(dir, "proj")
+		findingsFixture(t, store, status)
+
+		out := captureShow(t, store, "sf-subject-0002", false)
+		if !contains(out, "status: "+string(status)) {
+			t.Fatalf("fixture did not render as %s:\n%s", status, out)
+		}
+		if !contains(out, "## Findings") || !contains(out, string(ticket.ViolationParentNotEpic)) {
+			t.Errorf("a %s ticket's findings were not reported:\n%s", status, out)
+		}
+	}
+}
+
+func TestShowAttributesFindingsToTheFlaggedTicket(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	findingsFixture(t, store, ticket.StatusOpen)
+	createShowTicket(t, store, "sf-clean-0003", ticket.StatusOpen)
+
+	// Two IDs print in argument order, so the section has to sit between the
+	// flagged ticket's header and the clean one's.
+	out := captureShowAll(t, store, false, "sf-subject-0002", "sf-clean-0003")
+	if strings.Count(out, "## Findings") != 1 {
+		t.Fatalf("want exactly one Findings section:\n%s", out)
+	}
+	flagged := strings.Index(out, "id: sf-subject-0002")
+	findings := strings.Index(out, "## Findings")
+	clean := strings.Index(out, "id: sf-clean-0003")
+	if !(flagged < findings && findings < clean) {
+		t.Errorf("Findings section is not under the flagged ticket:\n%s", out)
+	}
+}
+
+func TestShowReportsEpicStatusDrift(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	// Stores done and derives open from its child.
+	auditEpic(t, store, "sf-epic-0001", ticket.StatusDone)
+	auditTicket(t, store, "sf-child-0002", ticket.TypeFeature, "sf-epic-0001")
+
+	out := captureShow(t, store, "sf-epic-0001", false)
+	idx := strings.Index(out, "## Findings")
+	if idx < 0 {
+		t.Fatalf("show output missing Findings section:\n%s", out)
+	}
+	want := "- " + string(ticket.EpicDriftStale) + "  stored: done  reads: open"
+	if !contains(out[idx:], want) {
+		t.Errorf("Findings section missing %q:\n%s", want, out[idx:])
+	}
+}
+
+func TestShowReportsContentFindings(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	// Built from its pieces: a terminator spelled out here would corrupt the
+	// tool call of any agent that quotes this file.
+	terminator := "</" + "antml:invoke" + ">"
+	auditBodyTicket(t, store, "sf-frag-0001", "\nThe real description text.\n"+terminator+"\n")
+	section := "\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED\n"
+	auditBodyTicket(t, store, "sf-rlog-0002", "\nA description.\n\n## Acceptance Criteria\n\nWhat done means.\n"+section)
+
+	for id, want := range map[string]string{
+		"sf-frag-0001": fmt.Sprintf("- %s  description: %q", ticket.ContentEnvelopeFragment, "The real description text.\n"+terminator),
+		"sf-rlog-0002": fmt.Sprintf("- %s  %d bytes", ticket.ContentLegacyReviewLog, len(section)),
+	} {
+		out := captureShow(t, store, id, false)
+		idx := strings.Index(out, "## Findings")
+		if idx < 0 {
+			t.Fatalf("show output for %s missing Findings section:\n%s", id, out)
+		}
+		if !contains(out[idx:], want) {
+			t.Errorf("Findings section for %s missing %q:\n%s", id, want, out[idx:])
+		}
+	}
+}
+
+func TestShowMetadataOmitsFindings(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	findingsFixture(t, store, ticket.StatusOpen)
+
+	out := captureShow(t, store, "sf-subject-0002", true)
+	if contains(out, "## Findings") {
+		t.Errorf("--metadata output carries a Findings section:\n%s", out)
+	}
+	if !contains(out, "parent: sf-leaf-0001") || !contains(out, "## Acceptance Criteria") {
+		t.Errorf("--metadata output lost the frontmatter or description:\n%s", out)
+	}
+}
+
+func TestShowSanitizesFindings(t *testing.T) {
+	dir := t.TempDir()
+	store := ticket.NewProjectFileStore(dir, "proj")
+	// A parent that resolves to nothing, carrying an escape sequence: the audit
+	// reports the parent and a detail naming it, and both reach the terminal.
+	writeLegacyTicket(t, store, &ticket.Ticket{
+		ID: "ss-subject-0001", Status: ticket.StatusOpen, Type: ticket.TypeFeature,
+		Parent:  "gone\x1b[31m-9999",
+		Created: time.Now(), Title: "Subject", Body: "\n",
+	})
+
+	out := captureShow(t, store, "ss-subject-0001", false)
+	idx := strings.Index(out, "## Findings")
+	if idx < 0 {
+		t.Fatalf("show output missing Findings section:\n%s", out)
+	}
+	findings := out[idx:]
+	if !contains(findings, string(ticket.ViolationParentMissing)) {
+		t.Fatalf("Findings section missing the parent-missing line:\n%s", findings)
+	}
+	if strings.ContainsRune(findings, '\x1b') {
+		t.Errorf("Findings section contains a raw escape byte:\n%q", findings)
+	}
+	if !contains(findings, "gone\ufffd[31m-9999") {
+		t.Errorf("Findings section does not carry the sanitized parent:\n%q", findings)
+	}
+}
+
 func createShowTicket(t *testing.T, store *ticket.FileStore, id string, status ticket.Status) {
 	t.Helper()
 	tk := &ticket.Ticket{
@@ -557,11 +728,26 @@ func createShowTicket(t *testing.T, store *ticket.FileStore, id string, status t
 
 func captureShow(t *testing.T, store *ticket.FileStore, id string, metadataOnly bool) string {
 	t.Helper()
+	return captureShowAll(t, store, metadataOnly, id)
+}
+
+// captureShowAll prints the IDs the way runShow does — in argument order, a
+// blank line between — and returns the whole of it as one capture.
+func captureShowAll(t *testing.T, store *ticket.FileStore, metadataOnly bool, ids ...string) string {
+	t.Helper()
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	err := showTicket(store, id, metadataOnly)
+	var err error
+	for i, id := range ids {
+		if i > 0 {
+			fmt.Println()
+		}
+		if err = showTicket(store, id, metadataOnly); err != nil {
+			break
+		}
+	}
 
 	w.Close()
 	os.Stdout = oldStdout

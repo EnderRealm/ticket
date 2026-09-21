@@ -29,7 +29,8 @@ Viewing:
                              complete (the store read in full); a leaf whose
                              parent does not make it a child ends with a
                              Relationship section saying why. Children and
-                             Blocking list tickets from any namespace, qualified
+                             Blocking list tickets from any namespace, qualified;
+                             a ticket the audit flags ends with a Findings section
   ls|list [filters]          List tickets (default: workflow grouped, done
                              and closed hidden; --all shows them)
     --all-projects           Every namespace in the central store, IDs qualified

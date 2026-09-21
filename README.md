@@ -160,7 +160,8 @@ Viewing:
                              Progress section (children counted by status
                              across every namespace, and whether the count is
                              complete); a leaf whose parent does not make it a
-                             child ends with a Relationship section saying why
+                             child ends with a Relationship section saying why;
+                             a ticket the audit flags ends with a Findings section
   ls|list [filters]          List tickets (default: workflow grouped, done
                              and closed hidden; --all shows them)
     --all-projects           Every namespace in the central store, IDs qualified

@@ -211,7 +211,45 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		fmt.Println(ticket.SanitizeControl(issue))
 	}
 
+	// Findings: what `tk audit` holds against this ticket, off the snapshot the
+	// sections above were already read from, so it adds no store read. Shown
+	// on done and closed tickets too — the status line already says the ticket
+	// is finished, and the reader asked about this one.
+	findings, err := ticket.AuditorOver(store, snap).Ticket(t)
+	if err != nil {
+		return err
+	}
+	if !findings.Empty() {
+		fmt.Print("\n## Findings\n\n")
+		printFindings(findings)
+	}
+
 	return nil
+}
+
+// printFindings lists one ticket's audit findings in the vocabulary `tk audit`
+// prints them in, without the ID — the reader is looking at that ticket. The
+// kinds and fields are ours and print bare; everything read off the store is
+// sanitized, and the envelope tail is quoted the way the audit quotes it.
+func printFindings(f ticket.Findings) {
+	if v := f.Parent; v != nil {
+		fmt.Printf("- %s  parent: %s  (%s)\n", v.Kind, ticket.SanitizeControl(v.Parent), ticket.SanitizeControl(v.Detail))
+	}
+	if d := f.EpicStatus; d != nil {
+		fmt.Printf("- %s  stored: %s  reads: %s\n", d.Kind, storedStatus(d.Stored), d.Derived)
+	}
+	for _, c := range f.Content {
+		switch c.Kind {
+		case ticket.ContentEnvelopeFragment:
+			fmt.Printf("- %s  %s: %q\n", c.Kind, c.Field, c.Detail)
+		case ticket.ContentBareAcceptance:
+			fmt.Printf("- %s  %d bare criterion(s)\n", c.Kind, c.Bare)
+		case ticket.ContentLegacyReviewLog:
+			fmt.Printf("- %s  %d bytes\n", c.Kind, c.Bytes)
+		default:
+			fmt.Printf("- %s\n", c.Kind)
+		}
+	}
 }
 
 // sanitizeRenderedDocument covers the whole stored document, not only titles:
