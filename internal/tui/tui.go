@@ -1288,6 +1288,13 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 
 	a.overlay = overlayNone
 	status := fmt.Sprintf("Created %s: %s", ticket.SanitizeControl(t.ID), ticket.SanitizeControl(t.Title))
+	// The description is written raw into the body, so a `## Acceptance
+	// Criteria` section in it is how this path produces criteria. The warning
+	// `tk create` prints on stderr rides the status line instead: a stderr
+	// write here lands in the alt screen and corrupts the frame.
+	if bare := ticket.BareCriteria(t.Body); len(bare) > 0 {
+		status += "; " + ticket.BareAcceptanceWarning(t.ID, bare)
+	}
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },
