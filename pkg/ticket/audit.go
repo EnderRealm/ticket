@@ -330,6 +330,19 @@ func BodyFindings(t *Ticket) Findings {
 	return Findings{Content: contentIssues(t)}
 }
 
+// EmptyAcceptance reports whether the ticket's stored body carries a
+// description with no acceptance criteria beside it. It is the one definition
+// of that classification: `tk audit` reports it through contentIssues and
+// ticket_create warns of it through the same call, so the two cannot disagree
+// on a ticket. Read off BodySections rather than any write's arguments, because
+// a description that carries its own `## Acceptance Criteria` section is stored
+// as criteria. An epic is a container: its children carry the contract, so it
+// has no criteria to be missing.
+func EmptyAcceptance(t *Ticket) bool {
+	desc, _, acceptance, _ := BodySections(t.Body)
+	return t.Type != TypeEpic && desc != "" && acceptance == ""
+}
+
 // contentIssues reports what a ticket's stored body is missing, in the two
 // shapes an MCP write can leave behind: a section that ends in a tool-call
 // envelope fragment, which means the text after it was absorbed rather than
@@ -356,9 +369,7 @@ func contentIssues(t *Ticket) []ContentIssue {
 			issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEnvelopeFragment, Field: f.field, Detail: tail})
 		}
 	}
-	// An epic is a container: its children carry the contract, so it has no
-	// criteria to be missing.
-	if t.Type != TypeEpic && desc != "" && acceptance == "" {
+	if EmptyAcceptance(t) {
 		issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEmptyAcceptance})
 	}
 	// Criteria that were written and cannot be checked, through the same reading
