@@ -402,7 +402,7 @@ func buildSnapshot(sources []namespaceSource, crossProject bool) *Snapshot {
 			continue
 		}
 		snap.epicStored[t.ID] = t.Status
-		status, completed := deriveEpicFrom(t.Abandoned, snap.children[t.ID], !snap.Complete)
+		status, completed := deriveEpicFrom(t.Abandoned, t.AbandonedAt, snap.children[t.ID], !snap.Complete)
 		derived = append(derived, derivation{epic: t, status: status, completed: completed})
 	}
 	for _, d := range derived {

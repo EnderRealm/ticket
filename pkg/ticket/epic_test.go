@@ -921,6 +921,75 @@ func TestEpicCompletedIsNeverStored(t *testing.T) {
 	}
 }
 
+func TestAbandonedEpicIsDatedByTheAbandon(t *testing.T) {
+	// An abandoned epic whose file carries no abandoned-at — what an abandon
+	// recorded before the date was stored left behind — has no date for the
+	// decision, and a write that is not an abandon must not invent one.
+	legacy := mkEpic("e-1", StatusClosed, "")
+	legacy.Abandoned = true
+	s := depStore(t, legacy)
+	epic, _ := s.Get("e-1")
+	if epic.Status != StatusClosed || !epic.Completed.IsZero() {
+		t.Fatalf("undated abandoned epic = %q completed %v, want %q with no date", epic.Status, epic.Completed, StatusClosed)
+	}
+	epic.Title = "Renamed"
+	if err := s.Update(epic); err != nil {
+		t.Fatal(err)
+	}
+	epic, _ = s.Get("e-1")
+	epic.Title = "Renamed again"
+	if _, err := SaveEdit(s, epic, false); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := s.getStored("e-1"); !stored.AbandonedAt.IsZero() {
+		t.Errorf("an edit that set no status dated the abandon %v", stored.AbandonedAt)
+	}
+
+	// Setting it closed is the decision, and dates it.
+	before := time.Now().UTC().Truncate(time.Second)
+	if err := setStatus(t, s, "e-1", StatusClosed); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := s.getStored("e-1")
+	if stored.AbandonedAt.Before(before) {
+		t.Fatalf("abandoned-at = %v, want the abandon at or after %v", stored.AbandonedAt, before)
+	}
+	if epic, _ = s.Get("e-1"); !epic.Completed.Equal(stored.AbandonedAt) {
+		t.Errorf("abandoned epic completed = %v, want its abandon %v", epic.Completed, stored.AbandonedAt)
+	}
+
+	// A child that finishes after the abandon dates the epic's return to closed.
+	abandoned := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	epic.AbandonedAt = abandoned
+	if err := s.Update(epic); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(mkWithParent("c-1", StatusOpen, "e-1")); err != nil {
+		t.Fatal(err)
+	}
+	if epic, _ = s.Get("e-1"); epic.Status != StatusOpen || !epic.Completed.IsZero() {
+		t.Fatalf("abandoned epic with a live child = %q completed %v, want %q and no date", epic.Status, epic.Completed, StatusOpen)
+	}
+	if err := setStatus(t, s, "c-1", StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := s.Get("c-1")
+	if epic, _ = s.Get("e-1"); epic.Status != StatusClosed || !epic.Completed.Equal(child.Completed) {
+		t.Errorf("epic = %q completed %v, want %q dated by the child's finish %v", epic.Status, epic.Completed, StatusClosed, child.Completed)
+	}
+	if stored, _ = s.getStored("e-1"); !stored.AbandonedAt.Equal(abandoned) {
+		t.Errorf("abandoned-at = %v after the child finished, want %v unchanged", stored.AbandonedAt, abandoned)
+	}
+
+	// Taking the abandon back takes its date with it.
+	if err := setStatus(t, s, "e-1", StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ = s.getStored("e-1"); stored.Abandoned || !stored.AbandonedAt.IsZero() {
+		t.Errorf("un-abandoned epic stored abandoned %v at %v, want neither", stored.Abandoned, stored.AbandonedAt)
+	}
+}
+
 func TestEpicUnabandonTakesItBackUp(t *testing.T) {
 	// Abandoning an epic whose children had all finished closes nothing, so the
 	// stored intent is all that makes it read closed. Setting it to what the

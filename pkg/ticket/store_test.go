@@ -49,7 +49,7 @@ func writeLegacy(t *testing.T, store *FileStore, tk *Ticket) {
 	if err := store.EnsureDir(); err != nil {
 		t.Fatalf("ensure dir: %v", err)
 	}
-	if err := store.writeTicket(tk); err != nil {
+	if err := store.writeTicket(tk, nil); err != nil {
 		t.Fatalf("write %s: %v", tk.ID, err)
 	}
 }

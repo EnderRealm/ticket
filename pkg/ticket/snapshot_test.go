@@ -421,27 +421,37 @@ func TestEpicDerivesFromChildrenInEveryNamespace(t *testing.T) {
 
 func TestAbandonOverridesAllTerminalAndChildless(t *testing.T) {
 	_, ms := centralFixture(t, true)
+	// The children finished well before the abandon, so a date read off them
+	// would be the day the work ended rather than the day the epic closed.
+	finished := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	w, l := mkWithParent("warp/w-0002", StatusDone, "_root/done-0001"), mkWithParent("loom/l-0003", StatusDone, "_root/done-0001")
+	w.Completed, l.Completed = finished, finished
 	mustCreate(t, ms,
 		mkEpic("_root/done-0001", StatusBacklog, ""),
-		mkWithParent("warp/w-0002", StatusDone, "_root/done-0001"),
-		mkWithParent("loom/l-0003", StatusDone, "_root/done-0001"),
+		w,
+		l,
 		mkEpic("_root/empty-0004", StatusBacklog, ""),
 	)
+	before := time.Now().UTC().Truncate(time.Second)
 	if got := statusOf(t, ms, "_root/done-0001"); got != StatusDone {
 		t.Fatalf("epic = %q, want %q", got, StatusDone)
 	}
 	if err := setStatus(t, ms, "_root/done-0001", StatusClosed); err != nil {
 		t.Fatalf("abandoning an all-done epic: %v", err)
 	}
-	if got := statusOf(t, ms, "_root/done-0001"); got != StatusClosed {
-		t.Errorf("abandoned all-done epic = %q, want %q", got, StatusClosed)
+	done := mustGet(t, ms, "_root/done-0001")
+	if done.Status != StatusClosed {
+		t.Errorf("abandoned all-done epic = %q, want %q", done.Status, StatusClosed)
+	}
+	if done.Completed.Before(before) || !done.Completed.Equal(done.AbandonedAt) {
+		t.Errorf("abandoned all-done epic completed %v (abandoned-at %v), want the abandon's date, not its children's %v", done.Completed, done.AbandonedAt, finished)
 	}
 	if err := setStatus(t, ms, "_root/empty-0004", StatusClosed); err != nil {
 		t.Fatalf("abandoning a childless epic: %v", err)
 	}
 	empty := mustGet(t, ms, "_root/empty-0004")
-	if empty.Status != StatusClosed || !empty.Completed.IsZero() {
-		t.Errorf("abandoned childless epic = %q completed %v, want %q with no invented date", empty.Status, empty.Completed, StatusClosed)
+	if empty.Status != StatusClosed || empty.Completed.Before(before) || !empty.Completed.Equal(empty.AbandonedAt) {
+		t.Errorf("abandoned childless epic = %q completed %v (abandoned-at %v), want %q dated by the abandon", empty.Status, empty.Completed, empty.AbandonedAt, StatusClosed)
 	}
 }
 

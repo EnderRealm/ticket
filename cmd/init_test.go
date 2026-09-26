@@ -225,6 +225,31 @@ func TestInitRefusesToImportAChildOfAMissingParent(t *testing.T) {
 	}
 }
 
+// A migration is not a finish: a legacy done ticket whose file never recorded
+// completed lands with no closed date, and one that did keeps it, rather than
+// either being dated by the import.
+func TestInitImportCarriesCompletedAsTheFileHeldIt(t *testing.T) {
+	_, err := initWithLocalTickets(t, "datedproject", map[string][]byte{
+		"undated-1111.md": []byte("---\nid: undated-1111\nstatus: done\ntype: feature\npriority: 2\ncreated: 2024-01-01T00:00:00Z\n---\n\n# Undated\n"),
+		"dated-2222.md":   []byte("---\nid: dated-2222\nstatus: done\ntype: feature\npriority: 2\ncreated: 2024-01-01T00:00:00Z\ncompleted: 2024-01-03T00:00:00Z\n---\n\n# Dated\n"),
+		"fresh-3333.md":   ticketFile("fresh-3333", "Fresh", ""),
+	})
+	if err != nil {
+		t.Fatalf("runInit with .tickets: %v", err)
+	}
+
+	rows := captureQuery(t)
+	if len(rows) != 3 {
+		t.Fatalf("query after import = %v, want the three imported tickets", rows)
+	}
+	if v, ok := rows["undated-1111"]["closed"]; ok {
+		t.Errorf("imported undated done ticket carries closed = %v, want absent", v)
+	}
+	if got := rows["dated-2222"]["closed"]; got != "2024-01-03T00:00:00Z" {
+		t.Errorf("imported dated done ticket closed = %v, want the file's 2024-01-03T00:00:00Z", got)
+	}
+}
+
 func TestTicketsDirCentral(t *testing.T) {
 	home := setupTestHome(t)
 

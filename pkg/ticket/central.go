@@ -831,7 +831,7 @@ func (o *op) create(s *FileStore, t *Ticket) error {
 	// Retry on hash collision (different title, same 4-char hash).
 	const maxRetries = 5
 	for i := 0; i < maxRetries; i++ {
-		written, err := s.createLocked(t)
+		written, err := s.createLocked(t, nil)
 		if err != nil {
 			return err
 		}
@@ -893,7 +893,7 @@ func (o *op) stamp(id string, t *Ticket) {
 		// Two files claim the ID, so the snapshot placed no children under it:
 		// derived as it would be from an empty, incomplete set, and stamped as
 		// the ambiguous identity the snapshot stamps every claimant with.
-		t.Status, t.Completed = deriveEpicFrom(t.Abandoned, nil, true)
+		t.Status, t.Completed = deriveEpicFrom(t.Abandoned, t.AbandonedAt, nil, true)
 		t.relationshipIssue = duplicateIssue(id)
 	case ok:
 		t.relationshipIssue = twin.relationshipIssue

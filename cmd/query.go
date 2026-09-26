@@ -30,6 +30,8 @@ type ticketJSON struct {
 	Deps        []string          `json:"deps"`
 	Links       []string          `json:"links"`
 	Created     string            `json:"created"`
+	Updated     string            `json:"updated,omitempty"`
+	Closed      string            `json:"closed,omitempty"`
 	Type        string            `json:"type"`
 	Priority    int               `json:"priority"`
 	ExternalRef string            `json:"external-ref,omitempty"`
@@ -62,7 +64,7 @@ func (j ticketJSON) MarshalJSON() ([]byte, error) {
 }
 
 func toTicketJSON(t *ticket.Ticket) ticketJSON {
-	return ticketJSON{
+	j := ticketJSON{
 		ID:          t.ID,
 		Status:      string(t.Status),
 		Abandoned:   t.Abandoned,
@@ -79,6 +81,15 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 		DepCargo:    t.DepCargo,
 		Extra:       t.Extra,
 	}
+	// A zero time is a date the ticket's file does not record: the key is
+	// omitted rather than rendered as year 1.
+	if !t.Updated.IsZero() {
+		j.Updated = t.Updated.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if closed := t.ClosedAt(); !closed.IsZero() {
+		j.Closed = closed.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	return j
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {

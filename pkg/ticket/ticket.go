@@ -122,6 +122,12 @@ type Ticket struct {
 	Created   time.Time `yaml:"-"`
 	Updated   time.Time `yaml:"-"`
 	Completed time.Time `yaml:"-"`
+	// AbandonedAt is when an epic's abandon was recorded, stored as
+	// `abandoned-at` beside the flag and read the same manual way. An epic's
+	// completed is derived from its children, but an abandon closes the epic at
+	// the moment of the edit, which no child dates — a childless epic has none,
+	// and children that finished earlier date the work, not the decision.
+	AbandonedAt time.Time `yaml:"-"`
 
 	// Results the ticket produced (branch, commit, artifacts), serialized as a
 	// nested block in format.go.
@@ -199,6 +205,17 @@ func RelationshipIssue(t *Ticket) string {
 	return t.relationshipIssue
 }
 
+// ClosedAt is when the ticket entered done or closed, or the zero time while it
+// is in any other status or its file predates the date being recorded. Gated on
+// the status rather than read off Completed alone, so a completed date
+// hand-edited onto a live ticket's file never reads as a finish.
+func (t *Ticket) ClosedAt() time.Time {
+	if t.Status != StatusDone && t.Status != StatusClosed {
+		return time.Time{}
+	}
+	return t.Completed
+}
+
 // Validate checks all fields for consistency. Returns the first error found.
 func (t *Ticket) Validate() error {
 	if t.ID == "" {
@@ -223,14 +240,14 @@ func (t *Ticket) Validate() error {
 // Extra fields are flattened to the top level in JSON, so both namespaces must be reserved.
 var reservedKeys = map[string]bool{
 	// YAML frontmatter fields.
-	"id": true, "status": true, "abandoned": true,
+	"id": true, "status": true, "abandoned": true, "abandoned-at": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
 	"dep-cargo": true, "verdicts": true, "actions": true,
-	// JSON output fields derived from body sections and markdown heading.
+	// JSON output fields derived from body sections, markdown heading and dates.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,
-	"dep_cargo": true,
+	"dep_cargo": true, "closed": true,
 }
 
 // IsReservedKey reports whether key is a known frontmatter field name.

@@ -127,6 +127,9 @@ func Parse(r io.Reader) (*Ticket, error) {
 		if v, ok := raw["completed"]; ok {
 			t.Completed = parseTimeValue(v)
 		}
+		if v, ok := raw["abandoned-at"]; ok {
+			t.AbandonedAt = parseTimeValue(v)
+		}
 
 		// Migrate legacy stage → status if status is not already set.
 		if t.Status == "" {
@@ -306,6 +309,9 @@ func Serialize(t *Ticket) ([]byte, error) {
 	writeField(&buf, "status", string(t.Status))
 	if t.Abandoned {
 		writeField(&buf, "abandoned", "true")
+	}
+	if !t.AbandonedAt.IsZero() {
+		writeField(&buf, "abandoned-at", t.AbandonedAt.UTC().Format(time.RFC3339))
 	}
 	writeFlowArray(&buf, "deps", t.Deps)
 	writeFlowArray(&buf, "links", t.Links)

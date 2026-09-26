@@ -91,14 +91,25 @@ func DeriveEpicStatus(abandoned bool, children []*Ticket) Status {
 // beside an epic a reopened child has made non-terminal again.
 //
 // An epic's file therefore stores no completion date at all (stampTimestamps
-// clears it), and there is no fallback to one: an abandoned epic with no
-// children to have finished renders no date rather than the date of whatever
-// edit last touched it.
-func deriveEpicCompleted(derived Status, children []*Ticket) time.Time {
+// clears it), and there is no fallback to one.
+//
+// An abandoned epic is the exception, because the abandon is what closed it: it
+// entered closed at the later of the abandon (abandonedAt, stamped by the edit
+// that recorded it) and its last child's finish — the latter when a child
+// reopened after the abandon and finished again. An abandoned epic whose file
+// predates the stamp has no date for the decision, and renders none rather
+// than a child's date the abandon may have come long after.
+func deriveEpicCompleted(derived Status, abandoned bool, abandonedAt time.Time, children []*Ticket) time.Time {
 	if derived != StatusDone && derived != StatusClosed {
 		return time.Time{}
 	}
 	last := time.Time{}
+	if abandoned {
+		if abandonedAt.IsZero() {
+			return time.Time{}
+		}
+		last = abandonedAt
+	}
 	for _, c := range children {
 		if c.Completed.After(last) {
 			last = c.Completed
@@ -131,11 +142,11 @@ func derivedEpicStatus(abandoned bool, children []*Ticket, incomplete bool) Stat
 }
 
 // deriveEpicFrom returns the status and completion date an epic's children
-// imply, given the abandon intent stored on the epic's own file and whether the
-// store it was read from held a file that could not be read.
-func deriveEpicFrom(abandoned bool, children []*Ticket, incomplete bool) (Status, time.Time) {
+// imply, given the abandon intent and its date stored on the epic's own file
+// and whether the store it was read from held a file that could not be read.
+func deriveEpicFrom(abandoned bool, abandonedAt time.Time, children []*Ticket, incomplete bool) (Status, time.Time) {
 	status := derivedEpicStatus(abandoned, children, incomplete)
-	return status, deriveEpicCompleted(status, children)
+	return status, deriveEpicCompleted(status, abandoned, abandonedAt, children)
 }
 
 // resolveAbandonIntent records on t the abandon intent the writer expressed and

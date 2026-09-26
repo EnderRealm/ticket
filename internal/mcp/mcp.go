@@ -80,6 +80,8 @@ type ticketSummaryJSON struct {
 	Deps     []string          `json:"deps"`
 	Links    []string          `json:"links"`
 	Created  string            `json:"created"`
+	Updated  string            `json:"updated,omitempty"`
+	Closed   string            `json:"closed,omitempty"`
 	Extra    map[string]string `json:"-"`
 }
 
@@ -104,6 +106,7 @@ func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
 }
 
 func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
+	updated, closed := lifecycleTimes(t)
 	return ticketSummaryJSON{
 		ID:       t.ID,
 		Title:    t.Title,
@@ -115,8 +118,23 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 		Deps:     nonNil(t.Deps),
 		Links:    nonNil(t.Links),
 		Created:  t.Created.UTC().Format("2006-01-02T15:04:05Z"),
+		Updated:  updated,
+		Closed:   closed,
 		Extra:    t.Extra,
 	}
+}
+
+// lifecycleTimes formats a ticket's last-write and terminal-entry times. A zero
+// time is a date the ticket's file does not record: it comes back empty so the
+// key is omitted rather than rendered as year 1.
+func lifecycleTimes(t *ticket.Ticket) (updated, closed string) {
+	if !t.Updated.IsZero() {
+		updated = t.Updated.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if c := t.ClosedAt(); !c.IsZero() {
+		closed = c.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	return updated, closed
 }
 
 // Full JSON representation of a ticket for MCP responses.
@@ -127,6 +145,8 @@ type ticketJSON struct {
 	Deps        []string          `json:"deps"`
 	Links       []string          `json:"links"`
 	Created     string            `json:"created"`
+	Updated     string            `json:"updated,omitempty"`
+	Closed      string            `json:"closed,omitempty"`
 	Type        string            `json:"type"`
 	Priority    int               `json:"priority"`
 	ExternalRef string            `json:"external_ref,omitempty"`
@@ -225,6 +245,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 		Actions:     t.Actions,
 	}
 
+	j.Updated, j.Closed = lifecycleTimes(t)
 	j.Extra = t.Extra
 
 	// Extract body sections.
@@ -572,7 +593,7 @@ const skippedFilesDoc = " `skipped_files` names every file in the projects read 
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
+		Description: "List tickets with optional filters and pagination. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Each row carries `updated` (last write) and, while the ticket is done or closed, `closed` (when it entered that status), both RFC 3339 UTC; a ticket last written before tk stored these dates omits them. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {

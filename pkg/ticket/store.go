@@ -292,7 +292,12 @@ func (s *FileStore) Create(t *Ticket) error {
 // lock across the check and the write so two concurrent creates of one ID
 // cannot both pass the check. Reports whether the write happened; a false
 // return is an ID already taken, which Create retries under a fresh one.
-func (s *FileStore) createLocked(t *Ticket) (bool, error) {
+//
+// source is the ticket as it stood before it reached this store — for an
+// import, the ticket as its legacy file held it — and nil for a ticket this
+// write creates. It stands in for the file an update replaces, so an imported
+// ticket's dates are carried rather than stamped by the import.
+func (s *FileStore) createLocked(t, source *Ticket) (bool, error) {
 	path, err := s.ticketFile(t.ID)
 	if err != nil {
 		return false, fmt.Errorf("create: %w", err)
@@ -305,7 +310,7 @@ func (s *FileStore) createLocked(t *Ticket) (bool, error) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		return false, nil
 	}
-	if err := s.writeTicket(t); err != nil {
+	if err := s.writeTicket(t, source); err != nil {
 		return false, err
 	}
 	s.logMutation(t.ID, MutationCreate, nil)
@@ -426,7 +431,8 @@ func (s *FileStore) ImportAll(tickets []*Ticket) (imported, skipped []string, er
 				skipped = append(skipped, t.ID)
 				continue
 			}
-			written, err := s.createLocked(t)
+			source := *t
+			written, err := s.createLocked(t, &source)
 			if err != nil {
 				return fmt.Errorf("import %s: %w", t.ID, err)
 			}
@@ -674,7 +680,7 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 			}
 		}
 	}
-	if err := s.writeTicket(t); err != nil {
+	if err := s.writeTicket(t, prior); err != nil {
 		return err
 	}
 	// The bytes the write replaced are what the log diffs against. This is the
@@ -724,6 +730,17 @@ func (s *FileStore) saveEdit(t *Ticket, statusSet bool) ([]string, error) {
 			var err error
 			if abandon, err = resolveAbandonIntent(t, prior.Type == TypeEpic && prior.Abandoned, children, !o.snap.Complete, statusSet); err != nil {
 				return err
+			}
+			// The abandon date travels with the intent: taken from the file, and
+			// stamped by the edit that abandons the epic when the file has none. A
+			// second close of an abandoned epic keeps the first date; the child it
+			// closes dates the epic's re-entry into closed.
+			t.AbandonedAt = time.Time{}
+			if prior.Type == TypeEpic && prior.Abandoned {
+				t.AbandonedAt = prior.AbandonedAt
+			}
+			if abandon && t.AbandonedAt.IsZero() {
+				t.AbandonedAt = time.Now().UTC()
 			}
 		}
 		if abandon {
@@ -1104,29 +1121,51 @@ func (s *FileStore) readFile(path string) (*Ticket, error) {
 
 // stampTimestamps maintains the created/updated/completed fields. It is the
 // single write choke point so CLI, MCP, and TUI callers all get consistent
-// timestamps. Rules are stateless (no previous status needed):
+// timestamps. prior is the ticket as the file being replaced holds it — for an
+// import, as its legacy file held it — and nil for a ticket this write creates
+// or a file that does not parse. Rules:
 //   - updated is always set to now.
 //   - created is set to now only if unset (a move carries it over).
-//   - completed is set to now when the status is done/closed and it is unset;
-//     it is cleared when the status is neither done nor closed.
+//   - completed is cleared when the status is neither done nor closed. When it
+//     is one of them, completed dates the ticket's entry into that state: set
+//     to now when the file being replaced was not terminal, kept exactly as
+//     that file stored it when it was — nothing included, so a note on a ticket
+//     that finished before completed was recorded does not date the finish to
+//     itself — and filled only if unset with no prior, so a create as done is
+//     stamped. An import is judged against its legacy file like any other
+//     prior, so it carries the date that file held, none included.
 //   - an epic stores no completed at all: it is derived from the children on
 //     read, and a date stamped from the writer's clock would be the day of an
 //     edit rather than the day the work ended.
-func stampTimestamps(t *Ticket) {
+//   - abandoned-at is cleared unless the ticket is an abandoned epic. It is
+//     never filled here: only the edit that abandons the epic dates it
+//     (saveEdit), so an unrelated write to an epic abandoned before the date
+//     was recorded does not date the abandon to itself.
+func stampTimestamps(t, prior *Ticket) {
 	now := time.Now().UTC()
 	t.Updated = now
 	if t.Created.IsZero() {
 		t.Created = now
 	}
-	if t.Status == StatusDone || t.Status == StatusClosed {
+	switch {
+	case !isTerminal(t):
+		t.Completed = time.Time{}
+	case prior == nil:
 		if t.Completed.IsZero() {
 			t.Completed = now
 		}
-	} else {
-		t.Completed = time.Time{}
+	case isTerminal(prior) && prior.Type != TypeEpic:
+		// An epic's stored status is advisory, so a demoted epic's says nothing
+		// about when the leaf it became finished.
+		t.Completed = prior.Completed
+	default:
+		t.Completed = now
 	}
 	if t.Type == TypeEpic {
 		t.Completed = time.Time{}
+	}
+	if t.Type != TypeEpic || !t.Abandoned {
+		t.AbandonedAt = time.Time{}
 	}
 }
 
@@ -1181,14 +1220,14 @@ func processUmask() fs.FileMode {
 // handled — the window is one write, every error path inside it removes the
 // temp file itself, and a stranded file is inert: it parses as nothing, and
 // listStored and Resolve select on the `.md` suffix it does not have.
-func (s *FileStore) writeTicket(t *Ticket) error {
+func (s *FileStore) writeTicket(t, prior *Ticket) error {
 	// Resolve the path before the stamping below, which mutates the caller's
 	// ticket: a rejected ID must not leave it looking as if it were persisted.
 	path, err := s.ticketFile(t.ID)
 	if err != nil {
 		return err
 	}
-	stampTimestamps(t)
+	stampTimestamps(t, prior)
 	// The abandon intent is an epic's alone. Cleared at the write choke point
 	// rather than trusted from the caller, so demoting an epic drops the flag
 	// however the demotion was written.
