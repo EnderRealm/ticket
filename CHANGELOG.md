@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `tk ui`'s `c` capture prompt no longer cuts an idea at 256 characters: the whole idea reaches `/brainstorm`, pasted newlines arrive as spaces, and the prompt wraps within the terminal width over up to five rows that follow the cursor instead of running past the edge on one. The detail overlay now sizes itself around the prompt, status and warning rows rather than having its top pushed off screen by them.
+
 ## [8.7.0] - 2026-09-21
 
 ### Added

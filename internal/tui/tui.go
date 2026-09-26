@@ -133,7 +133,9 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 	// Initialize the capture prompt.
 	ci := textinput.New()
 	ci.Placeholder = "Describe the idea…"
-	ci.CharLimit = 256
+	// No limit: a capture is a rough paragraph, and a cut here would reach
+	// /brainstorm silently truncated. capturePromptView wraps it instead.
+	ci.CharLimit = 0
 
 	a := App{
 		store:        store,
@@ -674,7 +676,7 @@ func (a App) View() string {
 	footer, footerLines := a.footerView()
 	captureRow, captureLines := "", 0
 	if a.overlay != overlayNone && a.captureActive {
-		captureRow, captureLines = a.capturePromptView(), 1
+		captureRow, captureLines = a.capturePromptView()
 	}
 	statusRows, statusLines := "", 0
 	if a.overlay != overlayNone && a.status != "" {
@@ -711,21 +713,31 @@ func (a App) View() string {
 			left += strings.Repeat(" ", gap) + right
 		}
 	}
-	b.WriteString(left)
-	b.WriteString("\n")
-	b.WriteString(sepStyle.Render(strings.Repeat("─", a.width)))
-	b.WriteString("\n")
+	if a.overlay == overlayDetail {
+		// The detail fills the terminal by itself, so the header and dimmed
+		// board above it never reached the screen — the renderer keeps a frame's
+		// trailing rows — and each row appended below pushed the detail's top
+		// off instead. Sized to leave the capture, status and warning rows, it
+		// keeps the frame at exactly a.height.
+		a.detail.setSize(a.width, max(1, a.height-captureLines-statusLines-warnLines))
+		b.WriteString(a.detail.view())
+	} else {
+		b.WriteString(left)
+		b.WriteString("\n")
+		b.WriteString(sepStyle.Render(strings.Repeat("─", a.width)))
+		b.WriteString("\n")
 
-	// Tab content.
-	content := a.dashboard.view()
+		// Tab content.
+		content := a.dashboard.view()
 
-	// If overlay active, dim the background content.
-	if a.overlay != overlayNone {
-		content = StyleDim.Render(content)
-		content += "\n" + a.renderOverlay()
+		// If overlay active, dim the background content.
+		if a.overlay != overlayNone {
+			content = StyleDim.Render(content)
+			content += "\n" + a.renderOverlay()
+		}
+
+		b.WriteString(content)
 	}
-
-	b.WriteString(content)
 
 	// Overlays (detail/form) render their own footer; the list-view separator
 	// and command/help bar only belong to the dashboard and epics tabs.
@@ -924,10 +936,64 @@ func (a App) renderCommandBar() string {
 	return prompt + a.cmdBar.View()
 }
 
-// capturePromptView renders the capture prompt as one padded row.
-func (a App) capturePromptView() string {
+// captureRowsMax caps the rows the capture prompt may claim, so a long idea
+// cannot starve the content area; the rows shown follow the cursor.
+const captureRowsMax = 5
+
+// capturePromptView renders the capture prompt wrapped within the width, up to
+// captureRowsMax rows, and returns the row count. The textinput's own View is
+// one row that scrolls horizontally past the terminal edge, so the idea is
+// wrapped here and the cursor drawn at its position. One column is held back
+// so a cursor after the last rune never pushes a full row past the width.
+func (a App) capturePromptView() (string, int) {
 	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
-	return pad.Render(StyleInputLabel.Render("capture: ") + a.captureBar.View())
+	label := StyleInputLabel.Render("capture: ")
+	value := []rune(a.captureBar.Value())
+	if len(value) == 0 {
+		return pad.Render(label + a.captureBar.View()), 1
+	}
+
+	width := a.width - 2 - lipgloss.Width(label) - 1
+	if width < 1 {
+		width = 1
+	}
+	wrapped := wrapText(string(value), width)
+	pos := a.captureBar.Position()
+	cursorRow := 0
+	for i, wl := range wrapped {
+		if wl.start <= pos {
+			cursorRow = i
+		}
+	}
+	first := 0
+	if cursorRow >= captureRowsMax {
+		first = cursorRow - captureRowsMax + 1
+	}
+	last := min(len(wrapped), first+captureRowsMax)
+
+	indent := strings.Repeat(" ", lipgloss.Width(label))
+	lines := make([]string, 0, last-first)
+	for i := first; i < last; i++ {
+		text := wrapped[i].text
+		if i == cursorRow {
+			runes := []rune(text)
+			col := min(pos-wrapped[i].start, len(runes))
+			cur := a.captureBar.Cursor
+			if col < len(runes) {
+				cur.SetChar(string(runes[col]))
+				text = string(runes[:col]) + cur.View() + string(runes[col+1:])
+			} else {
+				cur.SetChar(" ")
+				text += cur.View()
+			}
+		}
+		prefix := indent
+		if i == first {
+			prefix = label
+		}
+		lines = append(lines, pad.Render(prefix+text))
+	}
+	return strings.Join(lines, "\n"), len(lines)
 }
 
 // filterInfoText returns the unstyled filter segment for the current state, so
@@ -986,7 +1052,7 @@ func (a App) footerView() (string, int) {
 	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
 
 	if a.captureActive {
-		return a.capturePromptView(), 1
+		return a.capturePromptView()
 	}
 	if a.cmdActive {
 		return pad.Render(a.renderCommandBar()), 1

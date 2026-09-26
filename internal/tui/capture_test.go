@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // harmlessTemplate is the default template with its program swapped for
@@ -372,5 +374,150 @@ func TestCaptureHelpAdvertisesKeys(t *testing.T) {
 	detailHelp := strings.Join(d.helpLines(), " ")
 	if !strings.Contains(detailHelp, "(c)apture") {
 		t.Errorf("detail help should advertise (c)apture, got:\n%s", detailHelp)
+	}
+}
+
+// longIdea is a paragraph-length idea of well over 1000 runes, with a marker
+// at the end so a cut anywhere shows.
+func longIdea() string {
+	return strings.Repeat("capture the whole paragraph intact ", 32) + "END-OF-IDEA"
+}
+
+// pasteIdea sends idea as a single bracketed paste into the open prompt.
+func pasteIdea(t *testing.T, a App, idea string) App {
+	t.Helper()
+	model, _ := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(idea), Paste: true})
+	return model.(App)
+}
+
+// spawnedCommand submits the open prompt under a template that writes
+// {command} to a file, and returns what the spawned shell wrote.
+func spawnedCommand(t *testing.T, f globalFixture, submit func(App) App) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "command")
+	a := f.app(t, "warp", `printf '%s' "{command}" > '`+out+`'`)
+	a = press(t, a, "c")
+	a = submit(a)
+	model, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	a = model.(App)
+	if cmd == nil {
+		t.Fatal("enter on the idea returned no command")
+	}
+	if status, _ := cmd().(statusMsg); !strings.HasPrefix(string(status), "Launching /brainstorm") {
+		t.Fatalf("expected a launch, got %q", status)
+	}
+	// The spawn is detached; wait for the shell to finish writing.
+	var got []byte
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		got, _ = os.ReadFile(out)
+		if strings.HasSuffix(string(got), "END-OF-IDEA") {
+			break
+		}
+	}
+	return string(got)
+}
+
+func TestCaptureLongIdeaSpawnsInFull(t *testing.T) {
+	idea := longIdea()
+	if n := len([]rune(idea)); n < 1000 {
+		t.Fatalf("test idea is %d runes, want 1000+", n)
+	}
+	got := spawnedCommand(t, newGlobalFixture(t), func(a App) App {
+		a = pasteIdea(t, a, idea)
+		if v := a.captureBar.Value(); v != idea {
+			t.Errorf("the prompt holds %d runes of the %d pasted", len([]rune(v)), len([]rune(idea)))
+		}
+		return a
+	})
+	if want := "/brainstorm " + strings.TrimSpace(idea); got != want {
+		t.Errorf("spawned command is %d runes, want %d:\ngot  %q\nwant %q", len([]rune(got)), len([]rune(want)), got, want)
+	}
+}
+
+func TestCapturePastedNewlinesCollapse(t *testing.T) {
+	got := spawnedCommand(t, newGlobalFixture(t), func(a App) App {
+		return pasteIdea(t, a, "first line\nsecond line\nEND-OF-IDEA")
+	})
+	if want := "/brainstorm first line second line END-OF-IDEA"; got != want {
+		t.Errorf("spawned command = %q, want %q", got, want)
+	}
+}
+
+// captureRows returns the rows the open capture prompt occupies in a frame:
+// the row carrying the label and those after it that belong to the prompt.
+func captureRows(t *testing.T, out string) []string {
+	t.Helper()
+	rows := strings.Split(out, "\n")
+	for i, row := range rows {
+		if strings.Contains(row, "capture:") {
+			end := i + 1
+			for end < len(rows) && strings.HasPrefix(rows[end], strings.Repeat(" ", 10)) && strings.TrimSpace(rows[end]) != "" {
+				end++
+			}
+			return rows[i:end]
+		}
+	}
+	t.Fatalf("no capture prompt in the frame:\n%s", out)
+	return nil
+}
+
+func TestCaptureLongIdeaWrapsWithinWidth(t *testing.T) {
+	const w = 80
+	f := newGlobalFixture(t)
+	a := f.app(t, "warp", "true {command}")
+	model, _ := a.Update(tea.WindowSizeMsg{Width: w, Height: 24})
+	a = press(t, model.(App), "c")
+
+	a = pasteIdea(t, a, "a short idea, then more words")
+	a = pasteIdea(t, a, strings.Repeat(" wrapping", 12))
+	_, n := a.capturePromptView()
+	if n < 2 {
+		t.Fatalf("an idea past one row rendered in %d row(s), want it wrapped", n)
+	}
+
+	a = pasteIdea(t, a, longIdea())
+	view, n := a.capturePromptView()
+	if n != captureRowsMax {
+		t.Errorf("a long idea rendered in %d rows, want the %d-row cap", n, captureRowsMax)
+	}
+	for _, row := range strings.Split(view, "\n") {
+		if lipgloss.Width(row) > w {
+			t.Errorf("capture row is %d columns wide, want at most %d: %q", lipgloss.Width(row), w, row)
+		}
+	}
+	if !strings.Contains(view, "END-OF-IDEA") {
+		t.Errorf("the rows shown do not follow the cursor to the idea's end:\n%s", view)
+	}
+	if rows := captureRows(t, a.View()); len(rows) != captureRowsMax {
+		t.Errorf("the frame shows %d prompt rows, want %d", len(rows), captureRowsMax)
+	}
+}
+
+func TestCapturePromptKeepsFrameHeight(t *testing.T) {
+	const w, h = 80, 24
+	f := newGlobalFixture(t)
+
+	list := f.app(t, "warp", "true {command}")
+	model, _ := list.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	list = pasteIdea(t, press(t, model.(App), "c"), longIdea())
+
+	detail := onTab(t, f.app(t, "warp", "true {command}"), tabDone, "a-0002")
+	detail = press(t, detail, "enter")
+	if detail.overlay != overlayDetail {
+		t.Fatalf("enter opened overlay %v, want the detail", detail.overlay)
+	}
+	model, _ = detail.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	detail = pasteIdea(t, press(t, model.(App), "c"), longIdea())
+
+	for name, a := range map[string]App{"list": list, "detail": detail} {
+		if !a.captureActive {
+			t.Fatalf("%s: the capture prompt is not open", name)
+		}
+		if _, n := a.capturePromptView(); n != captureRowsMax {
+			t.Fatalf("%s: prompt is %d rows, want it at the %d-row maximum", name, n, captureRowsMax)
+		}
+		if got := frameHeight(a.View()); got != h {
+			t.Errorf("%s: frame is %d rows with the prompt open, want exactly %d", name, got, h)
+		}
 	}
 }
