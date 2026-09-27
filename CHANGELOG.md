@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.8.0] - 2026-09-26
 
 ### Added
 - `tk query` JSONL and the MCP ticket shapes (`ticket_list`, `ticket_show` and the other list tools) carry `updated`, the ticket's last write, and `closed`, the time it entered `done` or `closed`, both RFC 3339 UTC. `closed` is present only while the ticket is in one of those statuses, so a `completed` date hand-edited onto a live ticket never surfaces. An abandoned epic is dated by its abandon: the edit that abandons it records `abandoned-at` in the epic's frontmatter, and while the epic reads `closed` its completion date — in `tk show`, the TUI and `closed` — is the later of that and its last child's finish, where it used to be the last child's alone, and none at all for a childless epic. Tickets last written before tk stored these dates omit the keys rather than report a zero time, and an epic abandoned before `abandoned-at` existed reads no completion date until it is set `closed` again; nothing is backfilled. `completed` is now stamped only by a write that moves a ticket into `done` or `closed` and kept as stored by any write that leaves it there — `tk init`'s migration of a repo's `.tickets/` included — where a note, retitle, other edit or migration of a finished ticket with no `completed` used to stamp the write's time as its finish. `closed` and `abandoned-at` become reserved keys, so an extra field can no longer shadow or fabricate them; an existing extra field named either is dropped on the ticket's next write.
