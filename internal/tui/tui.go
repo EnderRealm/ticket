@@ -85,6 +85,15 @@ type App struct {
 	captureActive bool
 	captureNS     string
 
+	// Checkout offer: armed by OfferCheckout when the board was resolved from
+	// the working directory. checkoutCfg is the config execDir resolves
+	// through, updated in place once a path is recorded; checkoutDir is the
+	// working directory offered. record is the pending y/n prompt, nil when
+	// none is open.
+	checkoutCfg *project.Config
+	checkoutDir string
+	record      *recordOffer
+
 	// Layout
 	width  int
 	height int
@@ -155,6 +164,18 @@ func New(ticketsDir, project, version, spawnCommand, workDir string, unregistere
 	a.dashboard.activeTab = tabInbox
 	a.dashboard.ns = project
 	a.dashboard.sortIdx, a.dashboard.sortDir = defaultSort(tabInbox)
+	return a
+}
+
+// OfferCheckout arms `w` to offer recording dir as the board's project's local
+// path when a spawn is refused for want of one. The caller arms it only when
+// the board was resolved from the working directory — not from --project or
+// --repo — and passes that directory, and cfg must be the config the execDir
+// handed to New reads, since a confirmed record is written into it so the
+// retried spawn resolves the new path.
+func (a App) OfferCheckout(cfg *project.Config, dir string) App {
+	a.checkoutCfg = cfg
+	a.checkoutDir = dir
 	return a
 }
 
@@ -356,6 +377,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.captureActive {
 			return a.updateCapturePrompt(msg)
 		}
+		if a.record != nil {
+			return a.updateRecordPrompt(msg)
+		}
 
 		// Ctrl+K toggles command bar.
 		if msg.String() == "ctrl+k" {
@@ -503,7 +527,7 @@ func (a App) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			return a, yankID(a.detail.ticket.ID)
 		case "w":
-			return a, a.spawnWork(a.detail.ticket, a.detail.qid)
+			return a.startWork(a.detail.ticket, a.detail.qid)
 		case "c":
 			return a.startCapture(a.detail.ns)
 		case "u":
@@ -640,7 +664,7 @@ func (a App) updateTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "w":
 		if t := a.dashboard.selected(); t != nil {
-			return a, a.spawnWork(t, a.dashboard.qid(t))
+			return a.startWork(t, a.dashboard.qid(t))
 		}
 	case "u":
 		if t := a.dashboard.selected(); t != nil {
@@ -674,9 +698,14 @@ func (a App) View() string {
 	// authoritative for layout; the Update-time contentHeight() only feeds the
 	// scroll math, which a stale-by-one footer state can never push to overflow.
 	footer, footerLines := a.footerView()
-	captureRow, captureLines := "", 0
-	if a.overlay != overlayNone && a.captureActive {
-		captureRow, captureLines = a.capturePromptView()
+	promptRow, promptLines := "", 0
+	if a.overlay != overlayNone {
+		switch {
+		case a.captureActive:
+			promptRow, promptLines = a.capturePromptView()
+		case a.record != nil:
+			promptRow, promptLines = a.recordPromptView()
+		}
 	}
 	statusRows, statusLines := "", 0
 	if a.overlay != overlayNone && a.status != "" {
@@ -686,7 +715,7 @@ func (a App) View() string {
 	if a.warning != "" {
 		warnLines = 1
 	}
-	contentH := a.height - 3 - footerLines - captureLines - statusLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + capture + status + warning
+	contentH := a.height - 3 - footerLines - promptLines - statusLines - warnLines // header(1) + topsep(1) + botsep(1) + footer + prompt + status + warning
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -717,9 +746,9 @@ func (a App) View() string {
 		// The detail fills the terminal by itself, so the header and dimmed
 		// board above it never reached the screen — the renderer keeps a frame's
 		// trailing rows — and each row appended below pushed the detail's top
-		// off instead. Sized to leave the capture, status and warning rows, it
+		// off instead. Sized to leave the prompt, status and warning rows, it
 		// keeps the frame at exactly a.height.
-		a.detail.setSize(a.width, max(1, a.height-captureLines-statusLines-warnLines))
+		a.detail.setSize(a.width, max(1, a.height-promptLines-statusLines-warnLines))
 		b.WriteString(a.detail.view())
 	} else {
 		b.WriteString(left)
@@ -748,13 +777,13 @@ func (a App) View() string {
 	}
 
 	// An overlay renders its own footer, so footerView — the only site that
-	// renders the capture prompt and a.status — never runs in that branch: the
-	// prompt `c` opened from a detail would be invisible, and a store rejection
-	// of a save would leave the form open with no feedback at all. Kept above
-	// the warning row so the warning keeps the frame's last line.
-	if captureLines > 0 {
+	// renders the capture and record prompts and a.status — never runs in that
+	// branch: the prompt `c` or `w` opened from a detail would be invisible, and
+	// a store rejection of a save would leave the form open with no feedback at
+	// all. Kept above the warning row so the warning keeps the frame's last line.
+	if promptLines > 0 {
 		b.WriteString("\n")
-		b.WriteString(captureRow)
+		b.WriteString(promptRow)
 	}
 	if statusLines > 0 {
 		b.WriteString("\n")
@@ -801,13 +830,25 @@ const statusRowsMax = 3
 // sits in the second sentence, and that clause is the half the user acts on.
 // The last row kept marks the cut when the message outruns the cap.
 func (a App) statusView() (string, int) {
+	return a.warningRows(a.status)
+}
+
+// recordPromptView renders the open record prompt the way statusView renders
+// a status: a path is the likeliest text to outrun one row.
+func (a App) recordPromptView() (string, int) {
+	return a.warningRows(a.record.prompt())
+}
+
+// warningRows wraps text over up to statusRowsMax rows in the warning style,
+// marking the cut when it runs longer, and reports the row count.
+func (a App) warningRows(text string) (string, int) {
 	width := a.width - 2
 	if width < 1 {
 		width = 1
 	}
 	pad := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
 
-	wrapped := wrapText(a.status, width)
+	wrapped := wrapText(text, width)
 	lines := make([]string, 0, statusRowsMax)
 	for i, wl := range wrapped {
 		if i == statusRowsMax {
@@ -1053,6 +1094,9 @@ func (a App) footerView() (string, int) {
 
 	if a.captureActive {
 		return a.capturePromptView()
+	}
+	if a.record != nil {
+		return a.recordPromptView()
 	}
 	if a.cmdActive {
 		return pad.Render(a.renderCommandBar()), 1

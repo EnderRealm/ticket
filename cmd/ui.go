@@ -35,6 +35,9 @@ var uiCmd = &cobra.Command{
 		// is not this board's, and Root has none.
 		execDir := func(ns string) (string, error) { return project.ExecutionDir(cfg, ns) }
 		app := tui.New(ticketsDir, projectName, version(), spawnCommand, workDir, unregistered, execDir)
+		if dir := uiCheckoutCandidate(); dir != "" {
+			app = app.OfferCheckout(&cfg, dir)
+		}
 		p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		restoreWarnings := tui.CaptureWarnings(p)
 		defer restoreWarnings()
@@ -67,4 +70,16 @@ func uiWorkDir(ticketsDir, projectName string, cfg project.Config) string {
 	}
 	dir, _ := repoDir()
 	return dir
+}
+
+// uiCheckoutCandidate is the directory `w` may offer to record as the board's
+// project's local path: the working directory, when the board was resolved
+// from it. A board selected by --project or --repo was not, so the working
+// directory says nothing about where that project's checkout is and there is
+// no candidate.
+func uiCheckoutCandidate() string {
+	if projectFlag != "" || repoFlag != "" {
+		return ""
+	}
+	return mustGetwd()
 }

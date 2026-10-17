@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `tk ui`'s `w` offers to record the checkout when a spawn is refused because the board's own project — `store: central` in the shared config — has no `path` in `~/.ticket/config.yaml`: `<project> has no local path — record <dir> as its checkout? (y/n)`. `y` writes that one `path` to the local config (the shared catalog and every other local entry and key are left as they were) and runs the spawn; `n` or `esc` writes nothing and leaves it refused. It is offered only when the board was resolved from the working directory (no `--project`, no `--repo`), the ticket is the board's own project's (not a foreign child or a Root ticket) and the working directory is the top level of a main checkout (not a subdirectory or a linked worktree). The refusal for such a project, from `w`, `tk verify` and `ticket_verify` alike, now reads `project "<name>" has no local path in ~/.ticket/config.yaml` rather than saying it has no checkout registered. Library: `project.RecordableCheckout`, `project.RecordLocalPath`.
+
 ## [8.8.0] - 2026-09-26
 
 ### Added

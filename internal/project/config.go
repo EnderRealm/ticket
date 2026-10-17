@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -262,6 +263,43 @@ func ConfigPath() (string, error) {
 		return filepath.Join(root, configDirName, configFileName), nil
 	}
 	return homeConfigPath()
+}
+
+// localConfigName is ConfigPath with the home directory shown as ~, for a
+// message that names the file. A ConfigPath that does not resolve names the
+// default location rather than failing the message it is part of.
+func localConfigName() string {
+	path, err := ConfigPath()
+	if err != nil {
+		return filepath.Join("~", configDirName, configFileName)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(path, home+string(os.PathSeparator)) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
+// RecordLocalPath records dir as the project name's `path` in the local
+// config alone — ConfigPath, so a TK_STORE_ROOT run writes its own — and never
+// touches the shared config. Save is not used because it rewrites both halves:
+// `path` is machine-local, and the shared catalog in the central store has no
+// business changing because one machine learned where a checkout is. The local
+// file is read on its own and written back with only that one field changed,
+// so the project's other local fields, every other project entry and every
+// top-level key keep the values they had.
+func RecordLocalPath(name, dir string) error {
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+	local, err := loadFile(path)
+	if err != nil {
+		return err
+	}
+	p := local.Projects[name]
+	p.Path = dir
+	local.Projects[name] = p
+	return writeFileAtomic(path, local)
 }
 
 // homeConfigPath returns ~/.ticket/config.yaml — the machine owner's own

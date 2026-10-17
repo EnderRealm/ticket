@@ -166,6 +166,7 @@ func TestProjectFromDir(t *testing.T) {
 }
 
 func TestExecutionDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	checkout := t.TempDir()
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
@@ -183,7 +184,7 @@ func TestExecutionDir(t *testing.T) {
 	}{
 		{"registered", checkout, ""},
 		{RootNamespace, "", "Root has no repository"},
-		{"pathless", "", `project "pathless" has no checkout registered on this machine`},
+		{"pathless", "", "project \"pathless\" has no local path in ~/.ticket/config.yaml"},
 		{"unmarked", "", `project "unmarked" has no checkout registered on this machine`},
 		{"unknown", "", `project "unknown" has no checkout registered on this machine`},
 		{"gone", "", `project "gone" checkout ` + filepath.Join(checkout, "missing") + " is not a directory on this machine"},
@@ -200,6 +201,74 @@ func TestExecutionDir(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("ExecutionDir = %q, %v; want an error containing %q", got, err, tc.wantErr)
+			}
+			if got != "" {
+				t.Errorf("a refusal returned a directory %q", got)
+			}
+		})
+	}
+}
+
+// A run under TK_STORE_ROOT reads its local config from the override root, so
+// the refusal names that file rather than the home one it never read.
+func TestExecutionDirNamesTheOverrideRootsLocalConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	t.Setenv(StoreRootEnv, root)
+	cfg := Config{Projects: map[string]ProjectConfig{"pathless": {Store: "central"}}}
+	_, err := ExecutionDir(cfg, "pathless")
+	want := `project "pathless" has no local path in ` + filepath.Join(root, ".ticket", "config.yaml")
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ExecutionDir = %v; want an error containing %q", err, want)
+	}
+}
+
+func TestRecordableCheckout(t *testing.T) {
+	base := t.TempDir()
+	checkout := filepath.Join(base, "main")
+	worktree := filepath.Join(base, "wt")
+	plain := filepath.Join(base, "plain")
+	sub := filepath.Join(checkout, "sub")
+	for _, d := range []string{checkout, plain, sub} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRepo(t, checkout)
+	if out, err := exec.Command("git", "-C", checkout, "worktree", "add", "-q", worktree).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	cfg := Config{Projects: map[string]ProjectConfig{
+		"pathless": {Store: "central"},
+		"recorded": {Path: checkout, Store: "central"},
+		"unmarked": {},
+	}}
+
+	cases := []struct {
+		name, project, dir, want, wantErr string
+	}{
+		{"main checkout", "pathless", checkout, canonicalPath(checkout), ""},
+		{"unclean spelling", "pathless", checkout + string(os.PathSeparator) + ".", canonicalPath(checkout), ""},
+		{"subdirectory", "pathless", sub, "", "not a checkout's top level"},
+		{"linked worktree", "pathless", worktree, "", "linked worktree"},
+		{"not a git checkout", "pathless", plain, "", "not a git checkout"},
+		{"empty", "pathless", "", "", "no directory"},
+		{"Root", RootNamespace, checkout, "", "Root has no repository"},
+		{"not central", "unmarked", checkout, "", "not store: central"},
+		{"unknown", "unknown", checkout, "", "not store: central"},
+		{"path already recorded", "recorded", checkout, "", "already records path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RecordableCheckout(cfg, tc.project, tc.dir)
+			if tc.wantErr == "" {
+				if err != nil || got != tc.want {
+					t.Fatalf("RecordableCheckout = %q, %v; want %q", got, err, tc.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("RecordableCheckout = %q, %v; want an error containing %q", got, err, tc.wantErr)
 			}
 			if got != "" {
 				t.Errorf("a refusal returned a directory %q", got)

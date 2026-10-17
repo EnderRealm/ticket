@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/EnderRealm/ticket/v8/internal/project"
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -342,6 +343,68 @@ func (a App) spawnWork(t *ticket.Ticket, qid string) tea.Cmd {
 		return refuseSpawn(err.Error())
 	}
 	return startSpawn(cmd, dir, "Launching /work "+qid+"…")
+}
+
+// recordOffer is the open prompt `w` raised instead of refusing: the project
+// and directory it offers to record, the refusal that stands if the answer is
+// no, and the ticket whose spawn a yes retries.
+type recordOffer struct {
+	ns, dir, reason string
+	ticket          *ticket.Ticket
+	qid             string
+}
+
+func (r recordOffer) prompt() string {
+	return ticket.SanitizeControl(fmt.Sprintf("%s has no local path — record %s as its checkout? (y/n)", r.ns, r.dir))
+}
+
+// startWork is the `w` key. A spawn refused because the board's own project
+// has no local path opens a y/n prompt to record the working directory as
+// that path instead, when OfferCheckout armed the offer and
+// project.RecordableCheckout accepts the directory: the project is `store:
+// central` with no path here and the directory is the top level of its main
+// checkout. A foreign child or a Root ticket reached through an epic is not
+// the board's project, so it is refused as before; so is everything the offer
+// does not cover. The path is never recorded without the answer: the working
+// directory resolved the board by its git remote or its name, which a fork or
+// a same-named directory satisfies as well, and the recorded path is the one
+// every later spawn and verify run executes in.
+func (a App) startWork(t *ticket.Ticket, qid string) (App, tea.Cmd) {
+	ns, _ := ticket.ParseNamespacedID(qid)
+	if t.Type != ticket.TypeEpic && ns == a.projectName && a.checkoutCfg != nil {
+		if _, err := a.execDir(ns); err != nil {
+			if dir, rerr := project.RecordableCheckout(*a.checkoutCfg, ns, a.checkoutDir); rerr == nil {
+				a.record = &recordOffer{ns: ns, dir: dir, reason: err.Error(), ticket: t, qid: qid}
+				return a, nil
+			}
+		}
+	}
+	return a, a.spawnWork(t, qid)
+}
+
+// updateRecordPrompt routes keys while the record prompt is open, swallowing
+// every key but its answers. y writes the path to the local config, updates
+// the config execDir reads, and retries through spawnWork, so every refusal
+// the spawn path holds still applies to the recorded checkout; n and esc
+// write nothing and leave the spawn refused.
+func (a App) updateRecordPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		offer := *a.record
+		a.record = nil
+		if err := project.RecordLocalPath(offer.ns, offer.dir); err != nil {
+			return a, refuseSpawn("recording the path failed: " + err.Error())
+		}
+		p := a.checkoutCfg.Projects[offer.ns]
+		p.Path = offer.dir
+		a.checkoutCfg.Projects[offer.ns] = p
+		return a, a.spawnWork(offer.ticket, offer.qid)
+	case "n", "esc":
+		reason := a.record.reason
+		a.record = nil
+		return a, refuseSpawn(reason)
+	}
+	return a, nil
 }
 
 // spawnCapture launches a new terminal session running `/brainstorm <idea>`

@@ -63,12 +63,20 @@ func ConfiguredRepoPath(cfg Config, name string) (string, bool) {
 // and not the ticket store, because each of those is a directory the ticket
 // did not name, and a verify command running in one runs somewhere its
 // author never saw.
+//
+// A project the shared config does register, but whose local config records
+// no `path`, is told apart from one registered nowhere: the catalog plainly
+// lists it, so "no checkout registered" reads as a contradiction, and the one
+// thing missing is the local file's `path`.
 func ExecutionDir(cfg Config, namespace string) (string, error) {
 	if IsRoot(namespace) {
 		return "", fmt.Errorf("Root has no repository: a Root ticket is groomed and completed through edits and notes, never run")
 	}
 	path, ok := ConfiguredRepoPath(cfg, namespace)
 	if !ok {
+		if CentralRegistered(cfg, namespace) {
+			return "", fmt.Errorf("project %q has no local path in %s — run `tk init` in its checkout", namespace, localConfigName())
+		}
 		return "", fmt.Errorf("project %q has no checkout registered on this machine — run `tk init` in its repository", namespace)
 	}
 	info, err := os.Stat(path)
@@ -123,6 +131,70 @@ func ValidateExecutionDir(configured, requested string) (string, error) {
 		return "", fmt.Errorf("dir %s is not a worktree of the configured checkout %s: it belongs to another repository", dir, configured)
 	}
 	return dir, nil
+}
+
+// RecordableCheckout decides whether dir may be recorded as the local `path`
+// of the project name, returning it canonical (absolute, symlinks resolved —
+// the form `tk init` records) when it may. Only the gap ExecutionDir reports
+// as a missing local path qualifies: a project `store: central` in the shared
+// config with no `path` here. Root has no repository, a project the catalog
+// does not register has no claim to a checkout, and a recorded path is not
+// replaced from here.
+//
+// dir must be the top level of a main checkout. A subdirectory would record a
+// path ExecutionDir then hands every spawn and verify run as the project root;
+// a linked worktree is a checkout a harness is about to delete; a directory
+// that is not a git worktree is no checkout at all. The main checkout is the
+// worktree whose git dir is the repository's common dir — a linked one has its
+// own git dir under the common dir's worktrees/.
+func RecordableCheckout(cfg Config, name, dir string) (string, error) {
+	if IsRoot(name) {
+		return "", fmt.Errorf("Root has no repository")
+	}
+	if !CentralRegistered(cfg, name) {
+		return "", fmt.Errorf("project %q is not store: central in the shared config", name)
+	}
+	if p := cfg.Projects[name]; p.Path != "" {
+		return "", fmt.Errorf("project %q already records path %s", name, p.Path)
+	}
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("no directory to record")
+	}
+	canon := canonicalPath(dir)
+	top, ok := gitRoot(canon)
+	if !ok {
+		return "", fmt.Errorf("%s is not a git checkout", canon)
+	}
+	if canonicalPath(top) != canon {
+		return "", fmt.Errorf("%s is not a checkout's top level: it is inside the checkout at %s", canon, top)
+	}
+	gd, err := gitDir(canon)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", canon, err)
+	}
+	common, err := gitCommonDir(canon)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", canon, err)
+	}
+	if gd != common {
+		return "", fmt.Errorf("%s is a linked worktree, not the main checkout", canon)
+	}
+	return canon, nil
+}
+
+// gitDir is the canonical path of the worktree at dir's own git directory:
+// the common dir itself for the main worktree, a directory under its
+// worktrees/ for a linked one.
+func gitDir(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository")
+	}
+	gd := strings.TrimSpace(string(out))
+	if gd == "" {
+		return "", fmt.Errorf("not a git repository")
+	}
+	return canonicalPath(gd), nil
 }
 
 // gitCommonDir is the canonical path of the git directory the worktree at dir

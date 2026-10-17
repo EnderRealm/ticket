@@ -1419,3 +1419,116 @@ func TestStoreRootOverrideNonAbsoluteIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// RecordLocalPath writes the machine-local file alone: the shared catalog is
+// byte-for-byte what it was, and the local file keeps every other entry, the
+// project's other local field and every top-level key.
+func TestRecordLocalPathWritesOnlyTheLocalConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	centralRoot := filepath.Join(home, "central")
+	if err := Save(Config{
+		CentralRoot:  centralRoot,
+		GitEmail:     "me@example.com",
+		GitName:      "Me",
+		SyncInterval: "5m",
+		SpawnCommand: "true {dir}",
+		VerifyAllow:  VerifyAllowList{"go"},
+		Projects: map[string]ProjectConfig{
+			"warp":  {Store: "central", AutoLink: true, AutoClose: true, RegisteredAt: "2026-01-01"},
+			"loom":  {Path: "/repo/loom", VerifyTimeout: "5m", Store: "central", AutoLink: true},
+			"local": {Path: "/repo/local"},
+		},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// The project being recorded already carries a local field of its own.
+	localPath := filepath.Join(home, ".ticket", "config.yaml")
+	local, err := loadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Projects["warp"] = ProjectConfig{VerifyTimeout: "300s"}
+	if err := writeFileAtomic(localPath, local); err != nil {
+		t.Fatal(err)
+	}
+	// A comment no marshal reproduces, so a rewrite of the shared file shows
+	// even when it would write back the same values.
+	sharedPath := filepath.Join(centralRoot, configFileName)
+	raw, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedBefore := append([]byte("# shared catalog, hand-edited\n"), raw...)
+	if err := os.WriteFile(sharedPath, sharedBefore, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	warpDir := t.TempDir()
+	if err := RecordLocalPath("warp", warpDir); err != nil {
+		t.Fatalf("RecordLocalPath: %v", err)
+	}
+
+	sharedAfter, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sharedAfter) != string(sharedBefore) {
+		t.Errorf("shared config changed:\nbefore:\n%s\nafter:\n%s", sharedBefore, sharedAfter)
+	}
+
+	after, err := loadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CentralRoot != centralRoot || after.GitEmail != "me@example.com" || after.GitName != "Me" ||
+		after.SyncInterval != "5m" || after.SpawnCommand != "true {dir}" || !slices.Equal(after.VerifyAllow, []string{"go"}) {
+		t.Errorf("top-level local keys not preserved: %+v", after)
+	}
+	if got := after.Projects["warp"]; got.Path != warpDir || got.VerifyTimeout != "300s" {
+		t.Errorf("warp local entry = %+v, want the path recorded beside its verify_timeout", got)
+	}
+	if got := after.Projects["loom"]; got.Path != "/repo/loom" || got.VerifyTimeout != "5m" {
+		t.Errorf("loom local entry = %+v, want it untouched", got)
+	}
+	if got := after.Projects["local"]; got.Path != "/repo/local" {
+		t.Errorf("local-only entry = %+v, want it untouched", got)
+	}
+
+	merged, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir, err := ExecutionDir(merged, "warp"); err != nil || dir != warpDir {
+		t.Errorf("ExecutionDir = %q, %v; want the recorded path %q", dir, err, warpDir)
+	}
+	if p := merged.Projects["warp"]; p.Store != "central" || !p.AutoLink || !p.AutoClose || p.RegisteredAt != "2026-01-01" {
+		t.Errorf("merged warp = %+v, want its shared fields intact", p)
+	}
+}
+
+// Under TK_STORE_ROOT the path lands in the override root's local config, the
+// one that run reads, and the home config is not written.
+func TestRecordLocalPathFollowsTheStoreRootOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+	t.Setenv(StoreRootEnv, root)
+
+	if err := RecordLocalPath("warp", "/repo/warp"); err != nil {
+		t.Fatalf("RecordLocalPath: %v", err)
+	}
+	got, err := loadFile(filepath.Join(root, ".ticket", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Projects["warp"].Path != "/repo/warp" {
+		t.Errorf("override local config = %+v, want warp's path recorded", got.Projects)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".ticket", "config.yaml")); !os.IsNotExist(err) {
+		t.Errorf("home config was written under the override: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, configFileName)); !os.IsNotExist(err) {
+		t.Errorf("shared config was written: %v", err)
+	}
+}

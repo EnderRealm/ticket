@@ -508,6 +508,26 @@ func TestUIWorkDirFallsBackToTheResolvedRepo(t *testing.T) {
 	}
 }
 
+func TestUICheckoutCandidateIsTheWorkingDirectoryOnlyWithoutASelector(t *testing.T) {
+	// The offer to record a checkout stands on the board having been resolved
+	// from the working directory; --project and --repo each say the board came
+	// from somewhere else, so neither leaves a candidate.
+	if got := uiCheckoutCandidate(); got != mustGetwd() {
+		t.Errorf("no selector: candidate = %q, want the working directory %q", got, mustGetwd())
+	}
+	projectFlag = "warp"
+	defer func() { projectFlag = "" }()
+	if got := uiCheckoutCandidate(); got != "" {
+		t.Errorf("--project: candidate = %q, want none", got)
+	}
+	projectFlag = ""
+	repoFlag = "warp"
+	defer func() { repoFlag = "" }()
+	if got := uiCheckoutCandidate(); got != "" {
+		t.Errorf("--repo: candidate = %q, want none", got)
+	}
+}
+
 func TestResolveTicketsDirNamesALegacyLocalStore(t *testing.T) {
 	// The one case a user can mistake for lost tickets: the repo has a
 	// .tickets/ and no central project. The error names that directory and the

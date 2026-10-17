@@ -340,7 +340,7 @@ func TestSpawnRefusesRootAndMissingBindingsBeforeProcessCreation(t *testing.T) {
 
 	a = onTab(t, f.app(t, "ticket", template), tabInbox, "e-0007")
 	a = press(t, a, "w")
-	assertRefused(t, a, marker, "no checkout registered")
+	assertRefused(t, a, marker, `project "ticket" has no local path in ~/.ticket/config.yaml`)
 
 	// From warp's board, whose own checkout exists: the epic's Root child
 	// reached through the detail is still Root's, and an epic is not run.
