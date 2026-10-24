@@ -86,6 +86,33 @@ func ExecutionDir(cfg Config, namespace string) (string, error) {
 	return path, nil
 }
 
+// VerifyTarget resolves which project a ticket in namespace verifies against
+// and that project's checkout. implementation is the ticket's
+// `implementation` field: empty means the ticket's own project, through
+// ExecutionDir exactly as before. Set, it names the project whose checkout the
+// commands run in instead — resolved through ExecutionDir as well, so only a
+// checkout this machine registered with `tk init` qualifies, and every reason
+// that refuses one refuses this one, naming the field. It is a project name and
+// never a path, and a name that does not resolve is refused rather than falling
+// back to the ticket's own checkout: running there would record the ticket's
+// project as evidence for code that lives elsewhere. A Root ticket is refused
+// either way, since Root tickets are never run.
+func VerifyTarget(cfg Config, namespace, implementation string) (name, dir string, err error) {
+	// Root goes through ExecutionDir too, which refuses it whatever the field says.
+	if implementation == "" || IsRoot(namespace) {
+		dir, err := ExecutionDir(cfg, namespace)
+		return namespace, dir, err
+	}
+	if !ValidName(implementation) {
+		return "", "", fmt.Errorf("ticket field implementation %q is not a project name", implementation)
+	}
+	dir, err = ExecutionDir(cfg, implementation)
+	if err != nil {
+		return "", "", fmt.Errorf("ticket field implementation %q: %w", implementation, err)
+	}
+	return implementation, dir, nil
+}
+
 // ValidateExecutionDir decides whether requested is somewhere a ticket whose
 // project is registered at configured may execute, and returns it canonical
 // (absolute, symlinks resolved) when it is. The configured checkout itself is

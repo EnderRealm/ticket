@@ -28,9 +28,10 @@ type verifyJob struct {
 	mu     sync.Mutex
 	result verifyJobResult
 	owner  *mcp.ServerSession
-	// prov is what the job was started to verify: the directory, the contract
-	// and the candidate. A repeated start joins the job only with the same
-	// three, since its report answers for those and no others.
+	// prov is what the job was started to verify: the directory, the
+	// implementation project the ticket names (if any), the contract and the
+	// candidate. A repeated start joins the job only with the same four, since
+	// its report answers for those and no others.
 	prov   ticket.VerifyProvenance
 	seq    uint64
 	cancel context.CancelFunc
@@ -103,8 +104,12 @@ func (v *verifyJobs) start(owner *mcp.ServerSession, id string, prov ticket.Veri
 			return nil, fmt.Errorf("%s already has a verification in another MCP session", id)
 		}
 		if j.prov != prov {
-			return nil, fmt.Errorf("%s already has a verification running in %s (acceptance %s, candidate %q); wait for it or cancel it",
-				id, j.prov.Dir, j.prov.AcceptanceID, ticket.SanitizeControl(j.prov.Candidate))
+			implementation := ""
+			if j.prov.Implementation != "" {
+				implementation = "implementation " + ticket.SanitizeControl(j.prov.Implementation) + ", "
+			}
+			return nil, fmt.Errorf("%s already has a verification running in %s (%sacceptance %s, candidate %q); wait for it or cancel it",
+				id, j.prov.Dir, implementation, j.prov.AcceptanceID, ticket.SanitizeControl(j.prov.Candidate))
 		}
 		return j, nil
 	}

@@ -57,15 +57,18 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	// Eligibility before anything runs: the ticket's namespace is the store's,
-	// and only a registered checkout of that project is somewhere its commands
-	// may execute. Root has none, an unregistered project has none here, and
-	// a checkout that is gone is not stood in for by the process's working
-	// directory. --dir moves an eligible run; it does not make one eligible.
+	// and only a registered checkout of that project — or of the project its
+	// implementation field names — is somewhere its commands may execute. Root
+	// has none, an unregistered project has none here, and a checkout that is
+	// gone is not stood in for by the process's working directory or by the
+	// ticket's own checkout. --dir moves an eligible run; it does not make one
+	// eligible.
 	cfg, err := project.Load()
 	if err != nil {
 		return fmt.Errorf("load ticket config: %w", err)
 	}
-	dir, err := project.ExecutionDir(cfg, store.Project)
+	implementation := t.Extra[ticket.ImplementationField]
+	execProject, dir, err := project.VerifyTarget(cfg, store.Project, implementation)
 	if err != nil {
 		return err
 	}
@@ -105,9 +108,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// The allow-list and the timeout both come from machine-local config only —
 	// there is no flag for either, so nothing in a ticket or the synced store can
 	// widen what runs or how long it may run. --dir moves the directory alone:
-	// the bound still belongs to the ticket's project.
+	// the bound still belongs to the project whose checkout the run resolved to.
 	allow, allowErr := project.VerifyAllow()
-	timeout, timeoutErr := project.VerifyTimeout(cfg, store.Project)
+	timeout, timeoutErr := project.VerifyTimeout(cfg, execProject)
 	policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
 	// Verification children have their own process group. Forward CLI shutdown
 	// through the runner's context and drain that group before leaving.
@@ -120,7 +123,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	prov := ticket.VerifyProvenance{Dir: dir, AcceptanceID: acceptanceID}
+	prov := ticket.VerifyProvenance{Dir: dir, Implementation: implementation, AcceptanceID: acceptanceID}
 	report := ticket.NewVerifyReport(t.ID, prov, results)
 
 	// Record after the run so a store failure degrades to a warning instead of
@@ -141,7 +144,11 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println(string(data))
 	} else {
-		fmt.Printf("verifying %s in %s\n", t.ID, dir)
+		if implementation != "" {
+			fmt.Printf("verifying %s in %s (implementation %s)\n", t.ID, dir, ticket.SanitizeControl(implementation))
+		} else {
+			fmt.Printf("verifying %s in %s\n", t.ID, dir)
+		}
 		for _, r := range results {
 			switch r.Status {
 			case ticket.VerifyUnverified:

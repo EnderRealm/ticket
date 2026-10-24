@@ -72,7 +72,13 @@ Viewing:
   when the ticket is written; the ticket is still created.
 
   Each command runs in the checkout registered on this machine for the
-  ticket's own project, and only there. Eligibility is decided before
+  ticket's own project, and only there — or, when the ticket carries
+  implementation: <project> (tk edit <id> --set implementation=<project>),
+  in the checkout registered here for that project instead, under its
+  verify_timeout, recorded as "implementation <project>" beside the
+  checkout. The field names a project, never a path; one that does not
+  resolve to a registered checkout here is refused, never falling back to
+  the ticket's own. Eligibility is decided before
   anything runs: a Root ticket is refused (Root has no repository), so is
   a ticket in a project with no checkout registered on this machine, and
   so is one whose registered checkout is not a directory here — the

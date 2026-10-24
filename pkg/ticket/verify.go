@@ -541,16 +541,27 @@ func capOutputTail(s string) string {
 	return fmt.Sprintf("... %d bytes of output truncated from the head\n", cut) + s[cut:]
 }
 
+// ImplementationField is the extra field associating a ticket with the project
+// whose repository holds its implementation, when that is not the ticket's own
+// project. It names a project, never a path: verify resolves it only to a
+// checkout registered on this machine (project.VerifyTarget) and refuses the
+// run when it does not resolve, so ticket text selects among checkouts the
+// machine owner registered and grants nothing else.
+const ImplementationField = "implementation"
+
 // VerifyProvenance is what a verify run is evidence about: the directory the
-// commands actually ran in, the identity of the acceptance contract they were
-// run against (CriteriaIdentity of the criteria that ran), and the caller's
-// name for what was under test — a commit, a worktree, a run ID — if it gave
-// one. Candidate is provenance and nothing more: it records what the caller
-// said it was verifying, not that anyone approved it.
+// commands actually ran in, the project that directory is a checkout of when
+// the ticket names one through ImplementationField, the identity of the
+// acceptance contract they were run against (CriteriaIdentity of the criteria
+// that ran), and the caller's name for what was under test — a commit, a
+// worktree, a run ID — if it gave one. Candidate is provenance and nothing
+// more: it records what the caller said it was verifying, not that anyone
+// approved it.
 type VerifyProvenance struct {
-	Dir          string
-	AcceptanceID string
-	Candidate    string
+	Dir            string
+	Implementation string
+	AcceptanceID   string
+	Candidate      string
 }
 
 // maxCandidate bounds the caller-supplied candidate so it cannot swell the
@@ -578,8 +589,9 @@ const recordOutputIndent = "    "
 // criterion text and command are written as RunVerify produced them, already
 // stripped of control characters — the record is replayed by every later read.
 // The first line's shape is fixed; the provenance line after it names where the
-// commands ran, which contract they ran against and, when the caller named one,
-// the candidate — so the record says what was verified, not only how it went.
+// commands ran, the implementation project when the ticket names one, which
+// contract they ran against and, when the caller named one, the candidate — so
+// the record says what was verified, not only how it went.
 // A failing criterion's line is followed by its captured output, already capped
 // to its tail, so the failure a test framework prints last is on the ticket;
 // each output line is stripped of control characters and indented by
@@ -589,7 +601,11 @@ func FormatVerifyRecord(results []VerifyResult, prov VerifyProvenance, at time.T
 	var b strings.Builder
 	fmt.Fprintf(&b, "verify %s: %d pass, %d fail, %d refused, %d unverified\n",
 		at.UTC().Format(time.RFC3339), counts.Pass, counts.Fail, counts.Refused, counts.Unverified)
-	fmt.Fprintf(&b, "checkout %s; acceptance %s", SanitizeControl(prov.Dir), SanitizeControl(prov.AcceptanceID))
+	fmt.Fprintf(&b, "checkout %s", SanitizeControl(prov.Dir))
+	if prov.Implementation != "" {
+		fmt.Fprintf(&b, "; implementation %s", SanitizeControl(prov.Implementation))
+	}
+	fmt.Fprintf(&b, "; acceptance %s", SanitizeControl(prov.AcceptanceID))
 	if candidate := cleanCandidate(prov.Candidate); candidate != "" {
 		fmt.Fprintf(&b, "; candidate %s", candidate)
 	}
@@ -635,17 +651,20 @@ func RecordVerify(store Store, id, record, acceptanceID string) error {
 
 // VerifyReport is the structured result of a verify run, shared by the CLI's
 // --json output and the ticket_verify MCP tool. Dir is the directory the
-// commands actually ran in, AcceptanceID the CriteriaIdentity of the criteria
-// that ran, and Candidate the caller's name for what was under test, absent
-// when it gave none — the same provenance the Test Results record carries.
+// commands actually ran in, Implementation the project it is a checkout of
+// when the ticket names one through ImplementationField, absent otherwise,
+// AcceptanceID the CriteriaIdentity of the criteria that ran, and Candidate the
+// caller's name for what was under test, absent when it gave none — the same
+// provenance the Test Results record carries.
 type VerifyReport struct {
-	ID           string             `json:"id"`
-	Dir          string             `json:"dir"`
-	AcceptanceID string             `json:"acceptance_id"`
-	Candidate    string             `json:"candidate,omitempty"`
-	Summary      VerifyCounts       `json:"summary"`
-	OK           bool               `json:"ok"`
-	Results      []VerifyResultJSON `json:"results"`
+	ID             string             `json:"id"`
+	Dir            string             `json:"dir"`
+	Implementation string             `json:"implementation,omitempty"`
+	AcceptanceID   string             `json:"acceptance_id"`
+	Candidate      string             `json:"candidate,omitempty"`
+	Summary        VerifyCounts       `json:"summary"`
+	OK             bool               `json:"ok"`
+	Results        []VerifyResultJSON `json:"results"`
 	// RecordError reports a failure to write the results back to the ticket.
 	// The results themselves are still valid.
 	RecordError string `json:"record_error,omitempty"`
@@ -673,11 +692,12 @@ type VerifyResultJSON struct {
 func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) VerifyReport {
 	counts := countVerify(results)
 	report := VerifyReport{
-		ID:           id,
-		Dir:          prov.Dir,
-		AcceptanceID: prov.AcceptanceID,
-		Candidate:    cleanCandidate(prov.Candidate),
-		Summary:      counts,
+		ID:             id,
+		Dir:            prov.Dir,
+		Implementation: SanitizeControl(prov.Implementation),
+		AcceptanceID:   prov.AcceptanceID,
+		Candidate:      cleanCandidate(prov.Candidate),
+		Summary:        counts,
 		// A refusal leaves the criterion unchecked, so the run is not ok.
 		OK:      counts.Fail == 0 && counts.Refused == 0,
 		Results: []VerifyResultJSON{},
