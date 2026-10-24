@@ -4,6 +4,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
 // The CLI has no acceptance flag: a description carrying an `## Acceptance
@@ -59,5 +61,53 @@ func TestCreateWarnsOnBareAcceptanceCriteria(t *testing.T) {
 	}
 	if contains(string(warning), "Checked.") {
 		t.Errorf("warning names a criterion that carries a verify command: %q", string(warning))
+	}
+}
+
+// A numbered list under `## Acceptance Criteria` parses to no criteria, so it
+// is not bare either; without its own warning the create would look complete.
+func TestCreateWarnsOnUnparsedAcceptance(t *testing.T) {
+	store := centralStore(t, "cr-unparsed")
+
+	description := "Why it matters.\n\n## Acceptance Criteria\n\n1. First.\n   verify: go test ./a\n2. Second.\n   verify: go test ./b\n"
+	f := createCmd.Flags()
+	if err := f.Set("description", description); err != nil {
+		t.Fatalf("set description: %v", err)
+	}
+	defer func() { _ = f.Set("description", "") }()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	errR, errW, _ := os.Pipe()
+	os.Stdout, os.Stderr = devNull, errW
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+		errR.Close()
+	})
+
+	createErr := runCreate(createCmd, []string{"Numbered criteria ticket"})
+
+	errW.Close()
+	devNull.Close()
+	os.Stdout, os.Stderr = oldStdout, oldStderr
+	warning, _ := io.ReadAll(errR)
+
+	if createErr != nil {
+		t.Fatalf("runCreate: %v", createErr)
+	}
+
+	tickets, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tickets) != 1 {
+		t.Fatalf("store holds %d tickets, want the created one — the warning must not refuse the create", len(tickets))
+	}
+
+	if want := ticket.UnparsedAcceptanceWarning(tickets[0].ID); !contains(string(warning), want) {
+		t.Errorf("stderr = %q, want to contain %q", string(warning), want)
 	}
 }

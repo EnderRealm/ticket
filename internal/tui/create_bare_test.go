@@ -43,6 +43,29 @@ func TestCreateReportsBareAcceptanceCriteria(t *testing.T) {
 	}
 }
 
+func TestCreateReportsUnparsedAcceptance(t *testing.T) {
+	store := ticket.NewFileStore(t.TempDir())
+	a := App{store: store}
+
+	description := "Why it matters.\n\n## Acceptance Criteria\n\n1. First.\n   verify: go test ./..."
+	reported := statusLine(t, a.handleCreateTicket(formSubmitMsg{
+		title:       "Numbered create",
+		description: description,
+		ticketType:  ticket.TypeFeature,
+	}))
+
+	created, err := store.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("got %d tickets, want the create to have gone through", len(created))
+	}
+	if want := ticket.UnparsedAcceptanceWarning(created[0].ID); !strings.Contains(reported, want) {
+		t.Errorf("status line = %q, want it to carry %q", reported, want)
+	}
+}
+
 func TestCreateSaysNothingWhenCriteriaAreAllChecked(t *testing.T) {
 	store := ticket.NewFileStore(t.TempDir())
 	a := App{store: store}

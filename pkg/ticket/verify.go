@@ -205,6 +205,29 @@ func BareAcceptanceWarning(id string, bare []string) string {
 		id, strings.Join(quoted, ", "), id)
 }
 
+// UnparsedAcceptance reports whether body has a non-blank acceptance section
+// from which ParseCriteria extracts no criteria — a numbered list, `*` or `+`
+// bullets, indented bullets or plain prose. Such a section reads as a captured
+// contract in ticket_show, yet `tk verify` and ticket_verify find nothing in
+// it. Exclusive with EmptyAcceptance by construction: BodySections trims the
+// section, so a whitespace-only one is empty rather than unparsed.
+func UnparsedAcceptance(body string) bool {
+	section := AcceptanceCriteria(body)
+	return section != "" && len(ParseCriteria(section)) == 0
+}
+
+// UnparsedAcceptanceWarning is the one phrasing for a section
+// UnparsedAcceptance reports, said the same way by `tk create`, ticket_create
+// and ticket_edit. It names the remedy on the same terms BareAcceptanceWarning
+// does, and for the same reason does not name `tk edit`.
+func UnparsedAcceptanceWarning(id string) string {
+	return fmt.Sprintf("ticket %s has an acceptance section but no criteria parse from it: only a line starting with `- ` in the first column starts a criterion, "+
+		"so a numbered list, `*` or `+` bullets and indented bullets yield none, and verify will report that the ticket has no acceptance criteria. "+
+		"Rewrite each criterion as a `- ` bullet with its `verify: <command>` or `unverifiable: <reason>` line indented beneath it — "+
+		"with ticket_edit on %s and an `acceptance` argument, or by editing that ticket's `## Acceptance Criteria` section.",
+		id, id)
+}
+
 // RunVerify executes each criterion's command in dir, sequentially and in
 // order, each bounded by policy's timeout and by ctx. Criteria without commands
 // yield unverified results. An unusable dir is a single error rather than a

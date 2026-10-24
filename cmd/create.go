@@ -136,6 +136,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if bare := ticket.BareCriteria(t.Body); len(bare) > 0 {
 		fmt.Fprintln(os.Stderr, ticket.BareAcceptanceWarning(t.ID, bare))
 	}
+	if ticket.UnparsedAcceptance(t.Body) {
+		fmt.Fprintln(os.Stderr, ticket.UnparsedAcceptanceWarning(t.ID))
+	}
 
 	return showTicket(store, id, false)
 }

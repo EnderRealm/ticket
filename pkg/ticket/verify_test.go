@@ -1096,3 +1096,80 @@ func TestBareAcceptanceWarning(t *testing.T) {
 		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", got)
 	}
 }
+
+func TestUnparsedAcceptance(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			// The shape that went unreported: three criteria, each with a verify
+			// line, none of which ParseCriteria takes.
+			name: "numbered list with verify lines",
+			body: "Why.\n\n## Acceptance Criteria\n\n1. First.\n   verify: go test ./a\n2. Second.\n   verify: go test ./b\n3. Third.\n   verify: go test ./c\n",
+			want: true,
+		},
+		{
+			name: "parenthesised numbers",
+			body: "Why.\n\n## Acceptance Criteria\n\n1) First.\n  verify: go test ./...\n",
+			want: true,
+		},
+		{
+			name: "star bullets",
+			body: "Why.\n\n## Acceptance Criteria\n\n* First.\n  verify: go test ./...\n",
+			want: true,
+		},
+		{
+			name: "plus bullets",
+			body: "Why.\n\n## Acceptance Criteria\n\n+ First.\n",
+			want: true,
+		},
+		{
+			name: "prose",
+			body: "Why.\n\n## Acceptance Criteria\n\nIt works.\n",
+			want: true,
+		},
+		{
+			name: "dash bullets parse",
+			body: "Why.\n\n## Acceptance Criteria\n\n- First.\n  verify: go test ./...\n",
+		},
+		{
+			// Bare criteria parse; BareCriteria reports those, not this.
+			name: "bare dash bullet parses",
+			body: "Why.\n\n## Acceptance Criteria\n\n- First.\n",
+		},
+		{
+			name: "no acceptance section",
+			body: "Why.\n",
+		},
+		{
+			// EmptyAcceptance's case, not this one.
+			name: "whitespace-only acceptance section",
+			body: "Why.\n\n## Acceptance Criteria\n\n   \n\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UnparsedAcceptance(tc.body); got != tc.want {
+				t.Errorf("UnparsedAcceptance = %v, want %v", got, tc.want)
+			}
+			if tc.want && EmptyAcceptance(&Ticket{Type: TypeFeature, Body: tc.body}) {
+				t.Errorf("EmptyAcceptance also reports this body; the two must be distinct")
+			}
+		})
+	}
+}
+
+func TestUnparsedAcceptanceWarning(t *testing.T) {
+	got := UnparsedAcceptanceWarning("proj/tk-0001")
+	for _, want := range []string{"proj/tk-0001", "`- `", "verify:", "unverifiable:", "ticket_edit", "## Acceptance Criteria"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning %q does not name %q", got, want)
+		}
+	}
+	if strings.Contains(got, "tk edit") {
+		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", got)
+	}
+}

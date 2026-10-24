@@ -197,6 +197,12 @@ type ticketJSON struct {
 	// cheaply; a warning rather than a refusal, so a batch filing path is not
 	// left unable to record the ticket at all.
 	BareAcceptanceWarning string `json:"bare_acceptance_warning,omitempty"`
+	// UnparsedAcceptanceWarning says the stored acceptance section is not
+	// blank but no criterion parses from it, so verify will find none. Set by
+	// ticket_create, and by ticket_edit when the edit wrote a description or an
+	// acceptance value. Distinct from EmptyAcceptanceWarning, which is the
+	// section being absent, and the two never appear together.
+	UnparsedAcceptanceWarning string `json:"unparsed_acceptance_warning,omitempty"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -932,7 +938,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		content := ticketContent{
 			Title:       args.Title,
@@ -1092,6 +1098,9 @@ func (c ticketContent) warn(j *ticketJSON, t *ticket.Ticket) {
 	// checked is a gap whatever the type.
 	j.BareAcceptanceCriteria = ticket.BareCriteria(t.Body)
 	j.BareAcceptanceWarning = ticket.BareAcceptanceWarning(t.ID, j.BareAcceptanceCriteria)
+	if ticket.UnparsedAcceptance(t.Body) {
+		j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
+	}
 }
 
 // destination is where a new ticket lands, resolved from the `repo` and
@@ -1234,7 +1243,7 @@ type editArgs struct {
 func registerEdit(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
-		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. A body field that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. A body field that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
 		for _, f := range []struct{ name, value string }{
 			{"description", args.Description},
@@ -1362,6 +1371,13 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 		// the caller to discover the cascade by listing the epic's children.
 		j := toJSON(t)
 		j.ClosedChildren = closed
+		// Only when this edit wrote the body sections that can carry the
+		// criteria, so an unrelated edit to a ticket already in this state does
+		// not repeat it; read off the stored body after the write, as the create
+		// response is.
+		if (args.Description != "" || args.Acceptance != "") && ticket.UnparsedAcceptance(t.Body) {
+			j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
+		}
 		r, err := jsonResult(j)
 		return r, nil, err
 	})

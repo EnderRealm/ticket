@@ -1405,6 +1405,9 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 	if bare := ticket.BareCriteria(t.Body); len(bare) > 0 {
 		status += "; " + ticket.BareAcceptanceWarning(t.ID, bare)
 	}
+	if ticket.UnparsedAcceptance(t.Body) {
+		status += "; " + ticket.UnparsedAcceptanceWarning(t.ID)
+	}
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },

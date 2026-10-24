@@ -4425,6 +4425,65 @@ func TestCreateReportsBareAcceptanceCriteria(t *testing.T) {
 	}
 }
 
+// A numbered list stores verbatim and parses to no criteria; the response has
+// to say so rather than look like a captured contract until ticket_verify.
+const numberedAcceptance = "1. First.\n   verify: go test ./a\n2. Second.\n   verify: go test ./b\n3. Third.\n   verify: go test ./c"
+
+func TestCreateWarnsOnUnparsedAcceptance(t *testing.T) {
+	session := testServer(t)
+
+	tests := []struct {
+		name string
+		args map[string]any
+		warn bool
+	}{
+		{"numbered list", map[string]any{"title": "Numbered", "description": "Why it matters", "acceptance": numberedAcceptance}, true},
+		{"numbered list carried by the description", map[string]any{"title": "Embedded numbered", "description": "Why it matters\n\n## Acceptance Criteria\n\n" + numberedAcceptance}, true},
+		{"dash bullets", map[string]any{"title": "Bulleted", "description": "Why it matters", "acceptance": "- First.\n  verify: go test ./a"}, false},
+		{"no acceptance", map[string]any{"title": "Uncontracted", "description": "Why it matters"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			created := callObject(t, session, "ticket_create", tt.args)
+			warning, _ := created["unparsed_acceptance_warning"].(string)
+			if tt.warn && !strings.Contains(warning, created["id"].(string)) {
+				t.Fatalf("unparsed_acceptance_warning = %q, want one naming %v", warning, created["id"])
+			}
+			if !tt.warn && warning != "" {
+				t.Errorf("unexpected unparsed_acceptance_warning %q", warning)
+			}
+			// Distinct from the no-acceptance case: one response never carries
+			// both.
+			if warning != "" && created["empty_acceptance_warning"] != nil {
+				t.Errorf("response carries both unparsed and empty acceptance warnings: %v", created)
+			}
+		})
+	}
+}
+
+func TestEditWarnsOnUnparsedAcceptance(t *testing.T) {
+	session := testServer(t)
+	id := createTicketID(t, session, map[string]any{"title": "Edited", "description": "Why it matters", "acceptance": "- First.\n  verify: go test ./a"})
+
+	edited := callObject(t, session, "ticket_edit", map[string]any{"id": id, "acceptance": numberedAcceptance})
+	warning, _ := edited["unparsed_acceptance_warning"].(string)
+	if !strings.Contains(warning, id) {
+		t.Fatalf("unparsed_acceptance_warning = %q, want one naming %s", warning, id)
+	}
+
+	// An edit that writes no body section the criteria live in does not repeat
+	// it.
+	edited = callObject(t, session, "ticket_edit", map[string]any{"id": id, "title": "Retitled"})
+	if w, _ := edited["unparsed_acceptance_warning"].(string); w != "" {
+		t.Errorf("title-only edit carried unparsed_acceptance_warning %q", w)
+	}
+
+	edited = callObject(t, session, "ticket_edit", map[string]any{"id": id, "acceptance": "- First.\n  verify: go test ./a"})
+	if w, _ := edited["unparsed_acceptance_warning"].(string); w != "" {
+		t.Errorf("edit restoring dash bullets carried unparsed_acceptance_warning %q", w)
+	}
+}
+
 // ─── Root, foreign children and the global graph over MCP ──────────────────
 
 // activateCatalog writes the catalog that activates Root and cross-project
