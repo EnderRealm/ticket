@@ -4439,6 +4439,7 @@ func TestCreateWarnsOnUnparsedAcceptance(t *testing.T) {
 	}{
 		{"numbered list", map[string]any{"title": "Numbered", "description": "Why it matters", "acceptance": numberedAcceptance}, true},
 		{"numbered list carried by the description", map[string]any{"title": "Embedded numbered", "description": "Why it matters\n\n## Acceptance Criteria\n\n" + numberedAcceptance}, true},
+		{"indented dash bullets", map[string]any{"title": "Indented", "description": "Why it matters", "acceptance": "  - First.\n    verify: go test ./a\n  - Second.\n    verify: go test ./b"}, true},
 		{"dash bullets", map[string]any{"title": "Bulleted", "description": "Why it matters", "acceptance": "- First.\n  verify: go test ./a"}, false},
 		{"no acceptance", map[string]any{"title": "Uncontracted", "description": "Why it matters"}, false},
 	}

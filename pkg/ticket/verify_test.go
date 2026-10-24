@@ -176,6 +176,12 @@ func TestAcceptanceSectionAgreement(t *testing.T) {
 			body: "Description.\n\n## Design\n\n- not a criterion\n",
 		},
 		{
+			// The first bullet is indented like the rest, so it parses like the
+			// rest: none of them.
+			name: "indented bullets parse to none",
+			body: "Description.\n\n## Acceptance Criteria\n\n  - a\n    verify: true\n  - b\n    verify: false\n",
+		},
+		{
 			name: "acceptance last before test results",
 			body: "Description.\n\n## Design\n\nSome design.\n\n## Acceptance Criteria\n\n- a\n  verify: true\n\n## Test Results\n\n- PASS (exit 0): something\n",
 			want: []Criterion{{Text: "a", Command: "true"}},
@@ -1128,6 +1134,20 @@ func TestUnparsedAcceptance(t *testing.T) {
 		{
 			name: "prose",
 			body: "Why.\n\n## Acceptance Criteria\n\nIt works.\n",
+			want: true,
+		},
+		{
+			// Every bullet is indented, the first as much as the rest, so none
+			// starts a criterion — the section's first line included.
+			name: "indented dash bullets",
+			body: "Why.\n\n## Acceptance Criteria\n\n  - First.\n    verify: go test ./a\n  - Second.\n    verify: go test ./b\n",
+			want: true,
+		},
+		{
+			// The same list split across two acceptance blocks: the later block's
+			// first line is merged in indented, as written.
+			name: "indented dash bullets across two acceptance blocks",
+			body: "Why.\n\n## Acceptance Criteria\n\n  - First.\n    verify: go test ./a\n\n## Acceptance Notes\n\n  - Second.\n    verify: go test ./b\n",
 			want: true,
 		},
 		{

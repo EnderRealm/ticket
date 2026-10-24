@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -727,6 +728,9 @@ func replaceAcceptanceSection(body, content string) (string, bool) {
 //     appended to the earlier one in body order rather than replacing it.
 //   - Any other `## ` heading closes the acceptance section, and the text under
 //     it lands in no returned field.
+//   - Each acceptance block is trimmed of its surrounding blank lines but keeps
+//     the indent of its first line, so ParseCriteria judges that line by the
+//     same column rule as every other.
 //
 // Outside the acceptance section an unrecognised `## ` heading folds into the
 // section in progress, because descriptions routinely carry their own
@@ -749,7 +753,12 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 			buf = nil
 			return
 		}
-		text := strings.TrimSpace(strings.Join(buf, "\n"))
+		text := strings.Join(buf, "\n")
+		if current == &acceptance {
+			text = trimBlankLines(text)
+		} else {
+			text = strings.TrimSpace(text)
+		}
 		if current == &acceptance && acceptance != "" {
 			if text == "" {
 				buf = nil
@@ -784,6 +793,16 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 	}
 	flush()
 	return
+}
+
+// trimBlankLines drops the blank lines around s and its trailing whitespace,
+// but keeps the indent of its first line. ParseCriteria classifies a line by
+// its leading column, so trimming that indent alone would turn an indented
+// list's first bullet into a criterion while every later one stays none.
+func trimBlankLines(s string) string {
+	s = strings.TrimRightFunc(s, unicode.IsSpace)
+	lead := len(s) - len(strings.TrimLeftFunc(s, unicode.IsSpace))
+	return s[strings.LastIndexByte(s[:lead], '\n')+1:]
 }
 
 // parseTimeValue extracts a time.Time from a YAML-decoded frontmatter value,
