@@ -719,7 +719,8 @@ type showArgs struct {
 	ID           string    `json:"id" jsonschema:"ticket ID (supports partial matching)"`
 	NotesLimit   *FlexInt  `json:"notes_limit,omitempty" jsonschema:"max number of notes to return, newest first (default 20, 0 for all)"`
 	NotesOffset  *FlexInt  `json:"notes_offset,omitempty" jsonschema:"number of notes to skip, counted from newest (default 0)"`
-	MetadataOnly *FlexBool `json:"metadata_only,omitempty" jsonschema:"when true, omit notes entirely"`
+	MetadataOnly *FlexBool `json:"metadata_only,omitempty" jsonschema:"when true, return the headers alone: omit notes and the body (description, design, acceptance_criteria, test_results); notes_total and audit are still reported"`
+	OmitNotes    *FlexBool `json:"omit_notes,omitempty" jsonschema:"when true, omit notes entirely but return the full body"`
 }
 
 const defaultShowNotesLimit = 20
@@ -799,7 +800,7 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, metadata_only=true for none, or notes_offset to page further back. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `bare-acceptance`, `empty-acceptance`, `envelope-fragment`, `legacy-review-log`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `bare-acceptance`, `empty-acceptance`, `envelope-fragment`, `legacy-review-log`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -869,6 +870,10 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 		if args.MetadataOnly != nil {
 			metadataOnly = bool(*args.MetadataOnly)
 		}
+		omitNotes := false
+		if args.OmitNotes != nil {
+			omitNotes = bool(*args.OmitNotes)
+		}
 
 		limit := defaultShowNotesLimit
 		if args.NotesLimit != nil {
@@ -880,8 +885,8 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 		}
 
 		// Slice a newest-first window of size `limit`, paged back by `offset`.
-		// limit<=0 means "all"; metadata_only wins over both.
-		if metadataOnly {
+		// limit<=0 means "all"; metadata_only and omit_notes win over both.
+		if metadataOnly || omitNotes {
 			t.Notes = nil
 		} else if limit > 0 {
 			end := total - offset
@@ -896,7 +901,13 @@ func registerShow(server *mcp.Server, store ticket.Store) {
 		}
 
 		extras.NotesTotal, extras.NotesShown = total, len(t.Notes)
-		r, err := jsonResult(showResultJSON{ticketJSON: toJSON(t), showExtras: extras})
+		j := toJSON(t)
+		// The body is dropped from the response alone: the audit and the
+		// precondition above were taken off the full ticket.
+		if metadataOnly {
+			j.Description, j.Design, j.Acceptance, j.TestResults = "", "", "", ""
+		}
+		r, err := jsonResult(showResultJSON{ticketJSON: j, showExtras: extras})
 		return r, nil, err
 	})
 }

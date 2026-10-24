@@ -124,6 +124,97 @@ func TestShow_MetadataOnlySkipsNotes(t *testing.T) {
 	}
 }
 
+// bodyFields are the ticket body's sections as ticket_show reports them.
+var bodyFields = []string{"description", "design", "acceptance_criteria", "test_results"}
+
+// createFullTicket creates an epic and a done child of it carrying every body
+// section, notes, tags, a dep, a link and an output, and an acceptance
+// criterion the audit flags. It returns the epic's and the child's IDs.
+func createFullTicket(t *testing.T, session *mcp.ClientSession) (string, string) {
+	t.Helper()
+	epic := createTicketID(t, session, map[string]any{"title": "Epic", "type": "epic", "project": "proj"})
+	other := createTicketID(t, session, map[string]any{"title": "Other", "project": "proj"})
+	id := createTicketID(t, session, map[string]any{
+		"title":       "Full",
+		"project":     "proj",
+		"parent":      epic,
+		"tags":        "a,b",
+		"description": "A description.",
+		"design":      "A design.",
+		"acceptance":  bareAcceptance,
+	})
+	callObject(t, session, "ticket_edit", map[string]any{"id": id, "test_results": "All green.", "outputs": map[string]any{"commit": "abc123"}})
+	callObject(t, session, "ticket_dep", map[string]any{"id": id, "dep_id": other, "action": "add"})
+	callObject(t, session, "ticket_link", map[string]any{"id": id, "target_id": other, "action": "add"})
+	callObject(t, session, "ticket_add_note", map[string]any{"id": id, "text": "a note"})
+	editStatus(t, session, other, "done")
+	editStatus(t, session, id, "done")
+	return epic, id
+}
+
+func TestShow_MetadataOnlyOmitsBody(t *testing.T) {
+	session, _ := testCentralServer(t, "proj")
+	epic, id := createFullTicket(t, session)
+
+	full := showResult(t, session, map[string]any{"id": id})
+	for _, field := range bodyFields {
+		if _, present := full[field]; !present {
+			t.Fatalf("fixture carries no %s: %v", field, full)
+		}
+	}
+
+	out := showResult(t, session, map[string]any{"id": id, "metadata_only": true})
+	for _, field := range append(bodyFields, "notes") {
+		if _, present := out[field]; present {
+			t.Errorf("%s should be omitted with metadata_only, got %v", field, out[field])
+		}
+	}
+	for _, field := range []string{"id", "title", "status", "type", "priority", "parent", "deps", "links", "tags", "created", "updated", "closed", "namespace", "outputs", "notes_total", "precondition", "audit"} {
+		if _, present := out[field]; !present {
+			t.Errorf("metadata_only no longer carries %s: %v", field, out)
+		} else if !reflect.DeepEqual(out[field], full[field]) {
+			t.Errorf("metadata_only %s = %v, full show reports %v", field, out[field], full[field])
+		}
+	}
+	if total, _ := out["notes_total"].(float64); int(total) != 1 {
+		t.Errorf("notes_total = %v, want 1", out["notes_total"])
+	}
+
+	fullEpic := showResult(t, session, map[string]any{"id": epic})
+	epicOut := showResult(t, session, map[string]any{"id": epic, "metadata_only": true})
+	for _, field := range []string{"children", "children_total", "counts", "complete"} {
+		if _, present := epicOut[field]; !present {
+			t.Errorf("metadata_only epic no longer carries %s: %v", field, epicOut)
+		} else if !reflect.DeepEqual(epicOut[field], fullEpic[field]) {
+			t.Errorf("metadata_only epic %s = %v, full show reports %v", field, epicOut[field], fullEpic[field])
+		}
+	}
+}
+
+func TestShow_OmitNotesKeepsBody(t *testing.T) {
+	session, _ := testCentralServer(t, "proj")
+	_, id := createFullTicket(t, session)
+
+	full := showResult(t, session, map[string]any{"id": id})
+	out := showResult(t, session, map[string]any{"id": id, "omit_notes": true})
+	if _, present := out["notes"]; present {
+		t.Errorf("notes should be omitted with omit_notes, got %v", out["notes"])
+	}
+	if total, _ := out["notes_total"].(float64); int(total) != 1 {
+		t.Errorf("notes_total = %v, want 1", out["notes_total"])
+	}
+	if shown, _ := out["notes_shown"].(float64); int(shown) != 0 {
+		t.Errorf("notes_shown = %v, want 0", out["notes_shown"])
+	}
+	// Past the notes, omit_notes is the full show.
+	delete(full, "notes")
+	delete(full, "notes_shown")
+	delete(out, "notes_shown")
+	if !reflect.DeepEqual(out, full) {
+		t.Errorf("omit_notes = %v, want the full show without notes %v", out, full)
+	}
+}
+
 func TestShow_NotesOffsetPagesBack(t *testing.T) {
 	session := testServer(t)
 	id := createWithNotes(t, session, "Notes paging", 30)
