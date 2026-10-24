@@ -9,6 +9,9 @@
 ### Changed
 - `ticket_show` with `metadata_only` drops the body — `description`, `design`, `acceptance_criteria` and `test_results` — as well as the notes, so a caller after a ticket's headers no longer pulls its whole contract and verify log. `notes_total`, `precondition`, `audit` and an epic's `children`, `children_total`, `counts` and `complete` are still reported. A caller that needs the body without the notes passes `omit_notes` instead.
 
+### Fixed
+- `tk ui`'s record-checkout `y` no longer overwrites a `path` that `tk init`, a hand edit or another `tk ui` recorded for the project after the prompt opened: `project.RecordLocalPath` re-checks the local config it reads from disk, refuses with `project "<name>" already records path <path> in ~/.ticket/config.yaml` and leaves the file untouched, and the TUI reports that refusal and spawns nothing.
+
 ## [8.8.0] - 2026-09-26
 
 ### Added

@@ -287,6 +287,11 @@ func localConfigName() string {
 // file is read on its own and written back with only that one field changed,
 // so the project's other local fields, every other project entry and every
 // top-level key keep the values they had.
+//
+// A path already in the file is refused and the file left untouched: a
+// caller's own no-path check reads a config loaded earlier, and tk init, a
+// hand edit or another tk ui may have recorded one since. That path decides
+// where spawns and verify runs execute, so it is never silently replaced.
 func RecordLocalPath(name, dir string) error {
 	path, err := ConfigPath()
 	if err != nil {
@@ -297,6 +302,9 @@ func RecordLocalPath(name, dir string) error {
 		return err
 	}
 	p := local.Projects[name]
+	if p.Path != "" {
+		return fmt.Errorf("project %q already records path %s in %s", name, p.Path, localConfigName())
+	}
 	p.Path = dir
 	local.Projects[name] = p
 	return writeFileAtomic(path, local)

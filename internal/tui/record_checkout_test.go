@@ -278,3 +278,41 @@ func TestWorkDoesNotOfferToRecordOutsideItsConditions(t *testing.T) {
 		})
 	}
 }
+
+// A path another writer records while the prompt is open survives y: nothing
+// is written over it, nothing is spawned there or in the offered directory,
+// and the refusal names the path already recorded.
+func TestWorkRecordPromptRefusesAPathRecordedSinceItOpened(t *testing.T) {
+	f := newGlobalFixture(t)
+	repo := mainCheckout(t)
+	other := mainCheckout(t)
+	marker := filepath.Join(t.TempDir(), "spawned")
+	a := onTab(t, f.cwdApp(t, "ticket", "touch "+marker, repo), tabInbox, "e-0007")
+	a = press(t, a, "w")
+	if a.record == nil {
+		t.Fatalf("w opened no record prompt; status = %q", a.status)
+	}
+	if err := project.RecordLocalPath("ticket", other); err != nil {
+		t.Fatalf("the other writer's RecordLocalPath: %v", err)
+	}
+	before := f.configBytes(t)
+
+	a = press(t, a, "y")
+	if a.record != nil {
+		t.Errorf("y left the prompt open")
+	}
+	assertRefused(t, a, marker, `project "ticket" already records path `+other)
+	if after := f.configBytes(t); after != before {
+		t.Errorf("y wrote the config:\n%s", after)
+	}
+	cfg, err := project.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Projects["ticket"].Path; got != other {
+		t.Errorf("ticket's local path = %q, want the other writer's %q", got, other)
+	}
+	if got := a.checkoutCfg.Projects["ticket"].Path; got != "" {
+		t.Errorf("the TUI's config took path %q, want it left unrecorded", got)
+	}
+}

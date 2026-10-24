@@ -1507,6 +1507,45 @@ func TestRecordLocalPathWritesOnlyTheLocalConfig(t *testing.T) {
 	}
 }
 
+// A path already on disk — recorded after the caller loaded its config — is
+// refused by name and the local file is left byte-for-byte as it was.
+func TestRecordLocalPathRefusesAPathAlreadyRecorded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := Save(Config{
+		CentralRoot: filepath.Join(home, "central"),
+		Projects: map[string]ProjectConfig{
+			"warp": {Path: "/repo/warp", Store: "central"},
+		},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	localPath := filepath.Join(home, ".ticket", "config.yaml")
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte("# local config, hand-edited\n"), raw...)
+	if err := os.WriteFile(localPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = RecordLocalPath("warp", "/elsewhere/warp")
+	if err == nil {
+		t.Fatal("RecordLocalPath replaced a recorded path")
+	}
+	if !strings.Contains(err.Error(), `"warp"`) || !strings.Contains(err.Error(), "/repo/warp") {
+		t.Errorf("error = %q, want it naming the project and /repo/warp", err)
+	}
+	after, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("local config changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // Under TK_STORE_ROOT the path lands in the override root's local config, the
 // one that run reads, and the home config is not written.
 func TestRecordLocalPathFollowsTheStoreRootOverride(t *testing.T) {

@@ -386,7 +386,9 @@ func (a App) startWork(t *ticket.Ticket, qid string) (App, tea.Cmd) {
 // every key but its answers. y writes the path to the local config, updates
 // the config execDir reads, and retries through spawnWork, so every refusal
 // the spawn path holds still applies to the recorded checkout; n and esc
-// write nothing and leave the spawn refused.
+// write nothing and leave the spawn refused. A path another writer recorded
+// while the prompt was open makes RecordLocalPath refuse, and the spawn is
+// refused with it rather than run there: the answer was about offer.dir.
 func (a App) updateRecordPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
