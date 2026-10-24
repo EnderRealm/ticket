@@ -100,6 +100,40 @@ func TestParseCriteria(t *testing.T) {
 			},
 		},
 		{
+			name:    "unverifiable nested in a verify line is the claim, not a command",
+			section: "- Recipe recorded.\n  verify: unverifiable: a reproduction recipe is a recorded artifact",
+			want: []Criterion{
+				{Text: "Recipe recorded.", Unverifiable: true, UnverifiableReason: "a reproduction recipe is a recorded artifact"},
+			},
+		},
+		{
+			name:    "nested unverifiable with no spaces",
+			section: "- First thing.\n  verify:unverifiable:why",
+			want:    []Criterion{{Text: "First thing.", Unverifiable: true, UnverifiableReason: "why"}},
+		},
+		{
+			name:    "unindented nested unverifiable is not a marker",
+			section: "- First thing.\nverify: unverifiable: nope",
+			want:    []Criterion{{Text: "First thing."}},
+		},
+		{
+			name:    "nested unverifiable leaves the command slot open",
+			section: "- First thing.\n  verify: unverifiable: partial check only.\n  verify: true",
+			want: []Criterion{
+				{Text: "First thing.", Command: "true", Unverifiable: true, UnverifiableReason: "partial check only."},
+			},
+		},
+		{
+			name:    "plain unverifiable line wins over a later nested one",
+			section: "- First thing.\n  unverifiable: first reason\n  verify: unverifiable: second reason",
+			want:    []Criterion{{Text: "First thing.", Unverifiable: true, UnverifiableReason: "first reason"}},
+		},
+		{
+			name:    "nested unverifiable line wins over a later plain one",
+			section: "- First thing.\n  verify: unverifiable: first reason\n  unverifiable: second reason",
+			want:    []Criterion{{Text: "First thing.", Unverifiable: true, UnverifiableReason: "first reason"}},
+		},
+		{
 			name:    "empty bullets skipped",
 			section: "- \n- \t\n-\n- First thing.",
 			want:    []Criterion{{Text: "First thing."}},
@@ -320,6 +354,36 @@ func TestRunVerifyUnverifiableReasonNeverRuns(t *testing.T) {
 	}
 	if !results[0].Criterion.Unverifiable || results[0].Criterion.UnverifiableReason != criteria[0].UnverifiableReason {
 		t.Errorf("criterion = %+v, want the marker and reason carried through", results[0].Criterion)
+	}
+}
+
+// TestRunVerifyNestedUnverifiableIsUnverified pins the shape a ticket body
+// actually carries: a `verify: unverifiable: <reason>` line reaches RunVerify
+// as an unverified criterion with its reason, never as a refused command, and
+// the report carries the reason.
+func TestRunVerifyNestedUnverifiableIsUnverified(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "sentinel.txt")
+	criteria := ParseCriteria("- Recipe recorded.\n  verify: unverifiable: /bin/sh -c 'touch " + sentinel + "'")
+
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow})
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("the nested unverifiable reason ran as a command: sentinel stat err = %v", err)
+	}
+	if results[0].Status != VerifyUnverified || results[0].Output != "" {
+		t.Errorf("result = %+v, want unverified with no refusal output", results[0])
+	}
+
+	report := NewVerifyReport("alpha/tk-1", VerifyProvenance{Dir: dir}, results)
+	got := report.Results[0]
+	if got.Status != string(VerifyUnverified) || got.Command != "" || got.UnverifiableReason != "/bin/sh -c 'touch "+sentinel+"'" {
+		t.Errorf("report result = %+v, want unverified carrying the reason and no command", got)
+	}
+	if report.Summary.Refused != 0 || report.Summary.Unverified != 1 {
+		t.Errorf("summary = %+v, want 1 unverified and no refusal", report.Summary)
 	}
 }
 
@@ -760,6 +824,7 @@ func TestNewVerifyReport(t *testing.T) {
 	results := []VerifyResult{
 		{Criterion: Criterion{Text: "passes", Command: "/bin/echo ok"}, Status: VerifyPass},
 		{Criterion: Criterion{Text: "no command"}, Status: VerifyUnverified},
+		{Criterion: Criterion{Text: "hand-checked", Unverifiable: true, UnverifiableReason: "needs a human"}, Status: VerifyUnverified},
 	}
 
 	report := NewVerifyReport("alpha/tk-1", VerifyProvenance{Dir: "/repo", AcceptanceID: "sha256:abc", Candidate: "c1\x1b[2J"}, results)
@@ -769,11 +834,14 @@ func TestNewVerifyReport(t *testing.T) {
 	if report.Dir != "/repo" || report.AcceptanceID != "sha256:abc" || report.Candidate != "c1\ufffd[2J" {
 		t.Errorf("provenance = %q %q %q, want the dir, identity and sanitized candidate", report.Dir, report.AcceptanceID, report.Candidate)
 	}
-	if report.Summary.Pass != 1 || report.Summary.Unverified != 1 || report.Summary.Fail != 0 {
-		t.Errorf("summary = %+v, want 1 pass, 0 fail, 1 unverified", report.Summary)
+	if report.Summary.Pass != 1 || report.Summary.Unverified != 2 || report.Summary.Fail != 0 {
+		t.Errorf("summary = %+v, want 1 pass, 0 fail, 2 unverified", report.Summary)
 	}
 	if report.Results[0].Command != "/bin/echo ok" || report.Results[1].Command != "" {
 		t.Errorf("results = %+v, want the command only on the first criterion", report.Results)
+	}
+	if report.Results[1].UnverifiableReason != "" || report.Results[2].UnverifiableReason != "needs a human" {
+		t.Errorf("results = %+v, want the unverifiable reason only on the criterion declaring one", report.Results)
 	}
 }
 
@@ -814,6 +882,30 @@ func TestRunVerifyRefusesCommandOutsideAllowList(t *testing.T) {
 	for _, want := range []string{"rm", "verify_allow", "~/.ticket/config.yaml"} {
 		if !strings.Contains(results[0].Output, want) {
 			t.Errorf("refusal missing %q, so a user can't act on it:\n%s", want, results[0].Output)
+		}
+	}
+}
+
+// A first token ending in ":" is a label, not a program: adding it to
+// verify_allow would have tk try to exec it, so the refusal must not say to,
+// and names the unverifiable line as the shape the author meant.
+func TestRunVerifyRefusalOfLabelDoesNotAdviseAllowList(t *testing.T) {
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "labelled", Command: "manual: read the diff"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	out := results[0].Output
+	if results[0].Status != VerifyRefused {
+		t.Fatalf("status = %q, want refused", results[0].Status)
+	}
+	for _, unwanted := range []string{"add \"manual:\"", "To permit it", "verify_allow"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("refusal advises allow-listing a label (%q):\n%s", unwanted, out)
+		}
+	}
+	for _, want := range []string{"\"manual:\" is not a program", "unverifiable: <reason>", "command: manual: read the diff"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal missing %q:\n%s", want, out)
 		}
 	}
 }

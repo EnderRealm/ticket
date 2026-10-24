@@ -3387,6 +3387,29 @@ func verifyReport(t *testing.T, session *mcp.ClientSession, acceptance string) t
 	return report
 }
 
+// The shape warp/work-dispatch-test-6b6a carried: an unverifiable claim nested
+// inside a verify line. ticket_create takes it as a checkable criterion, and
+// ticket_verify reports it unverified with its reason rather than refusing a
+// program called "unverifiable:".
+func TestVerifyNestedUnverifiableReportsUnverifiedWithReason(t *testing.T) {
+	session, _ := verifyServer(t)
+	const acceptance = "- Recipe recorded.\n  verify: unverifiable: a reproduction recipe is a recorded artifact\n"
+
+	created := callObject(t, session, "ticket_create", map[string]any{"title": "Nested", "type": "feature", "description": "Why", "acceptance": acceptance})
+	if created["bare_acceptance_criteria"] != nil {
+		t.Errorf("create reported the nested claim as bare: %v", created["bare_acceptance_criteria"])
+	}
+
+	report := verifyReport(t, session, acceptance)
+	got := report.Results[0]
+	if got.Status != string(ticket.VerifyUnverified) || got.UnverifiableReason != "a reproduction recipe is a recorded artifact" || got.Command != "" {
+		t.Errorf("result = %+v, want unverified carrying the reason and no command", got)
+	}
+	if report.Summary.Refused != 0 || strings.Contains(got.Output, "verify_allow") {
+		t.Errorf("report = %+v, want no refusal and no allow-list advice", report)
+	}
+}
+
 func TestVerifyUsesProjectTimeout(t *testing.T) {
 	session, _ := verifyServer(t)
 	setVerifyTimeout(t, "200ms")

@@ -364,7 +364,7 @@ Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bul
   unverifiable: needs a human at a terminal.
 ```
 
-A criterion for which no runnable command can exist declares that instead, on a line of the same shape: `unverifiable: <reason>`. The two are what tell a contract gap from an honest one — a criterion nobody wrote a command for and one that cannot have a command both leave `verify:` absent, and only the marker distinguishes them. A criterion carrying both lines keeps its command; the reason is data and is never run.
+A criterion for which no runnable command can exist declares that instead, on a line of the same shape: `unverifiable: <reason>`. The two are what tell a contract gap from an honest one — a criterion nobody wrote a command for and one that cannot have a command both leave `verify:` absent, and only the marker distinguishes them. A criterion carrying both lines keeps its command; the reason is data and is never run. A `verify: unverifiable: <reason>` line, the marker nested inside a verify line, is read as the `unverifiable:` line it states rather than as a command.
 
 A bullet carrying neither line is bare, and `tk create` and the `ticket_create` MCP tool report one at the moment it is written — the CLI on stderr, the tool in `bare_acceptance_criteria` (the texts) and `bare_acceptance_warning` (the remedy). It is a report and not a refusal: the ticket is created and its ID returned, so a batch filing path is never left unable to record one. The caller is the audience because it still holds the context the criteria came from and can re-send them with a line attached.
 

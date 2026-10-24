@@ -116,12 +116,22 @@ func AcceptanceCriteria(body string) string {
 // empty verify line is not a command, so it leaves the slot open for a later
 // non-empty one; an empty unverifiable line still consumes the slot, because
 // the claim is the line's presence rather than the reason. The two are
-// independent: a criterion carrying both keeps its command. Bullets with no
-// text are skipped.
+// independent: a criterion carrying both keeps its command. A verify line
+// whose command itself opens with "unverifiable:" is read as that unverifiable
+// line, on the same terms, and is not a command. Bullets with no text are
+// skipped.
 func ParseCriteria(section string) []Criterion {
 	var criteria []Criterion
 	for _, line := range strings.Split(section, "\n") {
 		trimmed := strings.TrimSpace(line)
+		// "verify: unverifiable: <reason>" nests the claim inside a verify line.
+		// Its first token names no program, so tokenizing it would only ever be
+		// refused; the line states the claim, and that is how it is read.
+		if strings.HasPrefix(trimmed, verifyPrefix) {
+			if rest := strings.TrimSpace(trimmed[len(verifyPrefix):]); strings.HasPrefix(rest, unverifiablePrefix) {
+				trimmed = rest
+			}
+		}
 		switch {
 		case strings.HasPrefix(line, "- "):
 			text := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
@@ -335,6 +345,14 @@ func allowedCommand(argv0 string, allow []string) bool {
 // internal/project.ConfigPath, which this package deliberately does not import —
 // the core library stays free of machine config resolution.
 func refusal(command, argv0 string, allowErr error) string {
+	// A first token ending in ":" is a label such as "unverifiable:", not a
+	// program; advising it onto the allow-list would have tk try to exec it.
+	if allowErr == nil && strings.HasSuffix(argv0, ":") {
+		return capOutput(fmt.Sprintf("refused: %q is not a program, so this criterion's command did not run.\n"+
+			"A verify: line takes a command. A criterion no command can check takes an `unverifiable: <reason>` line of its own instead, "+
+			"indented under the criterion and not inside a verify line.\n"+
+			"command: %s", argv0, SanitizeControl(command)))
+	}
 	cause := fmt.Sprintf("refused: %q is not in verify_allow, so this criterion's command did not run.\n", argv0)
 	remedy := fmt.Sprintf("To permit it, add %q to the verify_allow list in ~/.ticket/config.yaml. ", argv0)
 	if allowErr != nil {
@@ -643,11 +661,12 @@ type VerifyCounts struct {
 
 // VerifyResultJSON is the wire form of a single criterion's outcome.
 type VerifyResultJSON struct {
-	Criterion string `json:"criterion"`
-	Command   string `json:"command,omitempty"`
-	Status    string `json:"status"`
-	ExitCode  int    `json:"exit_code"`
-	Output    string `json:"output,omitempty"`
+	Criterion          string `json:"criterion"`
+	Command            string `json:"command,omitempty"`
+	UnverifiableReason string `json:"unverifiable_reason,omitempty"`
+	Status             string `json:"status"`
+	ExitCode           int    `json:"exit_code"`
+	Output             string `json:"output,omitempty"`
 }
 
 // NewVerifyReport builds the structured report for a verify run.
@@ -665,11 +684,12 @@ func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) V
 	}
 	for _, r := range results {
 		report.Results = append(report.Results, VerifyResultJSON{
-			Criterion: r.Criterion.Text,
-			Command:   r.Criterion.Command,
-			Status:    string(r.Status),
-			ExitCode:  r.ExitCode,
-			Output:    r.Output,
+			Criterion:          r.Criterion.Text,
+			Command:            r.Criterion.Command,
+			UnverifiableReason: r.Criterion.UnverifiableReason,
+			Status:             string(r.Status),
+			ExitCode:           r.ExitCode,
+			Output:             r.Output,
 		})
 	}
 	return report
