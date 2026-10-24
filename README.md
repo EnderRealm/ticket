@@ -383,15 +383,23 @@ tk verify 5c4
 The command exits non-zero if any criterion failed or was refused, and records the run in the ticket's `## Test Results` section (replacing the previous record):
 
 ```
-verify 2026-07-31T22:10:00Z: 1 pass, 0 fail, 0 refused, 1 unverified
+verify 2026-07-31T22:10:00Z: 1 pass, 1 fail, 0 refused, 1 unverified
 checkout /Users/you/code/myproject; acceptance sha256:9f2c…
 - PASS (exit 0): Frontier excludes blocked tickets.
+- FAIL (exit 1): Blocked tickets render dimmed.
+    --- FAIL: TestDimBlocked (0.00s)
+        render_test.go:41: got bold, want dim
+    FAIL
 - UNVERIFIED: The TUI redraws cleanly at 40 columns.
 ```
 
+A failing criterion's line is followed by its captured output, each line indented four spaces with control characters replaced, so nothing a command prints can be read back as a heading, a criterion or a note.
+
 The second line is the run's provenance: the directory the commands actually ran in, and the identity of the acceptance contract they ran against — a sha256 over the parsed criteria (text, command, unverifiable claim and reason, in order), so an edit to what a criterion says or runs moves it and whitespace outside the criteria does not. A run started with a `candidate` (MCP only, below) adds `; candidate <name>` to that line. The record says which contract was verified and where; it does not say anyone approved the result.
 
-`tk verify --json` and a completed `ticket_verify` MCP call return the same structured report, including each command's exit code and captured output (capped at 4KB per criterion), the actual `dir`, the `acceptance_id` and, when supplied, the `candidate`. The MCP tool executes commands on the server host in the checkout registered for the ticket's project, or in a linked worktree of it when asked.
+`tk verify --json` and a completed `ticket_verify` MCP call return the same structured report, including each command's exit code and captured output, the actual `dir`, the `acceptance_id` and, when supplied, the `candidate`. The MCP tool executes commands on the server host in the checkout registered for the ticket's project, or in a linked worktree of it when asked.
+
+Captured output is capped at 4KB per criterion, and the cap keeps the end: test frameworks print their failures last, so the tail is what names the test that failed. A capped output opens with `... N bytes of output truncated from the head`. The same capped output is what the report returns and what the Test Results record carries under a failing criterion.
 
 #### Reading the contract and verifying a worktree over MCP
 

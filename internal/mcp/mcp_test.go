@@ -3197,6 +3197,54 @@ func TestVerifyRunsCriterionCommands(t *testing.T) {
 	}
 }
 
+// A long suite prints its failure last. The report and the recorded Test
+// Results both have to carry that end of the output, and say how much of the
+// head was dropped, or a failing criterion is one nobody can act on.
+func TestVerifyFailingOutputKeepsItsTail(t *testing.T) {
+	session, _ := verifyServer(t)
+	ctx := context.Background()
+
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Chatty failing suite",
+		"type":       "feature",
+		"acceptance": "- Suite passes.\n  verify: /bin/sh -c 'i=0; while [ $i -lt 500 ]; do echo Test case started; i=$((i+1)); done; echo Test brokenThing failed; exit 1'\n",
+	})
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("ticket_verify error: %v", result.Content)
+	}
+	var report ticket.VerifyReport
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	out := report.Results[0].Output
+	if report.Results[0].Status != string(ticket.VerifyFail) || report.Results[0].ExitCode != 1 {
+		t.Fatalf("result = %+v, want fail with exit 1", report.Results[0])
+	}
+	if !strings.HasSuffix(out, "Test brokenThing failed") {
+		t.Errorf("output lost the failure at its end:\n%s", out[len(out)-100:])
+	}
+	// 500 lines of 18 bytes and the 23-byte failure line, less the 4096 kept.
+	if want := fmt.Sprintf("... %d bytes of output truncated from the head\n", 500*18+23-4096); !strings.HasPrefix(out, want) {
+		t.Errorf("output should open with %q, got %q", want, out[:80])
+	}
+
+	testResults, _ := showTicket(t, session, id)["test_results"].(string)
+	if !strings.Contains(testResults, "- FAIL (exit 1): Suite passes.\n    ... ") {
+		t.Errorf("test_results should carry the truncation note under the failing line:\n%s", testResults)
+	}
+	if !strings.HasSuffix(testResults, "\n    Test brokenThing failed") {
+		t.Errorf("test_results should end with the failure the suite printed last:\n%s", testResults[len(testResults)-200:])
+	}
+}
+
 func TestVerifyUnresolvableProject(t *testing.T) {
 	session := testServer(t)
 	ctx := context.Background()

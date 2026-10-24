@@ -372,7 +372,7 @@ func timeoutNote(bound time.Duration, configured, cutByCaller bool) string {
 //
 // TAB is exempt: it carries none of that repaint risk and is ordinary inside a
 // hand-written markdown bullet. Newline and carriage return are not exempt,
-// because FormatVerifyRecord writes one line per criterion and an embedded
+// because FormatVerifyRecord writes the record line by line and an embedded
 // break would forge record lines that every later read replays.
 func SanitizeControl(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -442,14 +442,15 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	}
 	out, err := cmd.CombinedOutput()
 
-	// The command's own output is capped here, before the notes below are
-	// appended: capOutput cuts from the tail, and a chatty suite that overran
-	// its bound is the case the timeout note exists to make legible — it must
-	// not be the case that loses it. Same rule as refusal, from the other end:
-	// untrusted output never gets to push a diagnostic past the cut. The notes
-	// are bounded and few, so appending after the cap can only exceed it by a
-	// known amount.
-	res := VerifyResult{Criterion: c, Status: VerifyPass, Output: capOutput(string(out))}
+	// The command's own output keeps its tail, because that is where test
+	// frameworks print the failures — a head cut leaves a long suite's startup
+	// chatter and drops the name of the test that failed. It is capped here,
+	// before the notes below are appended: a chatty suite that overran its bound
+	// is the case the timeout note exists to make legible, so it must not be the
+	// case that loses it. Same rule as refusal, from the other end: untrusted
+	// output never gets to push a diagnostic past the cut. The notes are bounded
+	// and few, so appending after the cap can only exceed it by a known amount.
+	res := VerifyResult{Criterion: c, Status: VerifyPass, Output: capOutputTail(string(out))}
 	if err != nil {
 		res.Status = VerifyFail
 		res.ExitCode = -1
@@ -467,8 +468,10 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	return res
 }
 
-// capOutput trims and caps output, backing the cut off to a rune boundary so a
-// multi-byte character can't be split.
+// capOutput trims and caps output, keeping its head and backing the cut off to
+// a rune boundary so a multi-byte character can't be split. It is for tk's own
+// refusals, which put the cause and remedy first and the untrusted command
+// last precisely so this cut can only ever fall in the command.
 func capOutput(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= maxVerifyOutput {
@@ -479,6 +482,22 @@ func capOutput(s string) string {
 		cut--
 	}
 	return s[:cut] + "\n... output truncated"
+}
+
+// capOutputTail trims and caps a command's output, keeping its last
+// maxVerifyOutput bytes with the cut moved forward to a rune boundary, and
+// names how many bytes it dropped from the head so a reader knows the output
+// it sees is not the whole of it.
+func capOutputTail(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= maxVerifyOutput {
+		return s
+	}
+	cut := len(s) - maxVerifyOutput
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return fmt.Sprintf("... %d bytes of output truncated from the head\n", cut) + s[cut:]
 }
 
 // VerifyProvenance is what a verify run is evidence about: the directory the
@@ -507,12 +526,23 @@ func cleanCandidate(s string) string {
 	return s
 }
 
+// recordOutputIndent prefixes every line of a failing command's output in the
+// record. The output is untrusted text replayed into the ticket body, and every
+// boundary the body is parsed by — a `## ` heading, a `- ` criterion bullet, the
+// notes heading and their timestamp lines — opens at column 0, so an indented
+// line can forge none of them.
+const recordOutputIndent = "    "
+
 // FormatVerifyRecord renders a verify run as ticket Test Results content. The
 // criterion text and command are written as RunVerify produced them, already
 // stripped of control characters — the record is replayed by every later read.
 // The first line's shape is fixed; the provenance line after it names where the
 // commands ran, which contract they ran against and, when the caller named one,
 // the candidate — so the record says what was verified, not only how it went.
+// A failing criterion's line is followed by its captured output, already capped
+// to its tail, so the failure a test framework prints last is on the ticket;
+// each output line is stripped of control characters and indented by
+// recordOutputIndent so none of it can forge a record line or a body section.
 func FormatVerifyRecord(results []VerifyResult, prov VerifyProvenance, at time.Time) string {
 	counts := countVerify(results)
 	var b strings.Builder
@@ -535,6 +565,11 @@ func FormatVerifyRecord(results []VerifyResult, prov VerifyProvenance, at time.T
 			continue
 		}
 		fmt.Fprintf(&b, "- %s (exit %d): %s\n", strings.ToUpper(string(r.Status)), r.ExitCode, r.Criterion.Text)
+		if r.Status == VerifyFail && r.Output != "" {
+			for _, line := range strings.Split(r.Output, "\n") {
+				b.WriteString(recordOutputIndent + SanitizeControl(line) + "\n")
+			}
+		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }

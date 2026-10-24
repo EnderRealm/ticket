@@ -111,8 +111,11 @@ Viewing:
   a binary predating verify_timeout applies the 120s it was built with
   however current the config is, so restart the server after upgrading.
   Criteria with no command are reported unverified. Results are recorded
-  in the ticket's Test Results section; exit is non-zero on any failure
-  or refusal.
+  in the ticket's Test Results section, each failing criterion followed
+  by its indented output; exit is non-zero on any failure or refusal.
+  A command's output is capped to its last 4KB, where test frameworks
+  print failures, and a capped output opens with a line naming how many
+  bytes were dropped from the head.
   --criterion and --no-record are CLI-only, and the ticket_verify MCP
   tool's dir is narrower than --dir: it accepts only the project's
   configured checkout or a linked git worktree of that repository, refuses

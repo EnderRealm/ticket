@@ -11,6 +11,7 @@
 
 ### Fixed
 - `tk ui`'s record-checkout `y` no longer overwrites a `path` that `tk init`, a hand edit or another `tk ui` recorded for the project after the prompt opened: `project.RecordLocalPath` re-checks the local config it reads from disk, refuses with `project "<name>" already records path <path> in ~/.ticket/config.yaml` and leaves the file untouched, and the TUI reports that refusal and spawns nothing.
+- A verify command's captured output — in `tk verify`, `tk verify --json`, `ticket_verify` and `ticket_verify_status` — keeps its last 4KB rather than its first, so the failure a test framework prints at the end of a long suite survives the cap; a capped output opens with `... N bytes of output truncated from the head`. The Test Results record now carries each failing criterion's output beneath its `- FAIL` line, every line indented four spaces with control characters replaced, so recorded output cannot be read back as a heading, a criterion or a note. Refusals still keep their head, where the cause and remedy are.
 
 ## [8.8.0] - 2026-09-26
 

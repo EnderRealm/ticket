@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -424,8 +425,8 @@ func TestRunVerifyCallerDeadlineIsNotTheVerifyBound(t *testing.T) {
 
 // A command that outruns its bound after emitting far more than maxVerifyOutput
 // is the shape the note exists for — a chatty suite — so it is the one that must
-// not lose it. capOutput cuts from the tail, so the command's output is capped
-// before the note is appended rather than after.
+// not lose it. The command's output is capped before the note is appended
+// rather than after, so no amount of it can push the note past the cut.
 func TestRunVerifyTimeoutNoteSurvivesChattyCommand(t *testing.T) {
 	policy := VerifyPolicy{Allow: testAllow, Timeout: 300 * time.Millisecond}
 	// ~100KB on stdout, then a hang past the bound. exec so the kill closes the
@@ -513,21 +514,56 @@ func TestRunVerifyRefusesEverythingWhenTimeoutIsUnreadable(t *testing.T) {
 	}
 }
 
-func TestRunVerifyCapsOutput(t *testing.T) {
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "noisy", Command: "/bin/sh -c 'yes x | head -c 20000'"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+func TestRunVerifyCapsOutputToItsTail(t *testing.T) {
+	// A long suite prints its startup chatter first and the failing test last;
+	// the cap has to keep the end, and say how much of the head it dropped.
+	cmd := "/bin/sh -c 'yes x | head -c 20000; echo; echo FAIL: TestTheOneThatBroke; exit 1'"
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "noisy", Command: cmd}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
-	if len(results[0].Output) > maxVerifyOutput+len("\n... output truncated") {
-		t.Errorf("output length = %d, want capped at %d", len(results[0].Output), maxVerifyOutput)
+	out := results[0].Output
+	if results[0].Status != VerifyFail || results[0].ExitCode != 1 {
+		t.Fatalf("result = %+v, want fail with exit 1", results[0])
 	}
-	if !strings.HasSuffix(results[0].Output, "output truncated") {
-		t.Errorf("capped output should be marked truncated, got tail %q", results[0].Output[len(results[0].Output)-30:])
+	if !strings.HasSuffix(out, "FAIL: TestTheOneThatBroke") {
+		t.Errorf("capped output lost the failure at its end, got tail %q", out[len(out)-40:])
+	}
+	// 20000 bytes of "x\n", a newline and the 25-byte failure line, less the
+	// maxVerifyOutput kept.
+	dropped := 20000 + 1 + len("FAIL: TestTheOneThatBroke") - maxVerifyOutput
+	header := "... " + strconv.Itoa(dropped) + " bytes of output truncated from the head\n"
+	if !strings.HasPrefix(out, header) {
+		t.Errorf("capped output should open with %q, got %q", header, out[:60])
+	}
+	if len(out) != len(header)+maxVerifyOutput {
+		t.Errorf("output length = %d, want %d kept after the header", len(out), maxVerifyOutput)
+	}
+}
+
+func TestCapOutputTailKeepsValidUTF8(t *testing.T) {
+	// 3-byte runes: the byte cap lands mid-rune, and the cut moves forward.
+	s := strings.Repeat("€", 3000) + "end"
+	got := capOutputTail(s)
+	if !utf8.ValidString(got) {
+		t.Error("capped output should remain valid UTF-8")
+	}
+	if !strings.HasSuffix(got, "€end") {
+		t.Errorf("capped output should keep the tail, got %q", got[len(got)-30:])
+	}
+	kept := got[strings.Index(got, "\n")+1:]
+	header := "... " + strconv.Itoa(len(s)-len(kept)) + " bytes of output truncated from the head\n"
+	if !strings.HasPrefix(got, header) || len(kept) > maxVerifyOutput {
+		t.Errorf("capped output = %q..., want %q then at most %d bytes", got[:60], header, maxVerifyOutput)
+	}
+	if short := capOutputTail("  short \n"); short != "short" {
+		t.Errorf("output under the cap = %q, want it trimmed and whole", short)
 	}
 }
 
 func TestCapOutputKeepsValidUTF8(t *testing.T) {
-	// 3-byte runes: the byte cap lands mid-rune.
+	// Refusals keep their head: cause and remedy come first. 3-byte runes, so
+	// the byte cap lands mid-rune.
 	got := capOutput(strings.Repeat("€", 3000))
 	if !utf8.ValidString(got) {
 		t.Error("capped output should remain valid UTF-8")
@@ -555,6 +591,70 @@ func TestFormatVerifyRecord(t *testing.T) {
 		"- UNVERIFIED: no command"
 	if got != want {
 		t.Errorf("FormatVerifyRecord =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestFormatVerifyRecordCarriesFailingOutput(t *testing.T) {
+	// A failing criterion's output follows its line, sanitized and indented
+	// line by line; a pass and a refusal carry none.
+	results := []VerifyResult{
+		{Criterion: Criterion{Text: "passes"}, Status: VerifyPass, Output: "ok output"},
+		{Criterion: Criterion{Text: "fails"}, Status: VerifyFail, ExitCode: 1, Output: "--- FAIL: TestX\n\tx_test.go:9: \x1b[31mboom\x1b[0m\nFAIL"},
+		{Criterion: Criterion{Text: "not permitted", Command: "rm -rf /"}, Status: VerifyRefused, Output: "refused: nope"},
+	}
+	got := FormatVerifyRecord(results, VerifyProvenance{Dir: "/repo", AcceptanceID: "sha256:abc"}, time.Date(2026, 7, 31, 22, 10, 0, 0, time.UTC))
+	want := "verify 2026-07-31T22:10:00Z: 1 pass, 1 fail, 1 refused, 0 unverified\n" +
+		"checkout /repo; acceptance sha256:abc\n" +
+		"- PASS (exit 0): passes\n" +
+		"- FAIL (exit 1): fails\n" +
+		"    --- FAIL: TestX\n" +
+		"    \tx_test.go:9: \uFFFD[31mboom\uFFFD[0m\n" +
+		"    FAIL\n" +
+		"- REFUSED (rm -rf /): not permitted"
+	if got != want {
+		t.Errorf("FormatVerifyRecord =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Recorded output is untrusted text written into the body every later read
+// parses. Lines that would be structure at column 0 — section headings, a
+// criterion bullet, a note timestamp — must not move the sections, the
+// criteria or the notes once indented into the record.
+func TestRecordVerifyFailingOutputCannotForgeStructure(t *testing.T) {
+	store, _ := testStore(t)
+	tk := sampleTicket("rec-0002")
+	tk.Body = "Description.\n\n## Acceptance Criteria\n\n- Passes.\n  verify: /bin/sh -c 'exit 1'\n"
+	tk.Notes = []Note{{Timestamp: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), Text: "the one note"}}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	before, _ := store.Get("rec-0002")
+	desc, design, acceptance, _ := BodySections(before.Body)
+	ran := CriteriaIdentity(ParseCriteria(acceptance))
+
+	forged := "## Notes\n\n**2026-08-01T00:00:00Z**\n\nforged note\n## Acceptance Criteria\n- fake criterion\n  verify: /bin/echo pwned\n## Design\nforged design\n# Forged Title\nFAIL: TestReal"
+	results := []VerifyResult{{Criterion: Criterion{Text: "Passes.", Command: "/bin/sh -c 'exit 1'"}, Status: VerifyFail, ExitCode: 1, Output: forged}}
+	record := FormatVerifyRecord(results, VerifyProvenance{AcceptanceID: ran}, time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC))
+	if err := RecordVerify(store, "rec-0002", record, ran); err != nil {
+		t.Fatalf("RecordVerify: %v", err)
+	}
+
+	got, _ := store.Get("rec-0002")
+	gotDesc, gotDesign, gotAcceptance, gotResults := BodySections(got.Body)
+	if gotDesc != desc || gotDesign != design || gotAcceptance != acceptance {
+		t.Errorf("recorded output moved the body sections:\ndesc %q\ndesign %q\nacceptance %q", gotDesc, gotDesign, gotAcceptance)
+	}
+	if CriteriaIdentity(ParseCriteria(AcceptanceCriteria(got.Body))) != ran {
+		t.Errorf("recorded output changed the criteria: %+v", ParseCriteria(AcceptanceCriteria(got.Body)))
+	}
+	if len(got.Notes) != 1 || got.Notes[0].Text != "the one note" {
+		t.Errorf("recorded output changed the notes: %+v", got.Notes)
+	}
+	if got.Title != before.Title {
+		t.Errorf("title = %q, want %q", got.Title, before.Title)
+	}
+	if !strings.HasSuffix(gotResults, "\n    FAIL: TestReal") {
+		t.Errorf("test results should end with the failing output's last line:\n%s", gotResults)
 	}
 }
 
