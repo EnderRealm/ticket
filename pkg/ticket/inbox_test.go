@@ -156,6 +156,27 @@ func TestNextAction_Parked(t *testing.T) {
 	}
 }
 
+func TestNextAction_WaitingOn(t *testing.T) {
+	for _, tc := range []struct {
+		status Status
+		extra  map[string]string
+		action ActionKind
+		detail string
+	}{
+		{StatusBacklog, map[string]string{WaitingOnField: " observer/q-1 "}, ActionBlocked, "observer/q-1"},
+		{StatusReady, map[string]string{WaitingOnField: "observer/q-1"}, ActionBlocked, "observer/q-1"},
+		{StatusOpen, map[string]string{WaitingOnField: "observer/q-1"}, ActionBlocked, "observer/q-1"},
+		{StatusOpen, map[string]string{WaitingOnField: "observer/q-1", QuestionField: "Which store wins?"}, ActionBlocked, "Which store wins?"},
+		{StatusOpen, map[string]string{WaitingOnField: " \t"}, ActionWork, "in progress"},
+		{StatusBacklog, map[string]string{WaitingOnField: ""}, ActionReady, "no action needed"},
+	} {
+		item := NextAction(&Ticket{ID: "t-1", Status: tc.status, Type: TypeFeature, Created: time.Now(), Extra: tc.extra})
+		if item.Action != tc.action || item.Detail != tc.detail {
+			t.Errorf("NextAction(%s, %v) = %s %q, want %s %q", tc.status, tc.extra, item.Action, item.Detail, tc.action, tc.detail)
+		}
+	}
+}
+
 func TestNextAction_EmptyQuestionUnchanged(t *testing.T) {
 	// An empty value counts as absent — an extra field is not a park by itself.
 	// Whitespace is empty too: parking on a blank question blocks the ticket

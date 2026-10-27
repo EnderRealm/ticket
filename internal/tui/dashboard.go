@@ -377,7 +377,8 @@ func (m *dashboardModel) refreshTickets(tickets []*ticket.Ticket, snap *ticket.S
 //	done     done, closed              shown             shown
 //	all      anything but done/closed  hidden            shown
 //
-// The inbox also shows backlog tickets carrying a nonblank parked question.
+// The inbox also shows backlog tickets carrying a nonblank parked question or
+// waiting_on.
 //
 // A ticket with no status is a row on no tab.
 //
@@ -407,7 +408,8 @@ func (m dashboardModel) tabShows(tab tabID, t *ticket.Ticket, typeFilter ticket.
 			return false
 		}
 	case tabInbox:
-		parkedBacklog := t.Status == ticket.StatusBacklog && strings.TrimSpace(t.Extra[ticket.QuestionField]) != ""
+		parkedBacklog := t.Status == ticket.StatusBacklog &&
+			(strings.TrimSpace(t.Extra[ticket.QuestionField]) != "" || ticket.WaitingOn(t) != "")
 		if t.Status != ticket.StatusOpen && t.Status != ticket.StatusReady && !parkedBacklog {
 			return false
 		}

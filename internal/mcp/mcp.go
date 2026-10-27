@@ -1563,7 +1563,7 @@ const allProjectsDoc = " `all_projects=true` lists every namespace and ignores t
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved and no terminal parent epic. Epics are never listed — an epic is a container, not a work item. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it." + allProjectsDoc,
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic and no non-blank `waiting_on` field. Epics are never listed — an epic is a container, not a work item. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it." + allProjectsDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
@@ -1624,7 +1624,7 @@ type frontierResultJSON struct {
 func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_frontier",
-		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed. The parallel-safe set to start next. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + snapshotDoc + parentDoc + skippedFilesDoc,
+		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed and that carry no non-blank `waiting_on` field. The parallel-safe set to start next. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + snapshotDoc + parentDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args frontierArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {

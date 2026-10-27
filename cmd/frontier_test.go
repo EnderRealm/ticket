@@ -109,6 +109,37 @@ func TestFrontierListsUnblockedReady(t *testing.T) {
 	}
 }
 
+func TestFrontierOmitsWaitingOn(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	frontierTicket(t, stores["alpha"], "fr-waiting", ticket.StatusReady)
+	frontierTicket(t, stores["alpha"], "fr-blank", ticket.StatusReady)
+	setExtra := func(id, v string) {
+		tk, err := stores["alpha"].Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tk.Extra = map[string]string{ticket.WaitingOnField: v}
+		if err := stores["alpha"].Update(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setExtra("fr-waiting", "observer/q-1")
+	setExtra("fr-blank", "  ")
+
+	out := captureFrontier(t)
+	if contains(out, "fr-waiting") {
+		t.Errorf("frontier should exclude a ticket waiting on an event:\n%s", out)
+	}
+	if !contains(out, "fr-blank") {
+		t.Errorf("frontier missing ticket with blank waiting_on:\n%s", out)
+	}
+
+	setExtra("fr-waiting", "")
+	if out := captureFrontier(t); !contains(out, "fr-waiting") {
+		t.Errorf("clearing waiting_on did not restore the ticket:\n%s", out)
+	}
+}
+
 func TestFrontierJSON(t *testing.T) {
 	stores := setupFrontierStore(t, "alpha")
 	frontierTicket(t, stores["alpha"], "fr-open", ticket.StatusOpen)

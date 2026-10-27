@@ -9,6 +9,24 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestInboxBacklogWaitingOn(t *testing.T) {
+	dir := writeBoardFixture(t, "proj",
+		&ticket.Ticket{ID: "waiting-0001", Title: "Waits upstream", Type: ticket.TypeFeature, Status: ticket.StatusBacklog, Extra: map[string]string{ticket.WaitingOnField: " observer/q-1 "}},
+		&ticket.Ticket{ID: "both-0002", Title: "Both", Type: ticket.TypeFeature, Status: ticket.StatusOpen, Priority: 1, Extra: map[string]string{ticket.QuestionField: "Which store wins?", ticket.WaitingOnField: "observer/q-2"}},
+		&ticket.Ticket{ID: "blank-0003", Type: ticket.TypeFeature, Status: ticket.StatusBacklog, Extra: map[string]string{ticket.WaitingOnField: " \t"}},
+	)
+	listed, snap := loadBoardFixture(t, "proj", dir)
+	a := boardAppOver("proj", dir, tabInbox, 160, 40, listed, snap)
+	if got, want := itemIDs(a.dashboard.items), []string{"waiting-0001", "both-0002"}; !slices.Equal(got, want) {
+		t.Fatalf("inbox rows = %v, want %v", got, want)
+	}
+	for i, want := range []string{"⚑ observer/q-1", "⚑ Which store wins?"} {
+		if line := ansi.Strip(a.dashboard.renderRow(a.dashboard.rows[i], false)); !strings.Contains(line, want) {
+			t.Errorf("row %d missing %q: %s", i, want, line)
+		}
+	}
+}
+
 func TestInboxBacklogQuestion(t *testing.T) {
 	question := map[string]string{ticket.QuestionField: "  Which store wins?  "}
 	dir := writeBoardFixture(t, "proj",

@@ -20,6 +20,17 @@ const (
 // resumes, whatever its status says.
 const QuestionField = "question"
 
+// WaitingOnField is the extra field naming an outside event a ticket waits
+// on, typically an observer question reference. The value is opaque to tk. A
+// ticket carrying one is parked whatever its status: reported blocked, and
+// left out of ready and frontier until the field is cleared.
+const WaitingOnField = "waiting_on"
+
+// WaitingOn returns the ticket's nonblank waiting_on value, or "".
+func WaitingOn(t *Ticket) string {
+	return strings.TrimSpace(t.Extra[WaitingOnField])
+}
+
 // InboxItem represents a ticket needing attention, with context about what's needed.
 type InboxItem struct {
 	Ticket *Ticket
@@ -35,6 +46,11 @@ func NextAction(t *Ticket) InboxItem {
 	if q := strings.TrimSpace(t.Extra[QuestionField]); q != "" {
 		item.Action = ActionBlocked
 		item.Detail = q
+		return item
+	}
+	if w := WaitingOn(t); w != "" {
+		item.Action = ActionBlocked
+		item.Detail = w
 		return item
 	}
 
@@ -57,9 +73,9 @@ func NextAction(t *Ticket) InboxItem {
 }
 
 // Inbox returns ready and open tickets, plus backlog tickets with parked
-// questions, sorted by priority then age. Tickets with unresolved dependencies
-// or parked questions are kept as blocked, with a question taking precedence
-// in the detail.
+// questions or a waiting_on, sorted by priority then age. Tickets with
+// unresolved dependencies, parked questions or a waiting_on are kept as
+// blocked; the detail is the question first, then the waiting_on.
 func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {

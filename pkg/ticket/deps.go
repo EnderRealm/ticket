@@ -548,7 +548,7 @@ func parentOfVia(depOf depResolver) func(*Ticket) (*Ticket, error) {
 // resolve, is not an epic, or is one it may not belong to, and none of those
 // is evidence that nothing gates the work.
 func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, error)) bool {
-	if isTerminal(t) || t.relationshipIssue != "" {
+	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" {
 		return false
 	}
 	if isBlocked(t, depOf) {
@@ -566,7 +566,7 @@ func IsReadyOpen(store Store, t *Ticket) bool {
 // isReadyOpen is IsReadyOpen with the dep lookup supplied. The parent gate is
 // bypassed; a relationship issue is not a gate, it is an invalid leaf.
 func isReadyOpen(t *Ticket, depOf depResolver) bool {
-	if isTerminal(t) || t.relationshipIssue != "" {
+	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" {
 		return false
 	}
 	return !isBlocked(t, depOf)
@@ -681,7 +681,7 @@ func frontierOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var frontier []*Ticket
 	for _, t := range tickets {
-		if t.Status == StatusReady && t.relationshipIssue == "" && !isBlocked(t, depOf) {
+		if t.Status == StatusReady && t.relationshipIssue == "" && WaitingOn(t) == "" && !isBlocked(t, depOf) {
 			frontier = append(frontier, t)
 		}
 	}
