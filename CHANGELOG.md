@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.10.0] - 2026-10-27
 
 ### Added
 - `tk verify <id> --criterion <n> --check` reports whether that criterion would be refused, without running its command or writing Test Results: `runnable` exits 0, `refused` (with the output a real run gives) or `unverified` exits 20. The check and a real run decide refusal through one function, so a harness can refuse a launch up front instead of discovering an un-gradable criterion after the work has run. `--json` reports the status, and the summary counts `runnable`. Library: `ticket.CheckVerify`, `ticket.VerifyRunnable`.
