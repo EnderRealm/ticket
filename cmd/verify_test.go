@@ -821,3 +821,146 @@ func mkVerifyTicket(t *testing.T, store *ticket.FileStore, id, body string) {
 		t.Fatalf("Create: %v", err)
 	}
 }
+
+// checkCriteriaBody holds one criterion per --check outcome: allowed, outside
+// the fixture's allow-list, untokenizable, and without a command.
+const checkCriteriaBody = "Description.\n\n## Acceptance Criteria\n\n" +
+	"- Allowed check.\n  verify: /bin/sh -c 'exit 0'\n" +
+	"- Disallowed check.\n  verify: /usr/bin/true\n" +
+	"- Unparseable check.\n  verify: /bin/sh -c 'exit 0\n" +
+	"- Docs updated.\n"
+
+// verifyCriterionJSON runs criterion n with --json, with --check when check is
+// set and --no-record otherwise, and returns its single result and exit code.
+// Each call is its own subtest so the flags it sets are cleared on return.
+func verifyCriterionJSON(t *testing.T, id string, n int, check bool) (ticket.VerifyResultJSON, int) {
+	t.Helper()
+	var res ticket.VerifyResultJSON
+	var code int
+	ok := t.Run(fmt.Sprintf("criterion %d check=%v", n, check), func(t *testing.T) {
+		jsonOutput = true
+		defer func() { jsonOutput = false }()
+		setCriterion(t, n)
+		if check {
+			setVerifyFlag(t, "check", "true")
+		} else {
+			setVerifyFlag(t, "no-record", "true")
+		}
+
+		out, err := captureVerify(t, id)
+		var report ticket.VerifyReport
+		if jerr := json.Unmarshal([]byte(out), &report); jerr != nil {
+			t.Fatalf("json parse: %v (err %v)\noutput: %s", jerr, err, out)
+		}
+		if len(report.Results) != 1 {
+			t.Fatalf("got %d results, want 1", len(report.Results))
+		}
+		res, code = report.Results[0], exitCode(err)
+	})
+	if !ok {
+		t.FailNow()
+	}
+	return res, code
+}
+
+func TestVerifyCheckReportsWithoutRunning(t *testing.T) {
+	verifyStore(t, "vf-check", checkCriteriaBody)
+
+	for _, tc := range []struct {
+		name      string
+		criterion int
+		timeout   string
+		status    ticket.VerifyStatus
+		exit      int
+	}{
+		{"allowed", 1, "", ticket.VerifyRunnable, 0},
+		{"not in verify_allow", 2, "", ticket.VerifyRefused, verifyRefusedExit},
+		{"does not tokenize", 3, "", ticket.VerifyRefused, verifyRefusedExit},
+		{"no command", 4, "", ticket.VerifyUnverified, verifyRefusedExit},
+		{"invalid timeout", 1, "soon", ticket.VerifyRefused, verifyRefusedExit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.timeout != "" {
+				setVerifyTimeout(t, tc.timeout)
+				t.Cleanup(func() { setVerifyTimeout(t, "") })
+			}
+			got, code := verifyCriterionJSON(t, "vf-check", tc.criterion, true)
+			if got.Status != string(tc.status) || code != tc.exit {
+				t.Fatalf("--check = %s exit %d, want %s exit %d (%+v)", got.Status, code, tc.status, tc.exit, got)
+			}
+			if tc.status == ticket.VerifyRunnable {
+				return
+			}
+			// The output a harness reads from --check is the one a real run gives.
+			run, runCode := verifyCriterionJSON(t, "vf-check", tc.criterion, false)
+			if run.Status != got.Status || run.Output != got.Output || runCode != code {
+				t.Errorf("--check = %s exit %d %q\nrun     = %s exit %d %q", got.Status, code, got.Output, run.Status, runCode, run.Output)
+			}
+		})
+	}
+
+	// --check grades a single criterion; without one it is a usage error.
+	setVerifyFlag(t, "check", "true")
+	if _, err := captureVerify(t, "vf-check"); err == nil || exitCode(err) != 1 {
+		t.Errorf("--check without --criterion = %v (exit %d), want a usage error", err, exitCode(err))
+	}
+}
+
+func TestVerifyCheckNeverExecutes(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "marker.txt")
+	store := verifyStore(t, "vf-checkrun", "Description.\n\n## Acceptance Criteria\n\n"+
+		"- Touches a marker.\n  verify: /bin/sh -c 'touch "+marker+"'\n"+
+		"\n## Test Results\n\nprevious record\n")
+	path := filepath.Join(store.Dir, "vf-checkrun.md")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, code := verifyCriterionJSON(t, "vf-checkrun", 1, true)
+	if got.Status != string(ticket.VerifyRunnable) || code != 0 {
+		t.Fatalf("--check = %s exit %d, want runnable exit 0", got.Status, code)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("--check ran the criterion's command")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("--check rewrote the ticket:\n%s", after)
+	}
+
+	// A real run of the same criterion creates the marker, or the check above
+	// proves nothing about --check.
+	setCriterion(t, 1)
+	if _, err := captureVerify(t, "vf-checkrun"); err != nil {
+		t.Fatalf("real run: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("a real run did not create the marker: %v", err)
+	}
+}
+
+func TestHelpDocumentsVerifyCheck(t *testing.T) {
+	start := strings.Index(helpText, "  verify <id>")
+	if start < 0 {
+		t.Fatal("help has no verify entry")
+	}
+	// The flag block runs from the verify entry to the first blank line.
+	block := helpText[start:]
+	block = block[:strings.Index(block, "\n\n")]
+	criterion := strings.Index(block, "--criterion <n>")
+	noRecord := strings.Index(block, "--no-record")
+	check := strings.Index(block, "--check")
+	if criterion < 0 || noRecord < 0 || check < 0 {
+		t.Fatalf("verify flags missing --criterion, --no-record or --check:\n%s", block)
+	}
+	doc := block[check:]
+	for _, want := range []string{"--criterion", "exit 0", "runnable", "20 refused or unverified"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("--check help missing %q:\n%s", want, doc)
+		}
+	}
+}

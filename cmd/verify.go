@@ -26,6 +26,7 @@ var (
 	verifyDir       string
 	verifyCriterion int
 	verifyNoRecord  bool
+	verifyCheck     bool
 )
 
 // verifyRefusedExit is the exit code a single-criterion run reports for a
@@ -41,6 +42,7 @@ func init() {
 	f.StringVar(&verifyDir, "dir", "", "run the commands in this directory instead of the project's")
 	f.IntVar(&verifyCriterion, "criterion", 0, "run only criterion n (1-based): exit 0 pass, 1 fail, 20 refused or unverified")
 	f.BoolVar(&verifyNoRecord, "no-record", false, "skip writing the Test Results section")
+	f.BoolVar(&verifyCheck, "check", false, "with --criterion, report whether it would be refused without running or recording it: exit 0 runnable, 20 refused or unverified")
 	rootCmd.AddCommand(verifyCmd)
 }
 
@@ -84,6 +86,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// --criterion selects by position in ParseCriteria order, the order --json
 	// reports, so a harness re-running one check names the index it read there.
 	single := cmd.Flags().Changed("criterion")
+	if verifyCheck && !single {
+		return fmt.Errorf("--check requires --criterion")
+	}
 	if single {
 		if verifyCriterion < 1 || verifyCriterion > len(criteria) {
 			return fmt.Errorf("--criterion %d is out of range: %s has %d criteria", verifyCriterion, t.ID, len(criteria))
@@ -112,6 +117,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	allow, allowErr := project.VerifyAllow()
 	timeout, timeoutErr := project.VerifyTimeout(cfg, execProject)
 	policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
+	if verifyCheck {
+		return reportVerifyCheck(t.ID, ticket.CheckVerify(criteria, policy), dir, implementation, acceptanceID)
+	}
 	// Verification children have their own process group. Forward CLI shutdown
 	// through the runner's context and drain that group before leaving.
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -197,4 +205,31 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s of %d criteria", strings.Join(problems, " and "), len(criteria))
 	}
 	return nil
+}
+
+// reportVerifyCheck prints a --check result and maps it to the exit code: a
+// runnable criterion exits 0, and a refused or unverified one exits
+// verifyRefusedExit, the code a real run of it would give. Nothing ran, so
+// there is no record to write.
+func reportVerifyCheck(id string, results []ticket.VerifyResult, dir, implementation, acceptanceID string) error {
+	res := results[0]
+	if jsonOutput {
+		prov := ticket.VerifyProvenance{Dir: dir, Implementation: implementation, AcceptanceID: acceptanceID}
+		data, err := json.MarshalIndent(ticket.NewVerifyReport(id, prov, results), "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("%s %s\n", strings.ToUpper(string(res.Status)), res.Criterion.Text)
+		if res.Output != "" {
+			for _, line := range strings.Split(res.Output, "\n") {
+				fmt.Printf("  %s\n", line)
+			}
+		}
+	}
+	if res.Status == ticket.VerifyRunnable {
+		return nil
+	}
+	return &exitError{code: verifyRefusedExit, err: fmt.Errorf("criterion %d %s", verifyCriterion, res.Status)}
 }

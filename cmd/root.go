@@ -59,6 +59,9 @@ Viewing:
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
                              20 refused or unverified
     --no-record              Skip writing the Test Results section
+    --check                  With --criterion, report whether it would be
+                             refused, without running or recording it: exit 0
+                             runnable, 20 refused or unverified
 
   A criterion declares its check on an indented continuation line, or
   declares that no command can exist for it:

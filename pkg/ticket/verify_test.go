@@ -940,6 +940,59 @@ func TestRunVerifyRefusesEverythingWhenAllowListIsUnreadable(t *testing.T) {
 	}
 }
 
+// TestVerifyCheckSharesRefusalWithRun holds CheckVerify to RunVerify over every
+// refusal path: where a run refuses or leaves a criterion unverified, the check
+// reports the identical result, and where a run executes the command — pass or
+// fail — the check reports runnable.
+func TestVerifyCheckSharesRefusalWithRun(t *testing.T) {
+	allowed := VerifyPolicy{Allow: testAllow}
+	for _, tc := range []struct {
+		name     string
+		command  string
+		policy   VerifyPolicy
+		runnable bool
+	}{
+		{"passes", "/bin/sh -c 'exit 0'", allowed, true},
+		{"fails", "/bin/sh -c 'exit 3'", allowed, true},
+		{"not allowed", "/usr/bin/true", allowed, false},
+		{"label", "manual: read the diff", allowed, false},
+		{"untokenizable", "/bin/sh -c 'exit 0", allowed, false},
+		{"whitespace", "   ", allowed, false},
+		{"no command", "", allowed, false},
+		{"bad timeout", "/bin/sh -c 'exit 0'", VerifyPolicy{Allow: testAllow, TimeoutErr: errors.New(`verify_timeout "soon" is not a duration`)}, false},
+		{"unreadable allow-list", "/bin/sh -c 'exit 0'", VerifyPolicy{Allow: []string{}, AllowErr: errors.New("parsing config.yaml: mapping values are not allowed")}, false},
+		{"control characters", "/usr/bin/true \x1b[2J", allowed, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			criteria := []Criterion{{Text: "criterion \x1b[31m" + tc.name, Command: tc.command}}
+			run, err := RunVerify(context.Background(), criteria, t.TempDir(), tc.policy)
+			if err != nil {
+				t.Fatalf("RunVerify: %v", err)
+			}
+			check := CheckVerify(criteria, tc.policy)
+			if len(check) != 1 {
+				t.Fatalf("CheckVerify returned %d results, want 1", len(check))
+			}
+			if tc.runnable {
+				if run[0].Status != VerifyPass && run[0].Status != VerifyFail {
+					t.Fatalf("run status = %q, want the command to have run", run[0].Status)
+				}
+				want := VerifyResult{Criterion: run[0].Criterion, Status: VerifyRunnable}
+				if check[0] != want {
+					t.Errorf("check = %+v, want %+v", check[0], want)
+				}
+				return
+			}
+			if run[0].Status != VerifyRefused && run[0].Status != VerifyUnverified {
+				t.Fatalf("run status = %q, want refused or unverified", run[0].Status)
+			}
+			if check[0] != run[0] {
+				t.Errorf("check = %+v\nrun   = %+v", check[0], run[0])
+			}
+		})
+	}
+}
+
 func TestVerifyStripsControlCharactersFromEchoedCommand(t *testing.T) {
 	// ParseCriteria rules out a newline, but an ANSI escape survives it and
 	// would let a command repaint the operator's terminal at the moment they

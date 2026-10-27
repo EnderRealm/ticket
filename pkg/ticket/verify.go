@@ -37,6 +37,9 @@ const (
 	VerifyFail       VerifyStatus = "fail"
 	VerifyRefused    VerifyStatus = "refused"
 	VerifyUnverified VerifyStatus = "unverified"
+	// VerifyRunnable is CheckVerify's answer for a command no refusal applies
+	// to. RunVerify never reports it: a command that is run passes or fails.
+	VerifyRunnable VerifyStatus = "runnable"
 )
 
 // VerifyResult pairs a criterion with the outcome of running its command. A
@@ -273,15 +276,40 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy Ver
 		if c.Command != "" {
 			res = runCriterion(ctx, c, dir, policy)
 		}
-		// A criterion's text, command and unverifiable reason are all untrusted
-		// markdown that every consumer prints. Sanitizing here, where the result
-		// is produced, keeps each print site from having to remember to.
-		res.Criterion.Text = SanitizeControl(res.Criterion.Text)
-		res.Criterion.Command = SanitizeControl(res.Criterion.Command)
-		res.Criterion.UnverifiableReason = SanitizeControl(res.Criterion.UnverifiableReason)
-		results = append(results, res)
+		results = append(results, sanitizeResult(res))
 	}
 	return results, nil
+}
+
+// CheckVerify reports, for each criterion, what RunVerify would decide before
+// running it: refused or unverified with the output a run gives, or
+// VerifyRunnable. It executes nothing and needs no directory. The decision is
+// screenCriterion's, the same function runCriterion consults, so runnable here
+// means a run would not refuse the command.
+func CheckVerify(criteria []Criterion, policy VerifyPolicy) []VerifyResult {
+	results := make([]VerifyResult, 0, len(criteria))
+	for _, c := range criteria {
+		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
+		if c.Command != "" {
+			var ok bool
+			if _, res, ok = screenCriterion(c, policy); ok {
+				res = VerifyResult{Criterion: c, Status: VerifyRunnable}
+			}
+		}
+		results = append(results, sanitizeResult(res))
+	}
+	return results
+}
+
+// sanitizeResult strips control characters from a result's criterion. Its
+// text, command and unverifiable reason are all untrusted markdown that every
+// consumer prints; sanitizing where the result is produced keeps each print
+// site from having to remember to.
+func sanitizeResult(res VerifyResult) VerifyResult {
+	res.Criterion.Text = SanitizeControl(res.Criterion.Text)
+	res.Criterion.Command = SanitizeControl(res.Criterion.Command)
+	res.Criterion.UnverifiableReason = SanitizeControl(res.Criterion.UnverifiableReason)
+	return res
 }
 
 // tokenizeCommand splits a verify command into argv on whitespace, honouring
@@ -427,27 +455,39 @@ func SanitizeControl(s string) string {
 	}, s)
 }
 
-func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPolicy) VerifyResult {
+// screenCriterion decides everything about a command that is settled before it
+// runs. ok reports that nothing refuses it, with argv the program and arguments
+// to exec; otherwise refused is the refused or unverified result to report. It
+// is the single refusal decision behind both RunVerify and CheckVerify.
+func screenCriterion(c Criterion, policy VerifyPolicy) (argv []string, refused VerifyResult, ok bool) {
 	argv, err := tokenizeCommand(c.Command)
 	if err != nil {
-		return VerifyResult{
+		return nil, VerifyResult{
 			Criterion: c,
 			Status:    VerifyRefused,
 			Output:    capOutput(fmt.Sprintf("refused: cannot parse this criterion's command: %v\ncommand: %s", err, SanitizeControl(c.Command))),
-		}
+		}, false
 	}
 	// Defensive: RunVerify calls this only for a non-empty Command, but a caller
 	// constructing a Criterion directly could supply one that is all whitespace.
 	if len(argv) == 0 {
-		return VerifyResult{Criterion: c, Status: VerifyUnverified}
+		return nil, VerifyResult{Criterion: c, Status: VerifyUnverified}, false
 	}
 	// Checked before the allow-list so a command that would be refused either
 	// way names the config defect the user has to repair.
 	if policy.TimeoutErr != nil {
-		return VerifyResult{Criterion: c, Status: VerifyRefused, Output: timeoutRefusal(c.Command, policy.TimeoutErr)}
+		return nil, VerifyResult{Criterion: c, Status: VerifyRefused, Output: timeoutRefusal(c.Command, policy.TimeoutErr)}, false
 	}
 	if !allowedCommand(argv[0], policy.Allow) {
-		return VerifyResult{Criterion: c, Status: VerifyRefused, Output: refusal(c.Command, argv[0], policy.AllowErr)}
+		return nil, VerifyResult{Criterion: c, Status: VerifyRefused, Output: refusal(c.Command, argv[0], policy.AllowErr)}, false
+	}
+	return argv, VerifyResult{}, true
+}
+
+func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPolicy) VerifyResult {
+	argv, refused, ok := screenCriterion(c, policy)
+	if !ok {
+		return refused
 	}
 
 	timeout := policy.Timeout
@@ -676,6 +716,7 @@ type VerifyCounts struct {
 	Fail       int `json:"fail"`
 	Refused    int `json:"refused"`
 	Unverified int `json:"unverified"`
+	Runnable   int `json:"runnable,omitempty"`
 }
 
 // VerifyResultJSON is the wire form of a single criterion's outcome.
@@ -725,6 +766,8 @@ func countVerify(results []VerifyResult) VerifyCounts {
 			counts.Fail++
 		case VerifyRefused:
 			counts.Refused++
+		case VerifyRunnable:
+			counts.Runnable++
 		default:
 			counts.Unverified++
 		}

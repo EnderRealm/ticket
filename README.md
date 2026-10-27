@@ -191,6 +191,9 @@ Viewing:
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
                              20 refused or unverified
     --no-record              Skip writing the Test Results section
+    --check                  With --criterion, report whether it would be
+                             refused, without running or recording it: exit 0
+                             runnable, 20 refused or unverified
 
 Creating & Editing:
   create [title] [options]   Create ticket. Outside a registered project the
@@ -447,6 +450,8 @@ Three flags let a harness drive a single check without a wrapper script:
 The three are independent and compose: any combination behaves as each one does alone.
 
 With `--criterion`, the exit code grades that one criterion: `0` it passed, `1` it failed, `20` it was refused or has no `verify:` line. `20` is weft's anchor-stage convention — "graded and refused, do not relaunch" — adopted rather than invented, so one documented integer replaces a wrapper script per harness. An unverified criterion is not a pass: it never ran, so it exits `20` alongside a refusal rather than `0`. Without `--criterion` the exit code is unchanged: `0`, or `1` on any failure or refusal across the whole run. A usage error — a `--dir` that is not an existing directory, a `--criterion` out of range — exits `1` like any other `tk` error, before anything runs.
+
+`--check` asks, before any work is spent, whether a criterion could be graded at all. With `--criterion <n>` it loads the same policy and makes the same refusal decision a real run makes — the command does not tokenize, the project's `verify_timeout` cannot be read, or its program is not in `verify_allow` — then stops: nothing is executed and nothing is recorded. It reports `runnable` and exits `0`, or `refused` with the output a real run would give, or `unverified` for a criterion with no `verify:` line, and exits `20` for both. `runnable` means only that the run would not be refused; it says nothing about whether the command passes. `--check` without `--criterion` is a usage error.
 
 ```bash
 tk verify 5c4 --dir /path/to/worktree --criterion 1 --no-record
