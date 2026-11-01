@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- A `verify:` line carrying shell-only syntax outside quotes — `&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a token-leading `~` — is reported when it is written rather than first surfacing as a refusal at verify time. Verify runs a command as argv with no shell, so that syntax reaches the program as literal arguments, and a line such as `cd ~/code/warp && ! git grep …` cannot be graded at all. `tk create` prints the warning on stderr, the TUI's create appends it to the status line, and `ticket_create` and `ticket_edit` (when the edit writes a `description` or `acceptance` value) return it in `shell_syntax_warning`, naming each command and its constructs. Detection follows the verify tokenizer's quote rule, so a quoted `bash -c '…'` grader line is not reported. A report, not a refusal: editing a legacy ticket carrying such a line never fails. Library: `ticket.ShellSyntaxCriteria`, `ticket.ShellSyntaxWarning`.
+
+### Changed
+- `tk verify` and `ticket_verify` refusing a command whose first word is not in `verify_allow`, when that command carries shell syntax outside quotes, now name the syntax as the cause and say allow-listing the first word would not make the line runnable, instead of advising that word onto `verify_allow` — adding `cd` for `cd x && true` would only exec `cd` with `&&` and `true` as arguments. `tk verify --check` reports the same refusal.
+
 ## [8.10.0] - 2026-10-27
 
 ### Added

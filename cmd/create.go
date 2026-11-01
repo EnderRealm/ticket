@@ -139,6 +139,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if ticket.UnparsedAcceptance(t.Body) {
 		fmt.Fprintln(os.Stderr, ticket.UnparsedAcceptanceWarning(t.ID))
 	}
+	if shell := ticket.ShellSyntaxCriteria(t.Body); len(shell) > 0 {
+		fmt.Fprintln(os.Stderr, ticket.ShellSyntaxWarning(t.ID, shell))
+	}
 
 	return showTicket(store, id, false)
 }

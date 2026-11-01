@@ -1338,3 +1338,126 @@ func TestUnparsedAcceptanceWarning(t *testing.T) {
 		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", got)
 	}
 }
+
+// Detection follows tokenizeCommand's quote semantics: shell syntax a quoted
+// `bash -c '…'` argument carries is for the shell that program starts, so it
+// is not reported, while the same syntax unquoted is passed literally.
+func TestShellSyntaxIgnoresQuoted(t *testing.T) {
+	quoted := []string{
+		`bash -c 'a && b | c'`,
+		`bash -c "a || b; c"`,
+		`bash -c 'o=$(go test -count=1 -run "^TestX$" -v ./... 2>&1); s=$?; printf "%s\n" "$o" | tail -25; [ "$s" -eq 0 ] && printf "%s\n" "$o" | grep -Eq "^ *--- PASS: TestX [(]"'`,
+		`go test -run 'TestA|TestB' ./...`,
+		`/bin/echo '!' "~/x" '$(' a!b x~y`,
+		`go test ./...`,
+		// A `!` argument outside command position is the program's own
+		// negation, and the line runs as written under argv.
+		`test ! -f x`,
+		`[ ! -e x ]`,
+		`find . ! -name x`,
+	}
+	for _, cmd := range quoted {
+		if got := shellConstructs(cmd); len(got) != 0 {
+			t.Errorf("shellConstructs(%q) = %q, want none", cmd, got)
+		}
+	}
+
+	unquoted := []struct {
+		cmd  string
+		want []string
+	}{
+		{`cd x && true`, []string{"&&"}},
+		{`a || b`, []string{"||"}},
+		{`go test ./... | tail`, []string{"|"}},
+		{`go test -run TestA|TestB ./...`, []string{"|"}},
+		{`a; b`, []string{";"}},
+		{`echo $(date)`, []string{"$("}},
+		{`! git grep -n x`, []string{"!"}},
+		{`a&& ! b`, []string{"&&", "!"}},
+		{`a | ! b`, []string{"|", "!"}},
+		{`a; ! b`, []string{";", "!"}},
+		{`a || ! b`, []string{"||", "!"}},
+		{`a && test ! -f x`, []string{"&&"}},
+		{`grep x ~/code/warp`, []string{"~"}},
+		{`cd ~/code/warp && ! git grep -n '...' && grep -n 'CODEX_THREAD_ID' f`, []string{"&&", "!", "~"}},
+		{`a | b || c && d; ! $(e) ~`, []string{"&&", "||", "|", ";", "$(", "!", "~"}},
+		{`bash -c 'a && b' && c`, []string{"&&"}},
+	}
+	for _, tc := range unquoted {
+		got := shellConstructs(tc.cmd)
+		if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			t.Errorf("shellConstructs(%q) = %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+
+	body := "Why\n\n## Acceptance Criteria\n\n" +
+		"- Quoted grader.\n  verify: bash -c 'go test ./... && echo ok | cat'\n" +
+		"- Plain.\n  verify: go test ./...\n" +
+		"- Bare.\n"
+	if got := ShellSyntaxCriteria(body); len(got) != 0 {
+		t.Errorf("ShellSyntaxCriteria flagged quoted syntax: %+v", got)
+	}
+	if w := ShellSyntaxWarning("proj/tk-0001", ShellSyntaxCriteria(body)); w != "" {
+		t.Errorf("ShellSyntaxWarning for quoted syntax = %q, want empty", w)
+	}
+
+	body = "Why\n\n## Acceptance Criteria\n\n- Shell form.\n  verify: cd x && true\n- Plain.\n  verify: go test ./...\n"
+	found := ShellSyntaxCriteria(body)
+	if len(found) != 1 || found[0].Command != "cd x && true" || strings.Join(found[0].Constructs, " ") != "&&" {
+		t.Fatalf("ShellSyntaxCriteria = %+v, want the one shell-form command naming &&", found)
+	}
+	w := ShellSyntaxWarning("proj/tk-0001", found)
+	for _, want := range []string{"proj/tk-0001", `"cd x && true"`, "`&&`", "no shell", "ticket_edit", "## Acceptance Criteria"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning %q does not name %q", w, want)
+		}
+	}
+	if strings.Contains(w, "tk edit") {
+		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", w)
+	}
+}
+
+// A shell-form line is refused on its first word, but the remedy the plain
+// refusal gives — allow-list that word — would exec it with the syntax as
+// literal arguments, so the refusal names the syntax instead.
+func TestVerifyRefusalNamesShellConstruct(t *testing.T) {
+	criteria := []Criterion{{Text: "shell form", Command: "cd x && true"}}
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	out := results[0].Output
+	if results[0].Status != VerifyRefused {
+		t.Fatalf("status = %q, want refused", results[0].Status)
+	}
+	for _, want := range []string{"`&&`", "no shell", "would not make this line runnable", "command: cd x && true"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal missing %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"To permit it", `add "cd" to the verify_allow list`} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("refusal advises allow-listing the first word (%q):\n%s", unwanted, out)
+		}
+	}
+	if !strings.HasSuffix(out, "command: cd x && true") {
+		t.Errorf("refusal does not end with the command:\n%s", out)
+	}
+	// CheckVerify shares the decision, so it reports the same refusal.
+	if checked := CheckVerify(criteria, VerifyPolicy{Allow: testAllow}); checked[0].Output != out {
+		t.Errorf("CheckVerify output differs from RunVerify:\n%s\n---\n%s", checked[0].Output, out)
+	}
+
+	// `test ! -f x` runs as written once `test` is allowed, so its refusal keeps
+	// the allow-list remedy that would make it runnable.
+	results, err = RunVerify(context.Background(), []Criterion{{Text: "negated test", Command: "test ! -f x"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	if err != nil {
+		t.Fatalf("RunVerify: %v", err)
+	}
+	if results[0].Status != VerifyRefused {
+		t.Fatalf("status = %q, want refused", results[0].Status)
+	}
+	if out := results[0].Output; !strings.Contains(out, `To permit it, add "test" to the verify_allow list`) || strings.Contains(out, "shell syntax") {
+		t.Errorf("refusal of `test ! -f x` lost the allow-list remedy:\n%s", out)
+	}
+}

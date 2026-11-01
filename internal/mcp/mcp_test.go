@@ -4508,6 +4508,63 @@ func TestEditWarnsOnUnparsedAcceptance(t *testing.T) {
 	}
 }
 
+// A verify line written for a shell is stored, since editing a legacy ticket
+// carrying one must never fail, but the response says so while the author
+// still holds the intent rather than leaving it to a refusal at verify time.
+func TestCreateWarnsShellSyntaxVerify(t *testing.T) {
+	session := testServer(t)
+
+	created := callObject(t, session, "ticket_create", map[string]any{
+		"title": "Shell form", "description": "Why it matters",
+		"acceptance": "- Shell form.\n  verify: cd x && true",
+	})
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatalf("create returned no id: %v", created)
+	}
+	warning, _ := created["shell_syntax_warning"].(string)
+	for _, want := range []string{id, "cd x && true", "`&&`"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("shell_syntax_warning %q does not name %q", warning, want)
+		}
+	}
+
+	// The /capture grader shape carries its shell syntax inside a quoted
+	// `bash -c` argument, as does any clean criterion: neither is reported.
+	created = callObject(t, session, "ticket_create", map[string]any{
+		"title": "Clean", "description": "Why it matters",
+		"acceptance": "- Plain.\n  verify: go test ./...\n- Grader.\n  verify: bash -c 'o=$(go test ./... 2>&1); s=$?; [ \"$s\" -eq 0 ] && printf \"%s\\n\" \"$o\" | grep -q PASS'",
+	})
+	if w, ok := created["shell_syntax_warning"]; ok {
+		t.Errorf("clean criteria carried shell_syntax_warning %v", w)
+	}
+}
+
+func TestEditWarnsShellSyntaxVerify(t *testing.T) {
+	session := testServer(t)
+	id := createTicketID(t, session, map[string]any{"title": "Edited", "description": "Why it matters", "acceptance": "- First.\n  verify: go test ./a"})
+
+	edited := callObject(t, session, "ticket_edit", map[string]any{"id": id, "acceptance": "- First.\n  verify: go test ./a | tail -5"})
+	warning, _ := edited["shell_syntax_warning"].(string)
+	for _, want := range []string{id, "go test ./a | tail -5", "`|`"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("shell_syntax_warning %q does not name %q", warning, want)
+		}
+	}
+
+	// An edit that writes no body section the criteria live in does not repeat
+	// it.
+	edited = callObject(t, session, "ticket_edit", map[string]any{"id": id, "title": "Retitled"})
+	if w, _ := edited["shell_syntax_warning"].(string); w != "" {
+		t.Errorf("title-only edit carried shell_syntax_warning %q", w)
+	}
+
+	edited = callObject(t, session, "ticket_edit", map[string]any{"id": id, "acceptance": "- First.\n  verify: go test ./a"})
+	if w, _ := edited["shell_syntax_warning"].(string); w != "" {
+		t.Errorf("edit restoring a plain command carried shell_syntax_warning %q", w)
+	}
+}
+
 // ─── Root, foreign children and the global graph over MCP ──────────────────
 
 // activateCatalog writes the catalog that activates Root and cross-project

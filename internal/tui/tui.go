@@ -1408,6 +1408,9 @@ func (a *App) handleCreateTicket(msg formSubmitMsg) tea.Cmd {
 	if ticket.UnparsedAcceptance(t.Body) {
 		status += "; " + ticket.UnparsedAcceptanceWarning(t.ID)
 	}
+	if shell := ticket.ShellSyntaxCriteria(t.Body); len(shell) > 0 {
+		status += "; " + ticket.ShellSyntaxWarning(t.ID, shell)
+	}
 	return tea.Batch(
 		loadTickets(a.store),
 		func() tea.Msg { return statusMsg(status) },

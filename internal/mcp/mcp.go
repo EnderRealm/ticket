@@ -203,6 +203,13 @@ type ticketJSON struct {
 	// acceptance value. Distinct from EmptyAcceptanceWarning, which is the
 	// section being absent, and the two never appear together.
 	UnparsedAcceptanceWarning string `json:"unparsed_acceptance_warning,omitempty"`
+	// ShellSyntaxWarning names the verify commands that carry shell-only syntax
+	// outside quotes, which verify passes to the program as literal arguments
+	// because it runs no shell. Set by ticket_create, and by ticket_edit when
+	// the edit wrote a description or an acceptance value. A warning rather
+	// than a refusal, so editing a legacy ticket carrying such a line never
+	// fails.
+	ShellSyntaxWarning string `json:"shell_syntax_warning,omitempty"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -938,7 +945,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		content := ticketContent{
 			Title:       args.Title,
@@ -1101,6 +1108,7 @@ func (c ticketContent) warn(j *ticketJSON, t *ticket.Ticket) {
 	if ticket.UnparsedAcceptance(t.Body) {
 		j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
 	}
+	j.ShellSyntaxWarning = ticket.ShellSyntaxWarning(t.ID, ticket.ShellSyntaxCriteria(t.Body))
 }
 
 // destination is where a new ticket lands, resolved from the `repo` and
@@ -1243,7 +1251,7 @@ type editArgs struct {
 func registerEdit(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
-		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. A body field that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set under the same condition when a `verify:` line in the stored acceptance section carries shell-only syntax outside quotes, which verify passes to the program as literal arguments because it runs no shell. A body field that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
 		for _, f := range []struct{ name, value string }{
 			{"description", args.Description},
@@ -1375,8 +1383,11 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 		// criteria, so an unrelated edit to a ticket already in this state does
 		// not repeat it; read off the stored body after the write, as the create
 		// response is.
-		if (args.Description != "" || args.Acceptance != "") && ticket.UnparsedAcceptance(t.Body) {
-			j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
+		if args.Description != "" || args.Acceptance != "" {
+			if ticket.UnparsedAcceptance(t.Body) {
+				j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
+			}
+			j.ShellSyntaxWarning = ticket.ShellSyntaxWarning(t.ID, ticket.ShellSyntaxCriteria(t.Body))
 		}
 		r, err := jsonResult(j)
 		return r, nil, err

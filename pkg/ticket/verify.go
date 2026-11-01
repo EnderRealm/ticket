@@ -241,6 +241,57 @@ func UnparsedAcceptanceWarning(id string) string {
 		id, id)
 }
 
+// ShellSyntaxCommand is a verify command carrying shell syntax outside quotes,
+// with the constructs found in it.
+type ShellSyntaxCommand struct {
+	Command    string
+	Constructs []string
+}
+
+// ShellSyntaxCriteria returns every verify command in body's acceptance
+// criteria that carries shell-only syntax outside quotes. RunVerify execs a
+// command as argv with no shell, so such a line is either refused on its first
+// word or run with the syntax as literal arguments; reporting it when it is
+// written is the only point at which the author still holds its intent. Command
+// is sanitized because it is untrusted markdown both the CLI and the MCP
+// response print.
+func ShellSyntaxCriteria(body string) []ShellSyntaxCommand {
+	var found []ShellSyntaxCommand
+	for _, c := range ParseCriteria(AcceptanceCriteria(body)) {
+		if c.Command == "" {
+			continue
+		}
+		if constructs := shellConstructs(c.Command); len(constructs) > 0 {
+			found = append(found, ShellSyntaxCommand{Command: SanitizeControl(c.Command), Constructs: constructs})
+		}
+	}
+	return found
+}
+
+// shellSyntaxRemedy is the rewrite a shell-form verify line needs, shared by
+// the create/edit warning and the verify-time refusal so both name one fix.
+const shellSyntaxRemedy = "Rewrite such a line as one program invocation with its arguments, quote the text if it is meant as a literal argument, " +
+	"or move the shell logic into a script or a quoted `bash -c '…'` whose program is in verify_allow."
+
+// ShellSyntaxWarning is the one phrasing for commands ShellSyntaxCriteria
+// found, said the same way by `tk create`, the TUI's create, ticket_create and
+// ticket_edit. Empty found means no warning, so a caller can assign the result
+// unconditionally. It names the remedy on the same terms BareAcceptanceWarning
+// does, and for the same reason does not name `tk edit`.
+func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {
+	if len(found) == 0 {
+		return ""
+	}
+	named := make([]string, len(found))
+	for i, f := range found {
+		named[i] = fmt.Sprintf("%q (%s)", f.Command, formatConstructs(f.Constructs))
+	}
+	return fmt.Sprintf("ticket %s has verify commands carrying shell syntax outside quotes: %s. "+
+		"verify runs each command as argv with no shell, so that syntax is passed to the program as literal arguments and the check does not run as written. "+
+		"%s Do so with ticket_edit on %s and an `acceptance` argument, or by editing that ticket's `## Acceptance Criteria` section.",
+		id, strings.Join(named, ", "), shellSyntaxRemedy, id)
+}
+
 // RunVerify executes each criterion's command in dir, sequentially and in
 // order, each bounded by policy's timeout and by ctx. Criteria without commands
 // yield unverified results. An unusable dir is a single error rather than a
@@ -354,6 +405,117 @@ func tokenizeCommand(s string) ([]string, error) {
 	return argv, nil
 }
 
+// shellConstructOrder is the order shellConstructs reports in, so a warning
+// and a refusal naming the same command name its constructs the same way.
+var shellConstructOrder = []string{"&&", "||", "|", ";", "$(", "!", "~"}
+
+// shellConstructs returns the shell-only syntax in command that sits outside
+// quotes, de-duplicated and in shellConstructOrder. It scans with exactly
+// tokenizeCommand's semantics — single and double quotes group, nothing else is
+// special — so syntax inside a quoted `bash -c '…'` argument, which a shell the
+// program itself starts will interpret, is not reported. Everything reported is
+// passed to the program as a literal argument, because no shell runs the
+// command. `~` counts only at the start of a token, where a shell would read
+// it as home. `!` counts only as a token of its own in command position — the
+// first token, or the first after `&&`, `||`, `|` or `;` — where a shell would
+// read it as negation; elsewhere it is an argument a program such as `test`,
+// `[` or `find` takes literally and handles itself, so the line runs as
+// written.
+func shellConstructs(command string) []string {
+	found := map[string]bool{}
+	runes := []rune(command)
+	var quote rune
+	// tokenLen counts the runes of the current token, quote characters
+	// included, so a quoted '!' is two or more and never read as negation.
+	tokenLen := 0
+	tokenBang := false
+	// commandStart reports that the current token is in command position;
+	// sepLast that the last unquoted rune of the token was a separator, so the
+	// next token starts a command.
+	commandStart, sepLast := true, false
+	endToken := func() {
+		if tokenLen == 0 {
+			return
+		}
+		if tokenLen == 1 && tokenBang && commandStart {
+			found["!"] = true
+		}
+		commandStart = sepLast
+		tokenLen, tokenBang, sepLast = 0, false, false
+	}
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+			continue
+		case r == '\'' || r == '"':
+			quote = r
+			tokenLen++
+			sepLast = false
+			continue
+		case unicode.IsSpace(r):
+			endToken()
+			continue
+		}
+
+		next := rune(0)
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+		sepLast = false
+		switch {
+		case r == '&' && next == '&':
+			found["&&"] = true
+			i++
+			tokenLen++
+			sepLast = true
+		case r == '|' && next == '|':
+			found["||"] = true
+			i++
+			tokenLen++
+			sepLast = true
+		case r == '|':
+			found["|"] = true
+			sepLast = true
+		case r == ';':
+			found[";"] = true
+			sepLast = true
+		case r == '$' && next == '(':
+			found["$("] = true
+			i++
+			tokenLen++
+		case r == '~' && tokenLen == 0:
+			found["~"] = true
+		case r == '!' && tokenLen == 0:
+			tokenBang = true
+		}
+		tokenLen++
+	}
+	endToken()
+
+	var constructs []string
+	for _, c := range shellConstructOrder {
+		if found[c] {
+			constructs = append(constructs, c)
+		}
+	}
+	return constructs
+}
+
+// formatConstructs renders constructs as a backticked, comma-separated list.
+// They are fixed strings from shellConstructOrder, never ticket content.
+func formatConstructs(constructs []string) string {
+	quoted := make([]string, len(constructs))
+	for i, c := range constructs {
+		quoted[i] = "`" + c + "`"
+	}
+	return strings.Join(quoted, ", ")
+}
+
 // allowedCommand reports whether argv0 is permitted. Comparison is exact
 // string equality, not basename matching: an entry of "go" must not admit
 // /tmp/evil/go.
@@ -380,6 +542,17 @@ func refusal(command, argv0 string, allowErr error) string {
 			"A verify: line takes a command. A criterion no command can check takes an `unverifiable: <reason>` line of its own instead, "+
 			"indented under the criterion and not inside a verify line.\n"+
 			"command: %s", argv0, SanitizeControl(command)))
+	}
+	// A line written for a shell, such as `cd x && …`, is refused on its first
+	// word, but allow-listing that word would exec it with the shell syntax as
+	// literal arguments; the syntax is the cause the author has to repair.
+	if allowErr == nil {
+		if constructs := shellConstructs(command); len(constructs) > 0 {
+			return capOutput(fmt.Sprintf("refused: this criterion's command carries shell syntax outside quotes (%s), and verify runs a command as argv with no shell, "+
+				"so nothing interprets it and this criterion's command did not run.\n"+
+				"Adding %q to verify_allow would not make this line runnable: %q would run with that syntax as literal arguments. %s\n"+
+				"command: %s", formatConstructs(constructs), argv0, argv0, shellSyntaxRemedy, SanitizeControl(command)))
+		}
 	}
 	cause := fmt.Sprintf("refused: %q is not in verify_allow, so this criterion's command did not run.\n", argv0)
 	remedy := fmt.Sprintf("To permit it, add %q to the verify_allow list in ~/.ticket/config.yaml. ", argv0)
