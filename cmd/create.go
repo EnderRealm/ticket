@@ -36,6 +36,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// directory to a git remote or a directory name, and warn; a write landing
 	// somewhere inferred is a ticket in a namespace nobody chose, so only a
 	// directory the config registers, or a selector, decides where it goes.
+	// The guard covers only a bare create: a --repo path is resolved by
+	// ticket.ResolveStoreForRepo, which keeps the remote and basename fallbacks
+	// on purpose, so it can still land in a project inferred from that path.
 	if projectFlag == "" && repoFlag == "" {
 		cfg, err := project.Load()
 		if err != nil {

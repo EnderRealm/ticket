@@ -205,9 +205,11 @@ func UnregisteredWarning(store *FileStore) string {
 //
 // Every CLI lookup of a repo's store and MCP's repo argument resolve here, so a
 // directory reaches the same store whichever of them names it. A caller that
-// needs only a project name, as `tk serve`'s default project and `tk recompute`
-// do, calls project.ResolveName itself, and runCreate's guard sits above this
-// function: it refuses a bare `tk create` before any store is resolved.
+// needs only a project name, as `tk serve`'s default project, `tk recompute` and
+// `tk init` do, calls project.ResolveName itself — init resolves the name in
+// order to register it and create its directory, not to find an existing store.
+// runCreate's guard sits above this function: it refuses a bare `tk create`
+// before any store is resolved; --repo is not covered, see below.
 //
 // A .tickets/ in the repo has no say in the answer. Here, only a repo that
 // resolves to no project hears about one, through noStoreError. A repo that

@@ -173,7 +173,11 @@ Creating & Editing:
   create [title] [options]   Create ticket. Outside a registered project the
                              destination must be named: --project <namespace>
                              (--project _root for an idea with no repository
-                             yet) or --repo
+                             yet) or --repo. The guard applies only without
+                             --project or --repo: a --repo path still resolves
+                             by git remote or directory name, so a path no
+                             project registers writes into whichever project
+                             those name
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
