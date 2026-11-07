@@ -1,16 +1,25 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// bodyFields is the fixed set of body keys tk query and ticket_show carry.
+var bodyFields = []string{"description", "design", "acceptance_criteria", "test_results", "notes"}
+
+const fullBody = "Why it matters.\n\n## Design\n\nThe approach.\n\n## Acceptance Criteria\n\n- It works\n  verify: go test ./...\n\n## Test Results\n\nAll green.\n"
 
 func TestQueryCarriesUpdatedAndClosed(t *testing.T) {
 	store := centralStore(t, "q-times")
@@ -124,6 +133,197 @@ func TestQueryCarriesUpdatedAndClosed(t *testing.T) {
 	if got := rows["q-handdone"]["updated"]; got != "2024-01-02T00:00:00Z" {
 		t.Errorf("q-handdone updated = %v, want the stored 2024-01-02T00:00:00Z", got)
 	}
+}
+
+func TestQueryCarriesBodyFields(t *testing.T) {
+	store := centralStore(t, "q-body")
+
+	noted := time.Date(2026, 11, 1, 8, 20, 32, 0, time.UTC)
+	const posing = "Real text.\n\n---\nid: q-posing\nstatus: open\ntype: bug\n---\n# Posing ticket\n\nTail."
+	for id, tk := range map[string]*ticket.Ticket{
+		"q-full": {Body: fullBody, Notes: []ticket.Note{
+			{Timestamp: noted, Text: "First note."},
+			{Timestamp: noted.Add(time.Hour), Text: "Second note."},
+		}},
+		"q-frontmatter": {Body: posing + "\n"},
+		"q-heading":     {Body: "Intro.\n\n## Background\n\nContext.\n\n## Design\n\nThe approach.\n\n## Rollout\n\nIn stages.\n"},
+		"q-emptydesign": {Body: "Only this.\n\n## Design\n\n## Acceptance Criteria\n\n- It works\n"},
+		"q-nobody":      {Body: "\n"},
+	} {
+		tk.ID, tk.Status, tk.Type, tk.Created, tk.Title = id, ticket.StatusOpen, ticket.TypeFeature, time.Now(), "Item "+id
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	rows := captureQuery(t)
+
+	if len(rows) != 5 {
+		t.Errorf("query returned %d rows, want 5: %v", len(rows), rows)
+	}
+
+	wantNotes := []any{
+		map[string]any{"timestamp": "2026-11-01T08:20:32Z", "text": "First note."},
+		map[string]any{"timestamp": "2026-11-01T09:20:32Z", "text": "Second note."},
+	}
+	for id, want := range map[string]map[string]any{
+		"q-full": {
+			"description":         "Why it matters.",
+			"design":              "The approach.",
+			"acceptance_criteria": "- It works\n  verify: go test ./...",
+			"test_results":        "All green.",
+			"notes":               wantNotes,
+		},
+		// Text that looks like the next ticket's frontmatter is this ticket's
+		// description, not a second row.
+		"q-frontmatter": {"description": posing},
+		// A heading tk does not name is not a field; it stays in the section
+		// it follows.
+		"q-heading": {
+			"description": "Intro.\n\n## Background\n\nContext.",
+			"design":      "The approach.\n\n## Rollout\n\nIn stages.",
+		},
+		"q-emptydesign": {"description": "Only this.", "acceptance_criteria": "- It works"},
+		"q-nobody":      {},
+	} {
+		for _, key := range bodyFields {
+			got, ok := rows[id][key]
+			wantValue, wantOK := want[key]
+			if ok != wantOK || !reflect.DeepEqual(got, wantValue) {
+				t.Errorf("%s %s = %#v (present %v), want %#v (present %v)", id, key, got, ok, wantValue, wantOK)
+			}
+		}
+	}
+	for _, key := range []string{"background", "rollout"} {
+		if v, ok := rows["q-heading"][key]; ok {
+			t.Errorf("q-heading carries %s = %v, want no field for the heading", key, v)
+		}
+	}
+}
+
+// TestQueryAndShowAgreeOnBodyFields holds a `tk query --all-projects` row to the
+// ticket_show response for the same ticket: same keys present, same values. More
+// notes than ticket_show's default window, which notes_limit=0 opens, and a
+// heading after the acceptance section, whose text neither surface carries.
+func TestQueryAndShowAgreeOnBodyFields(t *testing.T) {
+	store := centralStore(t, "q-agree")
+
+	var notes []ticket.Note
+	for i := range 25 {
+		notes = append(notes, ticket.Note{
+			Timestamp: time.Date(2026, 11, 1, 8, i, 0, 0, time.UTC),
+			Text:      fmt.Sprintf("Note %d.", i),
+		})
+	}
+	const afterAcceptance = "Past the acceptance section."
+	for id, tk := range map[string]*ticket.Ticket{
+		"q-full":    {Body: fullBody, Notes: notes},
+		"q-heading": {Body: "Intro.\n\n## Background\n\nContext.\n\n## Acceptance Criteria\n\n- It works\n\n## Rollout\n\n" + afterAcceptance + "\n"},
+		"q-nobody":  {Body: "\n"},
+	} {
+		tk.ID, tk.Status, tk.Type, tk.Created, tk.Title = id, ticket.StatusOpen, ticket.TypeFeature, time.Now(), "Item "+id
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	if err := queryCmd.Flags().Set("all-projects", "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = queryCmd.Flags().Set("all-projects", "false") })
+	rows := captureQuery(t)
+
+	served, root, err := serveStore()
+	if err != nil {
+		t.Fatalf("serveStore: %v", err)
+	}
+	session := serveSession(t, served, "q-agree", root)
+
+	for _, id := range []string{"q-agree/q-full", "q-agree/q-heading", "q-agree/q-nobody"} {
+		row, ok := rows[id]
+		if !ok {
+			t.Fatalf("query has no row %s: %v", id, rows)
+		}
+		shown := callTool(t, session, "ticket_show", map[string]any{"id": id, "notes_limit": 0})
+		for _, key := range bodyFields {
+			got, ok := row[key]
+			want, wantOK := shown[key]
+			if ok != wantOK || !reflect.DeepEqual(got, want) {
+				t.Errorf("%s %s: query %#v (present %v), ticket_show %#v (present %v)", id, key, got, ok, want, wantOK)
+			}
+		}
+	}
+	if got := len(rows["q-agree/q-full"]["notes"].([]any)); got != 25 {
+		t.Errorf("q-full carries %d notes, want all 25", got)
+	}
+	if line, _ := json.Marshal(rows["q-agree/q-heading"]); strings.Contains(string(line), afterAcceptance) {
+		t.Errorf("q-heading carries the text past the acceptance section: %s", line)
+	}
+
+	listed := callTool(t, session, "ticket_list", map[string]any{"project": "q-agree"})
+	listRows := listed["tickets"].([]any)
+	if len(listRows) != 3 {
+		t.Fatalf("ticket_list returned %d rows, want 3: %v", len(listRows), listed)
+	}
+	for _, r := range listRows {
+		for _, key := range bodyFields {
+			if v, ok := r.(map[string]any)[key]; ok {
+				t.Errorf("ticket_list row %v carries %s = %v, want metadata only", r.(map[string]any)["id"], key, v)
+			}
+		}
+	}
+}
+
+// The body fields belong to query: frontier --json shares ticketJSON but its
+// rows stay metadata.
+func TestFrontierJSONCarriesNoBody(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	tk := &ticket.Ticket{
+		ID:      "fr-body",
+		Status:  ticket.StatusReady,
+		Type:    ticket.TypeFeature,
+		Created: time.Now(),
+		Title:   "Item",
+		Body:    fullBody,
+		Notes:   []ticket.Note{{Timestamp: time.Now(), Text: "A note."}},
+	}
+	if err := stores["alpha"].Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var rows []map[string]any
+	out := captureFrontier(t)
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, out)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("frontier --json returned %d rows, want 1: %s", len(rows), out)
+	}
+	for _, key := range bodyFields {
+		if v, ok := rows[0][key]; ok {
+			t.Errorf("frontier row carries %s = %v, want metadata only", key, v)
+		}
+	}
+}
+
+func callTool(t *testing.T, session *gomcp.ClientSession, name string, args map[string]any) map[string]any {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &gomcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(*gomcp.TextContent).Text
+	if result.IsError {
+		t.Fatalf("%s returned error: %s", name, text)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("%s: invalid JSON response: %v", name, err)
+	}
+	return decoded
 }
 
 func captureQuery(t *testing.T) map[string]map[string]any {

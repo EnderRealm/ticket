@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `tk query` carries the ticket body its help promised: `description`, `design`, `acceptance_criteria`, `test_results` and `notes`, under the keys and in the shape `ticket_show` uses and read through the same split, so a consumer no longer runs `tk show` per ticket and parses the markdown. `tk frontier --json` is unchanged. `tk help` no longer says other `## ` sections become fields: the set is fixed and its headings match on prefix, so `## Design Notes` opens `design`, and any other heading stays in the text of the section it follows, except that it closes the acceptance section. Help and the README name the text that reaches no field: after that closing heading, an earlier `design` or `test_results` block a later one replaces, and what follows an exact `## Notes` or `## Review Log` line outside a timestamped note. Help also lists the fields query really emits, `external-ref` rather than `external_ref` among them. The `ticket_list` description says its rows are metadata only.
+
 ## [8.11.0] - 2026-11-06
 
 ### Added

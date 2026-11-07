@@ -182,7 +182,8 @@ Dependencies & Links:
   unlink <id> <target-id>    Remove link
 
 Query:
-  query [jq-filter]          Output tickets as JSONL (pipe to jq)
+  query [jq-filter]          Output tickets as JSONL (pipe to jq), body
+                             fields included
     --all-projects           Every namespace, IDs qualified
 
 Setup:
@@ -473,7 +474,7 @@ tk edit <id> --set env=staging        # update
 tk edit <id> --set env=               # remove
 ```
 
-Extra fields appear in `tk show` output, `tk query` JSONL (under `extra`), and MCP responses.
+Extra fields appear in `tk show` output and, flattened to the top level, in `tk query` JSONL and MCP responses.
 
 Filter the list by an extra field with substring matching:
 
@@ -508,6 +509,18 @@ Outputs are populated automatically when a ticket lands: the commit watcher reco
 `tk query` JSONL and the MCP ticket shapes (`ticket_list`, `ticket_show` and the other list tools) carry three RFC 3339 UTC times: `created`; `updated`, the ticket's last write; and `closed`, the time it entered `done` or `closed` — present only while the ticket is in one of those statuses. An epic's `closed` is its completion date as described under epics: its last child's finish, or for an abandoned epic the abandon.
 
 There is no backfill. A ticket last written before tk recorded `updated` carries no `updated` key until its next write. Only a write that moves a ticket into `done` or `closed` dates its finish, so one that finished before tk recorded `completed` carries no `closed` key through later notes, retitles and other edits, or through `tk init` migrating it from a repo's `.tickets/`, until it is reopened and finished again; an epic abandoned before tk recorded `abandoned-at` carries no `closed` until it is set `closed` again. None of these is synthesized from file mtime, git history, a child's date or the time of an unrelated edit. An absent key means unknown, never the zero time. Since extra fields share the top level of that JSON, `closed` is a reserved name and cannot be used as one.
+
+### Body Fields
+
+`tk query` JSONL carries a ticket's body as `description`, `design`, `acceptance_criteria`, `test_results` and `notes` (each note a `timestamp` and `text`, oldest first), so a consumer reads it from structured fields rather than parsing `tk show`. These are the fields `ticket_show` carries, under the same keys and read through the same split; `ticket_show` trims `notes` to the newest 20 by default, and `tk query` carries them all. An empty section's key is omitted. `ticket_list` and `tk frontier --json` rows are metadata only and carry none of them.
+
+That set is fixed: no other `## ` heading becomes a field, since a heading is free text that could collide with a real key. The section headings match on prefix, so `## Design Notes` opens `design`, `## Test Results Summary` opens `test_results` and `## Acceptance Notes` opens `acceptance_criteria`, and the heading line itself is in no field. Any other heading stays in the text of the section it follows, so a heading in the description stays in `description`, except that it closes the acceptance section.
+
+Text reaches no field of either surface in three cases:
+
+- After a heading that closes the acceptance section, up to the next design, acceptance or test results heading.
+- In an earlier `design` or `test_results` block: a later block of the same section replaces it, where acceptance blocks are joined.
+- After an exact `## Notes` or `## Review Log` line, which ends the body, unless it is the text of a timestamped note. A section below such a line is not read as one.
 
 ### Bulk Operations
 

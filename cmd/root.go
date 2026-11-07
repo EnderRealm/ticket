@@ -186,11 +186,25 @@ Query (JSON):
   tk query '.title | test("deploy"; "i")'         # regex search
   tk query --all-projects                         # every namespace, IDs qualified
 
-  JSON fields: id, status, type, priority, title, description,
-    design, acceptance_criteria, deps[], links[], tags[],
-    created, parent, notes, external_ref,
+  JSON fields: id, status, abandoned, type, priority, title, deps[], links[],
+    tags[], created, updated, closed, parent, external-ref, outputs, dep_cargo,
+    description, design, acceptance_criteria, test_results,
+    notes[] (timestamp, text; every note, oldest first),
     plus any custom extra fields (flattened to top level)
-  Body sections (## Heading) become snake_case fields.
+  An empty body section's key is omitted.
+  The body fields are the ones ticket_show carries, split the same way, and
+  no other ## heading becomes one. Headings match on prefix: ## Design Notes
+  opens design, ## Test Results Summary opens test_results, ## Acceptance Notes
+  opens acceptance_criteria, and the heading line itself is in no field. Any
+  other heading stays in the text of the section it follows, description
+  included, except that it closes the acceptance section.
+  Text that reaches no field:
+    - after a heading that closes the acceptance section, up to the next
+      design, acceptance or test results heading
+    - an earlier design or test_results block: a later block of the same
+      section replaces it, where acceptance blocks are joined
+    - after an exact ## Notes or ## Review Log line, which ends the body,
+      unless it is the text of a timestamped note
 
 Setup:
   init [--project <name>] [--central-root <path>] [--yes]

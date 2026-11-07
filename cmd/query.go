@@ -38,9 +38,19 @@ type ticketJSON struct {
 	Parent      string            `json:"parent,omitempty"`
 	Tags        []string          `json:"tags,omitempty"`
 	Title       string            `json:"title"`
+	Description string            `json:"description,omitempty"`
+	Design      string            `json:"design,omitempty"`
+	Acceptance  string            `json:"acceptance_criteria,omitempty"`
+	TestResults string            `json:"test_results,omitempty"`
+	Notes       []noteJSON        `json:"notes,omitempty"`
 	Outputs     map[string]string `json:"outputs,omitempty"`
 	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
 	Extra       map[string]string `json:"-"`
+}
+
+type noteJSON struct {
+	Timestamp string `json:"timestamp"`
+	Text      string `json:"text"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -92,6 +102,21 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 	return j
 }
 
+// toQueryJSON adds the body fields, under the keys and in the shape ticket_show
+// carries them. `tk frontier --json` stays on toTicketJSON: its rows are
+// metadata, like ticket_list's.
+func toQueryJSON(t *ticket.Ticket) ticketJSON {
+	j := toTicketJSON(t)
+	j.Description, j.Design, j.Acceptance, j.TestResults = ticket.BodySections(t.Body)
+	for _, n := range t.Notes {
+		j.Notes = append(j.Notes, noteJSON{
+			Timestamp: n.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
+			Text:      n.Text,
+		})
+	}
+	return j
+}
+
 func runQuery(cmd *cobra.Command, args []string) error {
 	tickets, err := listingFor(cmd)
 	if err != nil {
@@ -100,7 +125,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 	var lines []string
 	for _, t := range tickets {
-		data, err := json.Marshal(toTicketJSON(t))
+		data, err := json.Marshal(toQueryJSON(t))
 		if err != nil {
 			continue
 		}
