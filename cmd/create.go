@@ -31,6 +31,12 @@ func init() {
 	rootCmd.AddCommand(createCmd)
 }
 
+// createTicket is the store write runCreate goes through. Create can settle
+// t.ID on a different ID than the one it was handed — a hash collision with a
+// concurrent create regenerates it — and that path is only reachable through a
+// race, so tests replace this to take it deterministically.
+var createTicket = (*ticket.FileStore).Create
+
 func runCreate(cmd *cobra.Command, args []string) error {
 	// A create names its destination. Reads fall back from the working
 	// directory to a git remote or a directory name, and warn; a write landing
@@ -87,8 +93,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	id := ticket.GenerateID(title)
-
 	var body strings.Builder
 	if description != "" {
 		body.WriteString("\n" + description + "\n")
@@ -113,7 +117,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	t := &ticket.Ticket{
-		ID:          id,
+		ID:          ticket.GenerateID(title),
 		Status:      ticket.StatusBacklog,
 		Type:        ticket.TicketType(typeStr),
 		Priority:    priority,
@@ -128,7 +132,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		Extra:       extra,
 	}
 
-	if err := store.Create(t); err != nil {
+	if err := createTicket(store, t); err != nil {
 		return err
 	}
 
@@ -146,5 +150,5 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, ticket.ShellSyntaxWarning(t.ID, shell))
 	}
 
-	return showTicket(store, id, false)
+	return showTicket(store, t.ID, false)
 }

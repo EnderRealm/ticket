@@ -111,3 +111,65 @@ func TestCreateWarnsOnUnparsedAcceptance(t *testing.T) {
 		t.Errorf("stderr = %q, want to contain %q", string(warning), want)
 	}
 }
+
+// Create regenerates the ID when a concurrent create claimed it between the
+// check and the write. The ticket rendered afterwards has to be the one this
+// create wrote, not the one that won the original ID.
+func TestCreateShowsRegeneratedID(t *testing.T) {
+	store := centralStore(t, "cr-regen")
+
+	realCreate := createTicket
+	t.Cleanup(func() { createTicket = realCreate })
+	var original, settled string
+	createTicket = func(s *ticket.FileStore, tk *ticket.Ticket) error {
+		original = tk.ID
+		planted := &ticket.Ticket{
+			ID:       original,
+			Status:   ticket.StatusBacklog,
+			Type:     ticket.TypeFeature,
+			Priority: 2,
+			Deps:     []string{},
+			Links:    []string{},
+			Created:  tk.Created,
+			Title:    "Planted rival ticket",
+			Body:     "\n",
+		}
+		if err := realCreate(s, planted); err != nil {
+			return err
+		}
+		for tk.ID == original {
+			tk.ID = ticket.GenerateID(tk.Title)
+		}
+		settled = tk.ID
+		return realCreate(s, tk)
+	}
+
+	oldStdout := os.Stdout
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		outR.Close()
+	})
+
+	createErr := runCreate(createCmd, []string{"Regenerated id ticket"})
+
+	outW.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(outR)
+
+	if createErr != nil {
+		t.Fatalf("runCreate: %v", createErr)
+	}
+	if _, err := store.Get(settled); err != nil {
+		t.Fatalf("Get(%s): %v", settled, err)
+	}
+	for _, want := range []string{settled, "Regenerated id ticket"} {
+		if !contains(string(out), want) {
+			t.Errorf("stdout = %q, want to contain %q", string(out), want)
+		}
+	}
+	if contains(string(out), "Planted rival ticket") {
+		t.Errorf("stdout renders the ticket holding the original ID %s, not the one written as %s: %q", original, settled, string(out))
+	}
+}
