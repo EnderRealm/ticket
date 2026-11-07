@@ -516,11 +516,14 @@ There is no backfill. A ticket last written before tk recorded `updated` carries
 
 That set is fixed: no other `## ` heading becomes a field, since a heading is free text that could collide with a real key. The section headings match on prefix, so `## Design Notes` opens `design`, `## Test Results Summary` opens `test_results` and `## Acceptance Notes` opens `acceptance_criteria`, and the heading line itself is in no field. Any other heading stays in the text of the section it follows, so a heading in the description stays in `description`, except that it closes the acceptance section.
 
-Text reaches no field of either surface in three cases:
+Repeated `design` or `test_results` blocks are joined in body order with a blank line between, as acceptance blocks are. The write matches that read: `ticket_edit` on either section, and a `ticket_verify` or `tk verify` record on `test_results`, replaces every block under one heading where the first was, leaving whatever sat between them in place, so writing back the value read reproduces it.
+
+An exact `## Notes` line is text like any other heading, so it stays in the section it follows, and a description edit replaces it with the rest of the description. The exception is the line that opens the notes: the first one whose next non-blank line is a note timestamp, such as `**2026-02-22T01:15:50Z**`. Written into a description, such a line moves what is below it out of the description: it is note text from there to the end of the file, a section heading included, so a section below it is not read as one.
+
+Text reaches no field of either surface in two cases:
 
 - After a heading that closes the acceptance section, up to the next design, acceptance or test results heading.
-- In an earlier `design` or `test_results` block: a later block of the same section replaces it, where acceptance blocks are joined.
-- After an exact `## Notes` or `## Review Log` line, which ends the body, unless it is the text of a timestamped note. A section below such a line is not read as one.
+- From an exact `## Review Log` line up to the next exact `## Notes` line, or to the end of the file if none follows. This is the legacy section `tk audit` reports, and the next write drops it, so a section below that line is not read as one. The same line inside a note is that note's text.
 
 ### Bulk Operations
 

@@ -3767,6 +3767,91 @@ func showTicket(t *testing.T, session *mcp.ClientSession, id string) map[string]
 	return shown
 }
 
+// A `## Notes` line in a description is description text through every write
+// the tools offer: a note added after it, a new section, an edit writing back
+// what was read, and an edit replacing it.
+func TestNotesLineInDescriptionThroughTheTools(t *testing.T) {
+	session := testServer(t)
+	const desc = "Intro\n\n## Notes\n\nfoo"
+	id := createTicketID(t, session, map[string]any{"title": "Notes line", "type": "feature", "description": desc})
+
+	const note = "Before.\n\n## Review Log\n\nAfter."
+	for _, text := range []string{note, "Later."} {
+		if result := callTool(t, session, "ticket_add_note", map[string]any{"id": id, "text": text}); result.IsError {
+			t.Fatalf("ticket_add_note: %v", result.Content)
+		}
+	}
+	check := func(wantDesc string) {
+		t.Helper()
+		shown := showTicket(t, session, id)
+		if shown["description"] != wantDesc {
+			t.Errorf("description = %q, want %q", shown["description"], wantDesc)
+		}
+		notes, _ := shown["notes"].([]any)
+		if len(notes) != 2 || notes[0].(map[string]any)["text"] != note {
+			t.Errorf("notes = %v, want both, the first whole", shown["notes"])
+		}
+		if shown["design"] != "The design." {
+			t.Errorf("design = %q", shown["design"])
+		}
+	}
+
+	if result := callTool(t, session, "ticket_edit", map[string]any{"id": id, "design": "The design."}); result.IsError {
+		t.Fatalf("ticket_edit design: %v", result.Content)
+	}
+	check(desc)
+	if result := callTool(t, session, "ticket_edit", map[string]any{"id": id, "description": desc}); result.IsError {
+		t.Fatalf("ticket_edit description: %v", result.Content)
+	}
+	check(desc)
+	if result := callTool(t, session, "ticket_edit", map[string]any{"id": id, "description": "Replaced."}); result.IsError {
+		t.Fatalf("ticket_edit description: %v", result.Content)
+	}
+	check("Replaced.")
+}
+
+// Repeated blocks read as one value, the write of that value leaves one block,
+// and a verify record replaces all of them.
+func TestRepeatedBlocksThroughTheTools(t *testing.T) {
+	session, _ := verifyServer(t)
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Repeated blocks",
+		"type":       "feature",
+		"design":     "A\n\n## Design Notes\n\nB",
+		"acceptance": "- Passing check.\n  verify: /bin/echo ok\n",
+	})
+	if result := callTool(t, session, "ticket_edit", map[string]any{"id": id, "test_results": "stale one\n\n## Test Results Summary\n\nstale two"}); result.IsError {
+		t.Fatalf("ticket_edit test_results: %v", result.Content)
+	}
+
+	shown := showTicket(t, session, id)
+	if shown["design"] != "A\n\nB" {
+		t.Errorf("design = %q, want both blocks", shown["design"])
+	}
+	if shown["test_results"] != "stale one\n\nstale two" {
+		t.Errorf("test_results = %q, want both blocks", shown["test_results"])
+	}
+
+	if result := callTool(t, session, "ticket_edit", map[string]any{"id": id, "design": shown["design"], "test_results": shown["test_results"]}); result.IsError {
+		t.Fatalf("ticket_edit write-back: %v", result.Content)
+	}
+	shown = showTicket(t, session, id)
+	if shown["design"] != "A\n\nB" || shown["test_results"] != "stale one\n\nstale two" {
+		t.Errorf("write-back moved the sections: design %q, test_results %q", shown["design"], shown["test_results"])
+	}
+
+	if result := callTool(t, session, "ticket_edit", map[string]any{"id": id, "test_results": "stale one\n\n## Test Results Summary\n\nstale two"}); result.IsError {
+		t.Fatalf("ticket_edit test_results: %v", result.Content)
+	}
+	if result := callTool(t, session, "ticket_verify", map[string]any{"id": id}); result.IsError {
+		t.Fatalf("ticket_verify: %v", result.Content)
+	}
+	results, _ := showTicket(t, session, id)["test_results"].(string)
+	if !strings.Contains(results, "PASS") || strings.Contains(results, "stale") {
+		t.Errorf("test_results should hold only the run record:\n%s", results)
+	}
+}
+
 // TestVerifyRecordsUnderTheRealTestResultsHeading covers the sequence that was
 // observed to destroy a ticket: a description naming the structural headings
 // inline, a verify run, then a description edit. The names are prose, so the

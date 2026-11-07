@@ -1,9 +1,11 @@
 package ticket
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1687,8 +1689,13 @@ func TestNextStructuralSection(t *testing.T) {
 		},
 		{
 			name: "heading at the start of the body",
-			body: "## Notes\n\nA note.\n",
-			want: "## Notes",
+			body: "## Design\n\nA design.\n",
+			want: "## Design",
+		},
+		{
+			name: "a notes line is text, as BodySections reads it",
+			body: "Intro.\n\n## Notes\n\nfoo\n\n## Test Results\n\nrun\n",
+			want: "## Test Results",
 		},
 		{
 			name: "no structural heading",
@@ -1750,5 +1757,661 @@ func TestSerialize_NotesHeadingNamedInProse(t *testing.T) {
 	}
 	if tk2.Body != tk.Body {
 		t.Errorf("body = %q, want %q", tk2.Body, tk.Body)
+	}
+}
+
+// roundTrip writes tk and reads it back, the path every store write and read
+// takes.
+func roundTrip(t *testing.T, tk *Ticket) *Ticket {
+	t.Helper()
+	data, err := Serialize(tk)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	got, err := parseBytes(data)
+	if err != nil {
+		t.Fatalf("Parse: %v\n%s", err, data)
+	}
+	return got
+}
+
+func bodyTicket(body string, notes ...Note) *Ticket {
+	return &Ticket{
+		ID:      "t-body",
+		Status:  StatusReady,
+		Type:    TypeFeature,
+		Created: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Title:   "Body text",
+		Body:    body,
+		Notes:   notes,
+	}
+}
+
+var (
+	firstNote  = Note{Timestamp: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), Text: "First note."}
+	secondNote = Note{Timestamp: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC), Text: "Second note."}
+)
+
+// A `## Notes` line in a description is description text, with or without notes
+// written after it, and it stays put however many times the ticket is rewritten:
+// no heading is added and no text crosses between the body and the notes.
+func TestNotesLineInDescriptionSurvivesRoundTrips(t *testing.T) {
+	for descName, desc := range map[string]string{
+		"text below the line":    "Intro\n\n## Notes\n\nfoo",
+		"nothing below the line": "Intro\n\n## Notes",
+	} {
+		for name, notes := range map[string][]Note{
+			"no notes":   nil,
+			"with notes": {firstNote, secondNote},
+		} {
+			t.Run(descName+"/"+name, func(t *testing.T) {
+				got := bodyTicket(desc, notes...)
+				first, err := Serialize(roundTrip(t, got))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 3 {
+					got = roundTrip(t, got)
+					if gotDesc, _, _, _ := BodySections(got.Body); gotDesc != desc {
+						t.Errorf("description = %q, want %q", gotDesc, desc)
+					}
+					if len(got.Notes) != len(notes) {
+						t.Fatalf("notes = %+v, want %+v", got.Notes, notes)
+					}
+					for i, n := range notes {
+						if got.Notes[i].Text != n.Text {
+							t.Errorf("notes[%d] = %q, want %q", i, got.Notes[i].Text, n.Text)
+						}
+					}
+					data, err := Serialize(got)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(data, first) {
+						t.Errorf("a rewrite changed the file:\nfirst:\n%s\nnow:\n%s", first, data)
+					}
+				}
+			})
+		}
+	}
+}
+
+// An empty `## Notes` heading in a stored file is text, before and after a note
+// is added: the note reads back as a note, and no later write moves the file or
+// adds a heading.
+func TestEmptyNotesHeadingInStoredFile(t *testing.T) {
+	const file = "---\nid: t-empty\nstatus: ready\ncreated: 2026-01-01T00:00:00Z\ntype: feature\n---\n# Title\n\nIntro.\n\n## Notes\n"
+	got, err := Parse(strings.NewReader(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "Intro.\n\n## Notes\n" || len(got.Notes) != 0 {
+		t.Fatalf("body = %q, notes = %+v", got.Body, got.Notes)
+	}
+	for range 3 {
+		got = roundTrip(t, got)
+		if got.Body != "Intro.\n\n## Notes\n" || len(got.Notes) != 0 {
+			t.Fatalf("rewrite moved text: body %q, notes %+v", got.Body, got.Notes)
+		}
+	}
+
+	got.Notes = append(got.Notes, firstNote)
+	first, err := Serialize(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(first), notesHeading+"\n"); count != 2 {
+		t.Errorf("%d notes headings, want the text line and the section:\n%s", count, first)
+	}
+	for range 3 {
+		got = roundTrip(t, got)
+		if got.Body != "Intro.\n\n## Notes\n" {
+			t.Errorf("body = %q", got.Body)
+		}
+		if len(got.Notes) != 1 || got.Notes[0].Text != firstNote.Text {
+			t.Fatalf("notes = %+v, want the one note", got.Notes)
+		}
+		data, err := Serialize(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, first) {
+			t.Errorf("a rewrite changed the file:\nfirst:\n%s\nnow:\n%s", first, data)
+		}
+	}
+}
+
+// The sections below a `## Notes` line in a description used to go with it.
+func TestNotesLineInDescriptionKeepsLaterSections(t *testing.T) {
+	const body = "Intro\n\n## Notes\n\nfoo\n\n## Design\n\nThe design.\n\n## Acceptance Criteria\n\n- It works\n"
+	got := roundTrip(t, bodyTicket(body, firstNote))
+
+	desc, design, acceptance, _ := BodySections(got.Body)
+	if desc != "Intro\n\n## Notes\n\nfoo" || design != "The design." || acceptance != "- It works" {
+		t.Errorf("desc = %q, design = %q, acceptance = %q", desc, design, acceptance)
+	}
+	if len(got.Notes) != 1 {
+		t.Errorf("notes = %+v, want the one note", got.Notes)
+	}
+}
+
+// parseBody and Serialize share one rule for where the notes open; each row is
+// a stored file's body, with the fields it has to read as.
+func TestNotesSectionOpening(t *testing.T) {
+	const stamp = "**2026-03-01T00:00:00Z**"
+	tests := []struct {
+		name  string
+		rest  string
+		body  string
+		notes []string
+	}{
+		{
+			name:  "timestamp on the next non-blank line",
+			rest:  "Intro.\n\n## Notes\n\n" + stamp + "\n\nA note.\n",
+			body:  "Intro.\n",
+			notes: []string{"A note."},
+		},
+		{
+			name:  "whitespace-only line ahead of the timestamp",
+			rest:  "Intro.\n\n## Notes\n   \n" + stamp + "\n\nA note.\n",
+			body:  "Intro.\n",
+			notes: []string{"A note."},
+		},
+		{
+			name:  "section opens the body",
+			rest:  "## Notes\n\n" + stamp + "\n\nA note.\n",
+			body:  "\n",
+			notes: []string{"A note."},
+		},
+		{
+			name: "nothing below the heading is text",
+			rest: "Intro.\n\n## Notes\n\n\n",
+			body: "Intro.\n\n## Notes\n",
+		},
+		{
+			name: "text below the heading",
+			rest: "Intro.\n\n## Notes\n\nfoo\n",
+			body: "Intro.\n\n## Notes\n\nfoo\n",
+		},
+		{
+			name: "indented timestamp is not one parseNotes accepts",
+			rest: "Intro.\n\n## Notes\n\n  " + stamp + "\n\nfoo\n",
+			body: "Intro.\n\n## Notes\n\n  " + stamp + "\n\nfoo\n",
+		},
+		{
+			name: "stamp carrying more than a timestamp",
+			rest: "Intro.\n\n## Notes\n\n**2026-03-01T00:00:00Z [agent]**\n\nfoo\n",
+			body: "Intro.\n\n## Notes\n\n**2026-03-01T00:00:00Z [agent]**\n\nfoo\n",
+		},
+		{
+			name: "text ahead of the first timestamp stays with what it precedes",
+			rest: "## Notes\n\nfoo\n\n" + stamp + "\n\nbar\n",
+			body: "## Notes\n\nfoo\n\n" + stamp + "\n\nbar\n",
+		},
+		{
+			name:  "a later heading is the section",
+			rest:  "Intro.\n\n## Notes\n\nfoo\n\n## Notes\n\n" + stamp + "\n\nA note.\n",
+			body:  "Intro.\n\n## Notes\n\nfoo\n",
+			notes: []string{"A note."},
+		},
+		{
+			name:  "a notes line inside a note is note text",
+			rest:  "## Notes\n\n" + stamp + "\n\nfoo\n\n## Notes\n\nbar\n",
+			body:  "\n",
+			notes: []string{"foo\n\n## Notes\n\nbar"},
+		},
+		{
+			name: "a longer heading is not the notes heading",
+			rest: "Intro.\n\n## Notes on rollout\n\n" + stamp + "\n\nfoo\n",
+			body: "Intro.\n\n## Notes on rollout\n\n" + stamp + "\n\nfoo\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Parse(strings.NewReader("---\nid: t-open\nstatus: ready\ncreated: 2026-01-01T00:00:00Z\ntype: feature\n---\n# Title\n\n" + tt.rest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Body != tt.body {
+				t.Errorf("body = %q, want %q", got.Body, tt.body)
+			}
+			var notes []string
+			for _, n := range got.Notes {
+				notes = append(notes, n.Text)
+			}
+			if !reflect.DeepEqual(notes, tt.notes) {
+				t.Errorf("notes = %q, want %q", notes, tt.notes)
+			}
+			if again := roundTrip(t, got); again.Body != got.Body || len(again.Notes) != len(got.Notes) {
+				t.Errorf("rewrite moved text: body %q notes %+v", again.Body, again.Notes)
+			}
+		})
+	}
+}
+
+// Serialize writes the heading only when the body does not already open the
+// section, or a second heading would land in the first note's text. A body ending
+// in the line has not opened it, so that line stays text above Serialize's own.
+func TestSerializeWritesOneNotesSectionHeading(t *testing.T) {
+	for name, tt := range map[string]struct {
+		body     string
+		headings int
+		want     string
+	}{
+		"body ends in the heading": {"Intro.\n\n## Notes\n", 2, "Intro.\n\n## Notes\n"},
+		"body opens the section":   {"Intro.\n\n## Notes\n\n**2026-02-01T00:00:00Z**\n\nEarlier.\n", 1, "Intro.\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data, err := Serialize(bodyTicket(tt.body, firstNote))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count := strings.Count(string(data), "## Notes"); count != tt.headings {
+				t.Errorf("%d notes headings, want %d:\n%s", count, tt.headings, data)
+			}
+			got := roundTrip(t, bodyTicket(tt.body, firstNote))
+			if got.Body != tt.want {
+				t.Errorf("body = %q, want %q", got.Body, tt.want)
+			}
+			if last := got.Notes[len(got.Notes)-1]; last.Text != firstNote.Text {
+				t.Errorf("notes = %+v", got.Notes)
+			}
+		})
+	}
+}
+
+// A Review Log line inside a note is note text, whichever note it is in.
+func TestReviewLogLineInNoteIsNoteText(t *testing.T) {
+	const text = "Before.\n\n## Review Log\n\nAfter."
+	got := roundTrip(t, bodyTicket("Intro.\n", Note{Timestamp: firstNote.Timestamp, Text: text}, secondNote))
+
+	if len(got.Notes) != 2 || got.Notes[0].Text != text || got.Notes[1].Text != secondNote.Text {
+		t.Fatalf("notes = %+v, want the whole note and the later one", got.Notes)
+	}
+	if got.Body != "Intro.\n" {
+		t.Errorf("body = %q", got.Body)
+	}
+	if got.droppedReviewLog != 0 {
+		t.Errorf("droppedReviewLog = %d, want 0: a note is not the legacy section", got.droppedReviewLog)
+	}
+}
+
+// Every writer tk has shipped put the Review Log ahead of the notes, so what
+// follows a note is that note's text: kept and readable rather than stripped.
+func TestReviewLogBelowNotesIsKept(t *testing.T) {
+	got, err := Parse(strings.NewReader("---\nid: t-after\nstatus: ready\ncreated: 2026-01-01T00:00:00Z\ntype: feature\n---\n# Title\n\nIntro.\n\n## Notes\n\n**2026-03-01T00:00:00Z**\n\nA note.\n\n## Review Log\n\n**2026-03-02T00:00:00Z [agent:reviewer]**\nAPPROVED\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Notes) != 1 || !strings.Contains(got.Notes[0].Text, "APPROVED") {
+		t.Errorf("notes = %+v, want the section's text kept in the note", got.Notes)
+	}
+	if got.droppedReviewLog != 0 {
+		t.Errorf("droppedReviewLog = %d, want 0", got.droppedReviewLog)
+	}
+}
+
+// A legacy section sitting under an empty notes heading is still the legacy
+// section, stripped and counted, and the heading above it is text like any other
+// non-opening line. A real notes section below it survives.
+func TestReviewLogUnderEmptyNotesHeading(t *testing.T) {
+	const section = "\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED\n"
+	for name, tt := range map[string]struct {
+		tail  string
+		notes int
+	}{
+		"nothing below":     {tail: ""},
+		"real notes follow": {tail: "\n## Notes\n\n**2026-03-01T00:00:00Z**\n\nA note.\n", notes: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Parse(strings.NewReader("---\nid: t-empty\nstatus: ready\ncreated: 2026-01-01T00:00:00Z\ntype: feature\n---\n# Title\n\nIntro.\n\n## Notes\n" + section + tt.tail))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Body != "Intro.\n\n## Notes\n" {
+				t.Errorf("body = %q", got.Body)
+			}
+			if got.droppedReviewLog != len(section) {
+				t.Errorf("droppedReviewLog = %d, want %d", got.droppedReviewLog, len(section))
+			}
+			if len(got.Notes) != tt.notes {
+				t.Errorf("notes = %+v, want %d", got.Notes, tt.notes)
+			}
+		})
+	}
+}
+
+// The legacy section ends at the next exact `## Notes` line, opening or not, so a
+// non-opening one and what is under it stay body text. Each row is a stored file's
+// body; the file has to settle after the first write, the only one with a section
+// to drop, whether or not notes sit below what the cut kept.
+func TestReviewLogCutKeepsNotesLineWithText(t *testing.T) {
+	const (
+		section = "\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED\n"
+		stamp   = "**2026-03-01T00:00:00Z**"
+	)
+	for name, tt := range map[string]struct {
+		rest    string
+		want    string
+		dropped int
+		notes   int
+	}{
+		"text under the heading": {
+			rest:    "Intro.\n\n## Notes\n\nfoo\n" + section,
+			want:    "Intro.\n\n## Notes\n\nfoo\n",
+			dropped: len(section),
+		},
+		"whitespace under the heading": {
+			rest:    "Intro.\n\n## Notes\n   \n" + section,
+			want:    "Intro.\n\n## Notes\n",
+			dropped: len(section),
+		},
+		"earlier heading is text": {
+			rest:    "Intro.\n\n## Notes\n\nfoo\n\n## Notes\n" + section,
+			want:    "Intro.\n\n## Notes\n\nfoo\n\n## Notes\n",
+			dropped: len(section),
+		},
+		"text below the section": {
+			rest:    "Intro.\n" + section + "\n## Notes\n\nfoo\n",
+			want:    "Intro.\n\n## Notes\n\nfoo\n",
+			dropped: len(section),
+		},
+		"text and a timestamp below the section": {
+			rest:    "Intro.\n" + section + "\n## Notes\n\nfoo\n\n" + stamp + "\n\nreal note\n",
+			want:    "Intro.\n\n## Notes\n\nfoo\n\n" + stamp + "\n\nreal note\n",
+			dropped: len(section),
+		},
+		"heading with nothing under it below the section": {
+			rest:    "Intro.\n" + section + "\n## Notes\n",
+			want:    "Intro.\n\n## Notes\n",
+			dropped: len(section),
+		},
+		"no blank line around the section": {
+			rest:    "Intro.\n## Review Log\nAPPROVED\n## Notes\nfoo\n",
+			want:    "Intro.\n## Notes\nfoo\n",
+			dropped: len("\n## Review Log\nAPPROVED"),
+		},
+		"section opens the body": {
+			rest:    section[1:] + "\n## Notes\n\nfoo\n",
+			want:    "## Notes\n\nfoo\n",
+			dropped: len(section),
+		},
+		"real notes below the kept text": {
+			rest:    "Intro.\n" + section + "\n## Notes\n\nfoo\n\n## Notes\n\n" + stamp + "\n\nreal note\n",
+			want:    "Intro.\n\n## Notes\n\nfoo\n",
+			dropped: len(section),
+			notes:   1,
+		},
+		"a second section below the kept text": {
+			rest:    "Intro.\n" + section + "\n## Notes\n\nfoo\n" + section,
+			want:    "Intro.\n\n## Notes\n\nfoo\n",
+			dropped: 2 * len(section),
+		},
+		"a second section ahead of real notes": {
+			rest:    "Intro.\n" + section + "\n## Notes\n\nfoo\n" + section + "\n## Notes\n\n" + stamp + "\n\nreal note\n",
+			want:    "Intro.\n\n## Notes\n\nfoo\n",
+			dropped: 2 * len(section),
+			notes:   1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Parse(strings.NewReader("---\nid: t-cut\nstatus: ready\ncreated: 2026-01-01T00:00:00Z\ntype: feature\n---\n# Title\n\n" + tt.rest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Body != tt.want {
+				t.Errorf("body = %q, want %q", got.Body, tt.want)
+			}
+			if len(got.Notes) != tt.notes {
+				t.Errorf("notes = %+v, want %d", got.Notes, tt.notes)
+			}
+			if got.droppedReviewLog != tt.dropped {
+				t.Errorf("droppedReviewLog = %d, want %d", got.droppedReviewLog, tt.dropped)
+			}
+
+			written, err := Serialize(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			again, err := parseBytes(written)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.droppedReviewLog != 0 {
+				t.Errorf("droppedReviewLog after a write = %d, want 0", again.droppedReviewLog)
+			}
+			rewritten, err := Serialize(again)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(rewritten, written) {
+				t.Errorf("second write changed the file:\n%s\n---\n%s", written, rewritten)
+			}
+
+			again.Notes = append(again.Notes, secondNote)
+			noted := roundTrip(t, again)
+			if noted.Body != tt.want {
+				t.Errorf("body after a note = %q, want %q", noted.Body, tt.want)
+			}
+			if len(noted.Notes) != tt.notes+1 || noted.Notes[tt.notes].Text != secondNote.Text {
+				t.Errorf("notes after a note = %+v", noted.Notes)
+			}
+		})
+	}
+}
+
+func TestBodySectionsJoinsRepeatedBlocks(t *testing.T) {
+	tests := []struct {
+		name               string
+		body               string
+		design, testResult string
+	}{
+		{
+			name:   "design blocks",
+			body:   "## Design\n\nA\n\n## Design Notes\n\nB",
+			design: "A\n\nB",
+		},
+		{
+			name:       "test results blocks",
+			body:       "## Test Results\n\nA\n\n## Test Results Summary\n\nB",
+			testResult: "A\n\nB",
+		},
+		{
+			name:   "blocks apart keep body order",
+			body:   "## Design\n\nA\n\n## Acceptance Criteria\n\n- x\n\n## Design Notes\n\nB\n",
+			design: "A\n\nB",
+		},
+		{
+			name:   "empty later block adds nothing",
+			body:   "## Design\n\nA\n\n## Design Notes\n",
+			design: "A",
+		},
+		{
+			name:   "empty earlier block adds nothing",
+			body:   "## Design\n\n## Design Notes\n\nB\n",
+			design: "B",
+		},
+		{
+			name:   "folded heading stays in its block",
+			body:   "## Design\n\nA\n\n## Rollout\n\nStaged.\n\n## Design Notes\n\nB\n",
+			design: "A\n\n## Rollout\n\nStaged.\n\nB",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, design, _, testResults := BodySections(tt.body)
+			if design != tt.design {
+				t.Errorf("design = %q, want %q", design, tt.design)
+			}
+			if testResults != tt.testResult {
+				t.Errorf("test results = %q, want %q", testResults, tt.testResult)
+			}
+		})
+	}
+}
+
+// The write is the inverse of the join: one edit replaces every block the read
+// merged, under one heading where the first block was, and leaves what sat
+// between them in place.
+func TestUpdateSection_MergedDesignAndTestResults(t *testing.T) {
+	tests := []struct {
+		name    string
+		heading string
+		body    string
+		want    string
+	}{
+		{
+			name:    "adjacent design blocks",
+			heading: "Design",
+			body:    "\nIntro.\n\n## Design\n\nA\n\n## Design Notes\n\nB\n",
+			want:    "\nIntro.\n\n## Design\n\nnew\n",
+		},
+		{
+			name:    "design blocks around acceptance",
+			heading: "Design",
+			body:    "\nIntro.\n\n## Design\n\nA\n\n## Acceptance Criteria\n\n- x\n\n## Design Notes\n\nB\n\n## Test Results\n\nrun\n",
+			want:    "\nIntro.\n\n## Design\n\nnew\n\n## Acceptance Criteria\n\n- x\n\n## Test Results\n\nrun\n",
+		},
+		{
+			name:    "a folded heading is design text",
+			heading: "Design",
+			body:    "\nIntro.\n\n## Design\n\nA\n\n## Rollout\n\nStaged.\n\n## Acceptance Criteria\n\n- x\n",
+			want:    "\nIntro.\n\n## Design\n\nnew\n\n## Acceptance Criteria\n\n- x\n",
+		},
+		{
+			name:    "a hand-written heading is replaced by the canonical one",
+			heading: "Design",
+			body:    "\n## Design Notes\n\nA\n",
+			want:    "\n## Design\n\nnew\n",
+		},
+		{
+			name:    "test results blocks",
+			heading: "Test Results",
+			body:    "\nIntro.\n\n## Test Results\n\nA\n\n## Design\n\nd\n\n## Test Results Summary\n\nB\n",
+			want:    "\nIntro.\n\n## Test Results\n\nnew\n\n## Design\n\nd\n",
+		},
+		{
+			name:    "an acceptance block still closes at an unnamed heading",
+			heading: "Acceptance Criteria",
+			body:    "\n## Acceptance Criteria\n\n- x\n\n## Rollout\n\nStaged.\n",
+			want:    "\n## Acceptance Criteria\n\nnew\n\n## Rollout\n\nStaged.\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UpdateSection(tt.body, tt.heading, "new"); got != tt.want {
+				t.Errorf("body =\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A client writing back the value it read leaves the read unchanged, for every
+// section, across a body holding each shape the read folds or merges.
+func TestUpdateSection_WriteBackIsStable(t *testing.T) {
+	for name, body := range map[string]string{
+		"notes line in the description": "Intro\n\n## Notes\n\nfoo\n\n## Design\n\nd\n",
+		"notes line alone in the body":  "Intro\n\n## Notes\n\nfoo\n",
+		"longer notes heading":          "Intro\n\n## Notes on rollout\n\nfoo\n\n## Acceptance Criteria\n\n- x\n",
+		"notes line in design":          "Intro\n\n## Design\n\nd\n\n## Notes\n\nfoo\n\n## Test Results\n\nrun\n",
+		"repeated design":               "Intro\n\n## Design\n\nA\n\n## Design Notes\n\nB\n",
+		"repeated test results":         "Intro\n\n## Test Results\n\nA\n\n## Acceptance Criteria\n\n- x\n\n## Test Results Summary\n\nB\n",
+		"repeated acceptance":           "Intro\n\n## Acceptance Criteria\n\n- x\n\n## Acceptance Notes\n\n- y\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := roundTrip(t, bodyTicket(body, firstNote))
+			desc, design, acceptance, results := BodySections(got.Body)
+			read := []string{desc, design, acceptance, results}
+
+			for i, heading := range []string{"", "Design", "Acceptance Criteria", "Test Results"} {
+				if read[i] == "" {
+					continue
+				}
+				got.Body = UpdateSection(got.Body, heading, read[i])
+				got = roundTrip(t, got)
+				d, g, a, r := BodySections(got.Body)
+				if now := []string{d, g, a, r}; !reflect.DeepEqual(now, read) {
+					t.Errorf("writing back %q moved the sections:\nread %q\nnow  %q", heading, read, now)
+				}
+			}
+			if len(got.Notes) != 1 {
+				t.Errorf("notes = %+v, want the one note", got.Notes)
+			}
+		})
+	}
+}
+
+// A description edit replaces the whole description the read returned, the
+// `## Notes` line and what follows it included, and a new section goes after
+// the description rather than into it.
+func TestUpdateSection_NotesLineIsDescriptionText(t *testing.T) {
+	const body = "\nIntro\n\n## Notes\n\nfoo\n"
+
+	if got := UpdateSection(body, "", "New."); got != "\nNew.\n" {
+		t.Errorf("description edit = %q, want the old tail gone", got)
+	}
+	got := UpdateSection(body, "Design", "d")
+	desc, design, _, _ := BodySections(got)
+	if desc != "Intro\n\n## Notes\n\nfoo" || design != "d" {
+		t.Errorf("desc = %q, design = %q.\nBody:\n%s", desc, design, got)
+	}
+}
+
+// A body can hold a real notes section before it is first written: an edit
+// stores what it was given, and two edits in one call run on that body. The
+// section is not a place an edit writes, and new sections stay above it, where
+// the next read sees them as sections.
+func TestUpdateSection_LeavesNotesSectionAlone(t *testing.T) {
+	const notes = "## Notes\n\n**2026-03-01T00:00:00Z**\n\n## Design\n\nA note.\n"
+	tests := []struct {
+		name    string
+		heading string
+		body    string
+		want    string
+	}{
+		{"description", "", "\nOld.\n\n" + notes, "\nnew\n\n" + notes},
+		{"inserted section", "Design", "\nIntro.\n\n" + notes, "\nIntro.\n\n## Design\n\nnew\n\n" + notes},
+		{"replaced section", "Design", "\nIntro.\n\n## Design\n\nold\n\n" + notes, "\nIntro.\n\n## Design\n\nnew\n\n" + notes},
+		{"acceptance", "Acceptance Criteria", "\n## Acceptance Criteria\n\n- x\n\n" + notes, "\n## Acceptance Criteria\n\nnew\n\n" + notes},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UpdateSection(tt.body, tt.heading, "new"); got != tt.want {
+				t.Errorf("body =\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The three reported losses through a real store: what goes in comes back after
+// a write of the ticket read from disk, which is the write that used to make a
+// parse-time loss permanent.
+func TestStoreKeepsBodyTextAcrossWrites(t *testing.T) {
+	store, _ := testStore(t)
+	tk := sampleTicket("keep-0001")
+	tk.Body = "Intro\n\n## Notes\n\nfoo\n\n## Design\n\nA\n\n## Design Notes\n\nB\n"
+	tk.Notes = []Note{{Timestamp: firstNote.Timestamp, Text: "Before.\n\n## Review Log\n\nAfter."}, secondNote}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for range 2 {
+		got, err := store.Get("keep-0001")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		desc, design, _, _ := BodySections(got.Body)
+		if desc != "Intro\n\n## Notes\n\nfoo" || design != "A\n\nB" {
+			t.Errorf("desc = %q, design = %q", desc, design)
+		}
+		if len(got.Notes) != 2 || got.Notes[0].Text != tk.Notes[0].Text || got.Notes[1].Text != secondNote.Text {
+			t.Errorf("notes = %+v", got.Notes)
+		}
+		if err := store.Update(got); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
 	}
 }

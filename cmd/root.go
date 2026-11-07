@@ -198,13 +198,15 @@ Query (JSON):
   opens acceptance_criteria, and the heading line itself is in no field. Any
   other heading stays in the text of the section it follows, description
   included, except that it closes the acceptance section.
+  Repeated design, test_results or acceptance blocks are joined in body order.
+  An exact ## Notes line is text like any other heading, unless the next
+  non-blank line is a note timestamp: then it opens the notes, so what is below
+  it is note text, sections included, and not description.
   Text that reaches no field:
     - after a heading that closes the acceptance section, up to the next
       design, acceptance or test results heading
-    - an earlier design or test_results block: a later block of the same
-      section replaces it, where acceptance blocks are joined
-    - after an exact ## Notes or ## Review Log line, which ends the body,
-      unless it is the text of a timestamped note
+    - from an exact ## Review Log line up to the next exact ## Notes line, or
+      the end if none follows; the same line inside a note is that note's text
 
 Setup:
   init [--project <name>] [--central-root <path>] [--yes]

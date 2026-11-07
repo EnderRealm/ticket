@@ -390,7 +390,7 @@ func Serialize(t *Ticket) ([]byte, error) {
 	}
 
 	if len(t.Notes) > 0 {
-		if lineIndex(t.Body, func(line string) bool { return line == notesHeading }) < 0 {
+		if notesSectionIndex(t.Body) < 0 {
 			buf.WriteString("\n" + notesHeading + "\n")
 		}
 		for _, n := range t.Notes {
@@ -460,54 +460,39 @@ func parseBody(t *Ticket, body string) {
 	// Split off Notes section (parsed into struct field).
 	rest := strings.Join(lines[titleIdx+1:], "\n")
 
-	// Extract ## Notes section.
-	notesIdx := strings.Index(rest, "\n"+notesHeading+"\n")
-	if notesIdx == -1 && strings.HasPrefix(rest, notesHeading+"\n") {
-		notesIdx = 0
+	// The notes run to the end of the file, so whatever a note holds is its text.
+	head := rest
+	if notesIdx := notesSectionIndex(rest); notesIdx >= 0 {
+		head = strings.TrimSuffix(rest[:notesIdx], "\n")
+		t.Notes = parseNotes(rest[notesIdx+len(notesHeading):])
 	}
 
-	// Strip legacy ## Review Log section from body (no longer parsed).
-	reviewIdx := strings.Index(rest, "\n## Review Log\n")
-	if reviewIdx == -1 && strings.HasPrefix(rest, "## Review Log\n") {
-		reviewIdx = 0
-	}
-
+	// Strip legacy ## Review Log section from body (no longer parsed). Only ahead
+	// of the notes: every writer tk has shipped put it there, and below them the
+	// same line is a note's text.
+	//
 	// The stripped section is recorded, not preserved: v7 retired the review
 	// system and no reader has parsed the section since, so the byte count is
 	// what lets writeTicket say what a write dropped and `tk audit` list the
-	// files still holding one. It ends at the notes when those follow it.
-	if reviewIdx >= 0 {
-		reviewEnd := len(rest)
-		if notesIdx > reviewIdx {
-			reviewEnd = notesIdx
+	// files still holding one. It runs from the newline ahead of its heading to
+	// the newline ahead of the next exact notes heading, opening or not, since
+	// what a non-opening one holds is body text. That text stays in head, so a
+	// section below it is stripped here too, or the write that keeps it would
+	// leave a section for the next write to drop.
+	for {
+		reviewIdx := lineIndex(head, func(line string) bool { return line == reviewLogHeading })
+		if reviewIdx < 0 {
+			break
 		}
-		t.droppedReviewLog = reviewEnd - reviewIdx
+		start, end := max(reviewIdx-1, 0), len(head)
+		if below := lineIndex(head[reviewIdx:], func(line string) bool { return line == notesHeading }); below >= 0 {
+			end = reviewIdx + below - 1
+		}
+		t.droppedReviewLog += end - start
+		head = head[:start] + head[end:]
 	}
 
-	// Determine body end: the earliest of review log or notes.
-	bodyEnd := len(rest)
-	if reviewIdx >= 0 && reviewIdx < bodyEnd {
-		bodyEnd = reviewIdx
-	}
-	if notesIdx >= 0 && notesIdx < bodyEnd {
-		bodyEnd = notesIdx
-	}
-	t.Body = rest[:bodyEnd]
-
-	if notesIdx >= 0 {
-		sectionStart := notesIdx + len("\n"+notesHeading+"\n")
-		if notesIdx == 0 {
-			sectionStart = len(notesHeading + "\n")
-		}
-		// Notes section ends at the next structural section or end.
-		sectionEnd := len(rest)
-		if reviewIdx > notesIdx {
-			sectionEnd = reviewIdx
-		}
-		t.Notes = parseNotes(rest[sectionStart:sectionEnd])
-	}
-
-	t.Body = strings.TrimSpace(t.Body) + "\n"
+	t.Body = strings.TrimSpace(head) + "\n"
 }
 
 // parseNotes extracts timestamped notes from the notes section.
@@ -522,16 +507,7 @@ func parseNotes(section string) []Note {
 	var current *Note
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") {
-			tsStr := strings.Trim(line, "*")
-			ts, err := time.Parse(time.RFC3339, tsStr)
-			if err != nil {
-				// Not a timestamp — treat as body text.
-				if current != nil {
-					current.Text += line + "\n"
-				}
-				continue
-			}
+		if ts, ok := noteTimestamp(line); ok {
 			// Valid timestamp: flush previous note and start a new one.
 			if current != nil {
 				current.Text = strings.TrimSpace(current.Text)
@@ -549,20 +525,64 @@ func parseNotes(section string) []Note {
 	return notes
 }
 
+// noteTimestamp reads line as the timestamp that opens a note.
+func noteTimestamp(line string) (time.Time, bool) {
+	if !strings.HasPrefix(line, "**") || !strings.HasSuffix(line, "**") {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339, strings.Trim(line, "*"))
+	return ts, err == nil
+}
+
 // acceptanceHeadingPrefix opens the acceptance section: every heading beginning
 // with it is part of one section.
 const acceptanceHeadingPrefix = "## Acceptance"
 
-// acceptanceHeading is the single heading an acceptance edit writes the merged
-// section back under.
-const acceptanceHeading = "## Acceptance Criteria"
-
 // notesHeading is the heading Serialize writes notes under and parseBody reads
-// them back from. Both match it as a whole line and nothing looser: parseBody
-// takes only an exact heading line for the section, so Serialize has to write
-// one whenever the body carries no such line, however often the prose above
-// names it.
+// them back from. An exact line of it opens the notes only as notesSectionIndex
+// says; any other is body text.
 const notesHeading = "## Notes"
+
+// reviewLogHeading opens the legacy section parseBody strips.
+const reviewLogHeading = "## Review Log"
+
+// notesSectionIndex returns the byte offset of the line opening the notes
+// section of s, or -1 if s has none. It is the first exact notesHeading line that
+// a note follows. Any other such line is body text, the last line of a body
+// included: a description can carry one, and reading it as the section would
+// discard it and what is under it, since parseNotes keeps only text below a
+// timestamp.
+//
+// This is the one definition of where the notes start. parseBody cuts the body
+// there, Serialize writes the heading only when the body holds no such line, and
+// UpdateSection keeps its edits above it, so a body written with text under a
+// `## Notes` line reads back with that text in the same place. A body ending in
+// the line has not opened the section either: Serialize writes its own heading
+// below it, and the line reads back as text above that heading.
+func notesSectionIndex(s string) int {
+	for off := 0; ; off += len(notesHeading) {
+		idx := lineIndex(s[off:], func(line string) bool { return line == notesHeading })
+		if idx < 0 {
+			return -1
+		}
+		off += idx
+		if opensNotes(s[off+len(notesHeading):]) {
+			return off
+		}
+	}
+}
+
+// opensNotes reports whether the text below a notes heading is notes: its first
+// non-blank line is a note timestamp.
+func opensNotes(below string) bool {
+	for _, line := range strings.Split(below, "\n") {
+		if strings.TrimSpace(line) != "" {
+			_, ok := noteTimestamp(line)
+			return ok
+		}
+	}
+	return false
+}
 
 // sectionKind is the section a body line opens, if any.
 type sectionKind int
@@ -572,14 +592,15 @@ const (
 	sectionDesign
 	sectionAcceptance
 	sectionTestResults
-	sectionNotes
 	sectionOther // a `## ` heading tk does not name
 )
 
 // classifyLine is the one definition of the section boundaries in a ticket
 // body. Both sides consume it — BodySections to split the body, UpdateSection
-// to span the acceptance section it replaces — so the write cannot fall behind
-// a change to the read.
+// to span the section it replaces — so the write cannot fall behind a change to
+// the read. A `## Notes` line is no boundary: parseBody has taken the notes out
+// of any body read from a file, so what is left of that heading is body text and
+// stays in the section it follows, as any other unnamed heading does.
 func classifyLine(line string) sectionKind {
 	switch {
 	case strings.HasPrefix(line, "## Design"):
@@ -588,8 +609,6 @@ func classifyLine(line string) sectionKind {
 		return sectionAcceptance
 	case strings.HasPrefix(line, "## Test Results"):
 		return sectionTestResults
-	case strings.HasPrefix(line, notesHeading):
-		return sectionNotes
 	case strings.HasPrefix(line, "## "):
 		return sectionOther
 	}
@@ -615,11 +634,10 @@ func lineIndex(s string, match func(line string) bool) int {
 }
 
 // structural reports whether kind opens a section that bounds the one before
-// it. `## Notes` bounds a section without being one BodySections returns:
-// Serialize keeps the notes it parses out of the body under that heading.
+// it.
 func (k sectionKind) structural() bool {
 	switch k {
-	case sectionDesign, sectionAcceptance, sectionTestResults, sectionNotes:
+	case sectionDesign, sectionAcceptance, sectionTestResults:
 		return true
 	}
 	return false
@@ -634,6 +652,14 @@ func nextStructuralSection(s string) int {
 // UpdateSection replaces or inserts a markdown section in the body.
 // If heading is empty, replaces the description (text before first structural heading).
 func UpdateSection(body, heading, content string) string {
+	// The notes stay below every section and out of reach of the edit. Only a body
+	// not yet read back from a file holds them, which is how a second edit in one
+	// ticket_edit call sees text the first one wrote.
+	if idx := notesSectionIndex(body); idx >= 0 {
+		above := strings.TrimRight(body[:idx], "\n") + "\n"
+		return strings.TrimRight(UpdateSection(above, heading, content), "\n") + "\n\n" + body[idx:]
+	}
+
 	if heading == "" {
 		idx := nextStructuralSection(body)
 		if idx >= 0 {
@@ -643,61 +669,45 @@ func UpdateSection(body, heading, content string) string {
 	}
 
 	marker := "## " + heading
-	if marker == acceptanceHeading {
-		// An acceptance edit replaces the whole merged section — every
-		// `## Acceptance*` block BodySections reads as one — under a single
-		// heading, so a client that writes the merged value it read back does not
-		// duplicate it and no later block is lost.
-		if updated, ok := replaceAcceptanceSection(body, content); ok {
+	if kind := classifyLine(marker); kind.structural() {
+		// An edit replaces the whole merged section — every block BodySections
+		// reads as one — under a single heading, so a client that writes the
+		// merged value it read back does not duplicate it and no later block is
+		// lost.
+		if updated, ok := replaceSection(body, kind, marker, content); ok {
 			return updated
 		}
-	} else if idx := lineIndex(body, func(line string) bool { return strings.HasPrefix(line, marker) }); idx >= 0 {
-		// From the line after the heading, so what bounds the section is the
-		// next heading line rather than any text the heading line trails.
-		rest := ""
-		if i := strings.IndexByte(body[idx:], '\n'); i >= 0 {
-			rest = body[idx+i+1:]
-		}
-		var after string
-		if nextIdx := nextStructuralSection(rest); nextIdx >= 0 {
-			after = "\n" + rest[nextIdx:]
-		}
-		return body[:idx] + marker + "\n\n" + content + "\n" + after
 	}
 
-	// Section doesn't exist — insert before Notes if present, else at end.
-	notesIdx := lineIndex(body, func(line string) bool { return classifyLine(line) == sectionNotes })
-	if notesIdx >= 0 {
-		return body[:notesIdx] + marker + "\n\n" + content + "\n\n" + body[notesIdx:]
-	}
 	return body + "\n" + marker + "\n\n" + content + "\n"
 }
 
-// replaceAcceptanceSection rewrites every acceptance block in body — each runs
-// from a `## Acceptance*` heading to the next `## ` heading of any kind, which
-// is what BodySections merges into one section — as a single
-// `## Acceptance Criteria` block holding content, positioned where the first
-// one was. Blocks sitting between two acceptance blocks are re-emitted in
-// order, so nothing but the acceptance text moves. ok is false when the body
-// carries no acceptance heading, leaving the caller its insert path.
-func replaceAcceptanceSection(body, content string) (string, bool) {
+// replaceSection rewrites every block of the kind section in body, which is what
+// BodySections merges into one, as a single block under heading holding content,
+// positioned where the first one was. Blocks sitting between two of them are
+// re-emitted in order, so nothing but that section's text moves. A block ends
+// where the read stops adding to it: an acceptance block at the next `## ` heading
+// of any kind, a design or test results block at the next structural one, since
+// those fold an unnamed heading into their text. ok is false when the body carries
+// no heading of that kind, leaving the caller its insert path.
+func replaceSection(body string, section sectionKind, heading, content string) (string, bool) {
 	lines := strings.Split(body, "\n")
 	out := make([]string, 0, len(lines)+3)
-	var inAcceptance, replaced bool
+	var inSection, replaced bool
 	for _, line := range lines {
 		kind := classifyLine(line)
-		if kind == sectionAcceptance {
+		if kind == section {
 			if !replaced {
-				out = append(out, acceptanceHeading, "", content, "")
+				out = append(out, heading, "", content, "")
 				replaced = true
 			}
-			inAcceptance = true
+			inSection = true
 			continue
 		}
-		if kind != sectionNone {
-			inAcceptance = false
+		if kind.structural() || (kind == sectionOther && section == sectionAcceptance) {
+			inSection = false
 		}
-		if !inAcceptance {
+		if !inSection {
 			out = append(out, line)
 		}
 	}
@@ -714,9 +724,8 @@ func replaceAcceptanceSection(body, content string) (string, bool) {
 //
 // The headings match on prefix, so `## Acceptance Notes` written by hand reads
 // as the acceptance section — intentional, and the same looseness UpdateSection
-// writes through, since both split the body with classifyLine. `## Notes` is
-// classified too, but only so it bounds a section UpdateSection replaces; here
-// it closes the acceptance section like any other unnamed heading, because the
+// writes through, since both split the body with classifyLine. A `## Notes` line
+// left in the body is an unnamed heading like any other, here and there: the
 // notes are parsed out of the body rather than returned as a section.
 //
 // This is the single definition of the acceptance section — AcceptanceCriteria
@@ -734,15 +743,17 @@ func replaceAcceptanceSection(body, content string) (string, bool) {
 //
 // Outside the acceptance section an unrecognised `## ` heading folds into the
 // section in progress, because descriptions routinely carry their own
-// subheadings and ticket_show must keep showing them.
+// subheadings and ticket_show must keep showing them. Design and test results
+// blocks repeat the way acceptance blocks do: a later one is appended to the
+// earlier one in body order, so neither loses text to the other.
 //
-// The write is the inverse of that read. An acceptance edit goes through
-// UpdateSection, which classifies the body the same way and replaces every
-// block this merges — wherever they sit, including one that follows a
-// `## Design` block — with the new content under one `## Acceptance Criteria`
-// heading, re-emitting the intervening blocks in place. So no later
-// `## Acceptance*` block is lost, none survives as stale text, and a client
-// that writes back the merged value it read here does not duplicate it.
+// The write is the inverse of that read. An edit of any of the three goes
+// through UpdateSection, which classifies the body the same way and replaces
+// every block this merges — wherever they sit, including an acceptance block that
+// follows a `## Design` block — with the new content under one heading,
+// re-emitting the intervening blocks in place. So no later block is lost, none
+// survives as stale text, and a client that writes back the merged value it read
+// here does not duplicate it.
 func BodySections(body string) (desc, design, acceptance, testResults string) {
 	lines := strings.Split(body, "\n")
 	var current *string
@@ -759,12 +770,12 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 		} else {
 			text = strings.TrimSpace(text)
 		}
-		if current == &acceptance && acceptance != "" {
+		if *current != "" {
 			if text == "" {
 				buf = nil
 				return
 			}
-			text = acceptance + "\n\n" + text
+			text = *current + "\n\n" + text
 		}
 		*current = text
 		buf = nil
@@ -784,7 +795,7 @@ func BodySections(body string) (desc, design, acceptance, testResults string) {
 		case kind == sectionTestResults:
 			flush()
 			current = &testResults
-		case (kind == sectionOther || kind == sectionNotes) && current == &acceptance:
+		case kind == sectionOther && current == &acceptance:
 			flush()
 			current = nil
 		default:

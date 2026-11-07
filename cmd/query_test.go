@@ -274,6 +274,64 @@ func TestQueryAndShowAgreeOnBodyFields(t *testing.T) {
 	}
 }
 
+// Text the parser used to drop reaches both surfaces, and `tk add-note`, which
+// once cut the body at a `## Notes` line, leaves it in place.
+func TestQueryAndShowCarryTextBesideHeadings(t *testing.T) {
+	store := centralStore(t, "q-keep")
+
+	noted := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	const reviewNote = "Before.\n\n## Review Log\n\nAfter."
+	for id, tk := range map[string]*ticket.Ticket{
+		"q-notesline": {Body: "Intro\n\n## Notes\n\nfoo\n"},
+		"q-reviewlog": {Body: "Intro.\n", Notes: []ticket.Note{
+			{Timestamp: noted, Text: reviewNote},
+			{Timestamp: noted.Add(time.Hour), Text: "Later."},
+		}},
+		"q-design": {Body: "## Design\n\nA\n\n## Design Notes\n\nB\n"},
+	} {
+		tk.ID, tk.Status, tk.Type, tk.Created, tk.Title = id, ticket.StatusOpen, ticket.TypeFeature, time.Now(), "Item "+id
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+	if err := runAddNote(addNoteCmd, []string{"q-notesline", "A real note."}); err != nil {
+		t.Fatalf("add-note: %v", err)
+	}
+
+	if err := queryCmd.Flags().Set("all-projects", "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = queryCmd.Flags().Set("all-projects", "false") })
+	rows := captureQuery(t)
+
+	served, root, err := serveStore()
+	if err != nil {
+		t.Fatalf("serveStore: %v", err)
+	}
+	session := serveSession(t, served, "q-keep", root)
+
+	if got := rows["q-keep/q-notesline"]["description"]; got != "Intro\n\n## Notes\n\nfoo" {
+		t.Errorf("q-notesline description = %q", got)
+	}
+	if notes := rows["q-keep/q-notesline"]["notes"].([]any); len(notes) != 1 || notes[0].(map[string]any)["text"] != "A real note." {
+		t.Errorf("q-notesline notes = %v", notes)
+	}
+	if notes := rows["q-keep/q-reviewlog"]["notes"].([]any); len(notes) != 2 || notes[0].(map[string]any)["text"] != reviewNote {
+		t.Errorf("q-reviewlog notes = %v", notes)
+	}
+	if got := rows["q-keep/q-design"]["design"]; got != "A\n\nB" {
+		t.Errorf("q-design design = %q", got)
+	}
+	for _, id := range []string{"q-keep/q-notesline", "q-keep/q-reviewlog", "q-keep/q-design"} {
+		shown := callTool(t, session, "ticket_show", map[string]any{"id": id, "notes_limit": 0})
+		for _, key := range bodyFields {
+			if got, want := rows[id][key], shown[key]; !reflect.DeepEqual(got, want) {
+				t.Errorf("%s %s: query %#v, ticket_show %#v", id, key, got, want)
+			}
+		}
+	}
+}
+
 // The body fields belong to query: frontier --json shares ticketJSON but its
 // rows stay metadata.
 func TestFrontierJSONCarriesNoBody(t *testing.T) {
