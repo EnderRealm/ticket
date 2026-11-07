@@ -278,7 +278,7 @@ func TestTicketsDirCentral(t *testing.T) {
 	os.Chdir(projDir)
 	defer os.Chdir(oldDir)
 
-	dir, _, _, err := resolveTicketsDir()
+	dir, _, err := resolveTicketsDir()
 	if err != nil {
 		t.Fatalf("resolveTicketsDir should resolve a central store project: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestTicketsDirNoLocalPath(t *testing.T) {
 	runGit(t, projDir2, "config", "user.name", "t")
 	os.Chdir(projDir2)
 
-	dir, _, _, err := resolveTicketsDir()
+	dir, _, err := resolveTicketsDir()
 	if err != nil {
 		t.Fatalf("resolveTicketsDir should resolve via shared config + dirname: %v", err)
 	}

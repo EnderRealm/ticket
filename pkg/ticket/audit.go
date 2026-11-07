@@ -207,9 +207,9 @@ func (a *Auditor) contextFor(t *Ticket) (*auditContext, error) {
 }
 
 // findings runs the three checks over one ticket, which is the single reading
-// of what is wrong with it: `tk show`, the TUI's detail page, the MCP response
-// and the store-wide report all come through here rather than each deriving
-// their own. The ID is carried verbatim from the ticket it was handed.
+// of what is wrong with it: `tk show`, the MCP response and the store-wide
+// report all come through here rather than each deriving their own. The ID is
+// carried verbatim from the ticket it was handed.
 func (c *auditContext) findings(t *Ticket) Findings {
 	return Findings{
 		Parent:     c.parentViolation(t),

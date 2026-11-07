@@ -156,15 +156,12 @@ func TestResolveTicketsDirAcceptsConfiguredProjectName(t *testing.T) {
 	}
 	store := ticket.NewProjectFileStore(filepath.Join(root, "tickets", "cs-name"), "cs-name")
 
-	dir, name, unregistered, err := resolveFor(t, "cs-name")
+	dir, name, err := resolveFor(t, "cs-name")
 	if err != nil {
 		t.Fatalf("resolve configured project name: %v", err)
 	}
 	if dir != store.Dir || name != store.Project {
 		t.Errorf("resolution = (%q, %q), want (%q, %q)", dir, name, store.Dir, store.Project)
-	}
-	if unregistered {
-		t.Error("configured central project resolved as unregistered")
 	}
 }
 
@@ -188,7 +185,7 @@ func TestResolveTicketsDirRejectsUnknownProjectName(t *testing.T) {
 	}
 	defer os.Chdir(oldDir)
 
-	_, _, _, err = resolveFor(t, "cs-missing")
+	_, _, err = resolveFor(t, "cs-missing")
 	if err == nil {
 		t.Fatal("unknown project name resolved, want an error")
 	}
@@ -202,7 +199,7 @@ func TestResolveTicketsDirRejectsUnknownProjectName(t *testing.T) {
 // resolveFor runs the CLI's own store resolution against a repo path, the way
 // `tk --repo <path>` does — the resolution every command below it gets its store
 // from.
-func resolveFor(t *testing.T, repo string) (string, string, bool, error) {
+func resolveFor(t *testing.T, repo string) (string, string, error) {
 	t.Helper()
 	repoFlag = repo
 	defer func() { repoFlag = "" }()
@@ -259,7 +256,7 @@ func TestTicketsDirUnregisteredCentralDir(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	dir, name, unregistered, err := resolveFor(t, strayRepo)
+	dir, name, err := resolveFor(t, strayRepo)
 
 	w.Close()
 	os.Stderr = oldStderr
@@ -273,9 +270,6 @@ func TestTicketsDirUnregisteredCentralDir(t *testing.T) {
 	}
 	if name != "cs-stray" {
 		t.Errorf("name = %q, want %q", name, "cs-stray")
-	}
-	if !unregistered {
-		t.Error("resolution should report the project as unregistered")
 	}
 	for _, want := range []string{"cs-stray", "tk init"} {
 		if !contains(string(warning), want) {
@@ -292,7 +286,7 @@ func TestTicketsDirUnregisteredCentralDir(t *testing.T) {
 func TestTicketsDirCentralDirForEntryWithoutStore(t *testing.T) {
 	strayDir, strayRepo := unregisteredCentral(t, true, &project.ProjectConfig{})
 
-	dir, name, unregistered, err := resolveFor(t, strayRepo)
+	dir, name, err := resolveFor(t, strayRepo)
 	if err != nil {
 		t.Fatalf("resolution should find the central dir of a project whose config entry has no store: %v", err)
 	}
@@ -302,8 +296,8 @@ func TestTicketsDirCentralDirForEntryWithoutStore(t *testing.T) {
 	if name != "cs-stray" {
 		t.Errorf("name = %q, want %q", name, "cs-stray")
 	}
-	if !unregistered {
-		t.Error("a config entry without `store: central` is not a registration")
+	if _, unregistered, err := ticket.ResolveStoreForRepo(strayRepo); err != nil || !unregistered {
+		t.Errorf("ResolveStoreForRepo = unregistered %v, %v: a config entry without `store: central` is not a registration", unregistered, err)
 	}
 }
 
@@ -321,7 +315,7 @@ func TestTicketsDirRefusesSymlinkedCentralDir(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	if dir, name, _, err := resolveFor(t, strayRepo); err == nil {
+	if dir, name, err := resolveFor(t, strayRepo); err == nil {
 		t.Fatalf("a symlinked project directory must not resolve, got dir=%q name=%q", dir, name)
 	}
 }
@@ -358,7 +352,7 @@ func TestLsReadsCentralDirBesideALegacyLocalStore(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if dir, _, _, err := resolveFor(t, strayRepo); err != nil || dir != strayDir {
+	if dir, _, err := resolveFor(t, strayRepo); err != nil || dir != strayDir {
 		t.Fatalf("resolution = (%q, %v), want the central dir %q", dir, err, strayDir)
 	}
 
@@ -386,7 +380,7 @@ func TestTicketsDirUnregisteredWithoutCentralDir(t *testing.T) {
 	// nothing rather than name a path that nothing created.
 	_, strayRepo := unregisteredCentral(t, false, nil)
 
-	dir, name, _, err := resolveFor(t, strayRepo)
+	dir, name, err := resolveFor(t, strayRepo)
 	if err == nil {
 		t.Fatalf("resolution should fail, got dir=%q name=%q", dir, name)
 	}
@@ -403,7 +397,7 @@ func TestResolveTicketsDirRefusesARepoWithNoProject(t *testing.T) {
 	if err := project.Save(project.Config{CentralRoot: filepath.Join(home, "central")}); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
-	_, _, _, err := resolveFor(t, repo)
+	_, _, err := resolveFor(t, repo)
 	if err == nil {
 		t.Fatal("resolution succeeded for a repo owning no project, want an error")
 	}
@@ -435,7 +429,7 @@ func TestResolveTicketsDirTreatsALegacyStoreValueAsUnregistered(t *testing.T) {
 	if err := project.Save(cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
-	if _, _, _, err := resolveFor(t, repo); err == nil {
+	if _, _, err := resolveFor(t, repo); err == nil {
 		t.Fatal("`store: local` resolved a store, want the repo reported as owning none")
 	}
 
@@ -469,7 +463,7 @@ func TestResolveTicketsDirNamesASharedConfigItCannotLoad(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(centralRoot, "config.yaml"), []byte("projects:\n  <<<<<<< HEAD\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	_, _, _, err := resolveFor(t, repo)
+	_, _, err := resolveFor(t, repo)
 	if err == nil {
 		t.Fatal("resolution succeeded with an unreadable shared config, want an error")
 	}
@@ -478,53 +472,6 @@ func TestResolveTicketsDirNamesASharedConfigItCannotLoad(t *testing.T) {
 	}
 	if contains(err.Error(), "tk init") {
 		t.Errorf("error %q sends the user to `tk init`, which does not fix a malformed config", err)
-	}
-}
-
-func TestUIWorkDirFallsBackToTheResolvedRepo(t *testing.T) {
-	// A project registered on another machine has no local `path`, and a tickets
-	// dir's parent is the central tickets dir rather than a repo — so the
-	// directory `tk ui` spawns a work session in is the repo it resolved from,
-	// never one inside the ticket store.
-	home := setupTestHome(t)
-	centralRoot := filepath.Join(home, "central")
-	repo := filepath.Join(home, "pathless-repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	cfg := project.Config{
-		CentralRoot: centralRoot,
-		Projects:    map[string]project.ProjectConfig{"pathless": {Store: "central"}},
-	}
-	if err := project.Save(cfg); err != nil {
-		t.Fatalf("Save config: %v", err)
-	}
-	repoFlag = repo
-	defer func() { repoFlag = "" }()
-
-	ticketsDir := filepath.Join(centralRoot, "tickets", "pathless")
-	if got := uiWorkDir(ticketsDir, "pathless", cfg); got != repo {
-		t.Errorf("uiWorkDir = %q, want the resolved repo %q", got, repo)
-	}
-}
-
-func TestUICheckoutCandidateIsTheWorkingDirectoryOnlyWithoutASelector(t *testing.T) {
-	// The offer to record a checkout stands on the board having been resolved
-	// from the working directory; --project and --repo each say the board came
-	// from somewhere else, so neither leaves a candidate.
-	if got := uiCheckoutCandidate(); got != mustGetwd() {
-		t.Errorf("no selector: candidate = %q, want the working directory %q", got, mustGetwd())
-	}
-	projectFlag = "warp"
-	defer func() { projectFlag = "" }()
-	if got := uiCheckoutCandidate(); got != "" {
-		t.Errorf("--project: candidate = %q, want none", got)
-	}
-	projectFlag = ""
-	repoFlag = "warp"
-	defer func() { repoFlag = "" }()
-	if got := uiCheckoutCandidate(); got != "" {
-		t.Errorf("--repo: candidate = %q, want none", got)
 	}
 }
 
@@ -545,7 +492,7 @@ func TestResolveTicketsDirNamesALegacyLocalStore(t *testing.T) {
 	if err := project.Save(project.Config{CentralRoot: filepath.Join(home, "central")}); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
-	_, _, _, err := resolveFor(t, repo)
+	_, _, err := resolveFor(t, repo)
 	if err == nil {
 		t.Fatal("resolution succeeded for a repo holding only a .tickets/, want an error")
 	}

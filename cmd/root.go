@@ -68,7 +68,7 @@ Viewing:
 
     - Frontier excludes blocked tickets.
       verify: go test ./pkg/ticket -run TestFrontier
-    - The TUI redraws cleanly at 40 columns.
+    - tk ls output stays readable at 40 columns.
       unverifiable: needs a human at a terminal.
 
   A criterion carrying neither line is reported on stderr by tk create
@@ -198,10 +198,7 @@ Setup:
   sync                         Sync ticket changes to git
   status                       Show tk system status and project overview
 
-Interactive:
-  ui                         Interactive ticket browser (TUI); --project _root
-                             browses Root; c refines an idea through Claude
-                             (/brainstorm, then /capture), n opens the create form
+Server:
   serve                      Start MCP server on stdio
 
 Journal:
@@ -304,11 +301,10 @@ Environment:
     which the override does not move. That is the one store path HOME still
     decides. tk init still registers a project, since central writes to an
     unregistered one are refused, but skips the store's git bootstrap.
-    verify_allow and spawn_command are the settings it does not move: both are
-    always read from ~/.ticket/config.yaml, because each decides code that runs
-    as you — the allow-list by permitting a program, spawn_command by being the
-    string handed to sh -c. So a store root can neither widen the allow-list nor
-    supply a spawn template, and a root with no config falls back to your own.
+    verify_allow is the setting it does not move: it is always read from
+    ~/.ticket/config.yaml, because it decides which programs run as you. So a
+    store root cannot widen the allow-list, and a root with no config falls back
+    to your own.
     That bounds what a store root can supply, not a caller who also controls the
     environment: whoever can set TK_STORE_ROOT can generally set HOME too.
     A value that is not an absolute path is an error on any command, before any
@@ -468,57 +464,44 @@ func TicketStore() *ticket.FileStore {
 // the project the repo — --repo when set, else the working directory — owns in
 // the central store. That is the only store tk resolves.
 func TicketsDirAndProject() (string, string) {
-	dir, name, _ := mustResolveTicketsDir()
-	return dir, name
-}
-
-// mustResolveTicketsDir is resolveTicketsDir for the callers that cannot carry
-// its error: every command below the resolution needs a store, and there is
-// nothing to fall back to now that a repo either owns a central project or owns
-// no store at all.
-func mustResolveTicketsDir() (string, string, bool) {
-	dir, name, unregistered, err := resolveTicketsDir()
+	dir, name, err := resolveTicketsDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	return dir, name, unregistered
+	return dir, name
 }
 
-// resolveTicketsDir resolves the tickets directory, the project it holds,
-// whether that project is an unregistered central directory, and the error a
-// repo owning no central project is. `tk ui` needs the unregistered flag in the
-// frame — the alt screen swallows the warning the CLI commands print on stderr —
-// and takes it from the resolution that decided it rather than re-deriving it
-// from a second config read.
+// resolveTicketsDir resolves the tickets directory, the project it holds, and
+// the error a repo owning no central project is.
 //
 // The rules live in ticket.ResolveStoreForRepo, which `tk move`'s destination
 // and MCP ticket_create's repo argument read through as well: one resolution, so
 // a write cannot land tickets in a directory this one would never read back, and
 // a config that fails to load is named as itself rather than sent to `tk init`.
-func resolveTicketsDir() (string, string, bool, error) {
+func resolveTicketsDir() (string, string, error) {
 	if projectFlag != "" {
 		if repoFlag != "" {
-			return "", "", false, fmt.Errorf("--project and --repo are both selectors; pass one")
+			return "", "", fmt.Errorf("--project and --repo are both selectors; pass one")
 		}
 		store, err := ticket.ResolveStoreForNamespace(projectFlag)
 		if err != nil {
-			return "", "", false, err
+			return "", "", err
 		}
-		return store.Dir, store.Project, false, nil
+		return store.Dir, store.Project, nil
 	}
 	repo, err := repoDir()
 	if err != nil {
-		return "", "", false, err
+		return "", "", err
 	}
 	store, unregistered, err := ticket.ResolveStoreForRepo(repo)
 	if err != nil {
-		return "", "", false, err
+		return "", "", err
 	}
 	if unregistered {
 		fmt.Fprintln(os.Stderr, ticket.UnregisteredWarning(store))
 	}
-	return store.Dir, store.Project, unregistered, nil
+	return store.Dir, store.Project, nil
 }
 
 // allProjectsStore is the store over every namespace, for the listings that
@@ -551,8 +534,7 @@ func listingFor(cmd *cobra.Command) ([]*ticket.Ticket, error) {
 // repoDir is the repo tk operates on: --repo when given, else the working
 // directory. A configured project name resolves before the filesystem fallback
 // so a same-named relative path cannot select a different project. The result
-// is absolute because it is both what the store resolves from and the directory
-// `tk ui` spawns a work session in when the project's config records no path.
+// is absolute because it is what the store resolves from.
 func repoDir() (string, error) {
 	if repoFlag == "" {
 		return mustGetwd(), nil

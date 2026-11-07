@@ -807,8 +807,8 @@ func TestStampCompletedClearedWhenReopened(t *testing.T) {
 }
 
 // Populating outputs on the done transition lives at the store write choke
-// point, so every caller gets it — including the TUI, which mutates a ticket
-// and calls store.Update directly.
+// point, so every caller gets it — including one that mutates a ticket and
+// calls store.Update directly.
 func TestUpdateToDonePopulatesBranchOutput(t *testing.T) {
 	store, _ := testStore(t)
 	tk := &Ticket{ID: "land-0001", Title: "Land", Status: StatusOpen, Type: TypeFeature, Branch: "feature-x"}
@@ -1064,7 +1064,7 @@ func TestFileStore_NamespaceWithNoTicketIDAfterItYieldsNoTicket(t *testing.T) {
 // ticket next — a status change, a priority cycle, an added note — and said
 // nothing when it happened, so 9.6 KB went from 19 tickets before anyone knew.
 // A write that drops one now reports it, with the ticket and the size, through
-// the sink the TUI and the CLI both surface.
+// the sink the CLI surfaces.
 func TestWriteWarnsWhenItDropsALegacyReviewLog(t *testing.T) {
 	dir := t.TempDir()
 	store := NewProjectFileStore(dir, "proj")

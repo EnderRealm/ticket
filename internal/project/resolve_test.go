@@ -223,60 +223,6 @@ func TestExecutionDirNamesTheOverrideRootsLocalConfig(t *testing.T) {
 	}
 }
 
-func TestRecordableCheckout(t *testing.T) {
-	base := t.TempDir()
-	checkout := filepath.Join(base, "main")
-	worktree := filepath.Join(base, "wt")
-	plain := filepath.Join(base, "plain")
-	sub := filepath.Join(checkout, "sub")
-	for _, d := range []string{checkout, plain, sub} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	gitRepo(t, checkout)
-	if out, err := exec.Command("git", "-C", checkout, "worktree", "add", "-q", worktree).CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add: %v (%s)", err, out)
-	}
-	cfg := Config{Projects: map[string]ProjectConfig{
-		"pathless": {Store: "central"},
-		"recorded": {Path: checkout, Store: "central"},
-		"unmarked": {},
-	}}
-
-	cases := []struct {
-		name, project, dir, want, wantErr string
-	}{
-		{"main checkout", "pathless", checkout, canonicalPath(checkout), ""},
-		{"unclean spelling", "pathless", checkout + string(os.PathSeparator) + ".", canonicalPath(checkout), ""},
-		{"subdirectory", "pathless", sub, "", "not a checkout's top level"},
-		{"linked worktree", "pathless", worktree, "", "linked worktree"},
-		{"not a git checkout", "pathless", plain, "", "not a git checkout"},
-		{"empty", "pathless", "", "", "no directory"},
-		{"Root", RootNamespace, checkout, "", "Root has no repository"},
-		{"not central", "unmarked", checkout, "", "not store: central"},
-		{"unknown", "unknown", checkout, "", "not store: central"},
-		{"path already recorded", "recorded", checkout, "", "already records path"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := RecordableCheckout(cfg, tc.project, tc.dir)
-			if tc.wantErr == "" {
-				if err != nil || got != tc.want {
-					t.Fatalf("RecordableCheckout = %q, %v; want %q", got, err, tc.want)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("RecordableCheckout = %q, %v; want an error containing %q", got, err, tc.wantErr)
-			}
-			if got != "" {
-				t.Errorf("a refusal returned a directory %q", got)
-			}
-		})
-	}
-}
-
 // gitRepo initializes a repository at dir with one commit, so `git worktree
 // add` has a HEAD to branch from.
 func gitRepo(t *testing.T, dir string) {

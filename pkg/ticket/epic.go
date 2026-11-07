@@ -86,9 +86,9 @@ func DeriveEpicStatus(abandoned bool, children []*Ticket) Status {
 // deriveEpicCompleted is the completion date that goes with a derived status:
 // the day the epic's last child reached a terminal state. Nothing writes an
 // epic when a child of it finishes, so a date on the epic's own file is either
-// missing — leaving `tk show`, `tk query` and the TUI's COMPLETED and DURATION
-// columns blank on a finished epic — or stale, rendering a completion date
-// beside an epic a reopened child has made non-terminal again.
+// missing — leaving the completion date `tk show` and `tk query` report blank
+// on a finished epic — or stale, rendering a completion date beside an epic a
+// reopened child has made non-terminal again.
 //
 // An epic's file therefore stores no completion date at all (stampTimestamps
 // clears it), and there is no fallback to one.
@@ -212,9 +212,8 @@ func resolveAbandonIntent(t *Ticket, priorAbandoned bool, children []*Ticket, in
 // another repository's work is not something an edit here does invisibly.
 //
 // statusSet is whether this edit set the status field at all, which the caller
-// knows and the ticket cannot say: `tk edit` has --status among its flags, MCP
-// has an omitted status meaning no change, and the TUI form has a status the
-// user either cycled or left as it was seeded. An edit that did not set it
+// knows and the ticket cannot say: `tk edit` has --status among its flags, and
+// MCP has an omitted status meaning no change. An edit that did not set it
 // leaves the abandon intent exactly as stored.
 //
 // Writes tk makes on its own behalf go through Store.Update and touch no other

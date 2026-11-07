@@ -39,7 +39,7 @@ func runMove(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 
 	// Resolve the target to the project it owns in the central store, so the
-	// moved ticket lands where `tk ls`, `tk ui` and the MCP server will find it.
+	// moved ticket lands where `tk ls` and the MCP server will find it.
 	src := TicketStore()
 	dst, unregistered, err := ticket.ResolveStoreForRepo(targetRepo)
 	if err != nil {

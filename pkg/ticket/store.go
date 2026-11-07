@@ -1120,7 +1120,7 @@ func (s *FileStore) readFile(path string) (*Ticket, error) {
 }
 
 // stampTimestamps maintains the created/updated/completed fields. It is the
-// single write choke point so CLI, MCP, and TUI callers all get consistent
+// single write choke point so CLI and MCP callers all get consistent
 // timestamps. prior is the ticket as the file being replaced holds it — for an
 // import, as its legacy file held it — and nil for a ticket this write creates
 // or a file that does not parse. Rules:
@@ -1235,7 +1235,7 @@ func (s *FileStore) writeTicket(t, prior *Ticket) error {
 		t.Abandoned = false
 	}
 	// A landed ticket records the branch it landed on. Done at the same write
-	// choke point as the timestamps so CLI, MCP, and TUI callers all get it;
+	// choke point as the timestamps so CLI and MCP callers all get it;
 	// fill-if-absent leaves any value the caller set explicitly.
 	if t.Status == StatusDone {
 		PopulateDoneOutputs(t, "", t.Branch)

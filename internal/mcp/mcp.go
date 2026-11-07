@@ -2055,8 +2055,7 @@ func registerStoreInfo(server *mcp.Server, centralRoot string) {
 			// without the registration answer rather than failing the call. The
 			// underlying error is not echoed: it wraps the yaml error, which
 			// quotes the offending scalar, so a malformed config would leak a
-			// config value (a git email, a project path, a spawn command) into
-			// the response.
+			// config value (a git email, a project path) into the response.
 			info["note"] = "registration could not be determined: the ticket config (~/.ticket/config.yaml or <central_root>/config.yaml) could not be read"
 		} else {
 			info["unregistered"] = unregistered

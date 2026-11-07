@@ -210,7 +210,7 @@ func TestWatchCycle_RetrospectFiresOnceOnClose(t *testing.T) {
 	}
 }
 
-// A ticket closed by hand between cycles — `tk edit`, the TUI, an MCP write —
+// A ticket closed by hand between cycles — `tk edit`, an MCP write —
 // is why the trigger scans the store instead of watching the close loop.
 func TestWatchCycle_RetrospectFiresOnExternalClose(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

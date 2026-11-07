@@ -274,8 +274,8 @@ const shellSyntaxRemedy = "Rewrite such a line as one program invocation with it
 	"or move the shell logic into a script or a quoted `bash -c '…'` whose program is in verify_allow."
 
 // ShellSyntaxWarning is the one phrasing for commands ShellSyntaxCriteria
-// found, said the same way by `tk create`, the TUI's create, ticket_create and
-// ticket_edit. Empty found means no warning, so a caller can assign the result
+// found, said the same way by `tk create`, ticket_create and ticket_edit.
+// Empty found means no warning, so a caller can assign the result
 // unconditionally. It names the remedy on the same terms BareAcceptanceWarning
 // does, and for the same reason does not name `tk edit`.
 func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {

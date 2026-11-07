@@ -25,8 +25,8 @@ var serveCmd = &cobra.Command{
 		"Set TK_STORE_ROOT to an absolute path to serve a throwaway store instead: tk\n" +
 		"resolves every store and config path under that root, needs no ~/.ticket/config.yaml,\n" +
 		"and runs no sync or journal watch (tk sync, tk watch and tk recompute refuse to run at\n" +
-		"all while it is set). It does not move verify_allow or spawn_command, both always read\n" +
-		"from ~/.ticket/config.yaml, and it does not cover a ticket_create `repo` argument (a\n" +
+		"all while it is set). It does not move verify_allow, always read from\n" +
+		"~/.ticket/config.yaml, and it does not cover a ticket_create `repo` argument (a\n" +
 		"caller-supplied path resolves outside the root by construction) or code a verify command\n" +
 		"runs.",
 	RunE: func(cmd *cobra.Command, args []string) error {

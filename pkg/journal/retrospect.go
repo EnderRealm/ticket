@@ -59,7 +59,7 @@ type retrospectMarker struct {
 // error that would cost the cycle its journal or its auto-closes.
 //
 // Scanning the store rather than watching the close loop is what makes the
-// trigger cover every path — a manual `tk edit`, the TUI, an MCP write, and the
+// trigger cover every path — a manual `tk edit`, an MCP write, and the
 // cycle's own auto-close, which by now reads done like any other.
 func runRetrospects(projectName string, store ticket.Store, budget int) (fired, seeded int, warnings []string) {
 	// The project half of the namespaced ID reaches argv too, and it has the same

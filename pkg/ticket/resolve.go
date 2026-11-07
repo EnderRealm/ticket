@@ -179,8 +179,8 @@ func legacyStoreDir(repoDir string) string {
 
 // UnregisteredWarning is the one phrasing for a store that resolved to an
 // unregistered central project. Every surface that can land on one — the CLI's
-// own resolution, `tk move` and the TUI's move — says the same sentence, so the
-// condition reads as a single state rather than as several.
+// own resolution and `tk move` — says the same sentence, so the condition reads
+// as a single state rather than as several.
 func UnregisteredWarning(store *FileStore) string {
 	return fmt.Sprintf("warning: project %q is not registered but has a ticket directory at %s — run `tk init` to register it", store.Project, store.Dir)
 }

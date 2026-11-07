@@ -40,16 +40,10 @@ type Config struct {
 	// store kind is what ticket/remove-local-tickets-3d72 removed.
 	DefaultStore string `yaml:"default_store,omitempty" json:"default_store,omitempty"`
 	SyncInterval string `yaml:"sync_interval,omitempty" json:"sync_interval,omitempty"`
-	// SpawnCommand: read it via project.SpawnCommand(). The value here is the
-	// merged one, whose local half is the override root's config under
-	// TK_STORE_ROOT, and it exists for Save's round-trip only — never as a read
-	// path, because the template is the string handed to `sh -c` as the machine
-	// owner.
-	SpawnCommand string `yaml:"spawn_command,omitempty" json:"spawn_command,omitempty"`
-	// VerifyAllow: read it via project.VerifyAllow(), for the same reason and on
-	// the same terms — merged from a half the override root may own, kept here so
-	// Save round-trips it, and never a read path, because the list decides which
-	// programs run as the machine owner.
+	// VerifyAllow: read it via project.VerifyAllow(). The value here is the merged
+	// one, whose local half is the override root's config under TK_STORE_ROOT, and
+	// it exists for Save's round-trip only — never as a read path, because the list
+	// decides which programs run as the machine owner.
 	VerifyAllow VerifyAllowList `yaml:"verify_allow,omitempty" json:"verify_allow,omitempty"`
 	// JournalDefaultsMigrated marks that MigrateJournalDefaults has run. It is a
 	// shared-config field, alongside the auto_link/auto_close it decides, so the
@@ -164,8 +158,8 @@ type ProjectConfig struct {
 
 // Load reads both local (~/.ticket/config.yaml) and shared (<central_root>/config.yaml)
 // configs, merging them into a single Config. Local fields (central_root, git_email,
-// git_name, default_store, sync_interval, spawn_command, per-project path and
-// verify_timeout) come from local config.
+// git_name, default_store, sync_interval, per-project path and verify_timeout)
+// come from local config.
 // Shared fields (journal_defaults_migrated, per-project store, auto_link,
 // auto_close, auto_retrospect, registered_at) come from shared config. Missing
 // files are not errors — returns what's available.
@@ -279,46 +273,14 @@ func localConfigName() string {
 	return path
 }
 
-// RecordLocalPath records dir as the project name's `path` in the local
-// config alone — ConfigPath, so a TK_STORE_ROOT run writes its own — and never
-// touches the shared config. Save is not used because it rewrites both halves:
-// `path` is machine-local, and the shared catalog in the central store has no
-// business changing because one machine learned where a checkout is. The local
-// file is read on its own and written back with only that one field changed,
-// so the project's other local fields, every other project entry and every
-// top-level key keep the values they had.
-//
-// A path already in the file is refused and the file left untouched: a
-// caller's own no-path check reads a config loaded earlier, and tk init, a
-// hand edit or another tk ui may have recorded one since. That path decides
-// where spawns and verify runs execute, so it is never silently replaced.
-func RecordLocalPath(name, dir string) error {
-	path, err := ConfigPath()
-	if err != nil {
-		return err
-	}
-	local, err := loadFile(path)
-	if err != nil {
-		return err
-	}
-	p := local.Projects[name]
-	if p.Path != "" {
-		return fmt.Errorf("project %q already records path %s in %s", name, p.Path, localConfigName())
-	}
-	p.Path = dir
-	local.Projects[name] = p
-	return writeFileAtomic(path, local)
-}
-
 // homeConfigPath returns ~/.ticket/config.yaml — the machine owner's own
 // config, which TK_STORE_ROOT never relocates. Only the controls that must
 // answer to the machine owner rather than to whoever set the environment use
 // it directly; everything else goes through ConfigPath.
 //
-// Two settings are read from it: verify_allow and spawn_command. They share the
-// property that decides it — each one decides code that runs as the machine
-// owner, verify_allow by permitting a program and spawn_command by being a
-// shell string — so neither may come from a root whoever set the variable owns.
+// verify_allow is the one setting read from it: it decides which programs run
+// as the machine owner, so it may not come from a root whoever set the variable
+// owns.
 func homeConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -480,27 +442,6 @@ func VerifyTimeout(cfg Config, name string) (time.Duration, error) {
 	return d, nil
 }
 
-// SpawnCommand returns the TUI's spawn_command template, plus the error that
-// made it unreadable. It reads ~/.ticket/config.yaml directly for the same
-// reason VerifyAllow does: the template is handed to `sh -c`, so whoever
-// supplies it runs code as the machine owner, and neither the synced shared
-// config nor a TK_STORE_ROOT root the caller named may be that source.
-//
-// An empty template is the caller's signal to use the built-in default, so a
-// sandbox with no home config gets the machine owner's default rather than a
-// template of its own.
-func SpawnCommand() (string, error) {
-	path, err := homeConfigPath()
-	if err != nil {
-		return "", err
-	}
-	local, err := loadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return local.SpawnCommand, nil
-}
-
 // CentralStoreRoot returns the central ticket store root directory, or the
 // TK_STORE_ROOT override when set — which is answered without reading any
 // config file, so no configured store is touched.
@@ -536,33 +477,6 @@ func CentralProjectDir(projectName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(root, "tickets", projectName), nil
-}
-
-// ResolveWorkDir returns the project's real repo working directory for a tickets
-// directory: the `path` its config entry records, or "" when it records none —
-// a project registered on another machine has no local path, and the local half
-// of the config is the only thing that knows where the repo is.
-//
-// There is nothing to fall back to. ticketsDir is always
-// <centralRoot>/tickets/<project>, so its parent is the central tickets dir and
-// never a repo; returning it would hand the caller a directory inside the ticket
-// store, which for `tk ui` is the directory a spawned work session runs in. The
-// caller decides what to do with "" — it knows which repo the resolution started
-// from, and this does not.
-func ResolveWorkDir(ticketsDir string, cfg Config) string {
-	abs, err := filepath.Abs(ticketsDir)
-	if err != nil {
-		abs = ticketsDir
-	}
-
-	// Derive the project name the same way the TUI does: the base of the
-	// tickets dir.
-	name := filepath.Base(abs)
-
-	if p, ok := cfg.Projects[name]; ok && p.Path != "" {
-		return p.Path
-	}
-	return ""
 }
 
 // --- Internal helpers ---
@@ -625,7 +539,6 @@ func mergeConfigs(local, shared Config) Config {
 		GitName:      local.GitName,
 		DefaultStore: local.DefaultStore,
 		SyncInterval: local.SyncInterval,
-		SpawnCommand: local.SpawnCommand,
 		VerifyAllow:  local.VerifyAllow,
 
 		JournalDefaultsMigrated: shared.JournalDefaultsMigrated,
@@ -676,7 +589,6 @@ func saveLocal(cfg Config, hasShared bool) error {
 		GitName:      cfg.GitName,
 		DefaultStore: cfg.DefaultStore,
 		SyncInterval: cfg.SyncInterval,
-		SpawnCommand: cfg.SpawnCommand,
 		VerifyAllow:  cfg.VerifyAllow,
 		Projects:     map[string]ProjectConfig{},
 	}

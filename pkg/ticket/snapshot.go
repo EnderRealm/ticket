@@ -79,6 +79,7 @@ func (s *Snapshot) Get(id string) (*Ticket, bool) {
 
 // IsBlocked answers the dependency rule for a qualified ticket ID using only
 // this snapshot. A missing or multiply claimed ticket is treated as blocked.
+// It is public API with no caller in this repo because shuttle reads it.
 func (s *Snapshot) IsBlocked(id string) bool {
 	t, ok := s.Get(id)
 	if !ok {

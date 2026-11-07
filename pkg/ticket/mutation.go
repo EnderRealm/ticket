@@ -51,8 +51,7 @@ type MutationEntry struct {
 const SourceEnv = "TK_SOURCE"
 
 // SourceHuman is what a write with no other attribution records: a person at
-// the CLI or in the TUI, which is the only writer that reaches the store
-// without announcing itself.
+// the CLI, the only writer that reaches the store without announcing itself.
 const SourceHuman = "human"
 
 // WithSource returns a store whose writes are attributed to source, leaving the
@@ -75,12 +74,10 @@ func WithSource(s Store, source string) Store {
 }
 
 // Warnf reports a condition this library will not fail a call over. It is a
-// replaceable sink rather than a direct write because a surface that owns the
-// terminal cannot take one: `tk ui` runs bubbletea in the alt screen, where a
-// write straight to stderr paints over the rendered frame, so that surface
-// points this at its own display for the life of the program. The default stays
-// stderr for the CLI and for `tk serve`, where the MCP protocol owns stdout and
-// stderr is the server's log.
+// replaceable sink rather than a direct write because a program embedding this
+// library decides where its own diagnostics go, and points this at its logger
+// for the duration of a call. The default stays stderr for the CLI and for
+// `tk serve`, where the MCP protocol owns stdout and stderr is the server's log.
 var Warnf = func(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format, args...)
 }

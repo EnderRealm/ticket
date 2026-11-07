@@ -107,39 +107,6 @@ Every command resolves one way: the repo — the configured path for a project n
 
 tk no longer reads a `.tickets/` directory inside a repo. Nothing deletes or rewrites one — if a repo still has it, the error names that directory, and `tk init` imports the tickets into the central store and leaves the original in place as a backup. The import goes through the same validating boundary every write passes, as one batch: a child resolves against the epic beside it, a file that does not parse names itself and stops the migration, a batch the graph refuses (a child naming a parent that exists nowhere) leaves the central store untouched, and a catalog requiring a feature this binary lacks refuses it like any other write. Tickets the central store already holds are skipped, so re-running `tk init` is harmless; the summary reports `imported:` and `skipped:` counts.
 
-### `spawn_command`
-
-The TUI `w` keybinding (see below) launches a `/work <id>` session, and `c` launches a `/brainstorm <idea>` session that hands off to `/capture` when the dialogue is done; both run the same `spawn_command` template, which decides the shell command, executed with `sh -c`. Like `verify_allow`, it is read from `~/.ticket/config.yaml` only — a `spawn_command` in the shared config is ignored, and `TK_STORE_ROOT` does not relocate it — because the template *is* the code that runs as you. The command runs with the selected ticket's checkout as its working directory, so a template that never interpolates `{dir}` still lands there; `{dir}` is for a template that opens a new window or shell, which starts wherever that program decides and needs the `cd`. These placeholders are substituted:
-
-- `{dir}` — the checkout registered on this machine for the *selected ticket's* project (absolute path): the `path` recorded for that project in your local config, resolved per spawn through the same rule `tk verify` uses. It is never the board's directory: a child of another project reached through an epic's detail spawns in its own checkout. A Root ticket has no repository, and a project registered here without a path has no checkout, so the spawn is refused on the status line before any process is created — unless `w` can offer to record the working directory as that path (see TUI Keybindings)
-- `{id}` — the namespaced ticket ID (e.g. `myproject/tk-...`); empty for a capture, which has no ticket yet
-- `{project}` — the selected ticket's project name, not the board's; for a capture, the project the idea is captured into
-- `{title}` — the ticket title, sanitized like `{wtitle}` (still caller-quoted, like `{dir}`); for a capture, the idea
-- `{wtitle}` — the computed window name `PROJECT -- ID4 -- TITLE` (uppercased project, the ticket's 4-char id suffix, and the title truncated to 20 characters; sanitized so it embeds without escaping); `PROJECT -- capture -- IDEA` for a capture
-- `{command}` — the slash command the session opens on: `/work <id>` for `w`, `/brainstorm <idea>` for `c`. The idea is typed into the TUI and sanitized exactly like `{title}`, so `{command}` takes the same quoting a title does. A template with no `{command}` — one written before it existed, hard-coding `/work {id}` — still serves `w` unchanged, since the placeholder simply never fires, and refuses `c` on the status line, since it has nowhere to put the capture
-
-The template runs through `sh -c`, and a ticket ID is a filename in the central store that another machine may have pushed, so both ticket-derived placeholders are constrained before they reach it. `{id}` must be letters, digits, `.`, `-` or `_`, plus at most one `/` for the project namespace, and each segment must start with a letter or digit — that covers everything `tk` generates (letters, digits and `-`, always opening with one) and the hand-named IDs already in stores (`ghostwheel/g-101.2`), while refusing `..` and an ID like `--flag` that a template would hand its program as an option rather than a ticket. Anything else refuses the spawn, naming the ID on the status line; the ticket stays usable everywhere else. Letters and digits are Unicode categories, not an ASCII range, so an ID slugged from a title in any script spawns normally. Quote `{id}` where your template interpolates it, the same as `{title}` and `{dir}`: the shape rule bounds the character set and the leading character, but quoting is what makes the placeholder safe wherever it lands.
-
-`{title}` and `{wtitle}` are free text — an apostrophe in a title is ordinary, not an attack — so they are sanitized rather than refused: quotes, backslashes, `$`, backticks, `!`, control characters and the invisible Unicode format characters become spaces, since `$` and a backtick would otherwise expand in the interactive shell the default template types its command into, `!` would trigger its history expansion (which double quotes do not suppress, and which kills the line outright when no history event matches), and a bidi override makes a title render as something other than what runs. Sanitizing removes what would break a *quoting layer*, not everything that is shell syntax — `;`, `&`, `|` and `>` survive in a title — so a custom template must still quote `{title}` where it interpolates it, exactly as it must `{dir}`.
-
-Watch which quotes you mean. In a `write text` payload the quotes you see are AppleScript's, not the shell's — the default's outer `"..."` is consumed by AppleScript, and what reaches the interactive shell is the escaped `\"...\"`. That is why the default's `{wtitle}` is safe inside `printf \"...\" \"{wtitle}\"` and a placeholder dropped into the visible outer quotes would not be. The default template uses only `{wtitle}`. `{dir}` and `{project}` come from project resolution rather than the shared store — your local config, or the override root's config under `TK_STORE_ROOT` — but nothing on the way in bounds what they may contain, so they are constrained here too: a value carrying `'`, `"`, `\`, `$`, a backtick, `!`, or a control or invisible format character refuses the spawn, naming the reason on the status line. Neither is ever rewritten to fit — replacing a character in a path changes which directory `cd` reaches, so the value passes through verbatim or not at all, and such a path has to be renamed rather than quoted around. The check sits at the boundary where the command is built, so a custom template does not lift it. Everything else, spaces included, passes as-is, and your template must still quote `{dir}` where it interpolates it.
-
-When unset, the default opens a new iTerm window (macOS), names it `{wtitle}`, cds to the project, and starts Claude Code on the ticket:
-
-```yaml
-spawn_command: 'osascript -e ''tell application "iTerm"'' -e ''set w to (create window with default profile)'' -e ''tell current session of w to set name to "{wtitle}"'' -e ''tell current session of w to write text "cd '\''{dir}'\'' && printf \"\033]0;%s\007\" \"{wtitle}\" && export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 && claude \"{command}\""'' -e ''end tell'''
-```
-
-The default creates the window with a normal interactive shell, names it so each worker is identifiable, and then types the command into it (via `write text`), so the window stays open and `claude` resolves on your `PATH`. It single-quotes `{dir}` so paths with spaces work; a project path containing a literal single quote can't be escaped inside the `osascript -e` wrapper at all, which is why such a path refuses the spawn instead of producing a command whose quoting it closes.
-
-Making the title stick takes more than `set name`: the shell prompt (oh-my-zsh and similar set the title from a `preexec` hook) and Claude Code itself both overwrite it. So the default reasserts the title with a `printf` OSC-0 escape *after* the prompt hook fires, and `export`s `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` so Claude Code doesn't keep rewriting the title during the session. The var is exported (not prefixed inline) because `claude` is often a shell alias — e.g. `tabset ...; command claude` — and an inline `VAR=1 claude` prefix would bind to the alias's first command rather than Claude. If you write a custom `spawn_command`, do the same if you want the title to persist.
-
-Override to use a different terminal, e.g. tmux:
-
-```yaml
-spawn_command: 'tmux new-window -c {dir} "claude \"{command}\""'
-```
-
 ## Agent Setup
 
 Add this line to your `CLAUDE.md` or `AGENTS.md`:
@@ -233,8 +200,7 @@ Global flags:
   --repo <name|path>         Operate on a registered project or repo
   --json                     Output in JSON format
 
-Interactive:
-  ui                         Terminal UI (--project _root browses Root)
+Server:
   serve                      MCP server for AI agent integration
 
 Journal:
@@ -244,36 +210,6 @@ Journal:
   watch logs [-n 50]           Show watcher log output
   recompute [--project=NAME]   Rebuild commit journal from git history
 ```
-
-### TUI Keybindings
-
-The `tk ui` browser supports the usual navigation keys plus, in both the list and detail views:
-
-| Key | Action |
-|-----|--------|
-| `y` | Yank (copy) the ticket ID to the clipboard |
-| `w` | Spawn a `/work <id>` session in a new terminal, in the selected ticket's own checkout (see `spawn_command`); refused for an epic, a Root ticket, or a project with no checkout registered here — or, for the board's own project with no local path, a prompt to record one (below) |
-| `c` | Prompt for an idea — wrapped over up to five rows, pasted newlines joined with spaces — then spawn a `/brainstorm <idea>` session in a new terminal — in the board's project checkout from the list, the ticket's own from a detail — where Claude refines the idea one question at a time and hands off to `/capture` to create the ticket when you say you are done; `esc` cancels. Same `spawn_command` and the same refusals as `w`, plus a template with no `{command}` |
-| `u` | Open the parent epic's full detail — every child in every namespace, closed ones included, with the counts its status was derived from — whichever project the epic lives in |
-
-A project can be in the shared catalog (`store: central`) and open in `tk ui` from its repo — the board resolves from the working directory's git remote or name — while this machine's `~/.ticket/config.yaml` records no `path` for it, and the spawn needs that path. When `w` is refused for exactly that, it asks instead: `<project> has no local path — record <dir> as its checkout? (y/n)`. `y` writes `path: <dir>` for that project to the local config alone — the shared catalog in the central store is not touched, and every other entry and key in the local file is kept — then runs the spawn; `n` or `esc` writes nothing and the spawn stays refused. The prompt appears only when all of these hold, and `w` refuses as before otherwise, the refusal naming the missing local path:
-
-- the board was resolved from the working directory — no `--project`, no `--repo`;
-- the ticket is the board's own project's — not a child of another project reached through an epic's detail, and not a Root ticket;
-- the project is `store: central` in the shared config and has no local `path`;
-- the working directory is the top level of the project's main checkout — not a subdirectory of it and not a linked git worktree.
-
-The path is never recorded without the answer: the board's project was matched by a git remote or a directory name, which a fork, a second clone or a same-named directory matches as well, and the recorded path is where every later spawn and `tk verify` run executes. `tk init` in the checkout records it the same way.
-
-In an epic's detail, `enter` opens a picker over its children and opens the chosen one, foreign or not; `esc` returns to the detail it was opened from. A project board is a slice of a shared epic: the epics tab nests only the board's own children under it, and the group row carries the global count, done and closed separately, a `slice N of M local` marker when the board holds fewer than the epic has, and an `incomplete` marker when the store could not be read in full. `tk ui --project _root` browses Root without a checkout. A ticket the audit flags ends its detail with a `## Findings` section naming each finding and its detail, as `tk show` does, so an invalid parent is visible before a save is refused for it.
-
-In the list view, `n` opens the create-ticket form (in a detail, `n` adds a note). Tab-specific status keys:
-
-| Key | Action |
-|-----|--------|
-| `r` | Backlog tab: move ticket to ready |
-| `b` | Inbox tab: move ticket to backlog |
-| `x` | Inbox tab: mark ticket done |
 
 ### Statuses
 
@@ -316,15 +252,15 @@ References are read relative to the ticket that holds them: a bare `parent`, dep
 
 An epic never reads `ready` — `ready` means "available to pick up" and an epic is not picked up directly. Setting an epic's status by hand is refused; change its children instead.
 
-An epic's completion date is derived alongside its status: it is the date its last child reached a terminal state, and it is blank while the epic is not terminal. Nothing writes an epic when a child of it finishes, so `tk show`, `tk query` and the TUI's COMPLETED and DURATION columns read the children rather than a date on the epic's own file — an epic's file stores no completion date at all.
+An epic's completion date is derived alongside its status: it is the date its last child reached a terminal state, and it is blank while the epic is not terminal. Nothing writes an epic when a child of it finishes, so `tk show` and `tk query` read the children rather than a date on the epic's own file — an epic's file stores no completion date at all.
 
 An abandoned epic is the exception, because the abandon is what closes it: the edit that abandons it records `abandoned-at` beside the flag, and while it reads `closed` its completion date is the later of that and its last child's — the child's when one reopened after the abandon and finished again. Taking the abandon back clears the date. An epic abandoned before `abandoned-at` was recorded has no date for the decision and renders none, rather than a child's date the abandon may have come long after; setting it `closed` again records one.
 
-The one exception is abandoning an epic: `tk edit <epic> --status closed` records `abandoned: true` on the epic and closes every non-terminal child in the same action (children that already finished keep their `done`). The abandoned epic reads `closed` only while every child is terminal, so reopening one un-closes the epic until it finishes again. Setting any other status takes the abandon back, whatever the epic reads at the time. The children the abandon closed are reported with the edit — named on `tk edit`'s and the TUI's own line, returned by MCP `ticket_edit` as `closed_children` — so a write that mutated other tickets says so.
+The one exception is abandoning an epic: `tk edit <epic> --status closed` records `abandoned: true` on the epic and closes every non-terminal child in the same action (children that already finished keep their `done`). The abandoned epic reads `closed` only while every child is terminal, so reopening one un-closes the epic until it finishes again. Setting any other status takes the abandon back, whatever the epic reads at the time. The children the abandon closed are reported with the edit — named on `tk edit`'s own line, returned by MCP `ticket_edit` as `closed_children` — so a write that mutated other tickets says so.
 
 Changing a ticket's type to `epic` is judged the same way: `tk edit <id> --type epic` on its own is one ordinary edit and the status it carries back is not read as a decision, while a status set in the same call is a status set on the epic that edit makes — `closed` abandons it, anything else is refused.
 
-Only a status a writer actually set counts as either decision: `tk edit --status`, the `status` argument to MCP `ticket_edit`, or the TUI edit form's status field cycled off the value it was opened with. A status that merely rode along with an edit to some other field is not a decision and is never judged as one — it can neither record an abandon nor be refused for disagreeing with the children. Writes tk makes on its own behalf express no intent either: `tk move` closes the ticket it left behind to record that it left, and the children staying behind are untouched, and a commit carrying `Closes: [<epic-id>]` closes nothing — the commit watcher skips epics with a warning, since an epic is closed by its children. An epic that moves is not closed in the source either: its file is left storing `backlog`, since a stored `closed` with no abandon flag beside it reads as a decision nobody took.
+Only a status a writer actually set counts as either decision: `tk edit --status` or the `status` argument to MCP `ticket_edit`. A status that merely rode along with an edit to some other field is not a decision and is never judged as one — it can neither record an abandon nor be refused for disagreeing with the children. Writes tk makes on its own behalf express no intent either: `tk move` closes the ticket it left behind to record that it left, and the children staying behind are untouched, and a commit carrying `Closes: [<epic-id>]` closes nothing — the commit watcher skips epics with a warning, since an epic is closed by its children. An epic that moves is not closed in the source either: its file is left storing `backlog`, since a stored `closed` with no abandon flag beside it reads as a decision nobody took.
 
 The intent lives in its own field because `status` on an epic is what every reader is shown and therefore what every edit carries back: an edit to a title or a note round-trips the flag unchanged, where it would otherwise drop or invent one. An epic's `status:` field is advisory — the derivation never reads it — so a value left there by an unrelated write means nothing.
 
@@ -363,7 +299,7 @@ Acceptance criteria live in the ticket's `## Acceptance Criteria` section as bul
 
 - Frontier excludes blocked tickets.
   verify: go test ./pkg/ticket -run TestFrontier
-- The TUI redraws cleanly at 40 columns.
+- tk ls output stays readable at 40 columns.
   unverifiable: needs a human at a terminal.
 ```
 
@@ -371,7 +307,7 @@ A criterion for which no runnable command can exist declares that instead, on a 
 
 A bullet carrying neither line is bare, and `tk create` and the `ticket_create` MCP tool report one at the moment it is written — the CLI on stderr, the tool in `bare_acceptance_criteria` (the texts) and `bare_acceptance_warning` (the remedy). It is a report and not a refusal: the ticket is created and its ID returned, so a batch filing path is never left unable to record one. The caller is the audience because it still holds the context the criteria came from and can re-send them with a line attached.
 
-An acceptance section that is not blank but holds no criterion — a numbered list, say, each item with its own `verify:` line — reads as a captured contract in `ticket_show` yet leaves `tk verify` and `ticket_verify` reporting that the ticket has no acceptance criteria. `tk create`, the TUI's create and the `ticket_create` MCP tool report it when the ticket is written, as do `ticket_edit` calls that write a `description` or `acceptance` value — the CLI on stderr, the TUI on its status line, the tools in `unparsed_acceptance_warning`. It is distinct from `empty_acceptance_warning`, which means no acceptance section at all, and the two never appear together. Like the bare warning it is a report and not a refusal; the remedy is to rewrite each criterion as a `- ` bullet.
+An acceptance section that is not blank but holds no criterion — a numbered list, say, each item with its own `verify:` line — reads as a captured contract in `ticket_show` yet leaves `tk verify` and `ticket_verify` reporting that the ticket has no acceptance criteria. `tk create` and the `ticket_create` MCP tool report it when the ticket is written, as do `ticket_edit` calls that write a `description` or `acceptance` value — the CLI on stderr, the tools in `unparsed_acceptance_warning`. It is distinct from `empty_acceptance_warning`, which means no acceptance section at all, and the two never appear together. Like the bare warning it is a report and not a refusal; the remedy is to rewrite each criterion as a `- ` bullet.
 
 Every heading beginning `## Acceptance` opens that section, so a hand-written `## Acceptance Notes` block is part of it: its bullets are criteria too, appended after the earlier block's in body order. The section ends at the next `## ` heading of any kind, so bullets under an unrelated heading are not criteria. `tk verify`, `--criterion <n>` and the `acceptance_criteria` field the `ticket_show` MCP tool returns all read that one section, so the criterion index a consumer reads out of `ticket_show` is the one tk runs. The write matches that read: an acceptance edit (the `ticket_edit` MCP tool's `acceptance` argument) replaces every `## Acceptance*` block — including one sitting further down the body, after a `## Design` block — with the new text under a single `## Acceptance Criteria` heading where the first block was, leaving whatever sat between them in place. So no block is dropped by the write and none is left behind as stale text, and writing back the section `ticket_show` returned reproduces it rather than duplicating it. A heading counts only where it opens a line: a description naming `## Acceptance Criteria`, `## Test Results` or `## Notes` inline is prose, and an edit spans the real section rather than the mention.
 
@@ -381,7 +317,7 @@ Every heading beginning `## Acceptance` opens that section, so a hand-written `#
 tk verify 5c4
 # verifying nw-5c46 in /Users/you/code/myproject
 # PASS (exit 0) Frontier excludes blocked tickets.
-# UNVERIFIED The TUI redraws cleanly at 40 columns.
+# UNVERIFIED tk ls output stays readable at 40 columns.
 # 1 pass, 0 fail, 0 refused, 1 unverified
 ```
 
@@ -395,7 +331,7 @@ checkout /Users/you/code/myproject; acceptance sha256:9f2c…
     --- FAIL: TestDimBlocked (0.00s)
         render_test.go:41: got bold, want dim
     FAIL
-- UNVERIFIED: The TUI redraws cleanly at 40 columns.
+- UNVERIFIED: tk ls output stays readable at 40 columns.
 ```
 
 A failing criterion's line is followed by its captured output, each line indented four spaces with control characters replaced, so nothing a command prints can be read back as a heading, a criterion or a note.
@@ -465,7 +401,7 @@ A verify command is content: agents write ticket bodies, and bodies replicate to
 
 **No shell.** The command is split into arguments on whitespace — single and double quotes group an argument, so `-run 'TestA|TestB'` survives whole — and then exec'd directly. Nothing is expanded and nothing is interpreted: `;`, `|`, `&&`, `$(...)`, backticks, `*` and `~` are literal characters handed to the program as part of an argument. `go test ./...; rm -rf ~` runs `go` with the arguments `test`, `./...;`, `rm`, `-rf`, `~` — `go` rejects the nonsense arguments, and nothing is deleted.
 
-A line written for a shell therefore never does what it says. `tk create`, the TUI's create and the `ticket_create` MCP tool report a `verify:` line carrying `&&`, `||`, `|`, `;`, `$(`, a `!` in command position (first, or first after a separator — `test ! -f x` is not reported, since `test` takes that `!` itself) or a token-leading `~` outside quotes when the ticket is written, as do `ticket_edit` calls that write a `description` or `acceptance` value — the CLI on stderr, the TUI on its status line, the tools in `shell_syntax_warning`, naming each such command and its constructs. Detection uses the same quote rule as the split above, so a quoted `bash -c 'a && b | c'` argument, whose shell logic runs in the shell `bash` starts, is not reported. Like the bare warning it is a report and not a refusal, so editing an older ticket that carries such a line never fails. When such a line is refused at verify time because its first word is not in `verify_allow` — `cd x && true`, say — the refusal names the shell syntax as the cause rather than advising that word onto the list, since allow-listing it would only exec it with the syntax as literal arguments.
+A line written for a shell therefore never does what it says. `tk create` and the `ticket_create` MCP tool report a `verify:` line carrying `&&`, `||`, `|`, `;`, `$(`, a `!` in command position (first, or first after a separator — `test ! -f x` is not reported, since `test` takes that `!` itself) or a token-leading `~` outside quotes when the ticket is written, as do `ticket_edit` calls that write a `description` or `acceptance` value — the CLI on stderr, the tools in `shell_syntax_warning`, naming each such command and its constructs. Detection uses the same quote rule as the split above, so a quoted `bash -c 'a && b | c'` argument, whose shell logic runs in the shell `bash` starts, is not reported. Like the bare warning it is a report and not a refusal, so editing an older ticket that carries such a line never fails. When such a line is refused at verify time because its first word is not in `verify_allow` — `cd x && true`, say — the refusal names the shell syntax as the cause rather than advising that word onto the list, since allow-listing it would only exec it with the syntax as literal arguments.
 
 **Allow-list.** The program — the first word — must exactly match an entry in `verify_allow` in your machine-local `~/.ticket/config.yaml`. Matching is exact string equality, not by basename, so an entry of `go` does not admit `/tmp/evil/go`. Anything else is `refused`: it never runs, and the refusal names the command and how to permit it — or, for a command carrying shell syntax outside quotes, names that syntax as the cause instead.
 
@@ -563,7 +499,7 @@ tk edit <id> --output artifact=dist/tk --output commit=31fc605
 tk edit <id> --output artifact=            # remove
 ```
 
-Outputs are populated automatically when a ticket lands: the commit watcher records the closing commit's SHA and branch on auto-close, and marking a ticket `done` from anywhere (CLI, MCP, or TUI) copies its `branch` field. Existing values are never overwritten, so anything set by hand wins; a derived value that would not serialize cleanly is dropped rather than written.
+Outputs are populated automatically when a ticket lands: the commit watcher records the closing commit's SHA and branch on auto-close, and marking a ticket `done` from anywhere (CLI or MCP) copies its `branch` field. Existing values are never overwritten, so anything set by hand wins; a derived value that would not serialize cleanly is dropped rather than written.
 
 `tk show` renders them as an `## Outputs` section, and they appear under `outputs` in `tk query` JSONL and MCP responses.
 
@@ -617,7 +553,7 @@ Two per-project flags in the shared config decide it: `auto_link` writes the jou
 
 #### `auto_retrospect`
 
-A third per-project flag, off by default and set by hand in `<central_root>/config.yaml`, hands each newly closed ticket to `loom`, the knowledge miner: every cycle, the watcher scans the project's store for tickets reading `done` or `closed` with no marker yet and runs `loom retrospect <project>/<id>` for each. Neither `tk init` nor the journal-defaults migration touches it. The trigger sits on the watch cycle rather than in the tool that closed the ticket, so it catches every close — a commit `Closes:`, `tk edit`, the TUI, an MCP write. Epics are skipped: an epic's `done` is derived from its children, each of which fires its own retrospect.
+A third per-project flag, off by default and set by hand in `<central_root>/config.yaml`, hands each newly closed ticket to `loom`, the knowledge miner: every cycle, the watcher scans the project's store for tickets reading `done` or `closed` with no marker yet and runs `loom retrospect <project>/<id>` for each. Neither `tk init` nor the journal-defaults migration touches it. The trigger sits on the watch cycle rather than in the tool that closed the ticket, so it catches every close — a commit `Closes:`, `tk edit`, an MCP write. Epics are skipped: an epic's `done` is derived from its children, each of which fires its own retrospect.
 
 Each fired ticket is recorded in `~/.ticket/state/<project>/retrospects.jsonl`, so nothing fires twice. The marker is keyed on the ticket ID alone: a ticket reopened and closed again is never mined a second time, deliberately — one lost run costs that ticket's candidates, where a duplicate spends another extraction and files the same ones again. Turning the flag on does *not* mine the store's history: the first cycle records every already-closed ticket without firing and says so in the log, and only closes after that are mined. A cycle starts at most four runs, so a batch of closes arriving at once — a store that just synced, or the backlog a missing `loom` left pending — is spread over the cycles that follow; the truncation is reported in the log and the rest fire seconds later. Everything about it is best-effort — the runs are started and left to finish on their own so an extraction never stalls the watcher, and a missing or failing `loom` is a log line, never an interrupted cycle. When `loom` is not on `PATH` nothing is recorded, so the pending closes fire on the first cycle after it is installed.
 
@@ -625,7 +561,7 @@ Each fired ticket is recorded in `~/.ticket/state/<project>/retrospects.jsonl`, 
 
 Every ticket change is appended to `~/.ticket/state/<project>/mutations.jsonl`, a sibling of the commit journal: one JSON line carrying `timestamp`, `ticket_id`, `operation` (`create`, `edit`, `add-note`, `dep`, `link`, `delete`, `move`), `source` and `fields_changed`. It is the trail git history cannot give — a ticket changes far more often than the store is committed.
 
-`source` names the writer: `TK_SOURCE` wins wherever it is set, otherwise each surface supplies its own default — the MCP client name from the handshake, or a write tool's explicit `source` argument; `watch` for the journal watcher's auto-closes; `human` for the CLI and TUI. It is declared by the writer and not authenticated: the log records which cooperating tool wrote a change, not proof of who did.
+`source` names the writer: `TK_SOURCE` wins wherever it is set, otherwise each surface supplies its own default — the MCP client name from the handshake, or a write tool's explicit `source` argument; `watch` for the journal watcher's auto-closes; `human` for the CLI. It is declared by the writer and not authenticated: the log records which cooperating tool wrote a change, not proof of who did.
 
 ### Observer actions
 
@@ -690,7 +626,7 @@ namespaces:
 
 **Cross-project parents.** `cross-project-parents` in `required_features` is what lets a leaf name an epic in another namespace as its parent. The relationship graph is read the same way before and after: the snapshot every reader and writer shares (`FileStore.Snapshot`, `MultiStore.Snapshot`) resolves references relative to their owner, derives every epic from its children in every namespace, and reports what it could not read. Every write takes one cross-process store lock — a file under the user's cache directory, never in the synced tree — validates against the snapshot taken under it, and only then takes the per-ticket lock; a callback handed to `ticket.Mutate` must not reach back through the store (an `Update`, a `Mutate`, a listing, or a `Get` of an epic), which is refused with `ErrStoreLockTimeout` rather than allowed to deadlock.
 
-**Compatibility.** Every central write — CLI, TUI, MCP, embedded library — passes one guard before it touches the store: a catalog requiring a feature outside `ticket.SupportedFeatures` refuses the write and says the binary must be replaced, and a write to `_root` is refused until `root-namespace` is required. Reads are never gated, and a store with no catalog behaves exactly as it did before the catalog existed. The guard only protects binaries that carry it: **tk binaries released before this guard ignore the catalog and the markers entirely**, so activating Root requires coordinated replacement of every tk binary, embedded library and long-lived process (MCP servers, watchers) sharing the store — a marker alone cannot make an already-released binary refuse. No command activates Root yet; `ticket.PreflightActivation` reports what would block it (a `_root` config entry, or a `_root` directory not catalogued as Root) and adopts or moves nothing.
+**Compatibility.** Every central write — CLI, MCP, embedded library — passes one guard before it touches the store: a catalog requiring a feature outside `ticket.SupportedFeatures` refuses the write and says the binary must be replaced, and a write to `_root` is refused until `root-namespace` is required. Reads are never gated, and a store with no catalog behaves exactly as it did before the catalog existed. The guard only protects binaries that carry it: **tk binaries released before this guard ignore the catalog and the markers entirely**, so activating Root requires coordinated replacement of every tk binary, embedded library and long-lived process (MCP servers, watchers) sharing the store — a marker alone cannot make an already-released binary refuse. No command activates Root yet; `ticket.PreflightActivation` reports what would block it (a `_root` config entry, or a `_root` directory not catalogued as Root) and adopts or moves nothing.
 
 ### Isolated stores (`TK_STORE_ROOT`)
 
@@ -706,7 +642,7 @@ With the override set:
 - `tk serve` starts without a `~/.ticket/config.yaml` at all — the override is the configuration.
 - No sync and no journal watch run, so nothing is committed or pushed and no ticket is auto-closed. `tk serve` starts neither loop (and logs that it did not), and `tk sync`, `tk watch` and `tk recompute` refuse to run at all: sync would commit and push whatever git repo encloses the sandbox, and the commit journal stays under `$HOME`, which the override does not move — so watch would auto-close sandbox tickets while journalling into the real home, and recompute would delete and rebuild your journal for any project name the sandbox happens to register. The commit journal is the one *store* path `$HOME` still decides; every other store path the override resolves for itself, the mutation log included — it is appended by every write and so cannot be refused the way those commands are, and under the override it lands at `<root>/state/<project>/mutations.jsonl` rather than in the machine's real audit trail.
 - `tk init` still registers a project — a harness needs it to, since central writes to an unregistered project are refused — but it skips the store's git bootstrap. A throwaway store keeps no history, and bootstrapping one nested inside another repo would stage and commit that repo's worktree.
-- `verify_allow` and `spawn_command` are the settings the override does not move: both are read from `~/.ticket/config.yaml` always. The override root belongs to whoever set the variable, and each of these decides code that runs as you — so following it there would let a sandbox widen the allow-list (`verify_allow: [sh]`) or hand the TUI its own `sh -c` template, and a sandbox with no config would restore the defaults over an allow-list you had narrowed. Pinning them to `$HOME` bounds what a *store root* can supply, not a caller who also controls the environment: whoever can set `TK_STORE_ROOT` can generally set `HOME` too.
+- `verify_allow` is the setting the override does not move: it is read from `~/.ticket/config.yaml` always. The override root belongs to whoever set the variable, and the list decides code that runs as you — so following it there would let a sandbox widen the allow-list (`verify_allow: [sh]`), and a sandbox with no config would restore the defaults over an allow-list you had narrowed. Pinning it to `$HOME` bounds what a *store root* can supply, not a caller who also controls the environment: whoever can set `TK_STORE_ROOT` can generally set `HOME` too.
 - A value that is not an absolute path is an error, on any command, before any store is resolved. There is no fall-back to the configured store — a silent fall-back is the failure this exists to prevent. The empty string is such a value: `TK_STORE_ROOT=` is a store root tk cannot resolve, not an unset variable.
 
 The guarantee covers tk's own store resolution and nothing wider. Two things are outside it, by design and under separate controls:

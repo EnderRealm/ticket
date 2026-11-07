@@ -9,11 +9,10 @@ When adding/changing commands or flags, update:
 
 ## Architecture
 
-Go binary. Four layers sharing one core library:
+Go binary. Three layers sharing one core library:
 
 - `pkg/ticket/` — Core library (types, store, multistore, format, deps, filter, id, inbox, move)
 - `cmd/` — CLI commands via cobra
-- `internal/tui/` — Bubbletea TUI for interactive browse and edit
 - `internal/mcp/` — MCP server for AI agent access via `tk serve`
 
 `Store` is the interface; `FileStore` (single project) and `MultiStore` (central store, all projects) implement it. `tk serve` uses `MultiStore` with namespaced IDs (`project/ticket-id`).
@@ -23,7 +22,7 @@ Tickets are markdown files with YAML frontmatter. Core YAML fields: `id`, `statu
 Statuses: `backlog`, `ready`, `open`, `done`, `closed`.
 Types: `epic`, `feature`, `bug`.
 
-The hierarchy is one level deep and enforced on write: `parent`, when set, must resolve to an epic — in the same project, or in another namespace once the catalog requires `cross-project-parents` — and an epic itself has no parent. Enforcement lives at the central boundary in `pkg/ticket/central.go`: every write (`Create`, `Update`, `Delete`, `Mutate`, `ImportAll`, a move) runs through `central.write`, which takes the exclusive store lock, snapshots the whole store under it and validates the write against that snapshot in `op.validate`, so CLI, MCP, TUI and library writes are all covered — do not add a second check at a call site. `ResolveParent` in `pkg/ticket/parent.go` is a read-only preview of the same check, taken without the exclusive lock, for a caller that wants the answer before writing: it canonicalizes `t.Parent` to the resolved epic's qualified ID but writes nothing, and the write itself is judged again under the lock.
+The hierarchy is one level deep and enforced on write: `parent`, when set, must resolve to an epic — in the same project, or in another namespace once the catalog requires `cross-project-parents` — and an epic itself has no parent. Enforcement lives at the central boundary in `pkg/ticket/central.go`: every write (`Create`, `Update`, `Delete`, `Mutate`, `ImportAll`, a move) runs through `central.write`, which takes the exclusive store lock, snapshots the whole store under it and validates the write against that snapshot in `op.validate`, so CLI, MCP and library writes are all covered — do not add a second check at a call site. `ResolveParent` in `pkg/ticket/parent.go` is a read-only preview of the same check, taken without the exclusive lock, for a caller that wants the answer before writing: it canonicalizes `t.Parent` to the resolved epic's qualified ID but writes nothing, and the write itself is judged again under the lock.
 
 Stores written before that rule still load and render; only writing one back is refused. `tk audit` reports the violations so a store can be cleaned first.
 

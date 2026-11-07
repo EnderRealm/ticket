@@ -109,7 +109,7 @@ func TestProjectSelectorSelectsRootFromARegisteredRepo(t *testing.T) {
 	}
 	selectProject(t, project.RootNamespace)
 
-	dir, name, _, err := resolveTicketsDir()
+	dir, name, err := resolveTicketsDir()
 	if err != nil {
 		t.Fatalf("--project _root did not resolve: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestProjectSelectorRefusesRepoTogether(t *testing.T) {
 	repoFlag = mustGetwd()
 	defer func() { repoFlag = "" }()
 
-	_, _, _, err := resolveTicketsDir()
+	_, _, err := resolveTicketsDir()
 	if err == nil || !contains(err.Error(), "--project and --repo are both selectors") {
 		t.Fatalf("--project with --repo = %v, want the conflict refused", err)
 	}
@@ -174,7 +174,7 @@ func TestProjectSelectorRefusesAnUnknownNamespace(t *testing.T) {
 	centralStore(t, "pr-known")
 	selectProject(t, "pr-nope")
 
-	_, _, _, err := resolveTicketsDir()
+	_, _, err := resolveTicketsDir()
 	if err == nil || !contains(err.Error(), `namespace "pr-nope" is not in the central store`) {
 		t.Fatalf("--project pr-nope = %v, want it refused as unknown", err)
 	}
@@ -189,7 +189,7 @@ func TestProjectSelectorRefusesAnUnknownNamespace(t *testing.T) {
 	}
 	for _, ns := range []string{"pr-dir", "pr-cat"} {
 		selectProject(t, ns)
-		if _, name, _, err := resolveTicketsDir(); err != nil || name != ns {
+		if _, name, err := resolveTicketsDir(); err != nil || name != ns {
 			t.Errorf("--project %s = (%q, %v), want it selectable", ns, name, err)
 		}
 	}
@@ -199,7 +199,7 @@ func TestProjectSelectorRefusesAnUnknownNamespace(t *testing.T) {
 func mustResolveDir(t *testing.T, ns string) string {
 	t.Helper()
 	selectProject(t, ns)
-	dir, _, _, err := resolveTicketsDir()
+	dir, _, err := resolveTicketsDir()
 	if err != nil {
 		t.Fatal(err)
 	}

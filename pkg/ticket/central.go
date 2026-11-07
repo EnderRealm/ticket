@@ -153,7 +153,7 @@ func acquireStoreLock(path string, exclusive bool) (func(), error) {
 
 // central is the relationship and mutation boundary over one central store —
 // or, for a store with no central layout, over that one directory. Every
-// snapshot is read and every write validated through it, so CLI, TUI, MCP,
+// snapshot is read and every write validated through it, so CLI, MCP,
 // `ticket_create(repo=)` and Mutate all pass one boundary: FileStore stays the
 // persistence primitive and is not an alternate write authority.
 type central struct {
