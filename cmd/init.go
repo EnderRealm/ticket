@@ -110,19 +110,30 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	registeredAt := time.Now().UTC().Format(time.RFC3339)
-	// A re-run must not clear an opt-in nobody re-stated: UpsertProject replaces
-	// the whole entry, and auto_retrospect and verify_timeout are set by hand and
-	// never by init, so carrying them over is the only thing that keeps `tk init`
-	// re-runnable for a project that has either set. Dropping verify_timeout
-	// would silently restore the 120s bound the project moved away from.
+	// A re-run must not undo a setting nobody re-stated: UpsertProject replaces
+	// the whole entry, so every per-project setting init does not own is carried
+	// over from the existing entry. auto_retrospect and verify_timeout are set by
+	// hand and never by init; dropping verify_timeout would silently restore the
+	// 120s bound the project moved away from. auto_link and auto_close default on
+	// only for a new registration — resetting them would undo a journaling
+	// opt-out, and `tk init` is the documented migration for a registered repo.
+	// An entry without `store: central` (local-only, or a legacy `store: local`)
+	// is unregistered, so init registering it is new and its false flags are not
+	// a choice to keep.
 	autoRetrospect := false
 	verifyTimeout := ""
+	autoLink := true
+	autoClose := true
 	if existing, ok := cfg.Projects[projectName]; ok {
 		if existing.RegisteredAt != "" {
 			registeredAt = existing.RegisteredAt
 		}
 		autoRetrospect = existing.AutoRetrospect
 		verifyTimeout = existing.VerifyTimeout
+		if project.CentralRegistered(cfg, projectName) {
+			autoLink = existing.AutoLink
+			autoClose = existing.AutoClose
+		}
 	}
 
 	centralDir, err := project.CentralProjectDir(projectName)
@@ -162,13 +173,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// for the watcher, and the commit journal is the only commit→ticket trail
 	// there is. Registering with both flags off made every store's journal inert
 	// — a default hardcoded here rather than one anybody chose. The flags stay
-	// explicit in the shared config, so turning either back off is an edit.
+	// explicit in the shared config, so turning either back off is an edit, and
+	// a re-run keeps whatever that edit chose.
 	cfg.UpsertProject(projectName, project.ProjectConfig{
 		Path:           repoPath,
 		VerifyTimeout:  verifyTimeout,
 		Store:          "central",
-		AutoLink:       true,
-		AutoClose:      true,
+		AutoLink:       autoLink,
+		AutoClose:      autoClose,
 		AutoRetrospect: autoRetrospect,
 		RegisteredAt:   registeredAt,
 	})

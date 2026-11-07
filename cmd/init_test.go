@@ -559,6 +559,144 @@ func TestInitRerunPreservesVerifyTimeout(t *testing.T) {
 	}
 }
 
+// auto_link and auto_close default on only for a new registration, which
+// TestInitNonInteractive pins. A re-run keeps the pair the project holds:
+// resetting it would undo a journaling opt-out, and the README sends a
+// registered repo with a stale .tickets/ to `tk init`. The mixed pairs are
+// deliberate link-only and close-only choices and survive the same way.
+func TestInitRerunPreservesJournalFlags(t *testing.T) {
+	cases := []struct {
+		name                string
+		autoLink, autoClose bool
+	}{
+		{"both off", false, false},
+		{"link only", true, false},
+		{"close only", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setupTestHome(t)
+
+			centralRoot := filepath.Join(home, "central")
+			os.MkdirAll(centralRoot, 0o755)
+			project.Save(project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{}})
+
+			projDir := filepath.Join(home, "jfproject")
+			os.MkdirAll(projDir, 0o755)
+			runGit(t, projDir, "init")
+			runGit(t, projDir, "config", "user.email", "test@test.com")
+			runGit(t, projDir, "config", "user.name", "test")
+
+			oldDir, _ := os.Getwd()
+			os.Chdir(projDir)
+			defer os.Chdir(oldDir)
+
+			initCmd.Flags().Set("yes", "true")
+			initCmd.Flags().Set("project", "jfproject")
+			defer func() {
+				initCmd.Flags().Set("yes", "false")
+				initCmd.Flags().Set("project", "")
+			}()
+
+			if err := runInit(initCmd, nil); err != nil {
+				t.Fatalf("runInit: %v", err)
+			}
+
+			cfg, err := project.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			p := cfg.Projects["jfproject"]
+			p.AutoLink = tc.autoLink
+			p.AutoClose = tc.autoClose
+			cfg.UpsertProject("jfproject", p)
+			if err := project.Save(cfg); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+
+			if err := runInit(initCmd, nil); err != nil {
+				t.Fatalf("runInit again: %v", err)
+			}
+
+			reloaded, err := project.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			again := reloaded.Projects["jfproject"]
+			if again.AutoLink != tc.autoLink || again.AutoClose != tc.autoClose {
+				t.Errorf("after re-run auto_link = %t, auto_close = %t, want %t, %t",
+					again.AutoLink, again.AutoClose, tc.autoLink, tc.autoClose)
+			}
+		})
+	}
+}
+
+// An entry without `store: central` is an unregistered project, so `tk init`
+// for it is a new registration: its false flags are what the pre-journal
+// default left behind, not an opt-out, and carrying them would register the
+// project with journaling off.
+func TestInitRegisteringUncentralEntryTurnsJournalOn(t *testing.T) {
+	cases := []struct {
+		name  string
+		store string
+	}{
+		{"local-only entry", ""},
+		{"legacy store local", "local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setupTestHome(t)
+
+			projDir := filepath.Join(home, "ucproject")
+			os.MkdirAll(projDir, 0o755)
+			runGit(t, projDir, "init")
+			runGit(t, projDir, "config", "user.email", "test@test.com")
+			runGit(t, projDir, "config", "user.name", "test")
+
+			centralRoot := filepath.Join(home, "central")
+			os.MkdirAll(centralRoot, 0o755)
+			project.Save(project.Config{CentralRoot: centralRoot, Projects: map[string]project.ProjectConfig{
+				"ucproject": {Path: projDir, Store: tc.store},
+			}})
+			cfg, err := project.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			seeded, ok := cfg.Projects["ucproject"]
+			if !ok || seeded.Store != tc.store || seeded.AutoLink || seeded.AutoClose {
+				t.Fatalf("seeded entry = %+v (present %t), want store %q with both flags off", seeded, ok, tc.store)
+			}
+
+			oldDir, _ := os.Getwd()
+			os.Chdir(projDir)
+			defer os.Chdir(oldDir)
+
+			initCmd.Flags().Set("yes", "true")
+			initCmd.Flags().Set("project", "ucproject")
+			defer func() {
+				initCmd.Flags().Set("yes", "false")
+				initCmd.Flags().Set("project", "")
+			}()
+
+			if err := runInit(initCmd, nil); err != nil {
+				t.Fatalf("runInit: %v", err)
+			}
+
+			reloaded, err := project.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			p := reloaded.Projects["ucproject"]
+			if p.Store != "central" {
+				t.Errorf("store = %q, want central", p.Store)
+			}
+			if !p.AutoLink || !p.AutoClose {
+				t.Errorf("auto_link = %t, auto_close = %t, want both true for a new registration", p.AutoLink, p.AutoClose)
+			}
+		})
+	}
+}
+
 // TestInitUnderStoreRootOverrideLeavesEnclosingRepoAlone holds `tk init` to the
 // documented "nothing is committed or pushed" under TK_STORE_ROOT. Running the
 // bootstrap against an override root nested inside another repo would stage and
