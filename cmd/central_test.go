@@ -375,6 +375,209 @@ func TestLsReadsCentralDirBesideALegacyLocalStore(t *testing.T) {
 	}
 }
 
+// A repo registered centrally that still holds a .tickets/ from before the central
+// store: every way of naming it has to land on the central project, or a ticket
+// moved in is invisible to the `tk --repo` a user looks for it with. The stale
+// file carries the central ticket's ID, so only its title tells the two apart.
+// TestCreateWithRepoLandsOnTheCentralProjectBesideAStaleTicketsDir is MCP's half.
+func TestEntryPointsResolveTheCentralProjectBesideAStaleTicketsDir(t *testing.T) {
+	const (
+		id         = "stale-probe-0001"
+		staleTitle = "Stale local copy"
+		stale      = "---\nid: " + id + "\nstatus: open\ntype: feature\n---\n# " + staleTitle + "\n"
+	)
+	fixture := func(t *testing.T) moveFixture {
+		t.Helper()
+		f := newMoveFixture(t)
+		mkMoveTicket(t, f.dst, id, ticket.TypeFeature, ticket.StatusOpen, "")
+		local := mkdir(t, f.toRepo, ".tickets")
+		if err := os.WriteFile(filepath.Join(local, id+".md"), []byte(stale), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return f
+	}
+	// lsRepo is `tk ls`, under --repo when repo is set.
+	lsRepo := func(t *testing.T, repo string) string {
+		t.Helper()
+		repoFlag = repo
+		defer func() { repoFlag = "" }()
+		return captureLs(t)
+	}
+	assertLeftAlone := func(t *testing.T, f moveFixture) {
+		t.Helper()
+		local := filepath.Join(f.toRepo, ".tickets")
+		entries, err := os.ReadDir(local)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != id+".md" {
+			t.Fatalf(".tickets/ holds %v, want only the stale ticket", entries)
+		}
+		raw, err := os.ReadFile(filepath.Join(local, id+".md"))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(raw) != stale {
+			t.Errorf("the stale ticket file was rewritten:\n%s", raw)
+		}
+	}
+
+	reads := []struct {
+		name string
+		repo func(moveFixture) string
+		cwd  func(moveFixture) string
+	}{
+		{
+			name: "working directory",
+			repo: func(moveFixture) string { return "" },
+			cwd:  func(f moveFixture) string { return f.toRepo },
+		},
+		{
+			name: "--repo by path",
+			repo: func(f moveFixture) string { return f.toRepo },
+			cwd:  func(f moveFixture) string { return f.fromRepo },
+		},
+		{
+			name: "--repo by name",
+			repo: func(moveFixture) string { return "mv-to" },
+			cwd:  func(f moveFixture) string { return f.fromRepo },
+		},
+	}
+	for _, tc := range reads {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fixture(t)
+			t.Chdir(tc.cwd(f))
+			dir, name, err := resolveFor(t, tc.repo(f))
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if dir != f.dst.Dir || name != f.dst.Project {
+				t.Errorf("resolution = (%q, %q), want (%q, %q)", dir, name, f.dst.Dir, f.dst.Project)
+			}
+			out := lsRepo(t, tc.repo(f))
+			if !contains(out, "Item "+id) {
+				t.Errorf("ls should list the central ticket:\n%s", out)
+			}
+			if contains(out, staleTitle) {
+				t.Errorf("ls read the .tickets/ copy:\n%s", out)
+			}
+			assertLeftAlone(t, f)
+		})
+	}
+
+	moves := []struct {
+		name   string
+		target func(moveFixture) string
+	}{
+		{name: "tk move by path", target: func(f moveFixture) string { return f.toRepo }},
+		{name: "tk move by name", target: func(moveFixture) string { return "mv-to" }},
+	}
+	for _, tc := range moves {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fixture(t)
+			stdout, _, err := captureMove(t, moveProbe, tc.target(f))
+			if err != nil {
+				t.Fatalf("runMove: %v", err)
+			}
+			if !contains(stdout, "-> mv-to/") {
+				t.Errorf("stdout = %q, want the new ID in mv-to", stdout)
+			}
+			out := lsRepo(t, f.toRepo)
+			if !contains(out, "Item "+moveProbe) {
+				t.Errorf("--repo should list the moved ticket:\n%s", out)
+			}
+			if contains(out, staleTitle) {
+				t.Errorf("ls read the .tickets/ copy:\n%s", out)
+			}
+			assertLeftAlone(t, f)
+		})
+	}
+
+	// The way out for this repo: init imports what the central store lacks and
+	// skips the ID it holds, leaving the central ticket as it was.
+	t.Run("tk init", func(t *testing.T) {
+		const (
+			onlyLocal      = "stale-probe-0002"
+			onlyLocalTitle = "Only in .tickets"
+			onlyLocalFile  = "---\nid: " + onlyLocal + "\nstatus: open\ntype: feature\n---\n# " + onlyLocalTitle + "\n"
+		)
+		f := fixture(t)
+		local := filepath.Join(f.toRepo, ".tickets")
+		if err := os.WriteFile(filepath.Join(local, onlyLocal+".md"), []byte(onlyLocalFile), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if out := lsRepo(t, f.toRepo); contains(out, onlyLocalTitle) {
+			t.Errorf("ls read the .tickets/ copy before the import:\n%s", out)
+		}
+
+		t.Chdir(f.toRepo)
+		initCmd.Flags().Set("yes", "true")
+		t.Cleanup(func() { initCmd.Flags().Set("yes", "false") })
+		if err := runInit(initCmd, nil); err != nil {
+			t.Fatalf("runInit: %v", err)
+		}
+
+		out := lsRepo(t, "")
+		if !contains(out, onlyLocalTitle) {
+			t.Errorf("ls should list the imported ticket:\n%s", out)
+		}
+		if !contains(out, "Item "+id) || contains(out, staleTitle) {
+			t.Errorf("the central ticket should stand over the stale copy:\n%s", out)
+		}
+		for file, want := range map[string]string{id + ".md": stale, onlyLocal + ".md": onlyLocalFile} {
+			raw, err := os.ReadFile(filepath.Join(local, file))
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if string(raw) != want {
+				t.Errorf("%s was rewritten:\n%s", file, raw)
+			}
+		}
+	})
+}
+
+// The fallbacks ResolveStoreForRepo keeps on purpose: a linked worktree outside
+// the checkout the config records has only its directory name or origin remote to
+// find its project by, and --repo has to reach the store a run inside it reaches.
+func TestRepoFlagReachesTheStoreARunInsideALinkedWorktreeDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		worktree func(*testing.T, moveFixture) string
+	}{
+		{name: "directory carrying the project's name", worktree: linkedWorktree},
+		{name: "origin remote naming the project", worktree: func(t *testing.T, f moveFixture) string {
+			linkedWorktree(t, f)
+			runGit(t, f.toRepo, "remote", "add", "origin", "git@example.com:org/mv-to.git")
+			worktree := filepath.Join(f.home, "worktrees", "elsewhere")
+			runGit(t, f.toRepo, "worktree", "add", worktree)
+			return worktree
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newMoveFixture(t)
+			worktree := tc.worktree(t, f)
+
+			t.Chdir(worktree)
+			insideDir, insideName, err := resolveFor(t, "")
+			if err != nil {
+				t.Fatalf("resolve inside the worktree: %v", err)
+			}
+			if insideDir != f.dst.Dir || insideName != f.dst.Project {
+				t.Errorf("inside = (%q, %q), want (%q, %q)", insideDir, insideName, f.dst.Dir, f.dst.Project)
+			}
+
+			t.Chdir(f.fromRepo)
+			dir, name, err := resolveFor(t, worktree)
+			if err != nil {
+				t.Fatalf("resolve --repo: %v", err)
+			}
+			if dir != insideDir || name != insideName {
+				t.Errorf("--repo = (%q, %q), want the store a run inside reaches (%q, %q)", dir, name, insideDir, insideName)
+			}
+		})
+	}
+}
+
 func TestTicketsDirUnregisteredWithoutCentralDir(t *testing.T) {
 	// No directory on disk means no store to surface — resolution must report
 	// nothing rather than name a path that nothing created.

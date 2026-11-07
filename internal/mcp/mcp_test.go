@@ -272,6 +272,74 @@ func TestCreateWithRepoOnCentralStoreUsesRepoProject(t *testing.T) {
 	}
 }
 
+// ticket_create's repo beside a stale .tickets/, whether it names the repo by path
+// or by project: the CLI's half is
+// TestEntryPointsResolveTheCentralProjectBesideAStaleTicketsDir. The stale file
+// shares the central ticket's ID, and a create must not touch it.
+func TestCreateWithRepoLandsOnTheCentralProjectBesideAStaleTicketsDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoDir := t.TempDir()
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+	if err := project.Save(project.Config{
+		CentralRoot: root,
+		Projects: map[string]project.ProjectConfig{
+			"beta": {Path: repoDir, Store: "central"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	central := createTicketID(t, session, map[string]any{
+		"title":   "Central copy",
+		"type":    "feature",
+		"project": "beta",
+	})
+	_, bare := ticket.ParseNamespacedID(central)
+	local := filepath.Join(repoDir, ".tickets")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := "---\nid: " + bare + "\nstatus: open\ntype: feature\n---\n# Stale local copy\n"
+	if err := os.WriteFile(filepath.Join(local, bare+".md"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, repo string }{
+		{"by path", repoDir},
+		{"by name", "beta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := createTicketID(t, session, map[string]any{
+				"title": "Created " + tc.name,
+				"type":  "feature",
+				"repo":  tc.repo,
+			})
+			proj, created := ticket.ParseNamespacedID(id)
+			if proj != "beta" {
+				t.Errorf("id %q is not namespaced under the repo's project beta", id)
+			}
+			if _, err := os.Stat(filepath.Join(root, "tickets", "beta", created+".md")); err != nil {
+				t.Errorf("ticket %s did not land in the central project dir: %v", id, err)
+			}
+
+			entries, err := os.ReadDir(local)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != bare+".md" {
+				t.Fatalf(".tickets/ holds %v, want only the stale ticket", entries)
+			}
+			raw, err := os.ReadFile(filepath.Join(local, bare+".md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != stale {
+				t.Errorf("the stale ticket file was rewritten:\n%s", raw)
+			}
+		})
+	}
+}
+
 // A child created through another repo's path under an epic elsewhere is the
 // epic's member once cross-project parents are activated: the repo route
 // lands in the repo's project and the parent is read qualified from there.

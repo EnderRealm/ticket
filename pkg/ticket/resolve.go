@@ -21,10 +21,11 @@ import (
 // resolves the project name via explicit path mapping, git remote, or directory
 // basename, and returns a FileStore rooted at <central_root>/tickets/<name>.
 //
-// This is the choke point for "where do this repo's tickets live". `tk move`'s
-// destination picks its project by a stricter rule, ResolveMoveDestination, but
-// opens it through the same centralProjectStore, so a move cannot land tickets
-// somewhere the repo's own `tk ls` will never look.
+// This answers "where do this repo's tickets live" for the working directory,
+// --repo and MCP's repo argument, all of which read through ResolveStoreForRepo.
+// `tk move`'s destination picks its project by a stricter rule,
+// ResolveMoveDestination, but opens it through the same centralProjectStore, so
+// a move cannot land tickets somewhere the repo's own `tk ls` will never look.
 //
 // The returned FileStore may wrap a directory that does not yet exist: a
 // registered project that has never held a ticket arrives without one from a
@@ -202,11 +203,34 @@ func UnregisteredWarning(store *FileStore) string {
 // read, or a project directory that is not one, comes back named by
 // CentralStoreForRepo instead.
 //
-// One known divergence, filed rather than resolved here: the project name falls
-// back to a git remote or the directory basename, so a path handed to --repo or
-// to MCP's repo argument that is no registered repo can still resolve to a real
-// project's store (ticket/repo-resolves-local-5111). `tk move`'s destination does
-// not read through here, for that reason: see ResolveMoveDestination.
+// Every CLI lookup of a repo's store and MCP's repo argument resolve here, so a
+// directory reaches the same store whichever of them names it. A caller that
+// needs only a project name, as `tk serve`'s default project and `tk recompute`
+// do, calls project.ResolveName itself, and runCreate's guard sits above this
+// function: it refuses a bare `tk create` before any store is resolved.
+//
+// A .tickets/ in the repo has no say in the answer. Here, only a repo that
+// resolves to no project hears about one, through noStoreError. A repo that
+// resolves gets no error or warning about it: the directory goes unread and stays
+// in place, and `tk init` there imports what the central store lacks. A file whose
+// ID the central store already holds is skipped rather than merged, see
+// FileStore.ImportAll.
+//
+// The project name keeps ResolveName's git-remote and basename fallbacks on
+// purpose. A second clone or linked worktree outside the checkout the config
+// records has only those rules to find its project by, and --repo and MCP's repo
+// have to reach the store that a `tk ls` run in that directory reads.
+//
+// The rules match a name rather than a repository, and that is the accepted cost.
+// A path that is no registered repo still resolves to a real project's store if
+// its remote or basename names one, and this feeds writes as well as reads: `tk
+// --repo <path> create` and ticket_create's repo land there, where a bare `tk
+// create` refuses any directory the config does not register. The other way
+// round, a linked worktree with no origin remote, in a directory not named for
+// its project, resolves to nothing.
+//
+// `tk move`'s destination differs on purpose and does not read through here: a
+// move closes its source, so it takes no guess. See ResolveMoveDestination.
 func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 	abs, err := filepath.Abs(repoDir)
 	if err != nil {
@@ -240,11 +264,12 @@ func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 // and in a subdirectory it either does the same or changes nothing.
 //
 // ResolveName's remote, basename and prefix rules stay out of this because they
-// answer "which project am I probably standing in", which is a fair guess for a
-// read. A move writes to two stores and closes the source: a guess there lands a
-// ticket in a project the user did not name, or back in its own, from a path
-// nothing ever checked. Which of those rules fired also depended on the working
-// directory, so the same argument meant different things in different places.
+// answer "which project am I probably standing in", a guess ResolveStoreForRepo
+// accepts so that a second clone or linked worktree finds its project. A move
+// writes to two stores and closes the source: a guess there lands a ticket in a
+// project the user did not name, or back in its own, from a path nothing ever
+// checked. Which of those rules fired also depended on the working directory,
+// so the same argument meant different things in different places.
 //
 // The cost, taken deliberately: `tk move <id> loom` and a directory ./loom are
 // different targets, and the bare form never means the directory. Git draws the
