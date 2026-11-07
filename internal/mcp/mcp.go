@@ -1158,11 +1158,10 @@ func resolveDestination(store ticket.Store, source, repoArg, projectArg string) 
 		}
 		repo = abs
 	}
-	// The resolution the CLI's own store and `tk move`'s destination read
-	// through, so a repo resolves to one store and one error whichever
-	// surface names it — including the project-name bound that keeps a
-	// config key crafted on another machine from steering this write
-	// outside the central root.
+	// The resolution the CLI's own store reads through, so a repo resolves
+	// to one store and one error whichever surface names it — including the
+	// project-name bound that keeps a config key crafted on another machine
+	// from steering this write outside the central root.
 	resolved, unregistered, err := ticket.ResolveStoreForRepo(repo)
 	if err != nil {
 		r, _ := errResult("%v", err)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/EnderRealm/ticket/v8/internal/project"
 )
@@ -20,9 +21,10 @@ import (
 // resolves the project name via explicit path mapping, git remote, or directory
 // basename, and returns a FileStore rooted at <central_root>/tickets/<name>.
 //
-// This is the choke point for "where do this repo's tickets live" — the CLI's
-// own resolution and `tk move`'s destination both read through it, so a move
-// cannot land tickets somewhere the repo's own `tk ls` will never look.
+// This is the choke point for "where do this repo's tickets live". `tk move`'s
+// destination picks its project by a stricter rule, ResolveMoveDestination, but
+// opens it through the same centralProjectStore, so a move cannot land tickets
+// somewhere the repo's own `tk ls` will never look.
 //
 // The returned FileStore may wrap a directory that does not yet exist: a
 // registered project that has never held a ticket arrives without one from a
@@ -38,6 +40,13 @@ func CentralStoreForRepo(repoDir string) (store *FileStore, unregistered, ok boo
 		return nil, false, false, fmt.Errorf("load ticket config: %w", err)
 	}
 	name, _ := project.ResolveName(cfg, repoDir, "")
+	return centralProjectStore(cfg, name)
+}
+
+// centralProjectStore opens a resolved project name's store in the central store,
+// under the same return contract as CentralStoreForRepo: every resolution that
+// ends in a name ends here, so all of them refuse the same project directories.
+func centralProjectStore(cfg project.Config, name string) (store *FileStore, unregistered, ok bool, err error) {
 	// ValidName, not merely non-empty: the config-path source of ResolveName
 	// returns the config map key verbatim, and filepath.Join cleans traversal
 	// segments rather than failing, so a crafted key would resolve a store
@@ -194,9 +203,10 @@ func UnregisteredWarning(store *FileStore) string {
 // CentralStoreForRepo instead.
 //
 // One known divergence, filed rather than resolved here: the project name falls
-// back to a git remote or the directory basename, so a path that is no
-// registered repo can still resolve to a real project's store
-// (ticket/tk-move-resolves-25f7).
+// back to a git remote or the directory basename, so a path handed to --repo or
+// to MCP's repo argument that is no registered repo can still resolve to a real
+// project's store (ticket/repo-resolves-local-5111). `tk move`'s destination does
+// not read through here, for that reason: see ResolveMoveDestination.
 func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 	abs, err := filepath.Abs(repoDir)
 	if err != nil {
@@ -214,4 +224,93 @@ func ResolveStoreForRepo(repoDir string) (*FileStore, bool, error) {
 		return store, unregistered, nil
 	}
 	return nil, false, noStoreError(abs)
+}
+
+// ResolveMoveDestination is the one resolver of a `tk move` destination. It
+// returns the store and whether its project is unregistered, as
+// ResolveStoreForRepo does.
+//
+// The argument's shape decides what it is; no rule falls back to another. With
+// no path separator, and not "." or "..", it is a project name and has to be a
+// registered one. Anything else is a path: it has to exist, be a directory, and
+// be the exact directory a config entry names, symlinks resolved. So a
+// subdirectory or linked worktree of a checkout owns nothing, and is refused.
+// That refusal names the project rather than pointing at `tk init`: run in a
+// linked worktree, init repoints the project's registered path at the worktree,
+// and in a subdirectory it either does the same or changes nothing.
+//
+// ResolveName's remote, basename and prefix rules stay out of this because they
+// answer "which project am I probably standing in", which is a fair guess for a
+// read. A move writes to two stores and closes the source: a guess there lands a
+// ticket in a project the user did not name, or back in its own, from a path
+// nothing ever checked. Which of those rules fired also depended on the working
+// directory, so the same argument meant different things in different places.
+//
+// The cost, taken deliberately: `tk move <id> loom` and a directory ./loom are
+// different targets, and the bare form never means the directory. Git draws the
+// same line between a branch and a path and errors rather than guessing, so the
+// refusal names the ./loom spelling instead of trying it.
+//
+// The CLI is the only surface that moves: the picker that used to feed this
+// paths went with `tk ui`, and MCP has no move tool, so nothing else has to agree.
+func ResolveMoveDestination(target string) (*FileStore, bool, error) {
+	// Neither shape: as a path "" would mean the working directory, which nobody
+	// typed.
+	if target == "" {
+		return nil, false, fmt.Errorf("move target is empty")
+	}
+	cfg, err := project.Load()
+	if err != nil {
+		return nil, false, fmt.Errorf("load ticket config: %w", err)
+	}
+	// ValidName is exactly the shape test once "" is out: no separator, not "."
+	// or "..".
+	if project.ValidName(target) {
+		// CentralRegistered rather than a config path: a registered project needs
+		// no checkout on this machine to receive a ticket.
+		if !project.CentralRegistered(cfg, target) {
+			return nil, false, fmt.Errorf("%q is not a registered project — a directory of that name is written with a path separator, e.g. ./%s", target, target)
+		}
+		store, unregistered, ok, err := centralProjectStore(cfg, target)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, fmt.Errorf("no ticket store found for project %q", target)
+		}
+		return store, unregistered, nil
+	}
+
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid repo path %s: %w", target, err)
+	}
+	info, err := os.Stat(abs)
+	if os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("no such directory: %s", abs)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("destination: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, false, fmt.Errorf("destination %s is not a directory", abs)
+	}
+	owners := project.ProjectsAtPath(cfg, abs)
+	if len(owners) == 0 {
+		if name, ok := project.EnclosingProject(cfg, abs); ok {
+			return nil, false, fmt.Errorf("no ticket store found for %s: it is part of the checkout of project %q — name the project instead", abs, name)
+		}
+		return nil, false, noStoreError(abs)
+	}
+	if len(owners) > 1 {
+		return nil, false, fmt.Errorf("%s is the configured path of more than one project (%s) — name the project instead", abs, strings.Join(owners, ", "))
+	}
+	store, unregistered, ok, err := centralProjectStore(cfg, owners[0])
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, noStoreError(abs)
+	}
+	return store, unregistered, nil
 }

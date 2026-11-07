@@ -153,12 +153,18 @@ Creating & Editing:
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
-  move <id> <repo-path>      Move a ticket to another repo's ticket store
+  move <id> <project|repo-path>
+                             Move a ticket to another project's ticket store
                              Only an isolated leaf moves; -r/--recursive is refused
 
-  The target resolves to the project that repo owns in the central store.
-  A repo that owns none is refused rather than having a store created for it,
-  and so is a target resolving to the store the ticket already lives in — that
+  The target's shape says which form it is. With no path separator it is a
+  project name, which has to be registered: a directory ./loom is written with
+  the separator, never as loom. With a separator, or as . or .., it is a path,
+  which has to be a directory and the exact checkout the config records for a
+  project, symlinks resolved; a subdirectory or linked worktree of a checkout
+  owns nothing, so name the project instead. A path that does not exist or owns
+  no store is refused rather than having a store created for it, and so is a
+  target resolving to the store the ticket already lives in — that
   renames rather than moves it; re-parent within a project with
   'tk edit --parent'. The moved ticket gets a new ID in the destination
   project, and the original is closed with a note — so list moved tickets
@@ -491,10 +497,11 @@ func TicketsDirAndProject() (string, string) {
 // resolveTicketsDir resolves the tickets directory, the project it holds, and
 // the error a repo owning no central project is.
 //
-// The rules live in ticket.ResolveStoreForRepo, which `tk move`'s destination
-// and MCP ticket_create's repo argument read through as well: one resolution, so
-// a write cannot land tickets in a directory this one would never read back, and
-// a config that fails to load is named as itself rather than sent to `tk init`.
+// The rules live in ticket.ResolveStoreForRepo, which MCP ticket_create's repo
+// argument reads through as well, and `tk move`'s destination opens its project
+// through the same store resolution: a write cannot land tickets in a directory
+// this one would never read back, and a config that fails to load is named as
+// itself rather than sent to `tk init`.
 func resolveTicketsDir() (string, string, error) {
 	if projectFlag != "" {
 		if repoFlag != "" {

@@ -24,8 +24,8 @@ type MoveResult struct {
 // along. Each is refused, before any write, naming the relationship.
 // recursive is kept for the callers that pass it and is refused when set.
 //
-// Both stores are resolved by the caller (ResolveStoreForRepo), which is where
-// a destination that resolves to no store is refused: nothing here checks that
+// Both stores are resolved by the caller, dst through ResolveMoveDestination,
+// which is where a destination with no store is refused: nothing here checks that
 // dst.Dir exists, because a registered central project that has never held a
 // ticket legitimately has no directory yet and the create makes it. A dst that
 // is the same directory as src is refused here, before anything is written,

@@ -170,7 +170,8 @@ Creating & Editing:
   edit <id> [options]        Update ticket fields
   add-note <id> [text]       Append timestamped note (stdin if no text)
   delete <id> [id...]        Delete ticket(s)
-  move <id> <repo-path>      Move a ticket to another repo's ticket store
+  move <id> <project|repo-path>
+                             Move a ticket to another project's ticket store
                              Only an isolated leaf moves; -r/--recursive is refused
 
 Dependencies & Links:
@@ -538,10 +539,11 @@ Partial ID matching: `tk show 5c4` matches `nw-5c46`.
 ### Moving Tickets Between Repos
 
 ```bash
-tk move <id> ~/code/other-repo        # one isolated leaf
+tk move <id> other-repo               # one isolated leaf, by project name
+tk move <id> ~/code/other-repo        # the same, by the project's checkout
 ```
 
-The target is a repo path, and it resolves to the project that repo owns in the central store. A repo that owns none is refused — no store is created for it, since a directory nothing else reads would orphan whatever landed there. A project that has a central directory but is not registered `store: central` is warned about by name: the move lands there, but nothing else writes to it. A target that resolves to the store the ticket already lives in is refused by project name and nothing is written — the move would rename the ticket rather than move it, giving it a new ID and closing the one other tickets and commit messages reference. Re-parenting a ticket within its project is `tk edit --parent`.
+The target's shape says which form it is, and neither form falls back to the other. With no path separator it is a project name, which has to be registered, whether or not this machine has a checkout of it; a bare name is never joined onto the working directory, so `tk move <id> loom` means the project even beside a directory called `loom`, and that directory is written `./loom`. With a separator, or as `.` or `..`, it is a path, which has to be a directory and the exact checkout the config records for a project, symlinks resolved. A path that does not exist is refused, and so is one that owns no store, whatever its basename or git remote happens to name — no store is created for it, since a directory nothing else reads would orphan whatever landed there. A subdirectory or linked worktree of a checkout owns nothing, so name the project instead. A project that has a central directory and a config entry naming that path, but is not registered `store: central`, is reachable by path only and is warned about by name: the move lands there, but nothing else writes to it. A target that resolves to the store the ticket already lives in is refused by project name and nothing is written — the move would rename the ticket rather than move it, giving it a new ID and closing the one other tickets and commit messages reference. Re-parenting a ticket within its project is `tk edit --parent`.
 
 The ticket is created in the destination with a new ID in that project's namespace, and the original is closed rather than deleted, so it is hidden from a default `tk ls` — list moved tickets with `tk ls --status=closed`. A move is copy-and-close, not reassignment, so only an isolated leaf moves: a ticket with a `parent`, `deps` or `links`, one that any other ticket names as its parent, dep or link, and any epic are refused before anything is written, naming the relationship — the copy would leave those references pointing at a closed copy, or strip them, and a blocker that reads satisfied while its replacement is unfinished corrupts the plan. `-r`/`--recursive` is refused on the same grounds. The move also needs the whole store read: an unreadable file anywhere in it could be a ticket naming the one that is moving. The move is not atomic: the destination copy is written first, and a failure closing the source names the orphaned copy.
 

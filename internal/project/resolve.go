@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -217,6 +218,73 @@ func matchProjectByPath(cfg Config, cwd string) (string, bool) {
 		return "", false
 	}
 	return bestName, true
+}
+
+// ProjectsAtPath returns the config projects whose path is exactly dir, sorted by
+// name. It answers who owns a directory, where matchProjectByPath answers which
+// project encloses one: a symlink to a checkout, or a spelling of it in another
+// case, is that checkout, but nothing matches by prefix, so a subdirectory is not.
+// Every claimant comes back rather than one, since config is a map and picking
+// would leave the answer to iteration order.
+func ProjectsAtPath(cfg Config, dir string) []string {
+	var names []string
+	for name, project := range cfg.Projects {
+		if project.Path != "" && sameDir(project.Path, dir) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// sameDir reports whether two paths name one directory. Identity is the inode
+// where both can be stat'd, because canonicalPath does not fold case and APFS is
+// case-insensitive by default, so ../proj from a checkout recorded as .../Proj
+// compares unequal as a string. The strings are the fallback for a configured
+// path this machine does not have. pkg/ticket's sameStoreDir applies the same
+// rule to store directories.
+func sameDir(a, b string) bool {
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	if errA == nil && errB == nil {
+		return os.SameFile(infoA, infoB)
+	}
+	return canonicalPath(a) == canonicalPath(b)
+}
+
+// EnclosingProject names the registered project whose checkout holds dir: by
+// path for a subdirectory, and through the git common dir for a linked worktree,
+// which can sit anywhere on disk but shares the main checkout's .git. It is
+// advisory, for wording a refusal, and never resolves a destination: the project
+// comes back only if it is registered, because a refusal that sends the user to
+// a name has to send them to one that works.
+func EnclosingProject(cfg Config, dir string) (string, bool) {
+	name, ok := projectAtOrAbove(cfg, dir)
+	if !ok {
+		common, err := gitCommonDir(dir)
+		if err != nil {
+			return "", false
+		}
+		name, ok = projectAtOrAbove(cfg, filepath.Dir(common))
+	}
+	if !ok || !CentralRegistered(cfg, name) {
+		return "", false
+	}
+	return name, true
+}
+
+// projectAtOrAbove walks up from dir to the nearest directory a project owns. It
+// answers what matchProjectByPath answers, but by ProjectsAtPath's identity, so a
+// subdirectory reached through another case spelling of a checkout still counts.
+func projectAtOrAbove(cfg Config, dir string) (string, bool) {
+	for d := canonicalPath(dir); ; d = filepath.Dir(d) {
+		if names := ProjectsAtPath(cfg, d); len(names) > 0 {
+			return names[0], true
+		}
+		if d == filepath.Dir(d) {
+			return "", false
+		}
+	}
 }
 
 func projectFromGitRemote(cwd string) (string, bool) {
