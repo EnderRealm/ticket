@@ -249,7 +249,7 @@ References are read relative to the ticket that holds them: a bare `parent`, dep
 | all done or closed, at least one closed | closed |
 | anything else | backlog |
 
-`done` and `closed` say different things about a finished epic: `done` means the work completed, `closed` means it did not. An epic whose children were every one abandoned, or moved to another repo, reads `closed`.
+`done` and `closed` say different things about a finished epic: `done` means the work completed, `closed` means it did not. An epic whose children were every one abandoned reads `closed`. So does one whose children were moved to another repo before `tk move` was limited to isolated leaves: the closed copies they left behind still count as its children.
 
 An epic never reads `ready` — `ready` means "available to pick up" and an epic is not picked up directly. Setting an epic's status by hand is refused; change its children instead.
 

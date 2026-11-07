@@ -19,8 +19,10 @@ import (
 //
 // The terminal bucket splits because done and closed say different things:
 // done means the work finished, closed means it did not. An epic whose children
-// were every one abandoned, or moved to another repo, has not completed, and
-// reading it as done would overstate what happened.
+// were every one abandoned has not completed. Nor has one whose children were
+// moved to another repo before tk move was limited to isolated leaves: the
+// closed copies they left behind still count as its children. Reading either as
+// done would overstate what happened.
 //
 // ready never appears: it means "available to pick up" and an epic is not
 // picked up directly. A childless epic derives backlog, not done — derivation
