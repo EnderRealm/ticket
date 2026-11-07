@@ -1,32 +1,34 @@
 #!/usr/bin/env bash
 # Integration test suite for tk (v7+).
 # Exercises the CLI against a fresh, isolated central store so the caller's
-# real tickets are untouched. Builds ./tk from this repo.
+# real tickets are untouched. Builds tk from the current tree into a temp
+# directory, so an existing ./tk is neither tested nor replaced.
 
 set -uo pipefail
 
 # ─── Setup ──────────────────────────────────────────────────────────────────
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TK_BIN="$REPO_ROOT/tk"
 
-if [[ ! -x "$TK_BIN" ]]; then
-    echo "Building tk binary..."
-    (cd "$REPO_ROOT" && go build -o "$TK_BIN" .)
-fi
-
+BUILD_DIR=$(mktemp -d)
+TK_BIN="$BUILD_DIR/tk"
 TEST_HOME=$(mktemp -d)
 CENTRAL_ROOT=$(mktemp -d)
 PROJECT_DIR=$(mktemp -d)
 # The move case needs a second repo owning a second project. It is registered
 # where that case runs, so nothing before it sees more than one project.
 OTHER_DIR=$(mktemp -d)
-export HOME="$TEST_HOME"
 
 cleanup() {
-    rm -rf "$TEST_HOME" "$CENTRAL_ROOT" "$PROJECT_DIR" "$OTHER_DIR"
+    rm -rf "$BUILD_DIR" "$TEST_HOME" "$CENTRAL_ROOT" "$PROJECT_DIR" "$OTHER_DIR"
 }
 trap cleanup EXIT
+
+# Ahead of the HOME change: go's build cache is keyed off HOME.
+echo "Building tk binary..."
+(cd "$REPO_ROOT" && go build -o "$TK_BIN" .) || exit 1
+
+export HOME="$TEST_HOME"
 
 cd "$PROJECT_DIR"
 git init -q
@@ -139,7 +141,7 @@ assert_contains "tk show $DEFAULT_P" "priority: 2" "Default priority is 2"
 
 # Parent linkage.
 ID_CHILD=$(tk create "Test Child Ticket" --parent "$ID3" | extract_id)
-assert_contains "tk show $ID_CHILD" "parent: $ID3" "Create with parent"
+assert_contains "tk show $ID_CHILD" "parent: tktest/$ID3" "Create with parent"
 assert_contains "tk show $ID3" "$ID_CHILD" "Parent shows child"
 
 # --set extra fields.
@@ -390,7 +392,7 @@ rm -rf "$UNREGISTERED" "$LEGACY"
 log_section "PARENT HIERARCHY"
 
 EPIC_CHILD=$(tk create "Child of an epic" --parent "$ID3" | extract_id)
-assert_contains "tk show $EPIC_CHILD" "parent: $ID3" "Create under an epic"
+assert_contains "tk show $EPIC_CHILD" "parent: tktest/$ID3" "Create under an epic"
 assert_ok "tk edit $EPIC_CHILD --parent=''" "Clear a parent"
 assert_not_contains "tk show $EPIC_CHILD" "^parent:" "Cleared parent is gone"
 
@@ -489,20 +491,22 @@ assert_contains "tk audit --project tktest stored-closed" "legacy-epic-9999" "Ep
 assert_ok "tk edit legacy-epic-9999 --status closed" "The remedy the audit names re-records the abandon"
 assert_not_contains "tk audit stored-closed" "legacy-epic-9999" "Audit clean once the abandon is re-recorded"
 
-# A move records that a ticket left by closing it here, but an epic left behind
-# stores backlog: its status is derived either way, and a stored closed with no
-# abandon flag is what the audit reports as a hand-close candidate — whose
-# remedy would abandon the epic and close the children that stayed.
+# An epic does not move: a move copies a ticket under a new ID and closes the
+# original, which would leave its children naming a closed copy. The refusal
+# comes before any write, so both projects read as they did before.
 (cd "$OTHER_DIR" && git init -q && tk init --central-root "$CENTRAL_ROOT" --project tkother --yes) > /dev/null
-MOVE_EPIC=$(tk create "Epic that moves projects" -t epic | extract_id)
-MOVE_CHILD=$(tk create "Child that stays behind" --parent "$MOVE_EPIC" | extract_id)
-assert_ok "tk move $MOVE_EPIC $OTHER_DIR" "Move an epic to another project"
-# Scoped to this epic: the block above deliberately leaves another epic storing
-# a closed its children no longer imply, so the listing itself is not empty —
-# what is under test is that this epic is not in it.
-assert_not_contains "tk audit stored-closed" "$MOVE_EPIC" "A moved epic plants no stored-closed candidate"
-assert_contains "grep '^status:' $STORE_DIR/$MOVE_EPIC.md" "status: backlog" "The epic left behind stores backlog"
-assert_contains "tk show $MOVE_CHILD" "status: backlog" "The child of a moved epic is left as it was"
+MOVE_EPIC=$(tk create "Epic that stays put" -t epic | extract_id)
+MOVE_CHILD=$(tk create "Child of the epic that stays put" --parent "$MOVE_EPIC" | extract_id)
+MOVE_BEFORE=$(cat "$STORE_DIR/$MOVE_EPIC.md" "$STORE_DIR/$MOVE_CHILD.md")
+assert_fail "tk move $MOVE_EPIC $OTHER_DIR" "Reject moving an epic to another project"
+assert_contains "tk move $MOVE_EPIC $OTHER_DIR" "is an epic and cannot move" "Refusal says an epic cannot move"
+# Non-empty guards the comparison: two failed reads would compare equal.
+if [[ -n "$MOVE_BEFORE" && "$(cat "$STORE_DIR/$MOVE_EPIC.md" "$STORE_DIR/$MOVE_CHILD.md")" == "$MOVE_BEFORE" ]]; then
+    log_pass "A refused move leaves the epic and its child as they were"
+else
+    log_fail "A refused move leaves the epic and its child as they were"
+fi
+assert_not_contains "tk --repo $OTHER_DIR ls" "stays put" "A refused move lands nothing in the destination"
 
 # The central store is a git repo other machines push into, so a ticket file can
 # carry a value tk would never have written. A mistyped typed field costs that
