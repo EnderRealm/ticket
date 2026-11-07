@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -30,20 +31,85 @@ func ticketFile(id, title, parent string) []byte {
 
 func setupGitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	// Registered before TempDir so it can run after the removal; see
+	// logRepoSurvived.
+	var dir string
+	t.Cleanup(func() { logRepoSurvived(t, dir) })
+	dir = t.TempDir()
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@test.com")
 	runGit(t, dir, "config", "user.name", "test")
-	// These fixtures inherit the developer's global config, and a global
-	// `push.autoSetupRemote = true` sets an upstream for a branch a test
-	// deliberately left without one, so the push it expects to fail succeeds.
+	// TestMain replaces the developer's global config, but system-level config
+	// still reaches these fixtures, and a `push.autoSetupRemote = true` there
+	// sets an upstream for a branch a test deliberately left without one, so
+	// the push it expects to fail succeeds.
 	runGit(t, dir, "config", "push.autoSetupRemote", "false")
 	runGit(t, dir, "config", "push.default", "simple")
 	// Initial commit so HEAD exists
 	os.WriteFile(filepath.Join(dir, ".gitkeep"), []byte(""), 0o644)
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-m", "initial")
+	logGitTeardown(t, dir)
 	return dir
+}
+
+// logGitTeardown and logRepoSurvived are diagnostic for
+// ticket/testsyncparentrepo-intermittently-fails-caa3: TestSyncParentRepo once
+// failed t.TempDir's cleanup with "unlinkat .../.git/objects/pack: directory
+// not empty", meaning something was still writing into the repo while it was
+// removed, and it never reproduced. Each logs what it finds and the processes
+// lsof finds holding the repo open or as their cwd, so a recurrence names its
+// writer. t.Logf surfaces only on failure or under -v.
+//
+// Cleanups run last-registered first, and the TempDir removal was registered on
+// the test's first TempDir call, so logGitTeardown runs just before that
+// removal. A fixture that only commits leaves objects/pack empty, so an entry
+// there is a repack or gc that is not the test's own.
+func logGitTeardown(t *testing.T, dir string) {
+	t.Cleanup(func() {
+		entries, err := os.ReadDir(filepath.Join(dir, ".git", "objects", "pack"))
+		if err != nil || len(entries) == 0 {
+			return
+		}
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Logf("teardown: %s/.git/objects/pack not empty: %v", dir, names)
+		logLsof(t, dir)
+	})
+}
+
+// logRepoSurvived reports a repo dir that is still there after the TempDir
+// removal. It is registered before the fixture's TempDir call, so it runs after
+// the removal only when that call registered the removal, which is when it was
+// the test's first. The testing package numbers a test's TempDirs from 001 and
+// registers the removal on the call that creates their parent, so 001 is that
+// case; any other dir means this runs before the removal and finds the repo
+// there as a matter of course, so it reports nothing.
+func logRepoSurvived(t *testing.T, dir string) {
+	if filepath.Base(dir) != "001" {
+		return
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return
+	}
+	var left []string
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if rel, relErr := filepath.Rel(dir, path); relErr == nil && rel != "." {
+			left = append(left, rel)
+		}
+		return nil
+	})
+	t.Logf("teardown: %s survived the TempDir removal, leaving: %v", dir, left)
+	logLsof(t, dir)
+}
+
+func logLsof(t *testing.T, dir string) {
+	// lsof exits 1 when it finds nothing and can when it finds something, so
+	// its output is read regardless of the error.
+	out, err := exec.Command("lsof", "+D", dir).CombinedOutput()
+	t.Logf("teardown: lsof +D %s (err=%v):\n%s", dir, err, out)
 }
 
 func TestSyncCommit(t *testing.T) {

@@ -16,6 +16,15 @@ import (
 // directory. It covers the tests that do not call setupTestHome as well. Both
 // variables: os.UserCacheDir reads HOME on darwin and prefers XDG_CACHE_HOME
 // elsewhere.
+//
+// It also turns off git auto-maintenance: every commit, and every push into a
+// bare remote, spawns a detached `git maintenance run --auto`, which can outlive
+// the test and still be writing into a fixture repo while t.TempDir removes it
+// (see logGitTeardown). GIT_CONFIG_GLOBAL carries the setting because git keeps
+// it for the receive-pack a local push runs in the bare remote, where it unsets
+// GIT_CONFIG_COUNT. It replaces the global git config for every cmd test,
+// including those that move HOME with setupTestHome, so a fixture that needs a
+// setting configures it in its own repo.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "tk-test-cache")
 	if err != nil {
@@ -23,6 +32,11 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", dir)
 	os.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	gitConfig := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(gitConfig, []byte("[maintenance]\n\tauto = false\n"), 0o644); err != nil {
+		panic(err)
+	}
+	os.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
