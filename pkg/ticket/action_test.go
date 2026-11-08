@@ -258,6 +258,112 @@ func TestApplyActionTransitions(t *testing.T) {
 	}
 }
 
+func TestApplyActionRelease(t *testing.T) {
+	store, _ := testStore(t)
+	waiting := func(id string, status Status, value string) *Ticket {
+		tk := sampleTicket(id)
+		tk.Status = status
+		if value != "" {
+			tk.Extra = map[string]string{WaitingOnField: value, "keep": "me"}
+		}
+		if err := store.Create(tk); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+		return tk
+	}
+
+	// A backlog ticket is released to ready; another field is left alone.
+	waiting("rel-0001", StatusBacklog, "observer/q-1")
+	req := ActionRequest{ID: "rel-0001", ActionID: "obs-release", Note: "q-1 answered", Transition: TransitionRelease}
+	res := mustApply(t, store, req)
+	if res.Replayed || res.Ticket.Status != StatusReady || res.Receipt.Outcome != "ready" {
+		t.Errorf("release on backlog = replayed %v, status %s, outcome %s", res.Replayed, res.Ticket.Status, res.Receipt.Outcome)
+	}
+	got := mustGet(t, store, "rel-0001")
+	if _, ok := got.Extra[WaitingOnField]; ok || got.Status != StatusReady || got.Extra["keep"] != "me" {
+		t.Errorf("after release: status %s, extra %v", got.Status, got.Extra)
+	}
+	if strings.Contains(string(readTicketFile(t, store, "rel-0001")), WaitingOnField) {
+		t.Error("the file still carries waiting_on after a release")
+	}
+	if len(got.Notes) != 1 || len(got.Actions) != 1 || got.Actions[0] != res.Receipt {
+		t.Errorf("notes = %d, actions = %+v", len(got.Notes), got.Actions)
+	}
+
+	// The replay answers with the recorded receipt although the ticket no
+	// longer waits, under a stale precondition, and writes nothing.
+	stale := got.Precondition()
+	if _, err := Mutate(store, "rel-0001", func(t *Ticket) error { t.Priority = 0; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before := readTicketFile(t, store, "rel-0001")
+	replayReq := req
+	replayReq.Precondition = stale
+	replay := mustApply(t, store, replayReq)
+	if !replay.Replayed || replay.Receipt != res.Receipt {
+		t.Errorf("replay = replayed %v, receipt %+v; want %+v", replay.Replayed, replay.Receipt, res.Receipt)
+	}
+	// Same id, other content, conflicts.
+	changed := req
+	changed.Transition = TransitionReopen
+	if _, err := ApplyAction(store, changed); !errors.Is(err, ErrActionConflict) {
+		t.Errorf("another transition under a release's id = %v; want ErrActionConflict", err)
+	}
+	changed = req
+	changed.Note = "other evidence"
+	if _, err := ApplyAction(store, changed); !errors.Is(err, ErrActionConflict) {
+		t.Errorf("another note under a release's id = %v; want ErrActionConflict", err)
+	}
+	if after := readTicketFile(t, store, "rel-0001"); !bytes.Equal(before, after) {
+		t.Errorf("a replay or a conflict changed the file:\n%s", after)
+	}
+
+	// Any status but backlog is left as it is.
+	for _, status := range []Status{StatusReady, StatusOpen, StatusDone} {
+		id := "rel-" + string(status)
+		waiting(id, status, "observer/q-2")
+		res := mustApply(t, store, ActionRequest{ID: id, ActionID: "obs", Note: "q-2 answered", Transition: TransitionRelease})
+		if res.Ticket.Status != status || res.Receipt.Outcome != string(status) || WaitingOn(res.Ticket) != "" {
+			t.Errorf("release on %s = status %s, outcome %s, waiting_on %q", status, res.Ticket.Status, res.Receipt.Outcome, WaitingOn(res.Ticket))
+		}
+	}
+
+	// A moved precondition is refused and writes nothing.
+	waiting("rel-0002", StatusBacklog, "observer/q-3")
+	pre := mustGet(t, store, "rel-0002").Precondition()
+	if _, err := Mutate(store, "rel-0002", func(t *Ticket) error { t.Priority = 1; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before = readTicketFile(t, store, "rel-0002")
+	if _, err := ApplyAction(store, ActionRequest{ID: "rel-0002", ActionID: "obs", Precondition: pre, Note: "n", Transition: TransitionRelease}); !errors.Is(err, ErrConflict) {
+		t.Errorf("release on a stale precondition = %v; want ErrConflict", err)
+	}
+	if after := readTicketFile(t, store, "rel-0002"); !bytes.Equal(before, after) {
+		t.Errorf("a refused release changed the file:\n%s", after)
+	}
+
+	// Refused on an epic, and on a ticket with no or a blank waiting_on.
+	epic := sampleTicket("rel-epic")
+	epic.Type = TypeEpic
+	epic.Status = StatusBacklog
+	epic.Extra = map[string]string{WaitingOnField: "observer/q-4"}
+	if err := store.Create(epic); err != nil {
+		t.Fatalf("Create epic: %v", err)
+	}
+	waiting("rel-none", StatusBacklog, "")
+	waiting("rel-blank", StatusBacklog, "   ")
+	for _, id := range []string{"rel-epic", "rel-none", "rel-blank"} {
+		before := readTicketFile(t, store, id)
+		_, err := ApplyAction(store, ActionRequest{ID: id, ActionID: "obs", Note: "n", Transition: TransitionRelease})
+		if !errors.Is(err, ErrTransitionNotPermitted) || !strings.Contains(err.Error(), id) {
+			t.Errorf("release on %s = %v; want ErrTransitionNotPermitted naming it", id, err)
+		}
+		if after := readTicketFile(t, store, id); !bytes.Equal(before, after) {
+			t.Errorf("a refused release on %s changed the file:\n%s", id, after)
+		}
+	}
+}
+
 // The write is one temp file plus one rename; a failure at that point leaves
 // the file as it was, with none of the note, the transition or the receipt.
 func TestApplyActionFaultLeavesTheTicketUntouched(t *testing.T) {

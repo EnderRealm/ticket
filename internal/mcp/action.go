@@ -46,16 +46,16 @@ type applyActionArgs struct {
 	ActionID     string `json:"action_id" jsonschema:"the caller's stable identity for this action; the same id sent again with the same note and transition returns the recorded outcome instead of applying the action twice"`
 	Precondition string `json:"precondition,omitempty" jsonschema:"the opaque precondition ticket_show reported for the state this action was decided on; omit to make no claim about the state"`
 	Note         string `json:"note" jsonschema:"the evidence note to append"`
-	Transition   string `json:"transition,omitempty" jsonschema:"optional status transition: reopen (sets status to open; refused on an epic)"`
+	Transition   string `json:"transition,omitempty" jsonschema:"optional status transition: reopen (sets status to open; refused on an epic) or release (clears waiting_on and moves a backlog ticket to ready, leaving any other status unchanged; refused on an epic and on a ticket with no waiting_on)"`
 	Source       string `json:"source,omitempty" jsonschema:"who is applying this; defaults to the MCP client name"`
 }
 
 func registerApplyAction(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name: "ticket_apply_action",
-		Description: "Apply one observer action to an existing ticket: append an evidence note, optionally reopen it, and record a receipt — all in one write, so no partial action can land. " +
+		Description: "Apply one observer action to an existing ticket: append an evidence note, optionally reopen or release it, and record a receipt — all in one write, so no partial action can land. " +
 			"`action_id` is the caller's stable identity for the action: repeating the same id with the same note and transition (after a lost response, a retry or a restart) returns the recorded receipt with `replayed: true` and writes nothing, whatever the ticket's state is by then; the same id with different content is refused. " +
-			"`precondition` is the opaque token ticket_show reported: when given, the action lands only if the ticket is still in that state, otherwise it is refused and the ticket is left unchanged. The permitted transitions are `reopen` only. " +
+			"`precondition` is the opaque token ticket_show reported: when given, the action lands only if the ticket is still in that state, otherwise it is refused and the ticket is left unchanged. The permitted transitions are `reopen` (sets the status to open; refused on an epic) and `release` (clears `waiting_on` and moves a backlog ticket to ready, any other status unchanged; refused on an epic and on a ticket with no `waiting_on`). " +
 			"The three refusals carry stable prefixes so they can be told apart from the text: `precondition conflict:` (re-read the ticket and decide again), `action conflict:` (the action id was already used for other content — use a new id), `transition not permitted:`. " +
 			"`source` is a declared label attributing the write, recorded on the receipt and in the mutation log; it does not authenticate anyone. " +
 			"Receipts live in the ticket's append-only `actions` block and replicate with it. Retries are deduplicated on one machine; two machines recording under one action id surface as a merge conflict in that block.",

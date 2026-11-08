@@ -12,11 +12,12 @@ import (
 )
 
 // The observer action protocol: a scheduled observer attaches evidence to a
-// ticket, reopens it, or files a discovery, and has to be able to retry after
-// a lost response without duplicating the work or overwriting a decision made
-// in between. Separate show / add-note / edit calls cannot promise that, so
-// the protocol is one write that lands the evidence note, the transition and
-// a durable receipt together, judged against a precondition the caller read.
+// ticket, reopens or releases it, or files a discovery, and has to be able to
+// retry after a lost response without duplicating the work or overwriting a
+// decision made in between. Separate show / add-note / edit calls cannot
+// promise that, so the protocol is one write that lands the evidence note, the
+// transition and a durable receipt together, judged against a precondition the
+// caller read.
 //
 // Receipts live in the ticket file itself, in the append-only `actions`
 // block, for the same reason the verdict ledger does: the note, the status
@@ -61,14 +62,16 @@ var errDamagedActions = errors.New("action receipts cannot be read")
 var errActionReplayed = errors.New("action replayed")
 
 // Transition is the status change an action may carry. The permitted set is
-// deliberately narrow: an observer reopens work it found regressed, and that
-// is the one transition the protocol names. Everything else is an edit a
-// human or an orchestrator makes through ticket_edit.
+// deliberately narrow: an observer reopens work it found regressed, or
+// releases a ticket parked on an outside event once that event occurred —
+// clearing its waiting_on and, from backlog only, making it ready. Everything
+// else is an edit a human or an orchestrator makes through ticket_edit.
 type Transition string
 
 const (
-	TransitionNone   Transition = ""
-	TransitionReopen Transition = "reopen"
+	TransitionNone    Transition = ""
+	TransitionReopen  Transition = "reopen"
+	TransitionRelease Transition = "release"
 )
 
 // ReceiptKind says what a receipt records: an action applied to an existing
@@ -277,7 +280,13 @@ func errNoAtomicStore(what string, store Store) error {
 //  2. Precondition. A non-empty Precondition that differs from the stored
 //     ticket's is refused with ErrConflict and nothing is written.
 //  3. Apply. The note is appended, the transition applied and the receipt
-//     appended, and the ticket written once.
+//     appended, and the ticket written once. Reopen sets the status to open.
+//     Release removes waiting_on and moves a backlog ticket to ready, leaving
+//     any other status as it is.
+//
+// Reopen and release are refused on an epic, and release on a ticket with no
+// nonblank waiting_on, with ErrTransitionNotPermitted after the replay check,
+// so an applied release — which leaves no waiting_on behind — still replays.
 //
 // Every argument that can be judged without the store is judged first, so a
 // refused request costs nothing on disk. The store must be a FileStore or a
@@ -298,9 +307,9 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		return nil, fmt.Errorf("apply action %q: note is required", req.ActionID)
 	}
 	switch req.Transition {
-	case TransitionNone, TransitionReopen:
+	case TransitionNone, TransitionReopen, TransitionRelease:
 	default:
-		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen)", ErrTransitionNotPermitted, req.Transition)
+		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release)", ErrTransitionNotPermitted, req.Transition)
 	}
 	digest := actionDigest(applyPayload{Note: req.Note, Transition: req.Transition})
 	source := declaredSource(store)
@@ -324,10 +333,22 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		if req.Transition == TransitionReopen && t.Type == TypeEpic {
 			return fmt.Errorf("%w: reopen on epic %s — an epic's status is derived from its children; reopen the child that regressed", ErrTransitionNotPermitted, t.ID)
 		}
+		if req.Transition == TransitionRelease && t.Type == TypeEpic {
+			return fmt.Errorf("%w: release on epic %s — an epic's status is derived from its children; release the child that waits", ErrTransitionNotPermitted, t.ID)
+		}
+		if req.Transition == TransitionRelease && WaitingOn(t) == "" {
+			return fmt.Errorf("%w: release on %s, which has no %s to clear", ErrTransitionNotPermitted, t.ID, WaitingOnField)
+		}
 		now := time.Now().UTC()
 		t.Notes = append(t.Notes, Note{Timestamp: now, Text: req.Note})
-		if req.Transition == TransitionReopen {
+		switch req.Transition {
+		case TransitionReopen:
 			t.Status = StatusOpen
+		case TransitionRelease:
+			delete(t.Extra, WaitingOnField)
+			if t.Status == StatusBacklog {
+				t.Status = StatusReady
+			}
 		}
 		receipt := ActionReceipt{
 			ID:      req.ActionID,

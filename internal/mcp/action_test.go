@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -192,6 +193,46 @@ func TestApplyActionRefusesTransitions(t *testing.T) {
 		if len(notesOf(shown)) != 0 || len(actionsOf(shown)) != 0 {
 			t.Errorf("%s: a refusal wrote %v", id, shown)
 		}
+	}
+}
+
+// A release clears waiting_on and moves the backlog ticket to ready, which is
+// all ready and frontier need to list it.
+func TestApplyActionReleaseMakesTheTicketReady(t *testing.T) {
+	session := testServer(t)
+	id := createTicketID(t, session, map[string]any{"title": "Waits upstream"})
+	callObject(t, session, "ticket_edit", map[string]any{"id": id, "status": "backlog", "set": map[string]any{ticket.WaitingOnField: "observer/q-1"}})
+	if slices.Contains(readyIDs(t, session, map[string]any{}), id) || slices.Contains(frontierIDs(t, session, map[string]any{}), id) {
+		t.Fatal("a waiting ticket is listed in ready or frontier")
+	}
+
+	args := map[string]any{"id": id, "action_id": "obs-release", "note": "q-1 answered", "transition": "release"}
+	tk, receipt, replayed := actionResponse(t, applyAction(t, session, args), "release")
+	if replayed || tk["status"] != "ready" || receipt["outcome"] != "ready" {
+		t.Errorf("release = replayed %v, status %v, receipt %v", replayed, tk["status"], receipt)
+	}
+	shown := showTicket(t, session, id)
+	if _, ok := shown[ticket.WaitingOnField]; ok || shown["status"] != "ready" {
+		t.Errorf("after release: %v", shown)
+	}
+	if !slices.Contains(readyIDs(t, session, map[string]any{}), id) {
+		t.Error("a released ticket is not in ready")
+	}
+	if !slices.Contains(frontierIDs(t, session, map[string]any{}), id) {
+		t.Error("a released ticket is not in frontier")
+	}
+
+	// The replay still answers once nothing waits; a second release under a
+	// new id is refused for the same reason.
+	if _, again, replayed := actionResponse(t, applyAction(t, session, args), "replay"); !replayed || !reflect.DeepEqual(again, receipt) {
+		t.Errorf("replay = replayed %v, receipt %v; want %v", replayed, again, receipt)
+	}
+	text := errorText(t, applyAction(t, session, map[string]any{"id": id, "action_id": "obs-2", "note": "n", "transition": "release"}), "a release with no waiting_on")
+	if !strings.HasPrefix(text, "transition not permitted: ") {
+		t.Errorf("error %q does not carry the transition prefix", text)
+	}
+	if shown := showTicket(t, session, id); len(notesOf(shown)) != 1 || len(actionsOf(shown)) != 1 {
+		t.Errorf("notes = %d, actions = %d; want one of each", len(notesOf(shown)), len(actionsOf(shown)))
 	}
 }
 
