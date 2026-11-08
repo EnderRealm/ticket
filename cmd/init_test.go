@@ -25,6 +25,12 @@ import (
 // GIT_CONFIG_COUNT. It replaces the global git config for every cmd test,
 // including those that move HOME with setupTestHome, so a fixture that needs a
 // setting configures it in its own repo.
+//
+// GIT_CONFIG_SYSTEM drops the machine's system config the same way, which
+// receive-pack keeps too. Between them no fixture git, and no git the code
+// under test runs, sees a developer's `commit.gpgsign`, `push.autoSetupRemote`,
+// `pull.rebase` or `core.hooksPath`, any of which changes the push, pull and
+// rebase outcomes the sync tests assert.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "tk-test-cache")
 	if err != nil {
@@ -37,6 +43,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

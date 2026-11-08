@@ -39,12 +39,6 @@ func setupGitRepo(t *testing.T) string {
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@test.com")
 	runGit(t, dir, "config", "user.name", "test")
-	// TestMain replaces the developer's global config, but system-level config
-	// still reaches these fixtures, and a `push.autoSetupRemote = true` there
-	// sets an upstream for a branch a test deliberately left without one, so
-	// the push it expects to fail succeeds.
-	runGit(t, dir, "config", "push.autoSetupRemote", "false")
-	runGit(t, dir, "config", "push.default", "simple")
 	// Initial commit so HEAD exists
 	os.WriteFile(filepath.Join(dir, ".gitkeep"), []byte(""), 0o644)
 	runGit(t, dir, "add", "-A")
@@ -632,6 +626,50 @@ func TestSyncLogsAutostashPopConflictOutsideStore(t *testing.T) {
 	// But the repo's owner gets a line naming what sync left conflicted.
 	if !contains(logs.String(), "notes.md") {
 		t.Errorf("no log line naming the conflicted path, log = %q", logs.String())
+	}
+}
+
+func TestPullRebaseAutostashFailureLogsUnmergedPathOutsideStore(t *testing.T) {
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--bare")
+
+	storeRoot := setupGitRepo(t)
+	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\nl2\nl3\n"), 0o644)
+	runGit(t, storeRoot, "add", "-A")
+	runGit(t, storeRoot, "commit", "-m", "seed")
+	runGit(t, storeRoot, "remote", "add", "origin", bare)
+	runGit(t, storeRoot, "push", "-u", "origin", "HEAD")
+
+	// The owner's own stash pop conflicts in notes.md. That leaves no MERGE_HEAD,
+	// so the pre-flight state guard passes it. Another machine's push puts the
+	// branch behind, so the cycle pulls before checkUnmergedPaths or the commit
+	// runs — and git refuses the pull outright, with output that names no file.
+	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\nstashed\nl3\n"), 0o644)
+	runGit(t, storeRoot, "stash")
+	os.WriteFile(filepath.Join(storeRoot, "notes.md"), []byte("l1\ncommitted\nl3\n"), 0o644)
+	runGit(t, storeRoot, "commit", "-am", "committed")
+	if err := exec.Command("git", "-C", storeRoot, "stash", "pop").Run(); err == nil {
+		t.Fatal("expected the stash pop to conflict")
+	}
+	pushFromOtherClone(t, bare, "other.md", "from other\n")
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	warning := syncCentralStore(storeRoot)
+
+	if !contains(warning, "pull --rebase --autostash failed") {
+		t.Fatalf("expected the pull failure, got %q", warning)
+	}
+	if blocked := readSyncBlocked(storeRoot); !contains(blocked, "pull --rebase --autostash failed") {
+		t.Errorf("marker = %q, want the pull failure", blocked)
+	}
+	if unmerged, _ := execCommand("git", "-C", storeRoot, "ls-files", "-u"); !contains(unmerged, "notes.md") {
+		t.Fatalf("expected notes.md still unmerged after the failed pull, ls-files -u = %q", unmerged)
+	}
+	if !contains(logs.String(), "notes.md") {
+		t.Errorf("no log line naming the unmerged path the failed pull left, log = %q", logs.String())
 	}
 }
 

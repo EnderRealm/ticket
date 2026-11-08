@@ -570,6 +570,7 @@ func pullRebaseAutostash(storeRoot, pushOut string) string {
 			exec.Command("git", "-C", storeRoot, "rebase", "--abort").Run()
 			aborted = "; aborted rebase"
 		}
+		logForeignUnmergedPaths(storeRoot)
 		msg = fmt.Sprintf("sync blocked: git pull --rebase --autostash failed%s (%s)", aborted, ticket.SanitizeControl(strings.TrimSpace(string(out))))
 	}
 	if cause := strings.TrimSpace(pushOut); cause != "" {
@@ -622,13 +623,18 @@ func nestedRebaseRefusal(storeRoot string) string {
 }
 
 // logForeignUnmergedPaths reports unmerged paths anywhere in the repository
-// that fall outside centralStorePaths. `pull --rebase --autostash` exits 0 even
-// when the autostash pop conflicts, and the blocking guard is scoped to the
-// store's own paths on purpose, so a pop this sync just caused in the repo
-// owner's files would otherwise leave no trace anywhere. A log line — it reaches
-// the serve log and the CLI's stderr — is the whole signal: the store's own
-// syncing carries on, and paths inside centralStorePaths stay
-// checkUnmergedPaths' job rather than being reported twice.
+// that fall outside centralStorePaths, on both exits of the rebase pull.
+// `pull --rebase --autostash` exits 0 even when the autostash pop conflicts,
+// and the blocking guard is scoped to the store's own paths on purpose, so a
+// pop this sync just caused in the repo owner's files would otherwise leave no
+// trace anywhere. The failure exit writes the blocked marker, but that carries
+// only git's output, and when the pull refuses to start over unmerged files the
+// owner left behind, that output names none of them. An aborted rebase adds
+// none of its own: the abort resets to the commit the autostash was taken on,
+// so re-applying it cannot conflict. A log line — it reaches the serve log and
+// the CLI's stderr — is the only place the names appear, and paths inside
+// centralStorePaths stay checkUnmergedPaths' job rather than being reported
+// twice.
 //
 // The line states what is observed and not what caused it: an unmerged path the
 // owner left behind — a stash pop of their own, which leaves no MERGE_HEAD and
@@ -686,7 +692,7 @@ func logForeignUnmergedPaths(storeRoot string) {
 	if len(names) > maxForeignUnmergedPaths {
 		names = append(names[:maxForeignUnmergedPaths], fmt.Sprintf("+%d more", len(names)-maxForeignUnmergedPaths))
 	}
-	log.Printf("sync: unmerged paths outside the store after git pull --rebase --autostash (%s); resolve them in the enclosing repository — the store keeps syncing", strings.Join(names, ", "))
+	log.Printf("sync: unmerged paths outside the store after git pull --rebase --autostash (%s); resolve them in the enclosing repository", strings.Join(names, ", "))
 }
 
 // maxForeignUnmergedPaths bounds the names one log line carries. The scan is

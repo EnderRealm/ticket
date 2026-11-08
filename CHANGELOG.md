@@ -11,6 +11,7 @@
 - `tk help` and the README no longer describe an epic moving and being left behind: `tk move` refuses every epic, and both now say so.
 - `tk create` renders the ticket it wrote when a hash collision with a concurrent create made the store regenerate its ID, instead of showing whichever ticket held the original ID — or failing to find one — after reporting success.
 - Re-running `tk init` in an already-registered repo keeps the project's `auto_link` and `auto_close` instead of setting both back to `true`, so a journaling opt-out survives the documented `.tickets/` migration and commit auto-close no longer comes back on for a project that turned it off. A new registration still sets both to `true`, including one for a config entry without `store: central`, whose flags are not carried over. The registered path still becomes the repo's git top level.
+- A failed `git pull --rebase --autostash` during sync now logs the unmerged paths outside the store, as a successful one already did. When the repo owner's own conflicted `git stash pop` leaves such a path, git refuses the pull with an error that names no file, and the blocked marker carried only that error. The log line no longer says the store keeps syncing, which is not true on the failure path.
 
 ## [8.11.0] - 2026-11-06
 
