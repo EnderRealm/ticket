@@ -11,6 +11,14 @@ import (
 // away with it rather than accumulating in the developer's real cache
 // directory. Both variables: os.UserCacheDir reads HOME on darwin and prefers
 // XDG_CACHE_HOME elsewhere.
+//
+// It also replaces the global and system git config, as cmd's TestMain does,
+// so neither the fixtures' git nor the git the code under test runs sees a
+// developer's `commit.gpgsign` or similar setting, which fails a fixture
+// commit. GIT_CONFIG_GLOBAL is a file rather than os.DevNull so it can turn off
+// auto-maintenance: each fixture commit otherwise spawns a detached
+// `git maintenance run --auto` that can still be writing into the repo while
+// t.TempDir removes it.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "tk-test-cache")
 	if err != nil {
@@ -18,6 +26,12 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", dir)
 	os.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	gitConfig := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(gitConfig, []byte("[maintenance]\n\tauto = false\n"), 0o644); err != nil {
+		panic(err)
+	}
+	os.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
