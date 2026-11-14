@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- `tk verify --policy [--json]` and `ticket_store_info`'s `verify_policy` report the verify allow-list and the project's `verify_timeout` (default 120s) this machine would enforce, resolved through the same `project.VerifyAllow` / `project.VerifyTimeout` `RunVerify` is given and re-read from config on every call. An unreadable or unparseable config is reported as `allow_error` / `timeout_error` with no list, never as the defaults. `ticket_verify`'s description points an agent there before it writes a verify line. Library: `ticket.NewVerifyAllowReport`, `ticket.NewVerifyTimeoutReport`.
 - `ticket_apply_action` and `ticket.ApplyAction` accept a `release` transition, so an observer can let go of a ticket parked on an outside event under the same action id, precondition and receipt as `reopen`: it removes `waiting_on` and moves a `backlog` ticket to `ready`, leaving any other status unchanged, and the receipt's outcome is the resulting status. It is refused with `transition not permitted:` on an epic and on a ticket whose `waiting_on` is absent or blank, writing nothing; a replay of an applied release still answers with its receipt. Library: `ticket.TransitionRelease`.
 
 ### Changed

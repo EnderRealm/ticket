@@ -55,6 +55,7 @@ Viewing:
                              whose id names another project. tk audit <cause> lists that cause's
                              tickets in full and nothing else; --json is the whole report either way
   verify <id>                Run the ticket's acceptance-criteria verify commands
+  verify --policy [--json]   Print the verify_allow list and verify_timeout this machine enforces
     --dir <path>             Run the commands in this directory instead of the project's
     --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
                              20 refused or unverified
@@ -113,6 +114,12 @@ Viewing:
   not of a ticket that syncs to every machine — and a value that is not
   a positive duration refuses every verify command in that project
   rather than falling back to the default.
+  tk verify --policy prints both as they would be enforced right now —
+  the allow-list and the resolved project's verify_timeout (120s when
+  unset) — so verify lines can be written against it; --json for a
+  script. ticket_store_info returns the same as verify_policy. An
+  unreadable config is reported as the error with no list, never as the
+  defaults.
   Both settings are read from ~/.ticket/config.yaml at the start of
   every run, by this command and by tk serve alike, so an edit applies
   to the next run with no server restart. The staleness that does bite

@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
 // Criterion is one acceptance criterion, optionally carrying a verify command
@@ -946,4 +948,56 @@ func countVerify(results []VerifyResult) VerifyCounts {
 		}
 	}
 	return counts
+}
+
+// VerifyAllowReport is the allow-list tk would enforce right now. Allow is nil —
+// and omitted — when the config could not be read, with AllowError saying why:
+// an unreadable config refuses every command, so reporting the defaults (or an
+// empty list, which means a user refused everything) would both be wrong.
+type VerifyAllowReport struct {
+	Allow      *[]string `json:"allow,omitempty"`
+	AllowError string    `json:"allow_error,omitempty"`
+}
+
+// VerifyTimeoutReport is the bound a project's verify commands run under: the
+// project's verify_timeout, or DefaultVerifyTimeout when it sets none, as a Go
+// duration. A set-but-unusable value, or an unreadable config, is TimeoutError
+// with no Timeout.
+type VerifyTimeoutReport struct {
+	Timeout      string `json:"timeout,omitempty"`
+	TimeoutError string `json:"timeout_error,omitempty"`
+}
+
+// VerifyPolicyReport is both halves for one project, as `tk verify --policy`
+// prints them.
+type VerifyPolicyReport struct {
+	VerifyAllowReport
+	VerifyTimeoutReport
+}
+
+// NewVerifyAllowReport resolves the allow-list through project.VerifyAllow, the
+// call `tk verify` and ticket_verify enforce with.
+func NewVerifyAllowReport() VerifyAllowReport {
+	allow, err := project.VerifyAllow()
+	if err != nil {
+		return VerifyAllowReport{AllowError: err.Error()}
+	}
+	return VerifyAllowReport{Allow: &allow}
+}
+
+// NewVerifyTimeoutReport resolves a project's bound through
+// project.VerifyTimeout and RunVerify's default for an unset one. cfgErr is the
+// error loading cfg: the bound cannot be known then, and the report says so.
+func NewVerifyTimeoutReport(cfg project.Config, cfgErr error, name string) VerifyTimeoutReport {
+	if cfgErr != nil {
+		return VerifyTimeoutReport{TimeoutError: fmt.Sprintf("load ticket config: %v", cfgErr)}
+	}
+	d, err := project.VerifyTimeout(cfg, name)
+	if err != nil {
+		return VerifyTimeoutReport{TimeoutError: err.Error()}
+	}
+	if d == 0 {
+		d = DefaultVerifyTimeout
+	}
+	return VerifyTimeoutReport{Timeout: d.String()}
 }

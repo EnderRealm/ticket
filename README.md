@@ -156,6 +156,7 @@ Viewing:
                              whose id names another project. tk audit <cause> lists that cause's
                              tickets in full and nothing else; --json is the whole report either way
   verify <id>                Run the ticket's acceptance-criteria verify commands
+  verify --policy [--json]   Print the verify_allow list and verify_timeout this machine enforces
                              in the checkout registered here for the ticket's own
                              project; a Root ticket, a project with no checkout
                              registered on this machine, and a missing checkout
@@ -350,6 +351,8 @@ checkout /Users/you/code/myproject; acceptance sha256:9f2c…
 A failing criterion's line is followed by its captured output, each line indented four spaces with control characters replaced, so nothing a command prints can be read back as a heading, a criterion or a note.
 
 The second line is the run's provenance: the directory the commands actually ran in, and the identity of the acceptance contract they ran against — a sha256 over the parsed criteria (text, command, unverifiable claim and reason, in order), so an edit to what a criterion says or runs moves it and whitespace outside the criteria does not. A ticket carrying `implementation: <project>` (below) adds `; implementation <project>` after the directory, and a run started with a `candidate` (MCP only, below) adds `; candidate <name>` to that line. The record says which contract was verified and where; it does not say anyone approved the result.
+
+`tk verify --policy --json` prints the allow-list and the resolved project's `verify_timeout` (120s when unset) that a run would enforce right now, resolved by the code `tk verify` runs with; `ticket_store_info` returns the same as `verify_policy` (the allow-list plus each project's timeout). A config that cannot be read is reported as `allow_error` / `timeout_error` with no list, never as the defaults. Read it before writing a `verify:` line.
 
 `tk verify --json` and a completed `ticket_verify` MCP call return the same structured report, including each command's exit code and captured output, the actual `dir`, the `implementation` project when the ticket names one, the `acceptance_id` and, when supplied, the `candidate`. The MCP tool executes commands on the server host in the checkout registered for the ticket's project (or for its `implementation` project), or in a linked worktree of it when asked.
 

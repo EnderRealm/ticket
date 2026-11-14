@@ -15,10 +15,10 @@ import (
 )
 
 var verifyCmd = &cobra.Command{
-	Use:   "verify <id>",
+	Use:   "verify <id> | --policy",
 	Short: "Run the verify commands declared in a ticket's acceptance criteria",
 	Long:  "Run the verify commands declared in a ticket's acceptance criteria and record the results on the ticket.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runVerify,
 }
 
@@ -27,6 +27,7 @@ var (
 	verifyCriterion int
 	verifyNoRecord  bool
 	verifyCheck     bool
+	verifyPolicy    bool
 )
 
 // verifyRefusedExit is the exit code a single-criterion run reports for a
@@ -43,6 +44,7 @@ func init() {
 	f.IntVar(&verifyCriterion, "criterion", 0, "run only criterion n (1-based): exit 0 pass, 1 fail, 20 refused or unverified")
 	f.BoolVar(&verifyNoRecord, "no-record", false, "skip writing the Test Results section")
 	f.BoolVar(&verifyCheck, "check", false, "with --criterion, report whether it would be refused without running or recording it: exit 0 runnable, 20 refused or unverified")
+	f.BoolVar(&verifyPolicy, "policy", false, "print the verify_allow list and the project's verify_timeout this machine would enforce, without a ticket (--json for a script)")
 	rootCmd.AddCommand(verifyCmd)
 }
 
@@ -51,6 +53,16 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// once (via Execute) rather than with cobra's usage dump and duplicate line.
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
+
+	if verifyPolicy {
+		if len(args) != 0 {
+			return fmt.Errorf("--policy takes no ticket id")
+		}
+		return reportVerifyPolicy()
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
+	}
 
 	store := TicketStore()
 	t, err := store.Get(args[0])
@@ -232,4 +244,42 @@ func reportVerifyCheck(id string, results []ticket.VerifyResult, dir, implementa
 		return nil
 	}
 	return &exitError{code: verifyRefusedExit, err: fmt.Errorf("criterion %d %s", verifyCriterion, res.Status)}
+}
+
+// reportVerifyPolicy prints what a verify run would enforce right now for the
+// project the repo resolves to, through the same project.VerifyAllow and
+// project.VerifyTimeout RunVerify is handed. An unreadable config is the error,
+// with no list, exactly as RunVerify refuses on it.
+func reportVerifyPolicy() error {
+	// A project that does not resolve still leaves the allow-list answerable,
+	// and a config that does not load is exactly what the allow half reports, so
+	// a resolution failure is the timeout's error rather than the command's.
+	_, name, resolveErr := resolveTicketsDir()
+	cfg, cfgErr := project.Load()
+	report := ticket.VerifyPolicyReport{
+		VerifyAllowReport:   ticket.NewVerifyAllowReport(),
+		VerifyTimeoutReport: ticket.NewVerifyTimeoutReport(cfg, cfgErr, name),
+	}
+	if resolveErr != nil {
+		report.VerifyTimeoutReport = ticket.VerifyTimeoutReport{TimeoutError: resolveErr.Error()}
+	}
+	if jsonOutput {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+	if report.Allow != nil {
+		fmt.Printf("verify_allow: %s\n", strings.Join(*report.Allow, ", "))
+	} else {
+		fmt.Printf("verify_allow: refused: %s\n", ticket.SanitizeControl(report.AllowError))
+	}
+	if report.Timeout != "" {
+		fmt.Printf("verify_timeout (%s): %s\n", name, report.Timeout)
+	} else {
+		fmt.Printf("verify_timeout (%s): refused: %s\n", name, ticket.SanitizeControl(report.TimeoutError))
+	}
+	return nil
 }

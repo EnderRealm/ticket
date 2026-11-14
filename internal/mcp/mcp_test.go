@@ -5165,3 +5165,81 @@ func TestVerifyRefusesRootAndMissingCheckout(t *testing.T) {
 		}
 	}
 }
+
+func storeInfoVerifyPolicy(t *testing.T, session *mcp.ClientSession) map[string]any {
+	t.Helper()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "ticket_store_info",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+	var info map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &info); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	policy, ok := info["verify_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("verify_policy is not an object: %v", info["verify_policy"])
+	}
+	return policy
+}
+
+func TestStoreInfoVerifyPolicy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := project.Config{
+		VerifyAllow: []string{"/bin/echo"},
+		Projects:    map[string]project.ProjectConfig{"alpha": {VerifyTimeout: "5m"}},
+	}
+	if err := project.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	session, _ := testCentralServer(t, "alpha", "beta")
+
+	policy := storeInfoVerifyPolicy(t, session)
+	if got, _ := policy["allow"].([]any); len(got) != 1 || got[0] != "/bin/echo" {
+		t.Errorf("allow = %v, want [/bin/echo]", policy["allow"])
+	}
+	timeouts, _ := policy["timeouts"].(map[string]any)
+	for name, want := range map[string]string{"alpha": "5m0s", "beta": ticket.DefaultVerifyTimeout.String()} {
+		entry, _ := timeouts[name].(map[string]any)
+		if entry["timeout"] != want {
+			t.Errorf("timeouts[%s] = %v, want %s", name, entry, want)
+		}
+	}
+
+	// An unreadable config is the error with no list, never the defaults.
+	path, err := project.ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("verify_allow: [unclosed\n\t: :"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy = storeInfoVerifyPolicy(t, session)
+	if _, present := policy["allow"]; present || policy["allow_error"] == nil {
+		t.Errorf("policy = %v, want allow_error and no allow", policy)
+	}
+}
+
+func TestStoreInfoVerifyPolicyRereadsConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := project.Save(project.Config{VerifyAllow: []string{"/bin/echo"}}); err != nil {
+		t.Fatal(err)
+	}
+	session, _ := testCentralServer(t, "alpha")
+	if got, _ := storeInfoVerifyPolicy(t, session)["allow"].([]any); len(got) != 1 || got[0] != "/bin/echo" {
+		t.Fatalf("allow = %v, want [/bin/echo]", got)
+	}
+
+	if err := project.Save(project.Config{VerifyAllow: []string{"/bin/sh", "go"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := storeInfoVerifyPolicy(t, session)["allow"].([]any); len(got) != 2 || got[0] != "/bin/sh" {
+		t.Errorf("allow after edit = %v, want [/bin/sh go] without a restart", got)
+	}
+}

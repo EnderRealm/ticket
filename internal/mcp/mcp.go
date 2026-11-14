@@ -1920,7 +1920,7 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 	})
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project, or, with dir, in a linked git worktree of that checkout. A ticket whose implementation lives in another project's repository carries the frontmatter field `implementation: <project>` (set it with ticket_edit set; a project name, never a path): its commands then run in the checkout registered on this machine for that project, or a linked worktree of it, never in the ticket's own checkout, and an implementation that is not a project name, has no checkout registered here or whose checkout is missing is refused before anything runs, naming the field. A Root ticket, a project with no checkout registered here, a registered checkout that is missing, and a dir that is not the configured checkout or a worktree root sharing its repository (a subdirectory, an unrelated or nested repository, a non-git directory, a missing path, an empty string, or a symlink resolving to any of those) are each refused before anything runs, naming the reason, and nothing is recorded. Pass acceptance_id from ticket_criteria to have the run refused before anything executes if the criteria changed since you read them; the report and the ticket's Test Results name the directory the commands ran in, the implementation project when the ticket names one, the acceptance_id of the criteria that ran, and candidate (your name for what was under test, recorded as provenance only) if given. If the criteria change while commands are running, the result is returned but not recorded (record_error says so). Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Each command is bounded by the verify_timeout of the project whose checkout it runs in, set in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified, with unverifiable_reason when the criterion declares one. Each command's output is capped to its last 4KB, where test frameworks print failures; a capped output opens with a line naming how many bytes were dropped from the head, and Test Results carries each failing criterion's output beneath its line. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start with the same dir, implementation, acceptance_id and candidate joins the active run; one that differs in any of the four (including an implementation field edited since the run started) is refused, naming the active run, and starts nothing; after completion a start begins a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project, or, with dir, in a linked git worktree of that checkout. A ticket whose implementation lives in another project's repository carries the frontmatter field `implementation: <project>` (set it with ticket_edit set; a project name, never a path): its commands then run in the checkout registered on this machine for that project, or a linked worktree of it, never in the ticket's own checkout, and an implementation that is not a project name, has no checkout registered here or whose checkout is missing is refused before anything runs, naming the field. A Root ticket, a project with no checkout registered here, a registered checkout that is missing, and a dir that is not the configured checkout or a worktree root sharing its repository (a subdirectory, an unrelated or nested repository, a non-git directory, a missing path, an empty string, or a symlink resolving to any of those) are each refused before anything runs, naming the reason, and nothing is recorded. Pass acceptance_id from ticket_criteria to have the run refused before anything executes if the criteria changed since you read them; the report and the ticket's Test Results name the directory the commands ran in, the implementation project when the ticket names one, the acceptance_id of the criteria that ran, and candidate (your name for what was under test, recorded as provenance only) if given. If the criteria change while commands are running, the result is returned but not recorded (record_error says so). Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Before writing a verify line, read the allow-list and the project's timeout from verify_policy in ticket_store_info (or tk verify --policy --json) instead of guessing or reading the config file. Each command is bounded by the verify_timeout of the project whose checkout it runs in, set in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified, with unverifiable_reason when the criterion declares one. Each command's output is capped to its last 4KB, where test frameworks print failures; a capped output opens with a line naming how many bytes were dropped from the head, and Test Results carries each failing criterion's output beneath its line. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start with the same dir, implementation, acceptance_id and candidate joins the active run; one that differs in any of the four (including an implementation field edited since the run started) is refused, naming the active run, and starts nothing; after completion a start begins a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -2014,10 +2014,31 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 	return jobs
 }
 
+// storeVerifyPolicy is what a verify run would enforce right now: one allow-list
+// for the machine and each project's bound, the same values `tk verify --policy`
+// prints for that project.
+type storeVerifyPolicy struct {
+	ticket.VerifyAllowReport
+	Timeouts map[string]ticket.VerifyTimeoutReport `json:"timeouts"`
+}
+
+// verifyPolicy is resolved from config on every call, so an edit applies
+// without restarting the server.
+func verifyPolicy(projects map[string]string, cfg project.Config, cfgErr error) storeVerifyPolicy {
+	p := storeVerifyPolicy{
+		VerifyAllowReport: ticket.NewVerifyAllowReport(),
+		Timeouts:          map[string]ticket.VerifyTimeoutReport{},
+	}
+	for name := range projects {
+		p.Timeouts[name] = ticket.NewVerifyTimeoutReport(cfg, cfgErr, name)
+	}
+	return p
+}
+
 func registerStoreInfo(server *mcp.Server, centralRoot string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_store_info",
-		Description: "Return central store root path, per-project ticket directory paths, and which of those projects are unregistered: a directory in the store with no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it. Only available in central mode.",
+		Description: "Return central store root path, per-project ticket directory paths, the verify policy this machine enforces (verify_policy: the allow-list of programs ticket_verify will run, and each project's verify_timeout, or why either could not be read), and which of those projects are unregistered: a directory in the store with no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it. Only available in central mode.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args emptyArgs) (*mcp.CallToolResult, any, error) {
 		if centralRoot == "" {
 			r, _ := errResult("ticket_store_info requires central mode (tk serve --central)")
@@ -2045,8 +2066,9 @@ func registerStoreInfo(server *mcp.Server, centralRoot string) {
 		}
 
 		info := map[string]any{
-			"central_root": centralRoot,
-			"projects":     projects,
+			"central_root":  centralRoot,
+			"projects":      projects,
+			"verify_policy": verifyPolicy(projects, cfg, cfgErr),
 		}
 		if cfgErr != nil {
 			// Config only fails to load when it is corrupt — exactly when the
