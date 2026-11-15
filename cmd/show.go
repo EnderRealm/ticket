@@ -14,8 +14,15 @@ var showCmd = &cobra.Command{
 	Use:     "show <id> [id...]",
 	Aliases: []string{"get"},
 	Short:   "Display ticket details",
-	Args:    cobra.MinimumNArgs(1),
-	RunE:    runShow,
+	Long: `Display ticket details. An epic ends with a Progress section: its children
+counted by status across every namespace and whether that count is complete
+(the store read in full). A leaf whose parent does not make it a child ends
+with a Relationship section saying why. Children and Blocking list tickets from
+any namespace, qualified; a ticket the audit flags ends with a Findings section.
+
+IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runShow,
 }
 
 func init() {

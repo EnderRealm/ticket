@@ -14,15 +14,24 @@ import (
 var createCmd = &cobra.Command{
 	Use:   "create [title]",
 	Short: "Create a new ticket",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runCreate,
+	Long: `Create a ticket. Outside a directory the config registers as a project, the
+destination must be named: --project <namespace> (--project _root for an idea
+with no repository yet) or --repo. The guard applies only without --project or
+--repo: a --repo path still resolves by git remote or directory name, so a path
+no project registers writes into whichever project those name.
+
+An acceptance criterion carrying neither a verify: nor an unverifiable: line is
+reported on stderr when the ticket is written (see tk verify --help); the
+ticket is still created.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runCreate,
 }
 
 func init() {
 	f := createCmd.Flags()
 	f.StringP("description", "d", "", "ticket description")
 	f.StringP("type", "t", "feature", "ticket type (feature, bug, epic)")
-	f.StringP("priority", "p", "2", "priority (0-4)")
+	f.StringP("priority", "p", "2", "priority (0-4, 0 highest)")
 	f.String("external-ref", "", "external reference")
 	f.String("parent", "", "parent epic ID (an epic in the same project; a qualified project/id names an epic in another namespace, accepted once the catalog requires cross-project-parents)")
 	f.String("tags", "", "comma-separated tags")

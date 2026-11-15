@@ -12,8 +12,20 @@ import (
 var editCmd = &cobra.Command{
 	Use:   "edit <id> [options]",
 	Short: "Update ticket fields",
-	Args:  cobra.MinimumNArgs(1),
-	RunE:  runEdit,
+	Long: `Update ticket fields. Only the fields named by a flag change.
+
+--parent names an epic in the same project, and an epic itself cannot have a
+parent. A qualified project/id names an epic in another namespace, accepted
+once the catalog requires cross-project-parents.
+
+An epic's status is derived from its children, and setting one by hand is
+refused. The exception is --status closed, which abandons the epic: it records
+abandoned: true and closes its unfinished children, naming them in the line
+that reports the edit. Setting any other status on an abandoned epic takes the
+abandon back. The same applies to a status set alongside --type epic. The
+README's Epic Status section has the full rules.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runEdit,
 }
 
 func init() {
@@ -36,7 +48,7 @@ func registerEditFlags(cmd *cobra.Command) {
 	f.String("tags", "", "comma-separated tags")
 	f.String("note", "", "append a timestamped note")
 	f.StringArray("set", nil, "set extra field (key=value, blank value removes)")
-	f.StringArray("output", nil, "set output value (key=value, blank value removes)")
+	f.StringArray("output", nil, "set output value, e.g. branch, commit, artifact (key=value, blank value removes)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {

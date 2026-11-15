@@ -20,7 +20,10 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize ticket storage for this project",
-	RunE:  runInit,
+	Long: `Initialize tk and register this repo as a project, setting up the central
+store first if it is not configured. A .tickets/ directory in the repo is
+imported through the validating store boundary.`,
+	RunE: runInit,
 }
 
 func init() {

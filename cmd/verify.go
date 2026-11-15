@@ -17,9 +17,52 @@ import (
 var verifyCmd = &cobra.Command{
 	Use:   "verify <id> | --policy",
 	Short: "Run the verify commands declared in a ticket's acceptance criteria",
-	Long:  "Run the verify commands declared in a ticket's acceptance criteria and record the results on the ticket.",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runVerify,
+	Long: `Run the verify commands declared in a ticket's acceptance criteria and record
+the results in the ticket's Test Results section, each failing criterion
+followed by its indented output.
+
+A criterion declares its check on an indented continuation line, or declares
+that no command can exist for it:
+
+  - Frontier excludes blocked tickets.
+    verify: go test ./pkg/ticket -run TestFrontier
+  - tk ls output stays readable at 40 columns.
+    unverifiable: needs a human at a terminal.
+
+A criterion carrying neither line is reported on stderr by tk create when the
+ticket is written; the ticket is still created. A criterion with no command is
+reported unverified.
+
+Commands run in the checkout registered on this machine for the ticket's
+project, or for the project its implementation field names
+(tk edit <id> --set implementation=<project>). A Root ticket, a project with no
+checkout registered here and a checkout that is not a directory are refused
+before anything runs, and nothing is recorded. --dir moves an eligible run; it
+makes nothing eligible.
+
+Commands are execed as argv, never through a shell, and run only if their
+program exactly matches an entry in verify_allow in ~/.ticket/config.yaml
+(default: go, make, cargo, pytest). Each is bounded by the project's
+verify_timeout (default 120s). Output is capped to its last 4KB.
+
+tk verify --policy, with no ticket id, prints the verify_allow list and the
+resolved project's verify_timeout as a run would enforce them right now;
+--json for a script. An unreadable config is reported as the error with no
+list, never as the defaults.
+
+Exit status: 0 when nothing failed or was refused, 1 otherwise. With
+--criterion: 0 pass, 1 fail, 20 refused or unverified.
+
+The verify policy -- eligibility, the implementation field, verify_allow and
+what listing a program trusts, verify_timeout, the output cap, and the
+ticket_verify MCP tool's narrower dir -- is in docs/verify.md
+(github.com/EnderRealm/ticket).`,
+	Example: `  tk verify 5c4
+  tk verify 5c4 --dir /path/to/worktree --criterion 1 --no-record
+  tk verify 5c4 --criterion 2 --check
+  tk verify --policy --json`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runVerify,
 }
 
 var (

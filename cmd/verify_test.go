@@ -944,23 +944,28 @@ func TestVerifyCheckNeverExecutes(t *testing.T) {
 }
 
 func TestHelpDocumentsVerifyCheck(t *testing.T) {
-	start := strings.Index(helpText, "  verify <id>")
-	if start < 0 {
-		t.Fatal("help has no verify entry")
+	help := renderHelp(t, verifyCmd)
+	if strings.Contains(help, helpText) {
+		t.Fatalf("verify help prints the root page:\n%s", help)
 	}
-	// The flag block runs from the verify entry to the first blank line.
-	block := helpText[start:]
-	block = block[:strings.Index(block, "\n\n")]
-	criterion := strings.Index(block, "--criterion <n>")
-	noRecord := strings.Index(block, "--no-record")
-	check := strings.Index(block, "--check")
-	if criterion < 0 || noRecord < 0 || check < 0 {
-		t.Fatalf("verify flags missing --criterion, --no-record or --check:\n%s", block)
+	flagLine := func(flag string) string {
+		for _, line := range strings.Split(help, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), flag+" ") {
+				return line
+			}
+		}
+		t.Fatalf("verify help has no %s flag:\n%s", flag, help)
+		return ""
 	}
-	doc := block[check:]
+	flagLine("--criterion")
+	flagLine("--no-record")
+	doc := flagLine("--check")
 	for _, want := range []string{"--criterion", "exit 0", "runnable", "20 refused or unverified"} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("--check help missing %q:\n%s", want, doc)
 		}
+	}
+	if !strings.Contains(help, "docs/verify.md") {
+		t.Errorf("verify help does not point to docs/verify.md:\n%s", help)
 	}
 }

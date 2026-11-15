@@ -11,7 +11,7 @@ import (
 var depCmd = &cobra.Command{
 	Use:   "dep <id> <dep-id>",
 	Short: "Add a dependency",
-	Long:  "Add a dependency, or use 'dep tree <id>'.",
+	Long:  "Add a dependency: <id> depends on <dep-id>. Use 'tk dep tree <id>' to show the tree.",
 	Args:  cobra.MinimumNArgs(1),
 	RunE:  runDep,
 }
@@ -19,6 +19,7 @@ var depCmd = &cobra.Command{
 var depTreeCmd = &cobra.Command{
 	Use:   "tree <id>",
 	Short: "Show dependency tree",
+	Long:  "Show the dependency tree, marking edges that carry no cargo.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runDepTree,
 }

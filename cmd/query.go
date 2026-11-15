@@ -13,8 +13,30 @@ import (
 var queryCmd = &cobra.Command{
 	Use:   "query [jq-filter]",
 	Short: "Output tickets as JSONL with optional jq filtering",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runQuery,
+	Long: `Output every ticket as JSONL, one JSON object per line.
+
+The optional filter is passed to jq's select() automatically. Do NOT wrap
+your filter in select() -- just provide the expression. Always single-quote
+the filter so the shell leaves ! and " alone.
+
+JSON fields: id, status, abandoned, type, priority, title, deps[], links[],
+  tags[], created, updated, closed, parent, external-ref, outputs, dep_cargo,
+  description, design, acceptance_criteria, test_results,
+  notes[] (timestamp, text; every note, oldest first),
+  plus any custom extra fields (flattened to top level)
+An empty body section's key is omitted.
+
+The body fields are the ones ticket_show carries, split the same way, and no
+other ## heading becomes one. Headings match on prefix: ## Design Notes opens
+design. Which headings open and close each field, and which text reaches no
+field, is in the README's Body Fields section.`,
+	Example: `  tk query                                       # all tickets as JSONL
+  tk query '.status == "open"'                   # filter by field
+  tk query '.type == "bug" and .priority <= 1'   # compound filter
+  tk query '.title | test("deploy"; "i")'        # regex search
+  tk query --all-projects                        # every namespace, IDs qualified`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runQuery,
 }
 
 func init() {

@@ -13,9 +13,13 @@ import (
 var frontierCmd = &cobra.Command{
 	Use:   "frontier",
 	Short: "List ready tickets whose dependencies are all done or closed",
-	Long:  "List ready tickets whose dependencies are all done or closed — the parallel-safe set to start next.",
-	Args:  cobra.NoArgs,
-	RunE:  runFrontier,
+	Long: `List ready tickets whose dependencies are all done or closed -- the
+parallel-safe set to start next. The frontier is computed over the whole store:
+--parent keeps the members of that epic (qualified project/id, or bare with
+--project) and --project keeps one namespace's rows, and neither changes what
+is ready.`,
+	Args: cobra.NoArgs,
+	RunE: runFrontier,
 }
 
 func init() {

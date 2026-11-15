@@ -14,12 +14,21 @@ var lsCmd = &cobra.Command{
 	Use:     "ls",
 	Aliases: []string{"list"},
 	Short:   "List tickets",
-	RunE:    runLs,
+	Long: `List tickets, grouped by workflow status unless --group-by or --flat says
+otherwise. done and closed are hidden by default; --status shows one status at
+a time, so --all is the only view of the whole board.
+
+--parent lists the children of an epic. Membership is global -- the epic's
+children in any namespace -- and the listing is the selected project's, so a
+child elsewhere is counted in the "children of ..." line on stderr and shown
+with --all-projects; --all keeps closed ones. --all-projects conflicts with
+--project.`,
+	RunE: runLs,
 }
 
 func init() {
 	addFilterFlags(lsCmd)
-	lsCmd.Flags().String("status", "", "filter by status")
+	lsCmd.Flags().String("status", "", "filter by status: backlog | ready | open | done | closed")
 	lsCmd.Flags().Bool("all", false, "include done and closed tickets (hidden by default; ignored with --status)")
 	lsCmd.Flags().String("parent", "", "children of this epic (qualified project/id, or bare in the selected project); membership is global, the listing is the selected project's")
 	lsCmd.Flags().Bool("all-projects", false, "list every namespace in the central store, IDs qualified")
@@ -252,8 +261,8 @@ func workflowGroup(blocked func(*ticket.Ticket) bool, t *ticket.Ticket) (string,
 // addFilterFlags registers shared filter flags on a command.
 func addFilterFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("tag", "T", "", "filter by tag")
-	cmd.Flags().StringP("priority", "P", "", "filter by priority")
-	cmd.Flags().StringP("type", "t", "", "filter by type")
+	cmd.Flags().StringP("priority", "P", "", "filter by priority: 0 (critical) through 4 (backlog)")
+	cmd.Flags().StringP("type", "t", "", "filter by type: bug | feature | epic")
 }
 
 // parseFilterFlags reads shared filter flags into ListOptions.

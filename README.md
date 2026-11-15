@@ -126,104 +126,58 @@ Claude Opus picks it up naturally from there. Other models may need additional g
 
 ## Usage
 
-Run `tk help` for the full command reference. Key commands:
+`tk help` (or `tk --help`) prints the command index below. `tk <command> --help`, or `tk help <command>`, prints that command's own help: what it does, its flags and examples.
 
 ```
+Usage: tk <command> [args]      tk <command> --help for details
+
 Viewing:
-  show <id> [--metadata]     Display ticket details. An epic ends with a
-                             Progress section (children counted by status
-                             across every namespace, and whether the count is
-                             complete); a leaf whose parent does not make it a
-                             child ends with a Relationship section saying why;
-                             a ticket the audit flags ends with a Findings section
-  ls|list [filters]          List tickets (default: workflow grouped, done
-                             and closed hidden; --all shows them)
-    --all-projects           Every namespace in the central store, IDs qualified
-    --parent=ID              Children of an epic: membership is global, the
-                             listing is the selected project's (a "children of …"
-                             line on stderr counts the rest); --all keeps closed ones
-  frontier [--parent=ID]     List ready tickets with all deps done/closed,
-                             computed over the whole store; --parent keeps that
-                             epic's members, --project keeps one namespace's rows
-  search <query>             Search tickets by relevance (best matches first)
-    --all-projects           Search every namespace, IDs qualified
-  audit [cause] [--project=NAME]
-                             Summarise findings by cause, one line each with the count and the
-                             command that lists that cause's tickets: invalid parents, epics whose
-                             stored status is not read, tickets missing body content, tickets whose
-                             acceptance criteria nothing can check, tickets storing a legacy Review
-                             Log, files that cannot be read as tickets (exits non-zero), and files
-                             whose id names another project. tk audit <cause> lists that cause's
-                             tickets in full and nothing else; --json is the whole report either way
-  verify <id>                Run the ticket's acceptance-criteria verify commands
-  verify --policy [--json]   Print the verify_allow list and verify_timeout this machine enforces
-                             in the checkout registered here for the ticket's own
-                             project; a Root ticket, a project with no checkout
-                             registered on this machine, and a missing checkout
-                             are refused before anything runs
-    --dir <path>             Run the commands in this directory instead of the
-                             project's (applies only to an eligible run)
-    --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
-                             20 refused or unverified
-    --no-record              Skip writing the Test Results section
-    --check                  With --criterion, report whether it would be
-                             refused, without running or recording it: exit 0
-                             runnable, 20 refused or unverified
+  show <id>...           Display ticket details
+  ls, list               List tickets (done/closed hidden; --all shows them)
+  frontier               Ready tickets whose deps are all done or closed
+  search <query>         Search tickets by relevance
+  query [jq-filter]      All tickets as JSONL, optionally filtered
+  audit [cause]          Summarise store findings by cause
 
 Creating & Editing:
-  create [title] [options]   Create ticket. Outside a registered project the
-                             destination must be named: --project <namespace>
-                             (--project _root for an idea with no repository
-                             yet) or --repo. The guard applies only without
-                             --project or --repo: a --repo path still resolves
-                             by git remote or directory name, so a path no
-                             project registers writes into whichever project
-                             those name
-  edit <id> [options]        Update ticket fields
-  add-note <id> [text]       Append timestamped note (stdin if no text)
-  delete <id> [id...]        Delete ticket(s)
-  move <id> <project|repo-path>
-                             Move a ticket to another project's ticket store
-                             Only an isolated leaf moves; -r/--recursive is refused
+  create [title]         Create a ticket
+  edit <id>              Update ticket fields
+  add-note <id> [text]   Append a timestamped note (stdin if no text)
+  move <id> <project>    Move an isolated leaf ticket to another project
+  delete <id>...         Delete tickets
 
 Dependencies & Links:
-  dep <id> <dep-id>          Add dependency
-    --cargo "<what flows>"   Name what concretely flows across the edge ("" clears)
-  undep <id> <dep-id>        Remove dependency
-  dep tree [--full] <id>     Show dependency tree (marks edges with no cargo)
-  link <id> <id> [id...]     Link tickets (symmetric)
-  unlink <id> <target-id>    Remove link
+  dep <id> <dep-id>      Add dependency (--cargo names what flows)
+  undep <id> <dep-id>    Remove dependency
+  dep tree <id>          Show dependency tree
+  link <id> <id>...      Link tickets (symmetric)
+  unlink <id> <id>       Remove link
 
-Query:
-  query [jq-filter]          Output tickets as JSONL (pipe to jq), body
-                             fields included
-    --all-projects           Every namespace, IDs qualified
+Verification:
+  verify <id>            Run acceptance-criteria verify commands
+  verify --policy        Print the verify_allow and verify_timeout in force
 
-Setup:
-  init [--project <name>] [--central-root <path>] [--yes]
-                               Initialize tk and register a project; a
-                               .tickets/ directory in the repo is imported
-                               through the validating store boundary
-  sync                         Sync ticket changes to git
-  status                       Show tk system status
-
-Global flags:
-  --project <ns>             Operate on a namespace in the central store by
-                             name (_root always selectable; unknown names
-                             refused); conflicts with --repo
-  --repo <name|path>         Operate on a registered project or repo
-  --json                     Output in JSON format
-
-Server:
-  serve                      MCP server for AI agent integration
+Setup & Server:
+  init                   Initialize tk and register a project
+  status                 System status and project overview
+  sync                   Sync ticket changes to git
+  serve                  Start MCP server on stdio
 
 Journal:
-  watch start [--interval=5s]  Start background git commit watcher
-  watch stop                   Stop the background watcher
-  watch status                 Show watcher status
-  watch logs [-n 50]           Show watcher log output
-  recompute [--project=NAME]   Rebuild commit journal from git history
+  watch start|stop|status|logs   Background git commit watcher
+  recompute              Rebuild commit journal from git history
+
+Global flags:
+  --project <ns>         Operate on a central-store namespace (_root for ideas)
+  --repo <name|path>     Operate on a registered project or repo
+  --json                 JSON output
+
+Statuses: backlog -> ready -> open -> done; closed = won't fix.
+An epic's status is derived from its children; see tk edit --help.
+IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.
 ```
+
+The sections below cover each area in depth. The verify policy — where commands run, `verify_allow`, `verify_timeout` and the MCP tool's narrower `dir` — is in [docs/verify.md](docs/verify.md).
 
 ### Statuses
 
@@ -638,6 +592,8 @@ Every listing is answered off the whole store first and narrowed afterwards. A `
 ### Namespaces, Root and the catalog
 
 A **namespace** is one directory under `<central_root>/tickets/` and the first half of every `project/id`. A **project** is a namespace with a repository registered behind it on some machine — the `path` in `~/.ticket/config.yaml` and `store: central` in the shared config. Registration is machine-local; the namespace is shared.
+
+`--project <ns>` selects a namespace by name, and no repository is resolved or has to exist. `_root` is always selectable — writing to it is still the catalog's call — and any other name must be a registered project, a directory under `<central_root>/tickets`, or catalogued: an unknown one is refused rather than created. It is a selector like `--repo`, and passing both is refused.
 
 **Root** is the built-in namespace `_root`, for ideas that need a stable home before they have a repository. It is always in the inventory and is bound to no repository — `tk init` refuses to register it, so nothing a registration drives (the journal watcher, auto-close) ever runs for it. Its tickets keep the ordinary `_root/slug-hash` shape, so nothing about IDs changes when an idea later becomes a project: register the real repository and file the implementation tickets there.
 

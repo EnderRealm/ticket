@@ -18,337 +18,57 @@ var (
 	projectFlag string
 )
 
+// helpText is the root help page: a command index only. Each command's
+// behaviour lives in its own Long and Example, printed by tk <command> --help,
+// and policy prose lives in docs/ and the README.
 var helpText = `tk - ticket management CLI
 
-Usage: tk <command> [args]
+Usage: tk <command> [args]      tk <command> --help for details
 
 Viewing:
-  show <id> [--metadata]     Display ticket details. An epic ends with a
-                             Progress section: its children counted by status
-                             across every namespace and whether that count is
-                             complete (the store read in full); a leaf whose
-                             parent does not make it a child ends with a
-                             Relationship section saying why. Children and
-                             Blocking list tickets from any namespace, qualified;
-                             a ticket the audit flags ends with a Findings section
-  ls|list [filters]          List tickets (default: workflow grouped, done
-                             and closed hidden; --all shows them)
-    --all-projects           Every namespace in the central store, IDs qualified
-    --parent=ID              Children of an epic. Membership is global — the
-                             epic's children in any namespace — and the listing
-                             is the selected project's, so a child elsewhere is
-                             counted in the "children of …" line on stderr and
-                             shown with --all-projects; --all keeps closed ones
-  frontier [--parent=ID]     List ready tickets with all deps done/closed,
-                             computed over the whole store; --parent keeps the
-                             members of that epic (qualified project/id, or bare
-                             with --project) and --project keeps one namespace's
-                             rows without changing what is ready
-  search <query>             Search tickets by relevance (best matches first)
-    --all-projects           Search every namespace, IDs qualified
-  audit [cause] [--project=NAME]
-                             Summarise findings by cause, one line each with the count and the
-                             command that lists that cause's tickets: invalid parents, epics whose
-                             stored status is not read, tickets missing body content, tickets whose
-                             acceptance criteria nothing can check, tickets storing a legacy Review
-                             Log, files that cannot be read as tickets (exits non-zero), and files
-                             whose id names another project. tk audit <cause> lists that cause's
-                             tickets in full and nothing else; --json is the whole report either way
-  verify <id>                Run the ticket's acceptance-criteria verify commands
-  verify --policy [--json]   Print the verify_allow list and verify_timeout this machine enforces
-    --dir <path>             Run the commands in this directory instead of the project's
-    --criterion <n>          Run only criterion n (1-based): exit 0 pass, 1 fail,
-                             20 refused or unverified
-    --no-record              Skip writing the Test Results section
-    --check                  With --criterion, report whether it would be
-                             refused, without running or recording it: exit 0
-                             runnable, 20 refused or unverified
-
-  A criterion declares its check on an indented continuation line, or
-  declares that no command can exist for it:
-
-    - Frontier excludes blocked tickets.
-      verify: go test ./pkg/ticket -run TestFrontier
-    - tk ls output stays readable at 40 columns.
-      unverifiable: needs a human at a terminal.
-
-  A criterion carrying neither line is reported on stderr by tk create
-  when the ticket is written; the ticket is still created.
-
-  Each command runs in the checkout registered on this machine for the
-  ticket's own project, and only there — or, when the ticket carries
-  implementation: <project> (tk edit <id> --set implementation=<project>),
-  in the checkout registered here for that project instead, under its
-  verify_timeout, recorded as "implementation <project>" beside the
-  checkout. The field names a project, never a path; one that does not
-  resolve to a registered checkout here is refused, never falling back to
-  the ticket's own. Eligibility is decided before
-  anything runs: a Root ticket is refused (Root has no repository), so is
-  a ticket in a project with no checkout registered on this machine, and
-  so is one whose registered checkout is not a directory here — the
-  working directory, HOME, a parent epic's project and the ticket store
-  never stand in, and nothing is recorded for a refused run. --dir moves
-  an eligible run and applies only after that check; it makes nothing
-  eligible. Commands are execed as argv and never
-  through a shell: quotes group arguments, everything else
-  (; | && $() backticks ~) is literal text. A command runs only if its
-  program exactly matches an entry in verify_allow in ~/.ticket/config.yaml;
-  anything else is refused without running. Only that machine-local file
-  grants permission — the shared central-store config, ticket content and
-  MCP arguments cannot, so an agent can never widen the list itself. An
-  empty verify_allow refuses everything, and so does a local config that
-  cannot be parsed.
-  Default: go, make, cargo, pytest. Listing a program trusts whoever
-  writes verify lines with everything that program can do — including
-  "go run pkg@version", "go install pkg@version", "cargo install <crate>"
-  and "make -f <file>", which run code from outside the repo. Shells and
-  interpreters are absent: swift is not in the default because
-  "swift -e <code>" runs arbitrary Swift, so a Swift project adds swift
-  to verify_allow itself to get "swift test" back.
-  Each command is bounded by verify_timeout under the project in
-  ~/.ticket/config.yaml, beside its path: a Go duration such as 300s or
-  5m, defaulting to 120s when unset, and a timed-out command's output
-  names the bound that was applied and whether it came from
-  verify_timeout or from the default. It is machine-local like
-  verify_allow — the bound is a property of the machine and the suite,
-  not of a ticket that syncs to every machine — and a value that is not
-  a positive duration refuses every verify command in that project
-  rather than falling back to the default.
-  tk verify --policy prints both as they would be enforced right now —
-  the allow-list and the resolved project's verify_timeout (120s when
-  unset) — so verify lines can be written against it; --json for a
-  script. ticket_store_info returns the same as verify_policy. An
-  unreadable config is reported as the error with no list, never as the
-  defaults.
-  Both settings are read from ~/.ticket/config.yaml at the start of
-  every run, by this command and by tk serve alike, so an edit applies
-  to the next run with no server restart. The staleness that does bite
-  is a tk serve process older than the build that introduced a setting:
-  a binary predating verify_timeout applies the 120s it was built with
-  however current the config is, so restart the server after upgrading.
-  Criteria with no command are reported unverified. Results are recorded
-  in the ticket's Test Results section, each failing criterion followed
-  by its indented output; exit is non-zero on any failure or refusal.
-  A command's output is capped to its last 4KB, where test frameworks
-  print failures, and a capped output opens with a line naming how many
-  bytes were dropped from the head.
-  --criterion and --no-record are CLI-only, and the ticket_verify MCP
-  tool's dir is narrower than --dir: it accepts only the project's
-  configured checkout or a linked git worktree of that repository, refuses
-  anything else before running, and always records. An MCP caller's
-  arguments are shaped by ticket content, and a sandboxed client with no
-  shell would gain reach it does not otherwise have; a CLI caller already
-  has a shell and can run anything anywhere, so --dir is used as given
-  and widens nothing for it. Nothing widens verify_allow.
-  ticket_criteria returns the parsed criteria with acceptance_id, the
-  contract's identity; ticket_verify refuses a stale acceptance_id before
-  running and does not record a run whose criteria changed meanwhile. The
-  report and the Test Results record name the directory the commands ran
-  in, the acceptance_id and the caller's candidate.
-  MCP verification waits up to 10 seconds, then returns a job ID for
-  ticket_verify_status polling. Request timeouts do not cancel commands;
-  ticket_verify_cancel or session disconnect does. Status recovers a lost
-  start response by ticket ID without running the commands again.
+  show <id>...           Display ticket details
+  ls, list               List tickets (done/closed hidden; --all shows them)
+  frontier               Ready tickets whose deps are all done or closed
+  search <query>         Search tickets by relevance
+  query [jq-filter]      All tickets as JSONL, optionally filtered
+  audit [cause]          Summarise store findings by cause
 
 Creating & Editing:
-  create [title] [options]   Create ticket. Outside a directory the config
-                             registers as a project, the destination must be
-                             named: --project <namespace> (--project _root for
-                             an idea with no repository yet) or --repo. The
-                             guard applies only without --project or --repo:
-                             a --repo path still resolves by git remote or
-                             directory name, so a path no project registers
-                             writes into whichever project those name
-  edit <id> [options]        Update ticket fields
-  add-note <id> [text]       Append timestamped note (stdin if no text)
-  delete <id> [id...]        Delete ticket(s)
-  move <id> <project|repo-path>
-                             Move a ticket to another project's ticket store
-                             Only an isolated leaf moves; -r/--recursive is refused
-
-  The target's shape says which form it is. With no path separator it is a
-  project name, which has to be registered: a directory ./loom is written with
-  the separator, never as loom. With a separator, or as . or .., it is a path,
-  which has to be a directory and the exact checkout the config records for a
-  project, symlinks resolved; a subdirectory or linked worktree of a checkout
-  owns nothing, so name the project instead. A path that does not exist or owns
-  no store is refused rather than having a store created for it, and so is a
-  target resolving to the store the ticket already lives in — that
-  renames rather than moves it; re-parent within a project with
-  'tk edit --parent'. The moved ticket gets a new ID in the destination
-  project, and the original is closed with a note — so list moved tickets
-  with 'tk ls --status=closed'. An epic is refused: its children would be
-  left naming a closed copy.
+  create [title]         Create a ticket
+  edit <id>              Update ticket fields
+  add-note <id> [text]   Append a timestamped note (stdin if no text)
+  move <id> <project>    Move an isolated leaf ticket to another project
+  delete <id>...         Delete tickets
 
 Dependencies & Links:
-  dep <id> <dep-id>          Add dependency (id depends on dep-id)
-    --cargo "<what flows>"   Name what concretely flows across the edge ("" clears)
-  undep <id> <dep-id>        Remove dependency
-  dep tree [--full] <id>     Show dependency tree (marks edges with no cargo)
-  link <id> <id> [id...]     Link tickets (symmetric)
-  unlink <id> <target-id>    Remove link
+  dep <id> <dep-id>      Add dependency (--cargo names what flows)
+  undep <id> <dep-id>    Remove dependency
+  dep tree <id>          Show dependency tree
+  link <id> <id>...      Link tickets (symmetric)
+  unlink <id> <id>       Remove link
 
-Query (JSON):
-  query [jq-filter]          Output all tickets as JSONL (one JSON object per line)
+Verification:
+  verify <id>            Run acceptance-criteria verify commands
+  verify --policy        Print the verify_allow and verify_timeout in force
 
-  The optional filter is passed to jq's select() automatically.
-  Do NOT wrap your filter in select() — just provide the expression.
-  Always use single quotes for the filter to avoid bash issues with ! and ".
-
-  tk query                                        # all tickets as JSONL
-  tk query '.status == "open"'                     # filter by field
-  tk query '.type == "bug" and .priority <= 1'    # compound filter
-  tk query '.title | test("deploy"; "i")'         # regex search
-  tk query --all-projects                         # every namespace, IDs qualified
-
-  JSON fields: id, status, abandoned, type, priority, title, deps[], links[],
-    tags[], created, updated, closed, parent, external-ref, outputs, dep_cargo,
-    description, design, acceptance_criteria, test_results,
-    notes[] (timestamp, text; every note, oldest first),
-    plus any custom extra fields (flattened to top level)
-  An empty body section's key is omitted.
-  The body fields are the ones ticket_show carries, split the same way, and
-  no other ## heading becomes one. Headings match on prefix: ## Design Notes
-  opens design, ## Test Results Summary opens test_results, ## Acceptance Notes
-  opens acceptance_criteria, and the heading line itself is in no field. Any
-  other heading stays in the text of the section it follows, description
-  included, except that it closes the acceptance section.
-  Repeated design, test_results or acceptance blocks are joined in body order.
-  An exact ## Notes line is text like any other heading, unless the next
-  non-blank line is a note timestamp: then it opens the notes, so what is below
-  it is note text, sections included, and not description.
-  Text that reaches no field:
-    - after a heading that closes the acceptance section, up to the next
-      design, acceptance or test results heading
-    - from an exact ## Review Log line up to the next exact ## Notes line, or
-      the end if none follows; the same line inside a note is that note's text
-
-Setup:
-  init [--project <name>] [--central-root <path>] [--yes]
-                               Initialize tk and register a project
-  sync                         Sync ticket changes to git
-  status                       Show tk system status and project overview
-
-Server:
-  serve                      Start MCP server on stdio
+Setup & Server:
+  init                   Initialize tk and register a project
+  status                 System status and project overview
+  sync                   Sync ticket changes to git
+  serve                  Start MCP server on stdio
 
 Journal:
-  watch start [--interval=5s]  Start background git commit watcher
-  watch stop                   Stop the background watcher
-  watch status                 Show watcher status
-  watch logs [-n 50]           Show watcher log output
-  recompute [--project=NAME]   Rebuild commit journal from git history
-
-Filter flags for ls:
-  --status=X         backlog | ready | open | done | closed
-  --all              Include done and closed, which the default hides.
-                     --status shows one status at a time, so this is the
-                     only view of the whole board.
-  -t, --type=X       bug | feature | epic
-  -P, --priority=X   0 (critical) through 4 (backlog)
-  -T, --tag=X        Filter by tag
-  --field=key=value  Filter by extra field (substring match)
-  --parent=X         Children of epic X (qualified project/id, or bare in the
-                     selected project); membership is global, the listing is
-                     the selected project's — see ls above
-  --all-projects     Every namespace in the central store, IDs qualified;
-                     conflicts with --project
-  --group-by=X       Group by: workflow | type | priority
-  --flat             Flat list (no grouping)
-
-Create & edit options:
-  -d, --description    Description text
-  -t, --type           bug | feature | epic [default: feature]
-  -p, --priority       0-4, 0=highest [default: 2]
-  --status             Ticket status (edit only)
-  --title              New title (edit only)
-  --parent             Parent epic ID (an epic in the same project; an epic
-                       itself cannot have a parent). A qualified project/id
-                       names an epic in another namespace, accepted once
-                       the catalog requires cross-project-parents
-  --tags               Comma-separated (e.g., --tags ui,backend)
-  --external-ref       External reference (e.g., gh-123)
-  --branch             Git branch name (edit only)
-  --set key=value      Set extra field (repeatable, blank value removes)
-  --output key=value   Set output value, e.g. branch/commit/artifact
-                       (edit only, repeatable, blank value removes)
-
-Statuses: backlog, ready, open, done, closed
-  An epic's status is derived from its children, never set: no children reads
-  backlog, any child open reads open, all children done reads done, and all
-  terminal with one of them closed reads closed — an epic whose work was
-  abandoned did not complete. An epic never reads ready, and its completion
-  date is its last child's. Setting a status by hand is refused — change the
-  children, or set the epic closed to abandon it, which records the intent
-  (abandoned: true) and closes its children too, naming them in the line that
-  reports the edit; setting any other status on an abandoned epic takes that
-  back. The same applies to a status set alongside --type epic. Statuses
-  stored on epics before this were left in place and are ignored, not
-  migrated; tk audit counts every epic that now reads a different one and
-  tk audit stale-status and tk audit stored-closed list them, and the ones
-  it reports as stored-closed should be re-recorded before those epics are
-  edited — but only where the file predates the change, since a later write
-  of an epic leaves the same shape behind.
+  watch start|stop|status|logs   Background git commit watcher
+  recompute              Rebuild commit journal from git history
 
 Global flags:
-  --repo <name|path>  Operate on a different registered project or repo
-  --project <ns>   Operate on a namespace in the central store by name; no
-                   repository is resolved and none has to exist. _root is
-                   always selectable (writing to it is still the catalog's
-                   call); any other name must be a registered project, a
-                   directory under <central_root>/tickets, or catalogued —
-                   an unknown one is refused rather than conjured. A
-                   selector: --project and --repo together are refused
-  --json           Output in JSON format
+  --project <ns>         Operate on a central-store namespace (_root for ideas)
+  --repo <name|path>     Operate on a registered project or repo
+  --json                 JSON output
 
-Namespaces:
-  A namespace is a directory under <central_root>/tickets/ and the first half
-  of every project/id. A project is a namespace with a repository registered
-  behind it; _root (Root) is the built-in namespace for ideas that have no
-  repository yet, and tk init refuses to register it. <central_root>/catalog.yaml
-  lists every namespace with its kind (root, project, legacy) and the
-  required_features every binary sharing the store must implement; a
-  .namespace marker inside each namespace directory keeps an empty one in git.
-  Writes are refused before they touch the store when the catalog requires a
-  feature this binary lacks, and writes to _root are refused until the catalog
-  requires root-namespace. No catalog means the store predates activation:
-  every read and write to an ordinary project behaves as before. Binaries
-  released before this guard ignore the catalog and the markers entirely, so
-  activation requires replacing every tk binary, embedded library and
-  long-lived process (MCP servers, watchers) sharing the store — a marker
-  alone cannot make an already-released binary refuse.
-
-Environment:
-  TK_STORE_ROOT <abs path>
-    Resolve the whole store against this root instead of the configured
-    central_root: tickets in <root>/tickets, shared config <root>/config.yaml,
-    local config <root>/.ticket/config.yaml. Nothing reads or writes the
-    configured store or ~/.ticket/config.yaml, and tk serve starts without a
-    local config.
-    No sync, commit, push or journal watch runs: tk serve starts neither loop,
-    and tk sync, tk watch and tk recompute refuse to run — sync would commit and
-    push the git repo enclosing the sandbox, and the journal (recompute rebuilds
-    it; watch appends to it, alongside its pid file and log) stays under HOME,
-    which the override does not move. That is the one store path HOME still
-    decides. tk init still registers a project, since central writes to an
-    unregistered one are refused, but skips the store's git bootstrap.
-    verify_allow is the setting it does not move: it is always read from
-    ~/.ticket/config.yaml, because it decides which programs run as you. So a
-    store root cannot widen the allow-list, and a root with no config falls back
-    to your own.
-    That bounds what a store root can supply, not a caller who also controls the
-    environment: whoever can set TK_STORE_ROOT can generally set HOME too.
-    A value that is not an absolute path is an error on any command, before any
-    store is resolved — there is no fall-back to the configured store. The empty
-    string is such a value, not an absent one.
-    It covers tk's own store resolution and nothing wider. Outside it, under
-    separate controls: ticket_create's "repo" argument, which resolves a
-    caller-supplied path before any config lookup; and a verify command that
-    verify_allow permits — "go run pkg@version" and "make -f <file>" run code
-    from outside the repo, which can reach any path.
-
-Partial ID matching: 'tk show 5c4' matches 'nw-5c46'
-Run 'tk init' to configure and register a project.`
+Statuses: backlog -> ready -> open -> done; closed = won't fix.
+An epic's status is derived from its children; see tk edit --help.
+IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.`
 
 // Version is set via -ldflags at build time.
 var Version = "dev"
@@ -398,9 +118,16 @@ var gateExempt = map[string]bool{
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	rootCmd.PersistentFlags().StringVar(&repoFlag, "repo", "", "registered project name or path to repo root")
-	rootCmd.PersistentFlags().StringVar(&projectFlag, "project", "", "namespace in the central store to operate on (_root for Root); no repo is resolved")
+	rootCmd.PersistentFlags().StringVar(&projectFlag, "project", "", "namespace in the central store to operate on (_root for Root); no repo is resolved, an unknown name is refused, conflicts with --repo")
+	// The root prints only the index; every other command keeps cobra's
+	// default help, so its own Long, Example and flags are what it prints.
+	defaultHelp := rootCmd.HelpFunc()
 	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		fmt.Println(helpText)
+		if cmd != rootCmd {
+			defaultHelp(cmd, args)
+			return
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), helpText)
 	})
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
