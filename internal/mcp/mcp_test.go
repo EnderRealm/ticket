@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,7 +85,14 @@ func testServerDir(t *testing.T) (*mcp.ClientSession, string) {
 // cleanup so LIFO cancels after the client is gone. Callers must create any
 // t.TempDir() before calling runServer, so this cleanup runs before their
 // removals.
-func runServer(t *testing.T, run func(context.Context, mcp.Transport) error, st mcp.Transport) {
+//
+// io.ErrClosedPipe is that client hang-up, not a failure: NewServer's AddTool
+// calls arm the SDK's debounced notifications/tools/list_changed, which fires
+// 10ms later on a background context. In a test that finishes sooner the
+// notification is written after the client closed its end of the pipe, the
+// connection records the write error, and Run returns it from ss.Wait when that
+// wins the race with cancel.
+func runServer(t testing.TB, run func(context.Context, mcp.Transport) error, st mcp.Transport) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -100,13 +108,81 @@ func runServer(t *testing.T, run func(context.Context, mcp.Transport) error, st 
 		case <-done:
 			// runErr is written before close(done), so this read is ordered.
 			// It is not read on the timeout path, where the goroutine lives on.
-			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, io.ErrClosedPipe) {
 				t.Errorf("runServer: server.Run: %v", runErr)
 			}
 		case <-time.After(2 * time.Second):
 			t.Error("runServer: server.Run did not return after context cancel")
 		}
 	})
+}
+
+// recordingTB stands in for a test's testing.TB so runServer's verdict can be
+// read back instead of failing the test that drives it.
+type recordingTB struct {
+	testing.TB
+	cleanups []func()
+	errs     []string
+}
+
+func (r *recordingTB) Cleanup(f func())  { r.cleanups = append(r.cleanups, f) }
+func (r *recordingTB) Error(args ...any) { r.errs = append(r.errs, fmt.Sprint(args...)) }
+func (r *recordingTB) Errorf(format string, args ...any) {
+	r.errs = append(r.errs, fmt.Sprintf(format, args...))
+}
+
+// finish runs the recorded cleanups last-registered first, as testing does.
+func (r *recordingTB) finish() {
+	for i := len(r.cleanups) - 1; i >= 0; i-- {
+		r.cleanups[i]()
+	}
+}
+
+func TestRunServerReportsOnlyAbnormalExits(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		wantErr string
+	}{
+		{"clean exit", nil, ""},
+		{"context canceled", context.Canceled, ""},
+		{"client closed pipe", io.ErrClosedPipe, ""},
+		{"other error", io.ErrUnexpectedEOF, "runServer: server.Run: unexpected EOF"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingTB{TB: t}
+			runServer(rec, func(ctx context.Context, _ mcp.Transport) error {
+				<-ctx.Done()
+				return tc.err
+			}, nil)
+			rec.finish()
+
+			var want []string
+			if tc.wantErr != "" {
+				want = []string{tc.wantErr}
+			}
+			if strings.Join(rec.errs, "\n") != strings.Join(want, "\n") {
+				t.Errorf("runServer reported %q, want %q", rec.errs, want)
+			}
+		})
+	}
+}
+
+func TestRunServerReportsRunThatIgnoresCancel(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	rec := &recordingTB{TB: t}
+	runServer(rec, func(context.Context, mcp.Transport) error {
+		<-release
+		return nil
+	}, nil)
+	rec.finish()
+
+	want := "runServer: server.Run did not return after context cancel"
+	if len(rec.errs) != 1 || rec.errs[0] != want {
+		t.Errorf("runServer reported %q, want [%q]", rec.errs, want)
+	}
 }
 
 func TestCreateTicket(t *testing.T) {
