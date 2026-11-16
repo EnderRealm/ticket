@@ -209,11 +209,8 @@ func BareCriteria(body string) []string {
 // said the same way by `tk create` and ticket_create. Empty bare means no
 // warning, so a caller can assign the result unconditionally.
 //
-// The remedy names ticket_edit and the section itself, and deliberately not
-// `tk edit`: that command has no acceptance flag, and its --description writes
-// only the description section, so a CLI operator sent there finds nothing that
-// writes the criteria. One phrasing reaches both surfaces, so it may name only
-// what is true on both.
+// The remedy names ticket_edit and the section itself, not `tk edit
+// --acceptance`. One phrasing reaches both the CLI and MCP surfaces.
 func BareAcceptanceWarning(id string, bare []string) string {
 	if len(bare) == 0 {
 		return ""
@@ -241,9 +238,9 @@ func UnparsedAcceptance(body string) bool {
 }
 
 // UnparsedAcceptanceWarning is the one phrasing for a section
-// UnparsedAcceptance reports, said the same way by `tk create`, ticket_create
-// and ticket_edit. It names the remedy on the same terms BareAcceptanceWarning
-// does, and for the same reason does not name `tk edit`.
+// UnparsedAcceptance reports, said the same way by `tk create`, `tk edit`,
+// ticket_create and ticket_edit. It names the remedy on the same terms
+// BareAcceptanceWarning does.
 func UnparsedAcceptanceWarning(id string) string {
 	return fmt.Sprintf("ticket %s has an acceptance section but no criteria parse from it: only a line starting with `- ` in the first column starts a criterion, "+
 		"so a numbered list, `*` or `+` bullets and indented bullets yield none, and verify will report that the ticket has no acceptance criteria. "+
@@ -285,10 +282,10 @@ const shellSyntaxRemedy = "Rewrite such a line as one program invocation with it
 	"or move the shell logic into a script or a quoted `bash -c '…'` whose program is in verify_allow."
 
 // ShellSyntaxWarning is the one phrasing for commands ShellSyntaxCriteria
-// found, said the same way by `tk create`, ticket_create and ticket_edit.
-// Empty found means no warning, so a caller can assign the result
+// found, said the same way by `tk create`, `tk edit`, ticket_create and
+// ticket_edit. Empty found means no warning, so a caller can assign the result
 // unconditionally. It names the remedy on the same terms BareAcceptanceWarning
-// does, and for the same reason does not name `tk edit`.
+// does.
 func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {
 	if len(found) == 0 {
 		return ""

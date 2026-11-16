@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +14,12 @@ var editCmd = &cobra.Command{
 	Use:   "edit <id> [options]",
 	Short: "Update ticket fields",
 	Long: `Update ticket fields. Only the fields named by a flag change.
+
+--description, --design, --acceptance and --test-results each replace one body
+section: the description, ## Design, ## Acceptance Criteria and ## Test Results.
+An edit writing the description or acceptance reports on stderr an acceptance
+section no criterion parses from, or a verify: line carrying shell syntax (see
+tk verify --help); the edit is still written.
 
 --parent names an epic in the same project, and an epic itself cannot have a
 parent. A qualified project/id names an epic in another namespace, accepted
@@ -39,6 +46,9 @@ func registerEditFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.String("title", "", "new title")
 	f.StringP("description", "d", "", "description text")
+	f.String("design", "", "design section text")
+	f.String("acceptance", "", "acceptance criteria section text")
+	f.String("test-results", "", "test results section text")
 	f.String("status", "", "ticket status (backlog, ready, open, done, closed)")
 	f.StringP("type", "t", "", "ticket type")
 	f.StringP("priority", "p", "", "priority (0-4)")
@@ -119,6 +129,18 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		t.Body = ticket.UpdateSection(t.Body, "", v)
 		changed = true
 	}
+	if v, _ := cmd.Flags().GetString("design"); cmd.Flags().Changed("design") {
+		t.Body = ticket.UpdateSection(t.Body, "Design", v)
+		changed = true
+	}
+	if v, _ := cmd.Flags().GetString("acceptance"); cmd.Flags().Changed("acceptance") {
+		t.Body = ticket.UpdateSection(t.Body, "Acceptance Criteria", v)
+		changed = true
+	}
+	if v, _ := cmd.Flags().GetString("test-results"); cmd.Flags().Changed("test-results") {
+		t.Body = ticket.UpdateSection(t.Body, "Test Results", v)
+		changed = true
+	}
 	if v, _ := cmd.Flags().GetString("note"); cmd.Flags().Changed("note") {
 		t.Notes = append(t.Notes, ticket.Note{
 			Timestamp: time.Now().UTC(),
@@ -173,6 +195,17 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Updated %s%s\n", t.ID, ticket.ClosedChildrenNote(closed))
+
+	// The same warnings ticket_edit returns, under the same condition: only an
+	// edit that wrote a section able to carry the criteria repeats them.
+	if cmd.Flags().Changed("description") || cmd.Flags().Changed("acceptance") {
+		if ticket.UnparsedAcceptance(t.Body) {
+			fmt.Fprintln(os.Stderr, ticket.UnparsedAcceptanceWarning(t.ID))
+		}
+		if shell := ticket.ShellSyntaxCriteria(t.Body); len(shell) > 0 {
+			fmt.Fprintln(os.Stderr, ticket.ShellSyntaxWarning(t.ID, shell))
+		}
+	}
 	return nil
 }
 

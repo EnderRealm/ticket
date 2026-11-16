@@ -1242,11 +1242,10 @@ func TestBareAcceptanceWarning(t *testing.T) {
 			t.Errorf("warning %q does not name %q", got, want)
 		}
 	}
-	// The CLI prints this same sentence, and `tk edit` cannot write the
-	// acceptance section — naming it would send an operator to a flag that
-	// does not exist.
+	// The CLI prints this same sentence; its remedy names ticket_edit and the
+	// section, not `tk edit`.
 	if strings.Contains(got, "tk edit") {
-		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", got)
+		t.Errorf("warning names `tk edit`: %q", got)
 	}
 }
 
@@ -1337,7 +1336,7 @@ func TestUnparsedAcceptanceWarning(t *testing.T) {
 		}
 	}
 	if strings.Contains(got, "tk edit") {
-		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", got)
+		t.Errorf("warning names `tk edit`: %q", got)
 	}
 }
 
@@ -1415,7 +1414,7 @@ func TestShellSyntaxIgnoresQuoted(t *testing.T) {
 		}
 	}
 	if strings.Contains(w, "tk edit") {
-		t.Errorf("warning names `tk edit`, which has no acceptance flag: %q", w)
+		t.Errorf("warning names `tk edit`: %q", w)
 	}
 }
 

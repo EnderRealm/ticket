@@ -36,6 +36,7 @@ Viewing:
 Creating & Editing:
   create [title]         Create a ticket
   edit <id>              Update ticket fields
+  edit --acceptance <t>  Set a body section (also --design, --test-results)
   add-note <id> [text]   Append a timestamped note (stdin if no text)
   move <id> <project>    Move an isolated leaf ticket to another project
   delete <id>...         Delete tickets

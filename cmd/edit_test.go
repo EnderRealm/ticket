@@ -3,6 +3,9 @@ package cmd
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,5 +247,161 @@ func TestShowRendersOutputs(t *testing.T) {
 		if !contains(out, want) {
 			t.Errorf("show output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestEditSetsBodySections(t *testing.T) {
+	store := editStore(t, "ed-sections")
+	if err := runEditWith(t, "ed-sections", "description", "Why it matters."); err != nil {
+		t.Fatalf("runEdit: %v", err)
+	}
+	// Backdate the stored stamp so the section edit's own write is observable
+	// at the format's one-second precision.
+	path := filepath.Join(store.Dir, "ed-sections.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := regexp.MustCompile(`(?m)^updated: .*$`).ReplaceAll(data, []byte("updated: 2020-01-01T00:00:00Z"))
+	if err := os.WriteFile(path, stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if before, err := store.Get("ed-sections"); err != nil || before.Updated.Year() != 2020 {
+		t.Fatalf("backdating did not take: updated = %v, err = %v", before.Updated, err)
+	}
+
+	acceptance := "- It works.\n  verify: go test ./cmd/"
+	if err := runEditWith(t, "ed-sections",
+		"acceptance", acceptance,
+		"design", "Reuse UpdateSection.",
+		"test-results", "all green"); err != nil {
+		t.Fatalf("runEdit: %v", err)
+	}
+	tk, err := store.Get("ed-sections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, design, acc, results := ticket.BodySections(tk.Body)
+	if desc != "Why it matters." {
+		t.Errorf("description = %q, want it kept", desc)
+	}
+	if design != "Reuse UpdateSection." {
+		t.Errorf("design = %q", design)
+	}
+	if acc != acceptance {
+		t.Errorf("acceptance = %q, want %q", acc, acceptance)
+	}
+	if results != "all green" {
+		t.Errorf("test results = %q", results)
+	}
+	if !contains(tk.Body, "## Acceptance Criteria\n") {
+		t.Errorf("body has no ## Acceptance Criteria heading:\n%s", tk.Body)
+	}
+	if criteria := ticket.ParseCriteria(ticket.AcceptanceCriteria(tk.Body)); len(criteria) != 1 || criteria[0].Command != "go test ./cmd/" {
+		t.Errorf("criteria = %+v, want the one written", criteria)
+	}
+	if !tk.Updated.After(time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("updated = %v, want the edit to stamp it", tk.Updated)
+	}
+
+	// A second acceptance edit replaces the section rather than adding one.
+	if err := runEditWith(t, "ed-sections", "acceptance", "- Replaced.\n  unverifiable: by hand"); err != nil {
+		t.Fatalf("runEdit: %v", err)
+	}
+	tk, err = store.Get("ed-sections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, acc, _ := ticket.BodySections(tk.Body); acc != "- Replaced.\n  unverifiable: by hand" {
+		t.Errorf("acceptance after replace = %q", acc)
+	}
+	if n := strings.Count(tk.Body, "## Acceptance"); n != 1 {
+		t.Errorf("body carries %d acceptance headings, want 1:\n%s", n, tk.Body)
+	}
+}
+
+func TestEditAcceptanceDerivesParentStatus(t *testing.T) {
+	// The section edit rides the same SaveEdit write as a status change, so an
+	// epic's only child finishing with its contract groomed finishes the epic.
+	store := centralStore(t, "ed-propagate")
+	if err := store.Create(&ticket.Ticket{
+		ID: "ed-epic-0003", Status: ticket.StatusBacklog, Type: ticket.TypeEpic,
+		Created: time.Now(), Title: "An epic", Body: "\n",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.Create(&ticket.Ticket{
+		ID: "ed-child-0004", Status: ticket.StatusOpen, Type: ticket.TypeFeature, Parent: "ed-epic-0003",
+		Created: time.Now(), Title: "A child", Body: "\n",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := runEditWith(t, "ed-child-0004", "acceptance", "- Done.\n  unverifiable: by hand", "status", "done"); err != nil {
+		t.Fatalf("runEdit: %v", err)
+	}
+	epic, err := store.Get("ed-epic-0003")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epic.Status != ticket.StatusDone {
+		t.Errorf("epic status = %q, want %q", epic.Status, ticket.StatusDone)
+	}
+}
+
+func TestEditWarnsOnUnparsedAcceptance(t *testing.T) {
+	editStore(t, "ed-warn")
+
+	stderr := captureEditStderr(t, "ed-warn", "acceptance", "1. Numbered.\n   verify: go test ./...")
+	if !contains(stderr, ticket.UnparsedAcceptanceWarning("ed-warn")) {
+		t.Errorf("stderr missing the unparsed-acceptance warning:\n%s", stderr)
+	}
+
+	stderr = captureEditStderr(t, "ed-warn", "acceptance", "- Shell.\n  verify: cd x && true")
+	if !contains(stderr, "shell syntax outside quotes") {
+		t.Errorf("stderr missing the shell-syntax warning:\n%s", stderr)
+	}
+
+	// An edit that writes neither section repeats nothing about one it did not touch.
+	stderr = captureEditStderr(t, "ed-warn", "design", "unrelated")
+	if stderr != "" {
+		t.Errorf("a design edit warned:\n%s", stderr)
+	}
+}
+
+func captureEditStderr(t *testing.T, id string, flags ...string) string {
+	t.Helper()
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	r, w, _ := os.Pipe()
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	os.Stdout, os.Stderr = devnull, w
+
+	err = runEditWith(t, id, flags...)
+
+	w.Close()
+	os.Stdout, os.Stderr = oldStdout, oldStderr
+
+	if err != nil {
+		t.Fatalf("runEdit: %v", err)
+	}
+
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+func TestHelpDocumentsEditSections(t *testing.T) {
+	help := renderHelp(t, editCmd)
+	for _, flag := range []string{"--acceptance", "--design", "--test-results"} {
+		if !contains(help, flag+" string") {
+			t.Errorf("edit help lists no %s flag:\n%s", flag, help)
+		}
+	}
+	root := renderHelp(t, rootCmd)
+	if !contains(root, "edit --acceptance <t>") {
+		t.Errorf("root help has no index line for edit's section flags:\n%s", root)
 	}
 }
