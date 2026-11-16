@@ -200,6 +200,39 @@ func TestMoveRefusesATicketWithDepsAndCargo(t *testing.T) {
 	}
 }
 
+// The copy a move writes owns its maps: the source ticket is closed and
+// written back after the copy is built, so a shared map would carry an edit to
+// either ticket into the other across projects. Nil stays nil, so the copy
+// does not grow an empty map the source never had.
+func TestMoveCopyDoesNotAliasMaps(t *testing.T) {
+	source := &Ticket{
+		ID:      "alias-src-0001",
+		Outputs: map[string]string{"branch": "feature/foo"},
+		Extra:   map[string]string{"owner": "alice"},
+	}
+	moved := copyForMove(source, "alias-dst-0002", Note{Text: "Moved"})
+
+	moved.Outputs["branch"] = "feature/bar"
+	moved.Outputs["commit"] = "abc123"
+	moved.Extra["owner"] = "bob"
+	moved.Extra["team"] = "core"
+
+	if len(source.Outputs) != 1 || source.Outputs["branch"] != "feature/foo" {
+		t.Errorf("source Outputs = %v, want the original entry alone", source.Outputs)
+	}
+	if len(source.Extra) != 1 || source.Extra["owner"] != "alice" {
+		t.Errorf("source Extra = %v, want the original entry alone", source.Extra)
+	}
+
+	bare := copyForMove(&Ticket{ID: "alias-src-0003"}, "alias-dst-0004", Note{Text: "Moved"})
+	if bare.Outputs != nil {
+		t.Errorf("copy Outputs = %#v, want nil for a source with none", bare.Outputs)
+	}
+	if bare.Extra != nil {
+		t.Errorf("copy Extra = %#v, want nil for a source with none", bare.Extra)
+	}
+}
+
 func TestMoveLeavesVerdictsBehind(t *testing.T) {
 	src, dst := moveStores(t)
 

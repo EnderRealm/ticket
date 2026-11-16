@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,29 +142,7 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		now := time.Now().UTC()
 		result := MoveResult{OldID: t.ID, NewID: newRef}
 
-		copied := *t
-		newTicket := &copied
-		newTicket.ID = newID
-		newTicket.Status = StatusBacklog
-		newTicket.Tags = copyStrings(t.Tags)
-		newTicket.Deps = []string{}
-		newTicket.Links = []string{}
-		newTicket.DepCargo = nil // the shallow copy aliases the source map
-		newTicket.version = ""   // the copy is a new file, not the source's
-		newTicket.relationshipIssue = ""
-		// Same inherited read-state: the body was stripped at parse time, so the
-		// new file never holds a Review Log and its write drops nothing. Only the
-		// source's close warns.
-		newTicket.droppedReviewLog = 0
-		// The rows judged commits of the source project's repo, against the ID the
-		// ticket had there, so they say nothing about the copy landing in this one
-		// and do not travel with it. The closed source ticket keeps the record.
-		newTicket.Verdicts = nil
-		// Receipts are keyed to the ticket and the project they were recorded
-		// in: an action ID names the source ticket, and a finding key is scoped
-		// to the source project. Neither answers for the copy.
-		newTicket.Actions = nil
-		newTicket.Notes = append(copyNotes(t.Notes), Note{
+		newTicket := copyForMove(t, newID, Note{
 			Timestamp: now,
 			Text:      fmt.Sprintf("Moved from %s in %s", t.ID, srcWhere),
 		})
@@ -193,6 +172,40 @@ func MoveTicket(src, dst *FileStore, id string, recursive bool) ([]MoveResult, e
 		return nil
 	})
 	return results, err
+}
+
+// copyForMove builds the ticket a move writes into the destination: a copy of
+// t under newID, reset to backlog with provenance appended to its notes. Every
+// reference field is rebuilt rather than taken from the shallow copy, so the
+// copy shares no slice or map with the source ticket, which the move goes on
+// to close and write back.
+func copyForMove(t *Ticket, newID string, provenance Note) *Ticket {
+	copied := *t
+	newTicket := &copied
+	newTicket.ID = newID
+	newTicket.Status = StatusBacklog
+	newTicket.Tags = copyStrings(t.Tags)
+	newTicket.Deps = []string{}
+	newTicket.Links = []string{}
+	newTicket.DepCargo = nil // the shallow copy aliases the source map
+	newTicket.Outputs = maps.Clone(t.Outputs)
+	newTicket.Extra = maps.Clone(t.Extra)
+	newTicket.version = "" // the copy is a new file, not the source's
+	newTicket.relationshipIssue = ""
+	// Same inherited read-state: the body was stripped at parse time, so the
+	// new file never holds a Review Log and its write drops nothing. Only the
+	// source's close warns.
+	newTicket.droppedReviewLog = 0
+	// The rows judged commits of the source project's repo, against the ID the
+	// ticket had there, so they say nothing about the copy landing in this one
+	// and do not travel with it. The closed source ticket keeps the record.
+	newTicket.Verdicts = nil
+	// Receipts are keyed to the ticket and the project they were recorded
+	// in: an action ID names the source ticket, and a finding key is scoped
+	// to the source project. Neither answers for the copy.
+	newTicket.Actions = nil
+	newTicket.Notes = append(copyNotes(t.Notes), provenance)
+	return newTicket
 }
 
 // qualifyForStore returns a bare ID in the store's namespace, so a reference
