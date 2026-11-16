@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -3784,6 +3786,54 @@ func TestVerifyToolArgumentCannotWidenAllowList(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("a tool argument widened what runs: %v", err)
+	}
+}
+
+// A launcher prefix decides which uid a command runs as, so it is a CLI flag
+// only: ticket_verify's schema carries exactly its known arguments, and a
+// launcher argument is rejected rather than wrapping the command.
+func TestVerifyToolHasNoLauncherArgument(t *testing.T) {
+	session, _ := verifyServer(t)
+	ctx := context.Background()
+
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tool.Name != "ticket_verify" {
+			continue
+		}
+		data, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &schema); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var names []string
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if want := []string{"acceptance_id", "candidate", "dir", "id"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("ticket_verify arguments = %q, want exactly %q", names, want)
+	}
+
+	id := createTicketID(t, session, map[string]any{
+		"title":      "Launched",
+		"type":       "feature",
+		"acceptance": "- Echoes.\n  verify: /bin/echo ok\n",
+	})
+	_, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ticket_verify",
+		Arguments: map[string]any{"id": id, "launcher": []string{"/bin/sh", "-c", "exit 1"}},
+	})
+	if err == nil {
+		t.Error("ticket_verify accepted a launcher argument")
 	}
 }
 

@@ -1998,7 +1998,7 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 		}
 		prov := ticket.VerifyProvenance{Dir: dir, Implementation: implementation, AcceptanceID: acceptanceID, Candidate: args.Candidate}
 		job, err := jobs.start(req.Session, t.ID, prov, func(ctx context.Context) (ticket.VerifyReport, string, error) {
-			results, err := ticket.RunVerify(ctx, criteria, dir, policy)
+			results, err := ticket.RunVerify(ctx, criteria, dir, policy, nil)
 			return ticket.NewVerifyReport(t.ID, prov, results), ticket.FormatVerifyRecord(results, prov, time.Now().UTC()), err
 		}, func(record string) error {
 			// The current body, so edits made during the run survive — unless

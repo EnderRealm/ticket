@@ -21,7 +21,13 @@ import (
 // Both variables, because os.UserCacheDir reads HOME on darwin and prefers
 // XDG_CACHE_HOME elsewhere. A test that sandboxes HOME for its own reasons
 // overrides this and lands somewhere equally temporary.
+//
+// Re-execed with standInLauncherEnv set, the binary is a verify launcher
+// stand-in instead and runs no tests.
 func TestMain(m *testing.M) {
+	if os.Getenv(standInLauncherEnv) != "" {
+		os.Exit(standInLauncher(os.Args[1], os.Args[2:]))
+	}
 	dir, err := os.MkdirTemp("", "tk-test-cache")
 	if err != nil {
 		panic(err)

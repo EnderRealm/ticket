@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -296,7 +297,7 @@ func TestRunVerify(t *testing.T) {
 		{Text: "no command"},
 	}
 
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestRunVerifyUnverifiableReasonNeverRuns(t *testing.T) {
 		Unverifiable:       true,
 		UnverifiableReason: "/bin/sh -c 'touch " + sentinel + "'",
 	}}
-	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -366,7 +367,7 @@ func TestRunVerifyNestedUnverifiableIsUnverified(t *testing.T) {
 	sentinel := filepath.Join(dir, "sentinel.txt")
 	criteria := ParseCriteria("- Recipe recorded.\n  verify: unverifiable: /bin/sh -c 'touch " + sentinel + "'")
 
-	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -393,7 +394,7 @@ func TestRunVerifyRunsInDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "in dir", Command: "/bin/cat marker.txt"}}, dir, VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "in dir", Command: "/bin/cat marker.txt"}}, dir, VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestRunVerifyRunsInDir(t *testing.T) {
 
 func TestRunVerifyMissingDir(t *testing.T) {
 	criteria := []Criterion{{Text: "passes", Command: "/bin/echo ok"}}
-	if _, err := RunVerify(context.Background(), criteria, filepath.Join(t.TempDir(), "gone"), VerifyPolicy{Allow: testAllow}); err == nil {
+	if _, err := RunVerify(context.Background(), criteria, filepath.Join(t.TempDir(), "gone"), VerifyPolicy{Allow: testAllow}, nil); err == nil {
 		t.Error("RunVerify should error once when the directory doesn't exist")
 	}
 }
@@ -413,7 +414,7 @@ func TestRunVerifyHonorsCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	results, err := RunVerify(ctx, []Criterion{{Text: "passes", Command: "/bin/echo ok"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(ctx, []Criterion{{Text: "passes", Command: "/bin/echo ok"}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -424,7 +425,7 @@ func TestRunVerifyHonorsCallerContext(t *testing.T) {
 
 func TestRunVerifyTimeout(t *testing.T) {
 	policy := VerifyPolicy{Allow: testAllow, Timeout: 50 * time.Millisecond}
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), policy)
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), policy, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestRunVerifyCallerDeadlineIsNotTheVerifyBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	results, err := RunVerify(ctx, []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(ctx, []Criterion{{Text: "hangs", Command: "/bin/sh -c 'sleep 5'"}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -502,7 +503,7 @@ func TestRunVerifyTimeoutNoteSurvivesChattyCommand(t *testing.T) {
 	// ~100KB on stdout, then a hang past the bound. exec so the kill closes the
 	// output pipe at once rather than after verifyWaitDelay.
 	cmd := "/bin/sh -c 'i=0; while [ $i -lt 2000 ]; do echo 0123456789012345678901234567890123456789012345678; i=$((i+1)); done; exec sleep 5'"
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "chatty and slow", Command: cmd}}, t.TempDir(), policy)
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "chatty and slow", Command: cmd}}, t.TempDir(), policy, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -523,7 +524,7 @@ func TestRunVerifyWithinConfiguredTimeout(t *testing.T) {
 		{Text: "slow pass", Command: "/bin/sh -c 'sleep 0.3'"},
 		{Text: "slow fail", Command: "/bin/sh -c 'sleep 0.3; exit 3'"},
 	}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), policy)
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), policy, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -546,7 +547,7 @@ func TestRunVerifyNonPositiveTimeoutUsesDefault(t *testing.T) {
 	// API; taking it literally would build an already-expired context and record
 	// the command as "timed out after -5m0s".
 	for _, timeout := range []time.Duration{0, -5 * time.Minute} {
-		results, err := RunVerify(context.Background(), []Criterion{{Text: "quick", Command: "/bin/echo ok"}}, t.TempDir(), VerifyPolicy{Allow: testAllow, Timeout: timeout})
+		results, err := RunVerify(context.Background(), []Criterion{{Text: "quick", Command: "/bin/echo ok"}}, t.TempDir(), VerifyPolicy{Allow: testAllow, Timeout: timeout}, nil)
 		if err != nil {
 			t.Fatalf("RunVerify: %v", err)
 		}
@@ -567,7 +568,7 @@ func TestRunVerifyRefusesEverythingWhenTimeoutIsUnreadable(t *testing.T) {
 		TimeoutErr: errors.New(`projects.village2.verify_timeout "soon" is not a positive duration`),
 	}
 	criteria := []Criterion{{Text: "writes a marker", Command: "/bin/sh -c 'touch " + marker + "'"}}
-	results, err := RunVerify(context.Background(), criteria, dir, policy)
+	results, err := RunVerify(context.Background(), criteria, dir, policy, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -588,7 +589,7 @@ func TestRunVerifyCapsOutputToItsTail(t *testing.T) {
 	// A long suite prints its startup chatter first and the failing test last;
 	// the cap has to keep the end, and say how much of the head it dropped.
 	cmd := "/bin/sh -c 'yes x | head -c 20000; echo; echo FAIL: TestTheOneThatBroke; exit 1'"
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "noisy", Command: cmd}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "noisy", Command: cmd}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -868,7 +869,7 @@ func TestRunVerifyRefusesCommandOutsideAllowList(t *testing.T) {
 	}
 
 	criteria := []Criterion{{Text: "hostile", Command: "rm -rf " + sentinel}}
-	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{"go"}})
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{"go"}}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -890,7 +891,7 @@ func TestRunVerifyRefusesCommandOutsideAllowList(t *testing.T) {
 // verify_allow would have tk try to exec it, so the refusal must not say to,
 // and names the unverifiable line as the shape the author meant.
 func TestRunVerifyRefusalOfLabelDoesNotAdviseAllowList(t *testing.T) {
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "labelled", Command: "manual: read the diff"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "labelled", Command: "manual: read the diff"}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -921,7 +922,7 @@ func TestRunVerifyRefusesEverythingWhenAllowListIsUnreadable(t *testing.T) {
 	// must be refused, and the refusal must say why rather than claiming the
 	// user left it off a list they never got to write.
 	criteria := []Criterion{{Text: "hostile", Command: "go run example.com/x@latest"}}
-	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{}, AllowErr: errors.New("parsing config.yaml: mapping values are not allowed")})
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{}, AllowErr: errors.New("parsing config.yaml: mapping values are not allowed")}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -965,11 +966,11 @@ func TestVerifyCheckSharesRefusalWithRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			criteria := []Criterion{{Text: "criterion \x1b[31m" + tc.name, Command: tc.command}}
-			run, err := RunVerify(context.Background(), criteria, t.TempDir(), tc.policy)
+			run, err := RunVerify(context.Background(), criteria, t.TempDir(), tc.policy, nil)
 			if err != nil {
 				t.Fatalf("RunVerify: %v", err)
 			}
-			check := CheckVerify(criteria, tc.policy)
+			check := CheckVerify(criteria, tc.policy, nil)
 			if len(check) != 1 {
 				t.Fatalf("CheckVerify returned %d results, want 1", len(check))
 			}
@@ -977,8 +978,9 @@ func TestVerifyCheckSharesRefusalWithRun(t *testing.T) {
 				if run[0].Status != VerifyPass && run[0].Status != VerifyFail {
 					t.Fatalf("run status = %q, want the command to have run", run[0].Status)
 				}
-				want := VerifyResult{Criterion: run[0].Criterion, Status: VerifyRunnable}
-				if check[0] != want {
+				argv, _ := tokenizeCommand(tc.command)
+				want := VerifyResult{Criterion: run[0].Criterion, Status: VerifyRunnable, Argv: argv}
+				if !reflect.DeepEqual(check[0], want) {
 					t.Errorf("check = %+v, want %+v", check[0], want)
 				}
 				return
@@ -986,7 +988,7 @@ func TestVerifyCheckSharesRefusalWithRun(t *testing.T) {
 			if run[0].Status != VerifyRefused && run[0].Status != VerifyUnverified {
 				t.Fatalf("run status = %q, want refused or unverified", run[0].Status)
 			}
-			if check[0] != run[0] {
+			if !reflect.DeepEqual(check[0], run[0]) {
 				t.Errorf("check = %+v\nrun   = %+v", check[0], run[0])
 			}
 		})
@@ -998,7 +1000,7 @@ func TestVerifyStripsControlCharactersFromEchoedCommand(t *testing.T) {
 	// would let a command repaint the operator's terminal at the moment they
 	// are asked to judge the refusal.
 	command := "\x1b[2J\x1b[1;32mPASS\x1b[0m"
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "spoofs", Command: command}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "spoofs", Command: command}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1026,7 +1028,7 @@ func TestVerifyStripsControlCharactersFromCriterionText(t *testing.T) {
 		{Text: "unverified ‮special"},
 		{Text: "hand-checked", Unverifiable: true, UnverifiableReason: "\x1b[2Jspoof"},
 	}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1051,7 +1053,7 @@ func TestVerifyKeepsTabsButNotLineBreaksInCriterionText(t *testing.T) {
 	// line break is different: the record is one line per criterion, so an
 	// embedded one would forge extra record lines.
 	criteria := []Criterion{{Text: "column\tone\ttwo"}, {Text: "forged\n- PASS (exit 0): nothing"}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1081,7 +1083,7 @@ func TestRunVerifyAllowListIsExactNotBasename(t *testing.T) {
 	}
 
 	criteria := []Criterion{{Text: "impostor", Command: evil + " test ./..."}}
-	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{"go"}})
+	results, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: []string{"go"}}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1097,7 +1099,7 @@ func TestRunVerifyGivesNoShellSemantics(t *testing.T) {
 	// Every metacharacter here is inert without a shell: the whole tail is
 	// argument text for /bin/echo, and the chained touch never runs.
 	command := "/bin/echo a ; touch " + sentinel + " && echo $(whoami) `id` ~ *"
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "metacharacters", Command: command}}, dir, VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), []Criterion{{Text: "metacharacters", Command: command}}, dir, VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1116,7 +1118,7 @@ func TestRunVerifyGivesNoShellSemantics(t *testing.T) {
 
 func TestRunVerifyQuotingGroupsArguments(t *testing.T) {
 	criteria := []Criterion{{Text: "quoted", Command: `/bin/echo -n 'one arg' "two  args"`}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1127,7 +1129,7 @@ func TestRunVerifyQuotingGroupsArguments(t *testing.T) {
 
 func TestRunVerifyRefusesUnterminatedQuote(t *testing.T) {
 	criteria := []Criterion{{Text: "malformed", Command: `/bin/echo 'unterminated`}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1422,7 +1424,7 @@ func TestShellSyntaxIgnoresQuoted(t *testing.T) {
 // literal arguments, so the refusal names the syntax instead.
 func TestVerifyRefusalNamesShellConstruct(t *testing.T) {
 	criteria := []Criterion{{Text: "shell form", Command: "cd x && true"}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -1444,13 +1446,13 @@ func TestVerifyRefusalNamesShellConstruct(t *testing.T) {
 		t.Errorf("refusal does not end with the command:\n%s", out)
 	}
 	// CheckVerify shares the decision, so it reports the same refusal.
-	if checked := CheckVerify(criteria, VerifyPolicy{Allow: testAllow}); checked[0].Output != out {
+	if checked := CheckVerify(criteria, VerifyPolicy{Allow: testAllow}, nil); checked[0].Output != out {
 		t.Errorf("CheckVerify output differs from RunVerify:\n%s\n---\n%s", checked[0].Output, out)
 	}
 
 	// `test ! -f x` runs as written once `test` is allowed, so its refusal keeps
 	// the allow-list remedy that would make it runnable.
-	results, err = RunVerify(context.Background(), []Criterion{{Text: "negated test", Command: "test ! -f x"}}, t.TempDir(), VerifyPolicy{Allow: testAllow})
+	results, err = RunVerify(context.Background(), []Criterion{{Text: "negated test", Command: "test ! -f x"}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}

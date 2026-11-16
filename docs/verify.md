@@ -58,6 +58,30 @@ repo. Shells and interpreters are absent from the default. `swift` is not in
 it because `swift -e <code>` runs arbitrary Swift, so a Swift project adds
 `swift` to `verify_allow` itself to get `swift test` back.
 
+## Launcher prefix
+
+`tk verify --launcher <word>`, repeated once per argv word, execs each command
+as that prefix followed by the command's own argv — `sudo -n -u <agent user> -H
+env -i …`, say — so the command runs with the launcher's privileges while tk
+reads the store and `verify_allow` with its own. The prefix is the caller's
+and is trusted like `--dir`: it is checked against nothing. `verify_allow` is
+still checked against the criterion's own program before the prefix is added,
+so a prefix cannot make a refused command run, even when its own program is
+listed. It is a command-line flag only: `ticket_verify` has no argument for
+it, because a model calling the tool must never choose a uid or a wrapper, and
+no ticket field or config key supplies one. `--check` reports the argv a run
+would exec, prefix included.
+
+A launcher changes how a run is stopped. A command under sudo runs as a user
+tk cannot signal, and sudo cannot relay SIGKILL, so on timeout or cancellation
+tk sends SIGTERM to the launcher's process group, which sudo relays, then
+SIGKILL to that group 2s later, inside the 5s tk waits for output before
+giving up on the process. An unprefixed command's group is still sent SIGKILL
+at once. A process that leaves the launcher's group, or that the launcher does
+not relay to, is reached by neither signal. The sequence is checked on macOS
+against a real `sudo -n -u <agent user>` prefix; on Linux, where sudo relays
+SIGTERM the same way, it is reasoned about rather than tested.
+
 ## `verify_timeout`
 
 Each command is bounded by `verify_timeout` under the project in
@@ -97,8 +121,8 @@ head.
 
 ## MCP `dir` versus CLI `--dir`
 
-`--criterion` and `--no-record` are CLI-only, and the `ticket_verify` MCP
-tool's `dir` is narrower than `--dir`: it accepts only the project's configured
+`--criterion`, `--no-record` and `--launcher` are CLI-only, and the
+`ticket_verify` MCP tool's `dir` is narrower than `--dir`: it accepts only the project's configured
 checkout or a linked git worktree of that repository, refuses anything else
 before running, and always records. An MCP caller's arguments are shaped by
 ticket content, and a sandboxed client with no shell would gain reach it does

@@ -54,6 +54,9 @@ type VerifyResult struct {
 	Status    VerifyStatus
 	ExitCode  int    // meaningful for pass/fail
 	Output    string // combined stdout+stderr, trimmed and capped, then tk's own notes
+	// Argv is CheckVerify's answer for a runnable criterion: the full argv a
+	// run would exec, launcher prefix included, sanitized like the command.
+	Argv []string
 }
 
 // verifyPrefix marks a criterion's check command on a continuation line.
@@ -73,6 +76,12 @@ const maxVerifyOutput = 4096
 // context expires. Without it a grandchild holding the output pipe keeps Wait
 // blocked and the timeout is only advisory.
 const verifyWaitDelay = 5 * time.Second
+
+// launcherKillGrace is how long a command run under a launcher has between
+// the SIGTERM sent to the launcher's process group and the SIGKILL that
+// follows. It sits inside verifyWaitDelay so the SIGKILL lands before exec
+// stops waiting on the launcher and closes its pipes.
+const launcherKillGrace = 2 * time.Second
 
 // DefaultVerifyTimeout bounds a single criterion command when the project sets
 // no verify_timeout; an overrun is reported as a failure. It is the only place
@@ -314,7 +323,19 @@ func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {
 // readable form the field exists for. That output comes from a program the
 // machine's owner allow-listed, which is a narrower trust than the ticket
 // content around it.
-func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy VerifyPolicy) ([]VerifyResult, error) {
+//
+// launcher, when non-empty, is an argv prefix each command is execed through —
+// `sudo -n -u <user> -H env -i …`, say — so the command runs with the
+// launcher's privileges while the store and the policy stay the caller's. It is
+// trusted the way dir is: it is never checked against policy.Allow, which still
+// screens the criterion's own program before the prefix is prepended, so a
+// launcher cannot make a refused command run. It is the caller's own argument
+// and must never be read from a ticket, a tool argument or any config. On
+// timeout or cancellation a launched command's process group is sent SIGTERM,
+// which a launcher such as sudo relays to a command running as a user tk
+// cannot signal, then SIGKILL after launcherKillGrace; an unlaunched command's
+// group is sent SIGKILL at once.
+func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy VerifyPolicy, launcher []string) ([]VerifyResult, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("verify directory: %w", err)
@@ -327,7 +348,7 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy Ver
 	for _, c := range criteria {
 		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
 		if c.Command != "" {
-			res = runCriterion(ctx, c, dir, policy)
+			res = runCriterion(ctx, c, dir, policy, launcher)
 		}
 		results = append(results, sanitizeResult(res))
 	}
@@ -338,15 +359,17 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy Ver
 // running it: refused or unverified with the output a run gives, or
 // VerifyRunnable. It executes nothing and needs no directory. The decision is
 // screenCriterion's, the same function runCriterion consults, so runnable here
-// means a run would not refuse the command.
-func CheckVerify(criteria []Criterion, policy VerifyPolicy) []VerifyResult {
+// means a run would not refuse the command. A runnable result's Argv is what
+// RunVerify with the same launcher would exec.
+func CheckVerify(criteria []Criterion, policy VerifyPolicy, launcher []string) []VerifyResult {
 	results := make([]VerifyResult, 0, len(criteria))
 	for _, c := range criteria {
 		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
 		if c.Command != "" {
-			var ok bool
-			if _, res, ok = screenCriterion(c, policy); ok {
-				res = VerifyResult{Criterion: c, Status: VerifyRunnable}
+			argv, refused, ok := screenCriterion(c, policy)
+			res = refused
+			if ok {
+				res = VerifyResult{Criterion: c, Status: VerifyRunnable, Argv: launchArgv(launcher, argv)}
 			}
 		}
 		results = append(results, sanitizeResult(res))
@@ -362,6 +385,13 @@ func sanitizeResult(res VerifyResult) VerifyResult {
 	res.Criterion.Text = SanitizeControl(res.Criterion.Text)
 	res.Criterion.Command = SanitizeControl(res.Criterion.Command)
 	res.Criterion.UnverifiableReason = SanitizeControl(res.Criterion.UnverifiableReason)
+	if res.Argv != nil {
+		argv := make([]string, len(res.Argv))
+		for i, a := range res.Argv {
+			argv[i] = SanitizeControl(a)
+		}
+		res.Argv = argv
+	}
 	return res
 }
 
@@ -659,11 +689,31 @@ func screenCriterion(c Criterion, policy VerifyPolicy) (argv []string, refused V
 	return argv, VerifyResult{}, true
 }
 
-func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPolicy) VerifyResult {
+// launchArgv is the argv a screened command is execed as: the launcher prefix,
+// then the command. Prepending only after screenCriterion is what keeps the
+// allow-list on the criterion's own program.
+func launchArgv(launcher, argv []string) []string {
+	return append(append([]string{}, launcher...), argv...)
+}
+
+// signalGroup sends sig to the process group led by pid, reporting a group
+// that is already gone as os.ErrProcessDone, the error exec.Cmd.Cancel expects.
+func signalGroup(pid int, sig syscall.Signal) error {
+	if err := syscall.Kill(-pid, sig); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	return nil
+}
+
+func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPolicy, launcher []string) VerifyResult {
 	argv, refused, ok := screenCriterion(c, policy)
 	if !ok {
 		return refused
 	}
+	argv = launchArgv(launcher, argv)
 
 	timeout := policy.Timeout
 	if timeout <= 0 {
@@ -687,16 +737,35 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	// checks running after cancellation, possibly alongside the next run. The
 	// supported hosts (macOS and Linux) give each verification its own group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A launcher such as sudo runs the command as a user tk cannot signal, and
+	// SIGKILL cannot be relayed, so a launched group gets SIGTERM first — which
+	// the launcher relays — and SIGKILL only after launcherKillGrace. A process
+	// that leaves the group, or that the launcher does not relay to, is out of
+	// reach of both.
+	var killLater *time.Timer
 	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
-				return os.ErrProcessDone
-			}
+		pid := cmd.Process.Pid
+		if len(launcher) == 0 {
+			return signalGroup(pid, syscall.SIGKILL)
+		}
+		if err := signalGroup(pid, syscall.SIGTERM); err != nil {
 			return err
 		}
+		killLater = time.AfterFunc(launcherKillGrace, func() { signalGroup(pid, syscall.SIGKILL) })
 		return nil
 	}
 	out, err := cmd.CombinedOutput()
+	// Wait returns only after Cancel has, so killLater is settled here. A
+	// launcher that exited inside the grace leaves nothing to relay to; its
+	// group is killed now rather than left running. A group ID is not reused
+	// while any member remains, but once the group is empty and its leader
+	// reaped the ID can be recycled, so this signal — like the timer firing
+	// while Wait is held on pipes by a process that left the group — could in
+	// principle reach an unrelated group that took it. That window is
+	// accepted.
+	if killLater != nil && killLater.Stop() {
+		signalGroup(cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	// The command's own output keeps its tail, because that is where test
 	// frameworks print the failures — a head cut leaves a long suite's startup
@@ -896,12 +965,13 @@ type VerifyCounts struct {
 
 // VerifyResultJSON is the wire form of a single criterion's outcome.
 type VerifyResultJSON struct {
-	Criterion          string `json:"criterion"`
-	Command            string `json:"command,omitempty"`
-	UnverifiableReason string `json:"unverifiable_reason,omitempty"`
-	Status             string `json:"status"`
-	ExitCode           int    `json:"exit_code"`
-	Output             string `json:"output,omitempty"`
+	Criterion          string   `json:"criterion"`
+	Command            string   `json:"command,omitempty"`
+	UnverifiableReason string   `json:"unverifiable_reason,omitempty"`
+	Status             string   `json:"status"`
+	ExitCode           int      `json:"exit_code"`
+	Output             string   `json:"output,omitempty"`
+	Argv               []string `json:"argv,omitempty"`
 }
 
 // NewVerifyReport builds the structured report for a verify run.
@@ -926,6 +996,7 @@ func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) V
 			Status:             string(r.Status),
 			ExitCode:           r.ExitCode,
 			Output:             r.Output,
+			Argv:               r.Argv,
 		})
 	}
 	return report

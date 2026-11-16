@@ -156,6 +156,7 @@ Dependencies & Links:
 Verification:
   verify <id>            Run acceptance-criteria verify commands
   verify --policy        Print the verify_allow and verify_timeout in force
+  verify --launcher <w>  Exec each verify command through an argv prefix
 
 Setup & Server:
   init                   Initialize tk and register a project
@@ -357,13 +358,22 @@ The three are independent and compose: any combination behaves as each one does 
 
 With `--criterion`, the exit code grades that one criterion: `0` it passed, `1` it failed, `20` it was refused or has no `verify:` line. `20` is weft's anchor-stage convention — "graded and refused, do not relaunch" — adopted rather than invented, so one documented integer replaces a wrapper script per harness. An unverified criterion is not a pass: it never ran, so it exits `20` alongside a refusal rather than `0`. Without `--criterion` the exit code is unchanged: `0`, or `1` on any failure or refusal across the whole run. A usage error — a `--dir` that is not an existing directory, a `--criterion` out of range — exits `1` like any other `tk` error, before anything runs.
 
-`--check` asks, before any work is spent, whether a criterion could be graded at all. With `--criterion <n>` it loads the same policy and makes the same refusal decision a real run makes — the command does not tokenize, the project's `verify_timeout` cannot be read, or its program is not in `verify_allow` — then stops: nothing is executed and nothing is recorded. It reports `runnable` and exits `0`, or `refused` with the output a real run would give, or `unverified` for a criterion with no `verify:` line, and exits `20` for both. `runnable` means only that the run would not be refused; it says nothing about whether the command passes. `--check` without `--criterion` is a usage error.
+`--check` asks, before any work is spent, whether a criterion could be graded at all. With `--criterion <n>` it loads the same policy and makes the same refusal decision a real run makes — the command does not tokenize, the project's `verify_timeout` cannot be read, or its program is not in `verify_allow` — then stops: nothing is executed and nothing is recorded. It reports `runnable` and exits `0`, or `refused` with the output a real run would give, or `unverified` for a criterion with no `verify:` line, and exits `20` for both. `runnable` means only that the run would not be refused; it says nothing about whether the command passes. `--check` without `--criterion` is a usage error. A runnable criterion also reports the argv a run would exec — `argv` under `--json`, an `argv:` line otherwise — with any `--launcher` prefix included.
+
+`--launcher <word>` execs each command through an argv prefix the caller supplies, one word per use, so a harness can run the command as another user while tk keeps reading the store and `verify_allow` as itself:
+
+```bash
+tk verify 5c4 --criterion 1 --no-record --launcher sudo --launcher=-n --launcher=-u --launcher weftagent1 \
+  --launcher=-H --launcher /usr/bin/env --launcher=-i --launcher PATH=/usr/bin:/bin
+```
+
+The command runs as the prefix followed by its own argv; without the flag the argv is unchanged. A word may start with `-`, as `--launcher -n` or `--launcher=-n`; an empty word is a usage error before anything runs. The prefix is trusted the way `--dir` is and checked against nothing, while `verify_allow` is still checked against the criterion's own program, so a criterion refused without a prefix is refused identically with one and the launcher never starts. It is a command-line flag only: `ticket_verify` has no argument for it, and nothing reads it from a ticket or any config. On timeout or cancellation tk sends SIGTERM to the launcher's process group — sudo relays it to the command, which runs as a user tk cannot signal — then SIGKILL 2s later; an unprefixed command's group still gets SIGKILL at once. A process that leaves the launcher's group, or one the launcher does not relay to, is beyond both signals. That sequence was checked on macOS with a real `sudo -n -u <agent user>` prefix; Linux sudo relays SIGTERM the same way, but there it is reasoned about rather than tested.
 
 ```bash
 tk verify 5c4 --dir /path/to/worktree --criterion 1 --no-record
 ```
 
-`--criterion` and `--no-record` are CLI-only, and the `ticket_verify` MCP tool's `dir` is narrower than `--dir`: an MCP caller's arguments are shaped by ticket content, and a sandboxed client with no shell of its own must not gain reach it does not otherwise have, so the tool accepts only the configured checkout or a linked worktree of that same repository and refuses everything else (see above). A CLI caller already has a shell and can run anything in any directory, so `--dir` is used as given and widens nothing for it. The MCP tool always records. `verify_allow` is still read from `~/.ticket/config.yaml` alone — no flag or argument widens it, neither `--dir` nor `dir` relocates where it is read from, and `TK_STORE_ROOT` does not move it either.
+`--criterion`, `--no-record` and `--launcher` are CLI-only, and the `ticket_verify` MCP tool's `dir` is narrower than `--dir`: an MCP caller's arguments are shaped by ticket content, and a sandboxed client with no shell of its own must not gain reach it does not otherwise have, so the tool accepts only the configured checkout or a linked worktree of that same repository and refuses everything else (see above). A CLI caller already has a shell and can run anything in any directory, so `--dir` is used as given and widens nothing for it. The MCP tool always records. `verify_allow` is still read from `~/.ticket/config.yaml` alone — no flag or argument widens it, neither `--dir` nor `dir` relocates where it is read from, and `TK_STORE_ROOT` does not move it either.
 
 #### What may run
 

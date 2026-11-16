@@ -45,6 +45,20 @@ program exactly matches an entry in verify_allow in ~/.ticket/config.yaml
 (default: go, make, cargo, pytest). Each is bounded by the project's
 verify_timeout (default 120s). Output is capped to its last 4KB.
 
+--launcher execs each command through an argv prefix, one word per use, so a
+harness can run it as another user while tk reads the store and verify_allow
+as itself:
+
+  tk verify 5c4 --criterion 1 --no-record --launcher sudo --launcher=-n \
+    --launcher=-u --launcher weftagent1 --launcher=-H --launcher env --launcher=-i
+
+The prefix is trusted like --dir and checked against nothing; verify_allow is
+still checked against the criterion's own program, so a prefix cannot make a
+refused command run. There is no config key or MCP argument for it. On
+timeout the launcher's process group is sent SIGTERM, which sudo relays, then
+SIGKILL 2s later. With --check, a runnable criterion reports the argv a run
+would exec, prefix included.
+
 tk verify --policy, with no ticket id, prints the verify_allow list and the
 resolved project's verify_timeout as a run would enforce them right now;
 --json for a script. An unreadable config is reported as the error with no
@@ -60,6 +74,7 @@ ticket_verify MCP tool's narrower dir -- is in docs/verify.md
 	Example: `  tk verify 5c4
   tk verify 5c4 --dir /path/to/worktree --criterion 1 --no-record
   tk verify 5c4 --criterion 2 --check
+  tk verify 5c4 --criterion 1 --check --launcher sudo --launcher=-n --launcher=-u --launcher weftagent1
   tk verify --policy --json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runVerify,
@@ -71,6 +86,7 @@ var (
 	verifyNoRecord  bool
 	verifyCheck     bool
 	verifyPolicy    bool
+	verifyLauncher  []string
 )
 
 // verifyRefusedExit is the exit code a single-criterion run reports for a
@@ -87,6 +103,7 @@ func init() {
 	f.IntVar(&verifyCriterion, "criterion", 0, "run only criterion n (1-based): exit 0 pass, 1 fail, 20 refused or unverified")
 	f.BoolVar(&verifyNoRecord, "no-record", false, "skip writing the Test Results section")
 	f.BoolVar(&verifyCheck, "check", false, "with --criterion, report whether it would be refused without running or recording it: exit 0 runnable, 20 refused or unverified")
+	f.StringArrayVar(&verifyLauncher, "launcher", nil, "exec each command through this argv prefix, one word per use (repeat it; a word may start with -); trusted like --dir, never checked against verify_allow")
 	f.BoolVar(&verifyPolicy, "policy", false, "print the verify_allow list and the project's verify_timeout this machine would enforce, without a ticket (--json for a script)")
 	rootCmd.AddCommand(verifyCmd)
 }
@@ -165,21 +182,30 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		}
 		dir = verifyDir
 	}
+	// An empty word is a harness's computed value gone missing, not an argv
+	// element sudo or env take; refused before anything runs, as --dir "" is.
+	for _, word := range verifyLauncher {
+		if word == "" {
+			return fmt.Errorf("--launcher: an empty word is not a launcher argument")
+		}
+	}
 	// The allow-list and the timeout both come from machine-local config only —
 	// there is no flag for either, so nothing in a ticket or the synced store can
 	// widen what runs or how long it may run. --dir moves the directory alone:
 	// the bound still belongs to the project whose checkout the run resolved to.
+	// --launcher wraps how an allowed command is execed; the allow-list is still
+	// checked against the command's own program.
 	allow, allowErr := project.VerifyAllow()
 	timeout, timeoutErr := project.VerifyTimeout(cfg, execProject)
 	policy := ticket.VerifyPolicy{Allow: allow, AllowErr: allowErr, Timeout: timeout, TimeoutErr: timeoutErr}
 	if verifyCheck {
-		return reportVerifyCheck(t.ID, ticket.CheckVerify(criteria, policy), dir, implementation, acceptanceID)
+		return reportVerifyCheck(t.ID, ticket.CheckVerify(criteria, policy, verifyLauncher), dir, implementation, acceptanceID)
 	}
 	// Verification children have their own process group. Forward CLI shutdown
 	// through the runner's context and drain that group before leaving.
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	results, err := ticket.RunVerify(ctx, criteria, dir, policy)
+	results, err := ticket.RunVerify(ctx, criteria, dir, policy, verifyLauncher)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -277,6 +303,9 @@ func reportVerifyCheck(id string, results []ticket.VerifyResult, dir, implementa
 		fmt.Println(string(data))
 	} else {
 		fmt.Printf("%s %s\n", strings.ToUpper(string(res.Status)), res.Criterion.Text)
+		if res.Argv != nil {
+			fmt.Printf("  argv: %q\n", res.Argv)
+		}
 		if res.Output != "" {
 			for _, line := range strings.Split(res.Output, "\n") {
 				fmt.Printf("  %s\n", line)

@@ -50,6 +50,7 @@ Dependencies & Links:
 Verification:
   verify <id>            Run acceptance-criteria verify commands
   verify --policy        Print the verify_allow and verify_timeout in force
+  verify --launcher <w>  Exec each verify command through an argv prefix
 
 Setup & Server:
   init                   Initialize tk and register a project
