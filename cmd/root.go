@@ -144,6 +144,15 @@ func init() {
 			cmd.SilenceUsage = true
 			return err
 		}
+		// A config that exists but cannot be read or parsed is not an
+		// unconfigured machine; name the file and the error instead of
+		// sending the reader to `tk init`.
+		if _, ok, _ := project.StoreRootOverride(); !ok {
+			if err := project.LocalConfigError(); err != nil {
+				cmd.SilenceUsage = true
+				return err
+			}
+		}
 		if !project.IsConfigured() {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true

@@ -367,6 +367,14 @@ func IsConfigured() bool {
 	return local.CentralRoot != ""
 }
 
+// LocalConfigError returns the error that makes ~/.ticket/config.yaml unusable:
+// a file that exists but cannot be read or parsed. A missing file is not an
+// error here — that is the one case where `tk init` is the right advice.
+func LocalConfigError() error {
+	_, err := loadLocalOnly()
+	return err
+}
+
 // VerifyAllow returns the argv[0] allow-list a ticket's verify commands are
 // checked against, plus the error that made it unreadable. It reads
 // ~/.ticket/config.yaml directly rather than the merged config on purpose: the
