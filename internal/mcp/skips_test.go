@@ -109,6 +109,64 @@ func TestFrontierReportsSkippedFiles(t *testing.T) {
 	assertSkipReported(t, "ticket_frontier", payload, "sk-broken-0003.md")
 }
 
+func TestReadyBlockedInboxReportSkippedFiles(t *testing.T) {
+	session, dir := testServerDir(t)
+	// The blocker sits in backlog with nothing in its way, so it is ready; the
+	// dependent is open behind it, so it is blocked and in the inbox.
+	makeBlocked(t, session, "")
+
+	tools := []struct {
+		name string
+		rows string
+	}{
+		{"ticket_ready", "tickets"},
+		{"ticket_blocked", "tickets"},
+		{"ticket_inbox", "items"},
+	}
+	for _, tool := range tools {
+		payload := callJSON(t, session, tool.name, map[string]any{})
+		if rows, _ := payload[tool.rows].([]any); len(rows) != 1 {
+			t.Errorf("%s %s = %v, want one row", tool.name, tool.rows, payload[tool.rows])
+		}
+		if _, ok := payload["snapshot"].(string); !ok {
+			t.Errorf("%s snapshot = %v, want the revision token", tool.name, payload["snapshot"])
+		}
+		if payload["complete"] != true {
+			t.Errorf("%s complete = %v on a healthy store, want true", tool.name, payload["complete"])
+		}
+		if skips, ok := payload["skipped_files"]; ok {
+			t.Errorf("%s skipped_files = %v on a healthy store, want the field absent", tool.name, skips)
+		}
+	}
+
+	plantUnreadable(t, dir, "sk-broken-0008.md")
+
+	for _, tool := range tools {
+		payload := callJSON(t, session, tool.name, map[string]any{})
+		if rows, _ := payload[tool.rows].([]any); len(rows) != 1 {
+			t.Errorf("%s %s = %v, want the one row that parses", tool.name, tool.rows, payload[tool.rows])
+		}
+		assertSkipReported(t, tool.name, payload, "sk-broken-0008.md")
+	}
+}
+
+func TestReadyBlockedInboxReturnEmptyRowsAsArrays(t *testing.T) {
+	session := testServer(t)
+	for _, tool := range []struct {
+		name string
+		rows string
+	}{
+		{"ticket_ready", "tickets"},
+		{"ticket_blocked", "tickets"},
+		{"ticket_inbox", "items"},
+	} {
+		payload := callJSON(t, session, tool.name, map[string]any{})
+		if rows, ok := payload[tool.rows].([]any); !ok || len(rows) != 0 {
+			t.Errorf("%s %s = %#v on an empty store, want []", tool.name, tool.rows, payload[tool.rows])
+		}
+	}
+}
+
 func TestShowReportsAnUnreadableFileDistinctlyFromAMissingTicket(t *testing.T) {
 	session, dir := testServerDir(t)
 	ctx := context.Background()
@@ -206,6 +264,9 @@ func TestProjectScopedListCarriesADegradingSkipFromAnotherProject(t *testing.T) 
 		{"ticket_list", map[string]any{"project": "alpha", "type": "epic"}},
 		{"ticket_search", map[string]any{"project": "alpha", "query": "Epic"}},
 		{"ticket_frontier", map[string]any{"project": "alpha"}},
+		{"ticket_ready", map[string]any{"project": "alpha"}},
+		{"ticket_blocked", map[string]any{"project": "alpha"}},
+		{"ticket_inbox", map[string]any{"project": "alpha"}},
 	} {
 		payload := callJSON(t, session, tool.name, tool.args)
 		assertSkipReported(t, tool.name, payload, "sk-broken-0007.md")

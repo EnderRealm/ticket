@@ -599,7 +599,7 @@ func skippedFilesJSON(skips []ticket.FileSkip, project string) []fileSkipJSON {
 }
 
 // skippedFilesDoc documents the skip fields in the tool descriptions that carry
-// them, so the three cannot describe the same field differently.
+// them, so the tools cannot describe the same field differently.
 const skippedFilesDoc = " `skipped_files` names every file in the projects read that was not read as a ticket, with the reason. " +
 	"An entry with `epic_status_degraded` is a ticket the store cannot place — a file that could not be read, a `duplicate-id` two files claim, or a `namespace` that could not be read — and it could be any epic's child in any project, so while it stands anywhere in the store, no epic anywhere reads done or closed, whatever its children say; a project view carries such an entry from another project for that reason."
 
@@ -1570,20 +1570,31 @@ type readyArgs struct {
 // but carry no snapshot fields.
 const allProjectsDoc = " `all_projects=true` lists every namespace and ignores the server's default project; it conflicts with `project`, which only narrows the rows — readiness, blocking and every relationship are answered off the whole store first."
 
+// ticketsResultJSON wraps the rows of ticket_ready and ticket_blocked so the
+// response can also carry the reading it was cut from and the files that
+// reading skipped; a bare array had nowhere to put either.
+type ticketsResultJSON struct {
+	Tickets      []ticketSummaryJSON `json:"tickets"`
+	Snapshot     string              `json:"snapshot"`
+	Complete     bool                `json:"complete"`
+	SkippedFiles []fileSkipJSON      `json:"skipped_files,omitempty"`
+}
+
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic and no non-blank `waiting_on` field. Epics are never listed — an epic is a container, not a work item. Ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it." + allProjectsDoc,
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic and no non-blank `waiting_on` field. Epics are never listed — an epic is a container, not a work item. Returns an object with `tickets`, ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it." + snapshotDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
 			return r, nil, nil
 		}
-		ready, err := ticket.ReadyTickets(store)
+		snap, err := storeSnapshot(store)
 		if err != nil {
 			r, _ := errResult("failed to get ready tickets: %v", err)
 			return r, nil, nil
 		}
+		ready := ticket.ReadyOf(store, snap.Tickets)
 
 		// An epic is a container, not a work item: it is never picked up
 		// directly, whatever status it derives from its children.
@@ -1610,7 +1621,12 @@ func registerReady(server *mcp.Server, store ticket.Store, defaultProject string
 			result = append(result, toSummaryJSON(t))
 		}
 
-		r, err = jsonResult(result)
+		r, err = jsonResult(ticketsResultJSON{
+			Tickets:      result,
+			Snapshot:     snap.Revision(),
+			Complete:     snap.Complete,
+			SkippedFiles: skippedFilesJSON(snap.Skips, proj),
+		})
 		return r, nil, err
 	})
 }
@@ -1686,17 +1702,18 @@ func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject str
 func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_blocked",
-		Description: "List tickets that are blocked by unresolved dependencies." + allProjectsDoc,
+		Description: "List tickets that are blocked by unresolved dependencies. Returns an object with `tickets`, ordered by priority then ID." + snapshotDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
 			return r, nil, nil
 		}
-		blocked, err := ticket.BlockedTickets(store)
+		snap, err := storeSnapshot(store)
 		if err != nil {
 			r, _ := errResult("failed to get blocked tickets: %v", err)
 			return r, nil, nil
 		}
+		blocked := ticket.BlockedOf(store, snap.Tickets)
 
 		opts := ticket.DefaultListOptions()
 		if args.Tag != "" {
@@ -1713,7 +1730,12 @@ func registerBlocked(server *mcp.Server, store ticket.Store, defaultProject stri
 			result = append(result, toSummaryJSON(t))
 		}
 
-		r, err = jsonResult(result)
+		r, err = jsonResult(ticketsResultJSON{
+			Tickets:      result,
+			Snapshot:     snap.Revision(),
+			Complete:     snap.Complete,
+			SkippedFiles: skippedFilesJSON(snap.Skips, proj),
+		})
 		return r, nil, err
 	})
 }
@@ -1725,28 +1747,38 @@ type inboxArgs struct {
 	AllProjects *FlexBool `json:"all_projects,omitempty" jsonschema:"list every namespace, ignoring the server's default project; conflicts with project"`
 }
 
+type inboxItemJSON struct {
+	Ticket ticketSummaryJSON `json:"ticket"`
+	Action string            `json:"action"`
+	Detail string            `json:"detail"`
+}
+
+// inboxResultJSON wraps the inbox rows, as ticketsResultJSON does the ready
+// and blocked rows.
+type inboxResultJSON struct {
+	Items        []inboxItemJSON `json:"items"`
+	Snapshot     string          `json:"snapshot"`
+	Complete     bool            `json:"complete"`
+	SkippedFiles []fileSkipJSON  `json:"skipped_files,omitempty"`
+}
+
 func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_inbox",
-		Description: "Show tickets needing human attention, sorted by priority then age. An action of blocked means unresolved dependencies (named in detail) or a parked question (which takes precedence in detail)." + allProjectsDoc,
+		Description: "Show tickets needing human attention. Returns an object with `items`, each a `ticket`, an `action` and a `detail`, sorted by priority then age. An action of blocked means unresolved dependencies (named in detail) or a parked question (which takes precedence in detail)." + snapshotDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args inboxArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
 			return r, nil, nil
 		}
-		items, err := ticket.Inbox(store)
+		snap, err := storeSnapshot(store)
 		if err != nil {
 			r, _ := errResult("inbox failed: %v", err)
 			return r, nil, nil
 		}
+		items := ticket.InboxOf(store, snap.Tickets)
 
-		type inboxItemJSON struct {
-			Ticket ticketSummaryJSON `json:"ticket"`
-			Action string            `json:"action"`
-			Detail string            `json:"detail"`
-		}
-
-		var result []inboxItemJSON
+		result := []inboxItemJSON{}
 		for _, item := range items {
 			if effectiveProject != "" {
 				proj, _ := ticket.ParseNamespacedID(item.Ticket.ID)
@@ -1761,7 +1793,12 @@ func registerInbox(server *mcp.Server, store ticket.Store, defaultProject string
 			})
 		}
 
-		r, jsonErr := jsonResult(result)
+		r, jsonErr := jsonResult(inboxResultJSON{
+			Items:        result,
+			Snapshot:     snap.Revision(),
+			Complete:     snap.Complete,
+			SkippedFiles: skippedFilesJSON(snap.Skips, effectiveProject),
+		})
 		return r, nil, jsonErr
 	})
 }

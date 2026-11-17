@@ -678,10 +678,12 @@ func readyIDs(t *testing.T, session *mcp.ClientSession, args map[string]any) []s
 	if result.IsError {
 		t.Fatalf("ticket_ready error: %v", result.Content)
 	}
-	var tickets []map[string]any
-	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
-	ids := make([]string, len(tickets))
-	for i, tk := range tickets {
+	var resp struct {
+		Tickets []map[string]any `json:"tickets"`
+	}
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	ids := make([]string, len(resp.Tickets))
+	for i, tk := range resp.Tickets {
 		ids[i], _ = tk["id"].(string)
 	}
 	return ids
@@ -850,8 +852,11 @@ func TestReadyReturnsSummaryShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tickets []map[string]any
-	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	var resp struct {
+		Tickets []map[string]any `json:"tickets"`
+	}
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	tickets := resp.Tickets
 	if len(tickets) != 1 {
 		t.Fatalf("expected 1 ready ticket, got %d", len(tickets))
 	}
@@ -2418,8 +2423,11 @@ func TestInboxSurfacesParkedQuestion(t *testing.T) {
 		t.Fatalf("inbox error: %v", result.Content)
 	}
 	text = result.Content[0].(*mcp.TextContent).Text
-	var items []map[string]any
-	json.Unmarshal([]byte(text), &items)
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	json.Unmarshal([]byte(text), &resp)
+	items := resp.Items
 
 	if len(items) != 1 {
 		t.Fatalf("expected 1 inbox item, got %d: %s", len(items), text)
@@ -2913,8 +2921,11 @@ func TestBlockedScopedToDefaultProject(t *testing.T) {
 		t.Fatalf("ticket_blocked error: %v", result.Content)
 	}
 
-	var tickets []map[string]any
-	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	var resp struct {
+		Tickets []map[string]any `json:"tickets"`
+	}
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	tickets := resp.Tickets
 	if len(tickets) != 1 {
 		t.Fatalf("expected 1 blocked ticket scoped to default project, got %d", len(tickets))
 	}
@@ -2941,8 +2952,11 @@ func TestBlockedScopedToExplicitProject(t *testing.T) {
 		t.Fatalf("ticket_blocked error: %v", result.Content)
 	}
 
-	var tickets []map[string]any
-	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &tickets)
+	var resp struct {
+		Tickets []map[string]any `json:"tickets"`
+	}
+	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp)
+	tickets := resp.Tickets
 	if len(tickets) != 1 {
 		t.Fatalf("expected 1 blocked ticket for explicit project, got %d", len(tickets))
 	}

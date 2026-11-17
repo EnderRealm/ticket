@@ -542,11 +542,22 @@ func ReadyTicketsOpen(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, true)
 }
 
+// ReadyOf is ReadyTickets over a listing the caller already holds — a
+// snapshot's tickets — so a consumer reporting the snapshot's revision and
+// skips beside the rows computes all of them off one reading of the store.
+func ReadyOf(store Store, tickets []*Ticket) []*Ticket {
+	return readyOf(store, tickets, false)
+}
+
 func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
 		return nil, err
 	}
+	return readyOf(store, tickets, openMode), nil
+}
+
+func readyOf(store Store, tickets []*Ticket, openMode bool) []*Ticket {
 	// Dep and parent gating both want a derived status, and List has already
 	// derived every ticket in the store. Resolving either through store.Get
 	// instead would read the whole store again for every epic named.
@@ -565,7 +576,7 @@ func readyTicketsImpl(store Store, openMode bool) ([]*Ticket, error) {
 			ready = append(ready, t)
 		}
 	}
-	return ready, nil
+	return ready
 }
 
 // FrontierTickets returns the schedulable set: tickets with status ready
@@ -628,7 +639,12 @@ func BlockedTickets(store Store) ([]*Ticket, error) {
 	if err != nil {
 		return nil, err
 	}
+	return BlockedOf(store, tickets), nil
+}
 
+// BlockedOf is BlockedTickets over a listing the caller already holds, for a
+// consumer that computes the rows and the snapshot's fields off one reading.
+func BlockedOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var blocked []*Ticket
 	for _, t := range tickets {
@@ -639,7 +655,7 @@ func BlockedTickets(store Store) ([]*Ticket, error) {
 			blocked = append(blocked, t)
 		}
 	}
-	return blocked, nil
+	return blocked
 }
 
 // SameTicketID returns true if two ticket IDs refer to the same ticket,

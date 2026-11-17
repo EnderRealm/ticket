@@ -44,17 +44,20 @@ func TestInboxBacklogQuestionLifecycle(t *testing.T) {
 			if result.IsError {
 				t.Fatalf("inbox error: %v", result.Content)
 			}
-			var items []struct {
-				Ticket struct {
-					ID     string `json:"id"`
-					Status string `json:"status"`
-				} `json:"ticket"`
-				Action string `json:"action"`
-				Detail string `json:"detail"`
+			var resp struct {
+				Items []struct {
+					Ticket struct {
+						ID     string `json:"id"`
+						Status string `json:"status"`
+					} `json:"ticket"`
+					Action string `json:"action"`
+					Detail string `json:"detail"`
+				} `json:"items"`
 			}
-			if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &items); err != nil {
+			if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp); err != nil {
 				t.Fatal(err)
 			}
+			items := resp.Items
 			if step.action == "" {
 				if len(items) != 0 {
 					t.Errorf("inbox = %+v, want empty", items)
@@ -117,17 +120,20 @@ func TestInboxBlocked(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("inbox error: %v", result.Content)
 	}
-	var items []struct {
-		Ticket struct {
-			ID     string        `json:"id"`
-			Status ticket.Status `json:"status"`
-		} `json:"ticket"`
-		Action string `json:"action"`
-		Detail string `json:"detail"`
+	var resp struct {
+		Items []struct {
+			Ticket struct {
+				ID     string        `json:"id"`
+				Status ticket.Status `json:"status"`
+			} `json:"ticket"`
+			Action string `json:"action"`
+			Detail string `json:"detail"`
+		} `json:"items"`
 	}
-	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &items); err != nil {
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &resp); err != nil {
 		t.Fatal(err)
 	}
+	items := resp.Items
 	want := map[string]struct {
 		action string
 		detail string
@@ -162,12 +168,15 @@ func TestInboxBlocked(t *testing.T) {
 	if blocked.IsError {
 		t.Fatalf("blocked error: %v", blocked.Content)
 	}
-	var tickets []struct {
-		ID string `json:"id"`
+	var blockedResp struct {
+		Tickets []struct {
+			ID string `json:"id"`
+		} `json:"tickets"`
 	}
-	if err := json.Unmarshal([]byte(blocked.Content[0].(*mcp.TextContent).Text), &tickets); err != nil {
+	if err := json.Unmarshal([]byte(blocked.Content[0].(*mcp.TextContent).Text), &blockedResp); err != nil {
 		t.Fatal(err)
 	}
+	tickets := blockedResp.Tickets
 	if len(tickets) != 4 {
 		t.Fatalf("blocked returned %d tickets, want 4", len(tickets))
 	}

@@ -81,7 +81,12 @@ func Inbox(store Store) ([]InboxItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	return InboxOf(store, tickets), nil
+}
 
+// InboxOf is Inbox over a listing the caller already holds, for a consumer
+// that computes the rows and the snapshot's fields off one reading.
+func InboxOf(store Store, tickets []*Ticket) []InboxItem {
 	depOf := depLookup(store, tickets)
 	var items []InboxItem
 	for _, t := range tickets {
@@ -107,7 +112,7 @@ func Inbox(store Store) ([]InboxItem, error) {
 		return items[i].Since.Before(items[j].Since)
 	})
 
-	return items, nil
+	return items
 }
 
 // ProjectSummary aggregates progress for an epic/parent ticket.
