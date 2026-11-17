@@ -123,7 +123,7 @@ func acquireStoreLock(path string, exclusive bool) (func(), error) {
 		storeLocks.Lock()
 		st := storeLocks.held[path]
 		if st == nil {
-			f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o600)
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY|syscall.O_NOFOLLOW, 0o600)
 			if err != nil {
 				storeLocks.Unlock()
 				return nil, fmt.Errorf("store lock %s: %w", path, err)

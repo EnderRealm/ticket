@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -624,9 +626,26 @@ func (s *FileStore) updateLocked(t *Ticket) error {
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	current, err := os.ReadFile(path)
+	current, err := readRegular(path)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("ticket %s not found", t.ID)
+	}
+	// A file that is not regular — a symlink above all — is not read through,
+	// on the terms readFile refuses it: nothing outside the store gets to judge
+	// the write, through the version compare, the append-only checks, the
+	// timestamps or the logged diff. It has no prior, so a read-modify-write
+	// cannot have read a version from it and conflicts; a version-less write
+	// replaces it as a new file, which the rename does to the link itself.
+	var irregular *irregularFileError
+	if errors.As(err, &irregular) {
+		if t.version != "" {
+			return fmt.Errorf("update %s: %w. Re-read it and apply the change again", t.ID, ErrConflict)
+		}
+		if err := s.writeTicket(t, nil); err != nil {
+			return err
+		}
+		s.logUpdate(nil, t)
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
@@ -1055,11 +1074,12 @@ const bareNameHint = "must be a bare name with no path separators — check the 
 // FileStore builds from a ticket ID goes through here, which bounds the filename
 // half; on a MultiStore the directory half comes from an ID's project prefix and
 // is bounded in storeFor. The bound is lexical — it constrains the path string,
-// not the inode it resolves to. A symlinked ticket file inside the store still
-// redirects a read, which follows the link; it no longer redirects a write,
-// because writeTicket replaces the path by rename and rename replaces the link
-// itself rather than writing through it — so the first write lands in the store
-// and leaves a regular file where the link was.
+// not the inode it resolves to. A symlinked ticket file inside the store is
+// refused by every read rather than followed (readRegular) — Update's included,
+// which writes over it as over no prior — and it does not redirect a write:
+// writeTicket replaces the path by rename, which replaces the link itself
+// rather than writing through it, so the write lands in the store and leaves a
+// regular file where the link was, at the mode a new ticket gets.
 func (s *FileStore) ticketFile(id string) (string, error) {
 	if id != filepath.Base(id) {
 		return "", fmt.Errorf("invalid ticket ID %q in %s: %s", id, s.Dir, bareNameHint)
@@ -1067,10 +1087,53 @@ func (s *FileStore) ticketFile(id string) (string, error) {
 	return filepath.Join(s.Dir, id+".md"), nil
 }
 
+// irregularFileError refuses a ticket file that is not a regular file, naming
+// the file and what it is instead.
+type irregularFileError struct {
+	path string
+	mode fs.FileMode
+}
+
+func (e *irregularFileError) Error() string {
+	kind := "not a regular file"
+	switch {
+	case e.mode&fs.ModeSymlink != 0:
+		kind = "a symlink, not a regular file"
+	case e.mode.IsDir():
+		kind = "a directory, not a regular file"
+	}
+	return fmt.Sprintf("%s in %s is %s — refusing to read it as a ticket", filepath.Base(e.path), filepath.Dir(e.path), kind)
+}
+
+// readRegular returns the bytes of the ticket file at path, and an
+// irregularFileError for anything that is not a regular file. Ticket files
+// arrive over git, which tracks symlinks, so a link in the store could
+// otherwise hand any file the user can read — another store's ticket, a
+// credential — to every listing, to the agent behind an MCP call, and to the
+// checks a write is judged by. The Lstat keeps the open off a FIFO or a
+// device; O_NOFOLLOW refuses a link swapped in after it.
+func readRegular(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, &irregularFileError{path: path, mode: info.Mode()}
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
 // readFile parses a ticket and stamps it with the version of the bytes it was
-// parsed from, which is what Update compares against before it writes.
+// parsed from, which is what Update compares against before it writes. Only a
+// regular file is read (readRegular); the refusal is reported like any other
+// file that yielded no ticket.
 func (s *FileStore) readFile(path string) (*Ticket, error) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1169,23 +1232,22 @@ func stampTimestamps(t, prior *Ticket) {
 	}
 }
 
-// createMode is the mode a ticket file that does not yet exist is created with:
-// 0644 masked by the process umask, which is what os.WriteFile produced before
-// the write became a temp file plus a rename. The kernel applies the umask to
-// an open, not to the chmod that has to follow os.CreateTemp's 0600, so it is
-// read here instead.
-//
-// Read once during package initialization by setting the umask and putting it
-// straight back, because the call is process-global: doing it at write time
-// would leave a window in which another goroutine's file creation saw a zero
-// umask. Initialization runs on one goroutine before main, which closes that
-// window rather than narrowing it.
-var createMode = fs.FileMode(0o644 &^ processUmask())
-
-func processUmask() fs.FileMode {
-	mask := syscall.Umask(0)
-	syscall.Umask(mask)
-	return fs.FileMode(mask)
+// createWriteTemp opens a new file in dir under a random `.tk-write-*` name,
+// for a caller to fill and rename over its target. It is os.CreateTemp at perm
+// rather than 0600: O_CREATE|O_EXCL lets the kernel apply the process umask to
+// the open, so a file published without a chmod at 0644 carries what
+// os.WriteFile gave a new file — 0644 masked by the umask — and the umask is
+// never read, which would mean setting it process-wide.
+func createWriteTemp(dir string, perm fs.FileMode) (*os.File, error) {
+	for i := 0; i < 10000; i++ {
+		name := filepath.Join(dir, fmt.Sprintf(".tk-write-%d", rand.Uint32()))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if os.IsExist(err) {
+			continue
+		}
+		return f, err
+	}
+	return nil, &fs.PathError{Op: "createtemp", Path: filepath.Join(dir, ".tk-write-*"), Err: fs.ErrExist}
 }
 
 // writeTicket serializes a ticket and replaces its file atomically: the bytes
@@ -1214,7 +1276,7 @@ func processUmask() fs.FileMode {
 // caller updating the same in-memory ticket twice does not conflict with its
 // own first write.
 //
-// Residual: a writer killed between CreateTemp and Rename strands a
+// Residual: a writer killed between createWriteTemp and Rename strands a
 // `.tk-write-*` file in the store directory, which no later run cleans up and
 // which `tk sync` stages wholesale along with the tickets. Bounded rather than
 // handled — the window is one write, every error path inside it removes the
@@ -1252,10 +1314,17 @@ func (s *FileStore) writeTicket(t, prior *Ticket) error {
 	// whose tickets are 0600 would find every one of them widened to
 	// world-readable by the next note — ticket bodies carry work detail and
 	// whatever an agent pasted into a note.
-	mode := createMode
-	info, err := os.Stat(path)
+	//
+	// Lstat, not Stat: only a regular file has a mode of its own to keep. A
+	// symlink's target is outside what this write replaces — the rename swaps
+	// the link itself — and ticket files arrive over git, so inheriting the
+	// target's bits would let a link to a 0666 file leave a world-writable
+	// ticket in the store. Anything that is not a regular file is replaced as a
+	// new one.
+	var inherit fs.FileMode
+	info, err := os.Lstat(path)
 	switch {
-	case err == nil:
+	case err == nil && info.Mode().IsRegular():
 		// A target the current user cannot write is refused rather than
 		// replaced. Renaming over a file consults the directory's mode and not
 		// the target's, so without this a ticket someone deliberately made
@@ -1265,24 +1334,34 @@ func (s *FileStore) writeTicket(t, prior *Ticket) error {
 		if info.Mode().Perm()&0o200 == 0 {
 			return &fs.PathError{Op: "write", Path: path, Err: fs.ErrPermission}
 		}
-		mode = info.Mode().Perm()
-	case !os.IsNotExist(err):
+		inherit = info.Mode().Perm()
+	case err != nil && !os.IsNotExist(err):
 		return err
 	}
 
-	tmp, err := os.CreateTemp(s.Dir, ".tk-write-*")
+	// A new file carries its create mode from the open. An inherited mode is
+	// opened at, so the umask can only narrow it, and then set exactly by a
+	// chmod, which is not umask-masked — both before any ticket bytes are
+	// written, so the temp file never holds them at a mode wider than the one
+	// the rename publishes, and nothing chmods the file afterwards. inherit is
+	// never zero for a file kept: the refusal above requires the owner-write
+	// bit.
+	perm := fs.FileMode(0o644)
+	if inherit != 0 {
+		perm = inherit
+	}
+	tmp, err := createWriteTemp(s.Dir, perm)
 	if err != nil {
 		return err
 	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
+	if inherit != 0 {
+		if err := tmp.Chmod(inherit); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return err
+		}
 	}
-	// CreateTemp opens at 0600 and a chmod is not umask-masked, so the mode has
-	// to be set explicitly before the rename publishes the file — nothing
-	// chmods it afterwards.
-	if err := tmp.Chmod(mode); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err

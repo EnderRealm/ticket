@@ -499,3 +499,69 @@ func TestMultiStoreMutate(t *testing.T) {
 		t.Errorf("notes = %d, want 1", len(stored.Notes))
 	}
 }
+
+// sandboxCache points the user cache directory at a fresh temp tree and returns
+// it, so a test can plant what lives under <cache>/tk.
+func sandboxCache(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir: %v", err)
+	}
+	return cache
+}
+
+// TestLocksDirRefusesASymlink: MkdirAll accepts a locks directory that is a
+// symlink to one someone else controls; the Lstat after it does not.
+func TestLocksDirRefusesASymlink(t *testing.T) {
+	cache := sandboxCache(t)
+	if err := os.MkdirAll(filepath.Join(cache, "tk"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	elsewhere := t.TempDir()
+	locks := filepath.Join(cache, "tk", "locks")
+	if err := os.Symlink(elsewhere, locks); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if _, err := locksDir(); err == nil || !strings.Contains(err.Error(), locks) {
+		t.Fatalf("locksDir = %v, want a refusal naming %s", err, locks)
+	}
+	store, _ := testStore(t)
+	if err := store.Create(sampleTicket("lockdir-0001")); err == nil {
+		t.Error("Create succeeded with the locks directory redirected")
+	}
+	entries, err := os.ReadDir(elsewhere)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("%d lock files landed in the link's target, want none", len(entries))
+	}
+}
+
+// TestLockOpenRefusesASymlink: a symlink planted at a lock file's path is
+// refused rather than followed by the O_CREATE open.
+func TestLockOpenRefusesASymlink(t *testing.T) {
+	sandboxCache(t)
+	store, _ := testStore(t)
+	path, err := store.lockFile("planted-0001")
+	if err != nil {
+		t.Fatalf("lockFile: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "created-through-the-link")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if release, err := store.lockTicket("planted-0001"); err == nil {
+		release()
+		t.Fatal("lockTicket followed a symlink planted at the lock path")
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Errorf("the link's target exists (%v), want the open to have created nothing", err)
+	}
+}

@@ -1,11 +1,13 @@
 package ticket
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1131,4 +1133,197 @@ func TestWriteWarnsWhenItDropsALegacyReviewLog(t *testing.T) {
 	if len(*warnings) != 1 {
 		t.Errorf("a write of a ticket carrying no Review Log warned: %v", *warnings)
 	}
+}
+
+// withUmask sets the process umask for one test and restores it afterwards.
+// The package runs no parallel tests, so nothing else creates files meanwhile.
+func withUmask(t *testing.T, mask int) {
+	t.Helper()
+	old := syscall.Umask(mask)
+	t.Cleanup(func() { syscall.Umask(old) })
+}
+
+// TestCreateMasksTheNewFileByTheUmask: a new ticket gets 0644 masked by the
+// process umask, as os.WriteFile gave it, with the kernel applying the mask to
+// the temp file's open. 027 tells that apart from an unmasked 0644 and from the
+// temp file's own default.
+func TestCreateMasksTheNewFileByTheUmask(t *testing.T) {
+	withUmask(t, 0o027)
+	store, _ := testStore(t)
+	if err := store.Create(sampleTicket("umask-0001")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(store.Dir, "umask-0001.md"))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640 — 0644 under umask 027", info.Mode().Perm())
+	}
+}
+
+// outsideCompleted is the completion date the ticket outside the store
+// carries, so a write that took it as its prior would carry it over.
+var outsideCompleted = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// symlinkedTicket plants id.md in the store as a symlink to a 0666 file outside
+// it holding a valid done ticket completed at outsideCompleted, and returns the
+// link's path, the outside file's path and its bytes.
+func symlinkedTicket(t *testing.T, store *FileStore, id string) (link, outside string, before []byte) {
+	t.Helper()
+	if err := store.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	planted := sampleTicket(id)
+	planted.Status = StatusDone
+	planted.Completed = outsideCompleted
+	before, err := Serialize(planted)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	outside = filepath.Join(t.TempDir(), "victim.md")
+	if err := os.WriteFile(outside, before, 0o666); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(outside, 0o666); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	link = filepath.Join(store.Dir, id+".md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	return link, outside, before
+}
+
+// assertOutsideUntouched checks the file a symlinked ticket pointed at kept its
+// bytes and its 0666 mode.
+func assertOutsideUntouched(t *testing.T, outside string, before []byte) {
+	t.Helper()
+	after, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("ReadFile outside: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("the file outside the store changed")
+	}
+	info, err := os.Stat(outside)
+	if err != nil {
+		t.Fatalf("Stat outside: %v", err)
+	}
+	if info.Mode().Perm() != 0o666 {
+		t.Errorf("outside mode = %v, want 0666 left as it was", info.Mode().Perm())
+	}
+}
+
+// TestUpdateOverASymlinkedTicketTakesTheCreateMode: the rename replaces the
+// link rather than writing through it, and the file it leaves takes the mode a
+// new ticket gets — not the mode of the link's target, which here would be
+// world-writable. The target is not read as the prior either: a write carrying
+// a version conflicts, since none could have been read from the link, and a
+// version-less one is stamped as over no prior, so the target's completion
+// date does not reach the store.
+func TestUpdateOverASymlinkedTicketTakesTheCreateMode(t *testing.T) {
+	withUmask(t, 0o027)
+	store, _ := testStore(t)
+	link, outside, before := symlinkedTicket(t, store, "link-0001")
+
+	stale := sampleTicket("link-0001")
+	stale.Status = StatusDone
+	stale.version = versionOf(before)
+	if err := store.Update(stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Update with the target's version = %v, want ErrConflict", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the refused write replaced the link: %v, %v", info, err)
+	}
+
+	start := time.Now().UTC().Add(-time.Second)
+	built := sampleTicket("link-0001")
+	built.Title = "Written over the link"
+	built.Status = StatusDone
+	if err := store.Update(built); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("store holds %v at %s, want a regular file", info.Mode(), link)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640 — the create mode under umask 027, not the target's 0666", info.Mode().Perm())
+	}
+	got, err := store.Get("link-0001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Title != "Written over the link" {
+		t.Errorf("Title = %q, want the write to have landed in the store", got.Title)
+	}
+	if got.Completed.Equal(outsideCompleted) || got.Completed.Before(start) {
+		t.Errorf("Completed = %v, want stamped by this write rather than carried from the link's target (%v)", got.Completed, outsideCompleted)
+	}
+	assertOutsideUntouched(t, outside, before)
+}
+
+// TestWriteSetsAnInheritedModeTheUmaskWouldNarrow: an existing ticket's mode is
+// kept exactly even where the umask would mask it, since the temp file is
+// chmodded to it rather than relying on the open alone.
+func TestWriteSetsAnInheritedModeTheUmaskWouldNarrow(t *testing.T) {
+	withUmask(t, 0o077)
+	store, _ := testStore(t)
+	if err := store.Create(sampleTicket("mode-0002")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := filepath.Join(store.Dir, "mode-0002.md")
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	got, err := store.Get("mode-0002")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got.Title = "Rewritten"
+	if err := store.Update(got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640 kept under umask 077", info.Mode().Perm())
+	}
+}
+
+// TestSymlinkedTicketIsNotReadOrDeleted: a ticket file that is a symlink is
+// refused by every read rather than followed out of the store, naming the file,
+// and a delete is refused with it — the store holds a file nothing could read.
+func TestSymlinkedTicketIsNotReadOrDeleted(t *testing.T) {
+	store, _ := testStore(t)
+	link, outside, before := symlinkedTicket(t, store, "link-0002")
+
+	if _, err := store.Get("link-0002"); err == nil || !strings.Contains(err.Error(), "link-0002.md") {
+		t.Errorf("Get = %v, want a refusal naming link-0002.md", err)
+	}
+	tickets, skips, err := store.ListWithSkips()
+	if err != nil {
+		t.Fatalf("ListWithSkips: %v", err)
+	}
+	if len(tickets) != 0 {
+		t.Errorf("listing holds %d tickets, want the link to have been skipped", len(tickets))
+	}
+	if len(skips) != 1 || skips[0].File != "link-0002.md" || skips[0].Kind != FileSkipUnreadable {
+		t.Errorf("skips = %+v, want link-0002.md skipped as unreadable", skips)
+	}
+	if err := store.Delete("link-0002"); err == nil || !strings.Contains(err.Error(), "link-0002.md") {
+		t.Errorf("Delete = %v, want a refusal naming link-0002.md", err)
+	}
+
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was not left in place: %v, %v", info, err)
+	}
+	assertOutsideUntouched(t, outside, before)
 }

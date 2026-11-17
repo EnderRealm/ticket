@@ -45,7 +45,7 @@ func (s *FileStore) lockTicket(id string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("lock %s: %w", id, err)
 	}
@@ -69,15 +69,20 @@ func (s *FileStore) lockTicket(id string) (func(), error) {
 // It lives outside the ticket store because `tk sync` stages tickets/ wholesale
 // (centralStorePaths in cmd/sync.go): a lock file under the store directory
 // would be committed and shipped to every other machine. It lives under the
-// user's cache directory rather than in os.TempDir because the property that
-// matters — that no other local user can reach it — has to be structural. A
-// world-writable /tmp, which is what a Linux host has, lets another user
-// pre-create the directory tk would have made: MkdirAll returns nil for a path
-// that already exists whoever owns it, and from there they could hold the flock
-// that blocks every writer, unlink lock files so two writers land on different
-// inodes, or plant a symlink for tk's O_CREATE to follow. A per-user cache
-// directory is owned by its user by construction; the 0700 mode below is
-// defence in depth, not the guarantee.
+// user's cache directory rather than in os.TempDir because no other local user
+// should be able to reach it. A world-writable /tmp, which is what a Linux host
+// has, lets another user pre-create the directory tk would have made: MkdirAll
+// returns nil for a path that already exists whoever owns it, and from there
+// they could hold the flock that blocks every writer, unlink lock files so two
+// writers land on different inodes, or plant a symlink for tk's O_CREATE to
+// follow. The cache directory comes from the environment — XDG_CACHE_HOME on
+// Linux, which `tk serve` inherits from its MCP client — so it can name a
+// shared directory too, and nothing about it is taken on trust: locksDir
+// refuses a locks directory that is a symlink or is owned by another uid, and
+// the lock open carries O_NOFOLLOW, so a symlink planted in the directory is
+// refused rather than followed. A directory tk creates is 0700; the mode of
+// one that already exists is not checked, since only its owner can have
+// widened it.
 //
 // Like the journal, it stays under HOME and is not moved by TK_STORE_ROOT: the
 // override relocates the store, and locks are about the processes on this
@@ -113,7 +118,12 @@ func (s *FileStore) lockFile(id string) (string, error) {
 }
 
 // locksDir is the directory every lock file lives in — the per-ticket ones
-// and the store lock (central.lockPath) alike — created on first use.
+// and the store lock (central.lockPath) alike — created on first use, and
+// checked on every use: Lstat, so a symlink to a directory someone else
+// controls is refused, and the owner compared against the current uid, since
+// MkdirAll accepts a directory that already exists whoever owns it. Only the
+// last element is checked; the components above it are the user's cache
+// directory, which the environment names.
 //
 // A hard failure, not a fallback to a shared directory: an environment with
 // neither XDG_CACHE_HOME nor HOME is a misconfiguration the caller can fix,
@@ -127,6 +137,14 @@ func locksDir() (string, error) {
 	locks := filepath.Join(cache, "tk", "locks")
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return "", err
+	}
+	info, err := os.Lstat(locks)
+	if err != nil {
+		return "", err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !info.IsDir() || !ok || int(stat.Uid) != os.Getuid() {
+		return "", fmt.Errorf("ticket lock directory %s is not a directory owned by the current user — refusing to lock through it", locks)
 	}
 	return locks, nil
 }

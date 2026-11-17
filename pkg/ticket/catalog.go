@@ -470,16 +470,11 @@ func WriteNamespaceMarker(centralRoot, name string) error {
 		return err
 	}
 	content := "tk namespace marker: keeps this directory in git while it holds no tickets\n"
-	tmp, err := os.CreateTemp(dir, ".tk-write-*")
+	tmp, err := createWriteTemp(dir, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Chmod(createMode); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
