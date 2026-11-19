@@ -213,6 +213,7 @@ func TestParse_UnusableFrontmatterStillFails(t *testing.T) {
 		{"parent as a sequence", "---\nid: t-abc1\nstatus: open\ntype: feature\nparent: [epic-1111]\n---\n# Lost parent\n"},
 		{"parent as a mapping", "---\nid: t-abc1\nstatus: open\ntype: feature\nparent: {a: b}\n---\n# Lost parent\n"},
 		{"deps as a scalar", "---\nid: t-abc1\nstatus: open\ntype: feature\ndeps: notalist\n---\n# Lost deps\n"},
+		{"deps partially decoded", "---\nid: t-abc1\nstatus: open\ntype: feature\ndeps: [t-real, [x]]\n---\n# Lost dep\n"},
 		// A typeless epic is passed over by the derivation and renders the stale
 		// status its file stores, which is the demotion bypassed rather than
 		// applied.
@@ -248,6 +249,7 @@ func TestParse_EmptyLoadBearingFieldsStillParse(t *testing.T) {
 		{"type empty string", "---\nid: t-abc1\nstatus: open\ntype: ''\nabandoned: maybe\ndeps: []\n---\n# Fine\n"},
 		{"type absent", "---\nid: t-abc1\nstatus: open\nabandoned: maybe\ndeps: []\n---\n# Fine\n"},
 		{"all populated", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\nparent: epic-1111\ndeps: [d-1]\n---\n# Fine\n"},
+		{"deps fully decoded", "---\nid: t-abc1\nstatus: open\ntype: feature\nabandoned: maybe\ndeps: [t-a, t-b]\n---\n# Fine\n"},
 	}
 	for _, c := range cases {
 		tk, err := Parse(strings.NewReader(c.input))

@@ -184,6 +184,10 @@ func Parse(r io.Reader) (*Ticket, error) {
 // `deps: []` and `type: ""` are all a writer saying "none": readable here, and
 // judged by Validate on the way in like any other missing value.
 //
+// Deps are counted as well as vetted for presence: yaml.v3 drops a malformed
+// element from a sequence and keeps its neighbours, so a deps list that decoded
+// shorter than the raw one lost a blocker while still looking populated.
+//
 // Local fields are deliberately not checked. An unreadable priority or a
 // mistyped abandon flag is wrong only about the ticket it is on, and that is
 // visible on the ticket; a lost parent, dep or type is wrong about a ticket
@@ -192,8 +196,13 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
 	if v, ok := raw["parent"]; ok && t.Parent == "" && !emptyYAMLValue(v) {
 		return true
 	}
-	if v, ok := raw["deps"]; ok && len(t.Deps) == 0 && !emptyYAMLValue(v) {
-		return true
+	if v, ok := raw["deps"]; ok && !emptyYAMLValue(v) {
+		if len(t.Deps) == 0 {
+			return true
+		}
+		if items, ok := v.([]interface{}); ok && len(t.Deps) < len(items) {
+			return true
+		}
 	}
 	if v, ok := raw["type"]; ok && t.Type == "" && !emptyYAMLValue(v) {
 		return true
