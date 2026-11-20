@@ -181,20 +181,24 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	}
 	store := ticket.NewMultiStore(filepath.Join(root, "tickets"))
 
+	// The name is checked the way `tk frontier --project` checks it, before the
+	// store is read: ValidName bounds it before it is joined into a path, and any
+	// namespace the store knows is accepted — an unregistered project directory
+	// included, which the unfiltered audit already covers — while a name the
+	// store does not know is refused rather than read as an empty report.
+	proj, _ := cmd.Flags().GetString("project")
+	if proj != "" {
+		if _, err := ticket.ResolveStoreForNamespace(proj); err != nil {
+			return err
+		}
+	}
+
 	audit, err := ticket.Audit(store)
 	if err != nil {
 		return err
 	}
 
-	proj, _ := cmd.Flags().GetString("project")
 	if proj != "" {
-		cfg, err := project.Load()
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-		if _, ok := cfg.Projects[proj]; !ok {
-			return fmt.Errorf("project %q not found in config", proj)
-		}
 		var filtered []ticket.ParentViolation
 		for _, v := range audit.Violations {
 			if p, _ := ticket.ParseNamespacedID(v.ID); p == proj {
@@ -343,8 +347,10 @@ var auditSafeToken = regexp.MustCompile(`^[A-Za-z0-9._@+/-]+$`)
 // over rather than whatever the name expands to. Control bytes are stripped
 // first, for the reason printIncompleteReport quotes the name it prints — a
 // project name is a store directory name or a shared-config key another machine
-// wrote. The flag is refused unless the local config already holds the name, so
-// this is defence in depth rather than a live exploit.
+// wrote. The flag is refused unless the name is a namespace the store knows —
+// and a project directory another machine synced in is one — so the name is
+// bounded against path separators and nothing else, and the quoting is what
+// keeps it from running as shell.
 func shellQuoteProject(proj string) string {
 	proj = ticket.SanitizeControl(proj)
 	if auditSafeToken.MatchString(proj) {

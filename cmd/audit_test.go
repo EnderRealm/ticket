@@ -161,6 +161,96 @@ func TestAuditJSONAndProjectFilter(t *testing.T) {
 	}
 }
 
+// An unregistered project with a directory under the central tickets root is
+// one the unfiltered audit already spans, so naming it narrows to exactly what
+// that audit reports for it rather than being refused for missing from config.
+func TestAuditProjectFilterReachesAnUnregisteredProjectDirectory(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	auditTicket(t, stores["alpha"], "au-alpha-0001", ticket.TypeFeature, "gone-9999")
+	ghostDir := filepath.Join(filepath.Dir(stores["alpha"].Dir), "ghost")
+	if err := os.MkdirAll(ghostDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ghost := ticket.NewFileStore(ghostDir)
+	auditTicket(t, ghost, "au-ghost-0001", ticket.TypeFeature, "gone-9999")
+	auditBodyTicket(t, ghost, "au-ghost-0002", "\nA description and nothing else.\n")
+
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	var whole, scoped ticket.AuditReport
+	if err := json.Unmarshal([]byte(captureAudit(t, "")), &whole); err != nil {
+		t.Fatalf("json parse: %v", err)
+	}
+	out := captureAudit(t, "", "project", "ghost")
+	if err := json.Unmarshal([]byte(out), &scoped); err != nil {
+		t.Fatalf("json parse: %v\noutput: %s", err, out)
+	}
+
+	var wantViolations []string
+	for _, v := range whole.Violations {
+		if p, _ := ticket.ParseNamespacedID(v.ID); p == "ghost" {
+			wantViolations = append(wantViolations, v.ID+" "+string(v.Kind))
+		}
+	}
+	var gotViolations []string
+	for _, v := range scoped.Violations {
+		gotViolations = append(gotViolations, v.ID+" "+string(v.Kind))
+	}
+	if len(wantViolations) != 1 || fmt.Sprint(gotViolations) != fmt.Sprint(wantViolations) {
+		t.Errorf("--project=ghost violations = %v, want the unfiltered audit's ghost findings %v", gotViolations, wantViolations)
+	}
+
+	var wantContent []string
+	for _, c := range whole.Content {
+		if p, _ := ticket.ParseNamespacedID(c.ID); p == "ghost" {
+			wantContent = append(wantContent, c.ID+" "+string(c.Kind))
+		}
+	}
+	var gotContent []string
+	for _, c := range scoped.Content {
+		gotContent = append(gotContent, c.ID+" "+string(c.Kind))
+	}
+	if len(wantContent) == 0 || fmt.Sprint(gotContent) != fmt.Sprint(wantContent) {
+		t.Errorf("--project=ghost content = %v, want the unfiltered audit's ghost findings %v", gotContent, wantContent)
+	}
+}
+
+// A name that is neither a config entry nor a store directory is a typo, and
+// is refused by name rather than answered with an empty report.
+func TestAuditProjectFilterRefusesAnUnknownName(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	auditTicket(t, stores["alpha"], "au-alpha-0001", ticket.TypeFeature, "gone-9999")
+
+	out, err := captureAuditErr(t, "", "project", "alpah")
+	if err == nil {
+		t.Fatalf("audit --project=alpah succeeded:\n%s", out)
+	}
+	if !contains(err.Error(), `"alpah"`) {
+		t.Errorf("error %q should name the project looked for", err)
+	}
+	if out != "" {
+		t.Errorf("a refused name should print no report:\n%s", out)
+	}
+}
+
+// The name is joined into a path under the central tickets root, so one that
+// could traverse out of it is refused by ValidName before any lookup.
+func TestAuditProjectFilterRefusesAnInvalidName(t *testing.T) {
+	stores := setupFrontierStore(t, "alpha")
+	auditTicket(t, stores["alpha"], "au-alpha-0001", ticket.TypeFeature, "gone-9999")
+
+	for _, name := range []string{"..", "../tickets", "alpha/.."} {
+		out, err := captureAuditErr(t, "", "project", name)
+		if err == nil {
+			t.Fatalf("audit --project=%s succeeded:\n%s", name, out)
+		}
+		if !contains(err.Error(), "invalid project name") {
+			t.Errorf("--project=%s: error %q should be the name validation's refusal", name, err)
+		}
+	}
+}
+
 func TestAuditReportsEpicsReadingADifferentStatus(t *testing.T) {
 	stores := setupFrontierStore(t, "alpha")
 	store := stores["alpha"]
