@@ -3,6 +3,7 @@ package journal
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,6 +70,9 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 	if err != nil {
 		return result, err
 	}
+	// A cycle with no journal state may be replaying closes another machine
+	// already applied; closedByCommit matches legacy notes only on such a cycle.
+	freshState := lastSHA == ""
 
 	if !dirExists(filepath.Join(cfg.Path, ".git")) {
 		return result, fmt.Errorf("no git repository at %s", cfg.Path)
@@ -183,10 +187,18 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 					// read-modify-write would drop whatever an agent wrote to the
 					// ticket while the watch cycle was walking the commits.
 					_, err := ticket.Mutate(store, ticketID, func(t *ticket.Ticket) error {
+						// The journal of handled commits is machine-local, so a
+						// machine without one walks every close since registration.
+						// Whether this commit already closed the ticket is read off
+						// the shared ticket instead, and a replay writes nothing —
+						// a ticket reopened since stays reopened.
+						if closedByCommit(t, commit, freshState) {
+							return errAlreadyClosed
+						}
 						t.Status = ticket.StatusDone
 						t.Notes = append(t.Notes, ticket.Note{
 							Timestamp: time.Now().UTC(),
-							Text:      "auto-closed by commit",
+							Text:      autoCloseNote(commit.SHA),
 						})
 						branch := dr.branch
 						if branch == "" {
@@ -195,9 +207,12 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 						ticket.PopulateDoneOutputs(t, commit.SHA, branch)
 						return nil
 					})
-					if err != nil {
+					switch {
+					case errors.Is(err, errAlreadyClosed):
+						// A replay: nothing written, so nothing counted or reported.
+					case err != nil:
 						result.Warnings = append(result.Warnings, fmt.Sprintf("auto-close %s failed: %v", ticketID, err))
-					} else {
+					default:
 						result.Closed++
 					}
 				}
@@ -260,6 +275,61 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 	}
 
 	return result, nil
+}
+
+// errAlreadyClosed aborts an auto-close's Mutate without a write when the
+// ticket already records the commit's close.
+var errAlreadyClosed = errors.New("ticket already closed by this commit")
+
+// legacyAutoCloseNote is the note an auto-close appended before the note named
+// its commit. It is still read, by closedByCommit, and never written.
+const legacyAutoCloseNote = "auto-closed by commit"
+
+// autoCloseNote is the note an auto-close appends. It carries the full SHA so
+// the close is recorded per commit in the shared ticket, where closedByCommit
+// finds it on any machine.
+func autoCloseNote(sha string) string {
+	return legacyAutoCloseNote + " " + sha
+}
+
+// legacyNoteSkew is how far a legacy note may predate a commit's committer date
+// and still count as that commit's close, on a cycle that started with no
+// journal state. The committer date is not when a watcher saw the commit: a
+// committer's clock can run ahead of the watching machine's, and a rebase or
+// cherry-pick can carry a date forward, so a real close's note can be older
+// than the commit it records. The cost, on such a cycle only, is that a
+// genuinely new close within this window after an old legacy note is skipped.
+const legacyNoteSkew = 24 * time.Hour
+
+// closedByCommit reports whether t records that commit closed it, by any of:
+//   - outputs.commit naming it. Fill-if-absent, so it holds only the first
+//     commit that closed the ticket.
+//   - the auto-close note naming it.
+//   - on a cycle that started with no journal state (freshState), a legacy
+//     note without a SHA timestamped no more than legacyNoteSkew before the
+//     commit's committer date. A legacy note older than that is taken not to
+//     be the commit's close, and one newer may be. This errs towards skipping:
+//     a later legacy close, or a legacy note within the window before a new
+//     close, also covers a commit that never closed the ticket. A committer
+//     date that does not parse leaves no way to rule a legacy note out, so any
+//     legacy note counts. A cycle with journal state is past the replay, and
+//     every commit it reaches is one this machine has not seen, so there the
+//     inexact match would only drop real closes and is not applied.
+func closedByCommit(t *ticket.Ticket, commit GitCommit, freshState bool) bool {
+	if t.Outputs[ticket.OutputKeyCommit] == commit.SHA {
+		return true
+	}
+	committed, tsErr := time.Parse(time.RFC3339, commit.TS)
+	note := autoCloseNote(commit.SHA)
+	for _, n := range t.Notes {
+		if n.Text == note {
+			return true
+		}
+		if freshState && n.Text == legacyAutoCloseNote && (tsErr != nil || !n.Timestamp.Before(committed.Add(-legacyNoteSkew))) {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadJournalState reads existing SHAs and the last SHA from a journal file.

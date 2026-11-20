@@ -1,6 +1,8 @@
 package journal
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -514,6 +516,521 @@ func TestWatchCycle_LocalCloseLandsOnce(t *testing.T) {
 	}
 }
 
+// removeWatchState deletes the machine-local watcher state for project, as a
+// fresh machine, a wiped state directory or a new home would have none.
+func removeWatchState(t *testing.T, project string) {
+	t.Helper()
+	jPath, err := JournalPath(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(jPath)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestWatchCycle_FreshStateKeepsReopenedTicket is a machine with no journal
+// replaying a close a human has since undone: the ticket records that the
+// commit already closed it, so the cycle leaves its reopened status alone.
+func TestWatchCycle_FreshStateKeepsReopenedTicket(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "reopen-test")
+	tk := mkTicket(t, store, "Reopened leaf", ticket.StatusOpen)
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] Land the leaf")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	first, err := RunWatchCycle("reopen-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Closed != 1 {
+		t.Fatalf("first cycle closed %d, want 1: %v", first.Closed, first.Warnings)
+	}
+	if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+		t.Status = ticket.StatusReady
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removeWatchState(t, "reopen-test")
+	replay, err := RunWatchCycle("reopen-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Closed != 0 || len(replay.Warnings) != 0 {
+		t.Errorf("replay closed %d with warnings %v, want 0 and none", replay.Closed, replay.Warnings)
+	}
+
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusReady {
+		t.Errorf("ticket status = %q, want ready — the human reopened it", updated.Status)
+	}
+	if len(updated.Notes) != 1 {
+		t.Errorf("notes = %v, want only the first auto-close note", updated.Notes)
+	}
+}
+
+// TestWatchCycle_FreshStateLeavesClosedTicket is a machine with no journal
+// replaying a close that already landed, under both records of it: the
+// SHA-bearing note, and a ticket closed before the note carried a SHA, where
+// outputs.commit is the only record: its SHA-less note is dated further
+// before the commit than legacyNoteSkew, so the note alone would not match.
+func TestWatchCycle_FreshStateLeavesClosedTicket(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		legacy bool
+	}{
+		{name: "note", legacy: false},
+		{name: "legacy", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			repoDir := initTestRepo(t)
+			store := ticket.NewProjectFileStore(t.TempDir(), "closed-test")
+			tk := mkTicket(t, store, "Closed leaf", ticket.StatusOpen)
+			commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] Land the leaf")
+
+			cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+			if tc.legacy {
+				commits, err := CollectCommits(repoDir, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(commits) != 1 {
+					t.Fatalf("got %d commits, want 1", len(commits))
+				}
+				if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+					t.Status = ticket.StatusDone
+					t.Notes = append(t.Notes, ticket.Note{Timestamp: time.Now().UTC().Add(-legacyNoteSkew - time.Hour), Text: legacyAutoCloseNote})
+					t.Outputs = map[string]string{ticket.OutputKeyCommit: commits[0].SHA}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				first, err := RunWatchCycle("closed-test", cfg, store)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if first.Closed != 1 {
+					t.Fatalf("first cycle closed %d, want 1: %v", first.Closed, first.Warnings)
+				}
+			}
+			before, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			removeWatchState(t, "closed-test")
+			replay, err := RunWatchCycle("closed-test", cfg, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replay.Closed != 0 || len(replay.Warnings) != 0 {
+				t.Errorf("replay closed %d with warnings %v, want 0 and none", replay.Closed, replay.Warnings)
+			}
+
+			after, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != ticket.StatusDone {
+				t.Errorf("ticket status = %q, want done", after.Status)
+			}
+			if len(after.Notes) != len(before.Notes) {
+				t.Errorf("notes = %v, want the %d already there", after.Notes, len(before.Notes))
+			}
+			if !maps.Equal(after.Outputs, before.Outputs) {
+				t.Errorf("outputs = %v, want %v unchanged", after.Outputs, before.Outputs)
+			}
+		})
+	}
+}
+
+// TestWatchCycle_NewCloseWithStateLandsOnce pins the ordinary path the replay
+// check must not block: on a machine with journal state, a Closes: commit it
+// has not seen closes its open ticket once, under one note naming the commit.
+func TestWatchCycle_NewCloseWithStateLandsOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "new-close-test")
+	tk := mkTicket(t, store, "Open leaf", ticket.StatusOpen)
+	commitFile(t, repoDir, "a.go", "package a\n", "["+tk.ID+"] Start the work")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	if _, err := RunWatchCycle("new-close-test", cfg, store); err != nil {
+		t.Fatal(err)
+	}
+	jPath, err := JournalPath("new-close-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(jPath); err != nil {
+		t.Fatalf("no journal state after the first cycle: %v", err)
+	}
+
+	commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Land the work")
+	result, err := RunWatchCycle("new-close-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 1 || len(result.Warnings) != 0 {
+		t.Fatalf("closed %d with warnings %v, want 1 and none", result.Closed, result.Warnings)
+	}
+
+	commits, err := CollectCommits(repoDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := commits[len(commits)-1].SHA
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("ticket status = %q, want done", updated.Status)
+	}
+	if len(updated.Notes) != 1 || updated.Notes[0].Text != autoCloseNote(sha) {
+		t.Errorf("notes = %v, want one %q", updated.Notes, autoCloseNote(sha))
+	}
+}
+
+// TestWatchCycle_FreshStateNoteIsOnlyRecord replays a close whose only record
+// is the note naming its commit: the ticket was closed by A, reopened and
+// closed by B, so outputs.commit still names A.
+func TestWatchCycle_FreshStateNoteIsOnlyRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reopen bool
+	}{
+		{name: "done", reopen: false},
+		{name: "reopened", reopen: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			repoDir := initTestRepo(t)
+			store := ticket.NewProjectFileStore(t.TempDir(), "note-only-test")
+			tk := mkTicket(t, store, "Twice closed leaf", ticket.StatusOpen)
+			cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+
+			commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] First landing")
+			if first, err := RunWatchCycle("note-only-test", cfg, store); err != nil {
+				t.Fatal(err)
+			} else if first.Closed != 1 {
+				t.Fatalf("first cycle closed %d, want 1: %v", first.Closed, first.Warnings)
+			}
+			if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+				t.Status = ticket.StatusReady
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Second landing")
+			if second, err := RunWatchCycle("note-only-test", cfg, store); err != nil {
+				t.Fatal(err)
+			} else if second.Closed != 1 {
+				t.Fatalf("second cycle closed %d, want 1: %v", second.Closed, second.Warnings)
+			}
+
+			commits, err := CollectCommits(repoDir, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(commits) != 2 {
+				t.Fatalf("got %d commits, want 2", len(commits))
+			}
+			shaA, shaB := commits[0].SHA, commits[1].SHA
+			if tc.reopen {
+				if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+					t.Status = ticket.StatusReady
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.Outputs[ticket.OutputKeyCommit] != shaA {
+				t.Fatalf("outputs.commit = %q, want the first close's %q", before.Outputs[ticket.OutputKeyCommit], shaA)
+			}
+			if len(before.Notes) != 2 || before.Notes[1].Text != autoCloseNote(shaB) {
+				t.Fatalf("notes = %v, want the second one naming %s", before.Notes, shaB)
+			}
+
+			removeWatchState(t, "note-only-test")
+			replay, err := RunWatchCycle("note-only-test", cfg, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replay.Closed != 0 || len(replay.Warnings) != 0 {
+				t.Errorf("replay closed %d with warnings %v, want 0 and none", replay.Closed, replay.Warnings)
+			}
+
+			after, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != before.Status {
+				t.Errorf("ticket status = %q, want %q", after.Status, before.Status)
+			}
+			if len(after.Notes) != len(before.Notes) {
+				t.Errorf("notes = %v, want the %d already there", after.Notes, len(before.Notes))
+			}
+			if !maps.Equal(after.Outputs, before.Outputs) {
+				t.Errorf("outputs = %v, want %v unchanged", after.Outputs, before.Outputs)
+			}
+		})
+	}
+}
+
+// TestWatchCycle_FreshStateLegacyMultiClose replays two closes made before the
+// note named its commit: outputs.commit holds only the first, and the second
+// is recorded by nothing but a SHA-less note written after it.
+func TestWatchCycle_FreshStateLegacyMultiClose(t *testing.T) {
+	for _, status := range []ticket.Status{ticket.StatusReady, ticket.StatusDone} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			repoDir := initTestRepo(t)
+			store := ticket.NewProjectFileStore(t.TempDir(), "legacy-multi-test")
+			tk := mkTicket(t, store, "Legacy twice closed leaf", ticket.StatusOpen)
+			commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] First landing")
+			commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Second landing")
+
+			commits, err := CollectCommits(repoDir, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(commits) != 2 {
+				t.Fatalf("got %d commits, want 2", len(commits))
+			}
+			if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+				now := time.Now().UTC()
+				t.Status = status
+				t.Notes = append(t.Notes,
+					ticket.Note{Timestamp: now, Text: legacyAutoCloseNote},
+					ticket.Note{Timestamp: now, Text: legacyAutoCloseNote})
+				t.Outputs = map[string]string{ticket.OutputKeyCommit: commits[0].SHA}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+			removeWatchState(t, "legacy-multi-test")
+			replay, err := RunWatchCycle("legacy-multi-test", cfg, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replay.Closed != 0 || len(replay.Warnings) != 0 {
+				t.Errorf("replay closed %d with warnings %v, want 0 and none", replay.Closed, replay.Warnings)
+			}
+
+			after, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != status {
+				t.Errorf("ticket status = %q, want %q", after.Status, status)
+			}
+			if len(after.Notes) != len(before.Notes) {
+				t.Errorf("notes = %v, want the %d already there", after.Notes, len(before.Notes))
+			}
+			if !maps.Equal(after.Outputs, before.Outputs) {
+				t.Errorf("outputs = %v, want %v unchanged", after.Outputs, before.Outputs)
+			}
+		})
+	}
+}
+
+// TestWatchCycle_FreshStateLegacyCloseDatedAhead replays a legacy second close
+// whose committer date runs ahead of the note the watcher wrote for it, as a
+// committer's fast clock or a rebase-carried date leaves it: inside
+// legacyNoteSkew the note still records the close, so the reopened ticket
+// stays reopened.
+func TestWatchCycle_FreshStateLegacyCloseDatedAhead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "legacy-ahead-test")
+	tk := mkTicket(t, store, "Legacy leaf dated ahead", ticket.StatusOpen)
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] First landing")
+	noted := time.Now().UTC()
+	t.Setenv("GIT_COMMITTER_DATE", fmt.Sprintf("@%d +0000", noted.Add(2*time.Hour).Unix()))
+	commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Second landing")
+
+	commits, err := CollectCommits(repoDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("got %d commits, want 2", len(commits))
+	}
+	dated, err := time.Parse(time.RFC3339, commits[1].TS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dated.After(noted.Add(time.Hour)) {
+		t.Fatalf("second commit dated %s, want it well after the note at %s", commits[1].TS, noted)
+	}
+	if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+		t.Status = ticket.StatusReady
+		t.Notes = append(t.Notes,
+			ticket.Note{Timestamp: noted, Text: legacyAutoCloseNote},
+			ticket.Note{Timestamp: noted, Text: legacyAutoCloseNote})
+		t.Outputs = map[string]string{ticket.OutputKeyCommit: commits[0].SHA}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	removeWatchState(t, "legacy-ahead-test")
+	replay, err := RunWatchCycle("legacy-ahead-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Closed != 0 || len(replay.Warnings) != 0 {
+		t.Errorf("replay closed %d with warnings %v, want 0 and none", replay.Closed, replay.Warnings)
+	}
+
+	after, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != ticket.StatusReady {
+		t.Errorf("ticket status = %q, want ready — the human reopened it", after.Status)
+	}
+	if len(after.Notes) != len(before.Notes) {
+		t.Errorf("notes = %v, want the %d already there", after.Notes, len(before.Notes))
+	}
+	if !maps.Equal(after.Outputs, before.Outputs) {
+		t.Errorf("outputs = %v, want %v unchanged", after.Outputs, before.Outputs)
+	}
+}
+
+// TestWatchCycle_FreshStateOlderLegacyNoteDoesNotBlockClose holds the
+// legacy-note rule to its lower bound on the cycle it applies to: with no
+// journal state, a SHA-less note older than a commit by more than
+// legacyNoteSkew is not that commit's close, so the commit still closes the
+// open ticket. The ticket's outputs.commit names an earlier, unrelated commit,
+// which does not block the close either.
+func TestWatchCycle_FreshStateOlderLegacyNoteDoesNotBlockClose(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "older-legacy-test")
+	tk := mkTicket(t, store, "Reopened legacy leaf", ticket.StatusOpen)
+	if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+		t.Notes = append(t.Notes, ticket.Note{Timestamp: time.Now().UTC().Add(-legacyNoteSkew - time.Hour), Text: legacyAutoCloseNote})
+		t.Outputs = map[string]string{ticket.OutputKeyCommit: "1111111111111111111111111111111111111111"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Land the work")
+	result, err := RunWatchCycle("older-legacy-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 1 || len(result.Warnings) != 0 {
+		t.Fatalf("closed %d with warnings %v, want 1 and none", result.Closed, result.Warnings)
+	}
+
+	commits, err := CollectCommits(repoDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := commits[len(commits)-1].SHA
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("ticket status = %q, want done", updated.Status)
+	}
+	if len(updated.Notes) != 2 || updated.Notes[1].Text != autoCloseNote(sha) {
+		t.Errorf("notes = %v, want the legacy note and one %q", updated.Notes, autoCloseNote(sha))
+	}
+}
+
+// TestWatchCycle_LegacyNoteIgnoredWithState holds the legacy-note match to the
+// cycle it is for: with journal state the machine is past any replay, so a
+// first-seen Closes: commit closes a reopened ticket even though it carries a
+// SHA-less note inside legacyNoteSkew of the commit.
+func TestWatchCycle_LegacyNoteIgnoredWithState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "legacy-state-test")
+	tk := mkTicket(t, store, "Reopened leaf with legacy note", ticket.StatusReady)
+	if _, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+		t.Notes = append(t.Notes, ticket.Note{Timestamp: time.Now().UTC(), Text: legacyAutoCloseNote})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, repoDir, "a.go", "package a\n", "["+tk.ID+"] Start the work")
+
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	if _, err := RunWatchCycle("legacy-state-test", cfg, store); err != nil {
+		t.Fatal(err)
+	}
+	jPath, err := JournalPath("legacy-state-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(jPath); err != nil {
+		t.Fatalf("no journal state after the first cycle: %v", err)
+	}
+
+	commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Land the work")
+	result, err := RunWatchCycle("legacy-state-test", cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 1 || len(result.Warnings) != 0 {
+		t.Fatalf("closed %d with warnings %v, want 1 and none", result.Closed, result.Warnings)
+	}
+
+	commits, err := CollectCommits(repoDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := commits[len(commits)-1].SHA
+	updated, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != ticket.StatusDone {
+		t.Errorf("ticket status = %q, want done", updated.Status)
+	}
+	if len(updated.Notes) != 2 || updated.Notes[1].Text != autoCloseNote(sha) {
+		t.Errorf("notes = %v, want the legacy note and one %q", updated.Notes, autoCloseNote(sha))
+	}
+}
+
 // TestWatchCycle_PartialRefDoesNotClose holds a ref that is only a substring of
 // a ticket's ID to the warning path: the store's lookup falls back to substring
 // matching, which would let any bracketed word in a commit subject close an
@@ -744,7 +1261,7 @@ func runTestWatchCycle(t *testing.T, repoDir, jPath string, cfg project.ProjectC
 					tk.Status = ticket.StatusDone
 					tk.Notes = append(tk.Notes, ticket.Note{
 						Timestamp: time.Now().UTC(),
-						Text:      "auto-closed by commit",
+						Text:      autoCloseNote(commit.SHA),
 					})
 					if err := store.Update(tk); err != nil {
 						result.Warnings = append(result.Warnings, err.Error())
