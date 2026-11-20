@@ -210,6 +210,21 @@ type ticketJSON struct {
 	// than a refusal, so editing a legacy ticket carrying such a line never
 	// fails.
 	ShellSyntaxWarning string `json:"shell_syntax_warning,omitempty"`
+	// SimilarTickets names the non-closed tickets in the destination project
+	// whose title or description closely matches the new ticket, so a caller
+	// can fold into one rather than file a duplicate. Set by ticket_create
+	// alone; omitted when nothing matches.
+	SimilarTickets []similarJSON `json:"similar_tickets,omitempty"`
+	// SimilarTicketsWarning is the remedy for those candidates. A warning
+	// rather than a refusal: the ticket is created either way.
+	SimilarTicketsWarning string `json:"similar_tickets_warning,omitempty"`
+}
+
+// similarJSON is one candidate in similar_tickets.
+type similarJSON struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 func (j ticketJSON) MarshalJSON() ([]byte, error) {
@@ -945,7 +960,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. `similar_tickets` and `similar_tickets_warning` are set when a non-closed ticket (not done or closed) in the destination project closely matches the new title or description — each candidate's id, title and status — so the caller can add to that ticket instead; the ticket is created either way. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		content := ticketContent{
 			Title:       args.Title,
@@ -995,6 +1010,11 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 
+		// Looked up before the write so the new ticket is not its own match.
+		// A store that cannot list simply yields no candidates.
+		existing, _ := dst.store.List()
+		similar := ticket.SimilarTickets(existing, t)
+
 		if err := dst.store.Create(t); err != nil {
 			r, _ := errResult("failed to create ticket: %v", dst.frame(err))
 			return r, nil, nil
@@ -1004,6 +1024,10 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		j := toJSON(t)
 		j.UnregisteredWarning = dst.unregisteredWarning
 		content.warn(&j, t)
+		for _, s := range similar {
+			j.SimilarTickets = append(j.SimilarTickets, similarJSON{ID: s.ID, Title: s.Title, Status: string(s.Status)})
+		}
+		j.SimilarTicketsWarning = ticket.SimilarTicketsWarning(t.ID, similar)
 		r, err := jsonResult(j)
 		return r, nil, err
 	})

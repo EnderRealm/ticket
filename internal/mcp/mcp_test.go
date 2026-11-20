@@ -5383,3 +5383,43 @@ func TestStoreInfoVerifyPolicyRereadsConfig(t *testing.T) {
 		t.Errorf("allow after edit = %v, want [/bin/sh go] without a restart", got)
 	}
 }
+
+func TestTicketCreateSimilarTickets(t *testing.T) {
+	session := testServer(t)
+	create := func(args map[string]any) map[string]any {
+		t.Helper()
+		result := callTool(t, session, "ticket_create", args)
+		if result.IsError {
+			t.Fatalf("ticket_create error: %v", result.Content)
+		}
+		var out map[string]any
+		json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &out)
+		return out
+	}
+
+	first := create(map[string]any{"title": "Swift test fails only under the tk MCP server"})
+	if first["similar_tickets"] != nil || first["similar_tickets_warning"] != nil {
+		t.Fatalf("first create reported similar: %v", first)
+	}
+	firstID := first["id"].(string)
+
+	second := create(map[string]any{"title": "swift test fails only under tk MCP server"})
+	if second["id"] == nil || second["id"] == "" {
+		t.Fatalf("similar create was not stored: %v", second)
+	}
+	sim, _ := second["similar_tickets"].([]any)
+	if len(sim) != 1 || sim[0].(map[string]any)["id"] != firstID {
+		t.Fatalf("similar_tickets = %v, want %s", second["similar_tickets"], firstID)
+	}
+	if w, _ := second["similar_tickets_warning"].(string); w == "" {
+		t.Fatal("missing similar_tickets_warning")
+	}
+
+	// Closed tickets are not offered.
+	callTool(t, session, "ticket_edit", map[string]any{"id": firstID, "status": "closed"})
+	callTool(t, session, "ticket_edit", map[string]any{"id": second["id"], "status": "closed"})
+	third := create(map[string]any{"title": "Swift test fails only under tk MCP server"})
+	if third["similar_tickets"] != nil || third["similar_tickets_warning"] != nil {
+		t.Fatalf("closed tickets offered: %v", third)
+	}
+}

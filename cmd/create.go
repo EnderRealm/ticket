@@ -141,6 +141,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		Extra:       extra,
 	}
 
+	// Looked up before the write so the new ticket is not its own match.
+	existing, _ := store.List()
+	similar := ticket.SimilarTickets(existing, t)
+
 	if err := createTicket(store, t); err != nil {
 		return err
 	}
@@ -157,6 +161,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	if shell := ticket.ShellSyntaxCriteria(t.Body); len(shell) > 0 {
 		fmt.Fprintln(os.Stderr, ticket.ShellSyntaxWarning(t.ID, shell))
+	}
+
+	if w := ticket.SimilarTicketsWarning(t.ID, similar); w != "" {
+		fmt.Fprintln(os.Stderr, w)
 	}
 
 	return showTicket(store, t.ID, false)

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `ticket_create` returns `similar_tickets` (each candidate's `id`, `title`, `status`) and `similar_tickets_warning` when a non-closed ticket in the destination project closely matches the new title or description, and `tk create` prints the same warning on stderr. The "search before filing" rule lived in each agent's prose and was missed, producing repeat filings of one failure; every create crosses tk, so the check sits there. Done and closed tickets are never offered, and it reports and never refuses: the ticket is created either way. Library: `ticket.SimilarTickets`, `ticket.SimilarTicketsWarning`.
+
 ## [8.12.0] - 2026-11-19
 
 ### Added
