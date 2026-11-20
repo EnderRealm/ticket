@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.12.0] - 2026-11-19
 
 ### Added
 - `tk edit --acceptance`, `--design` and `--test-results` set the `## Acceptance Criteria`, `## Design` and `## Test Results` sections, as `ticket_edit`'s `acceptance`, `design` and `test_results` arguments do, so a CLI-only consumer can groom a ticket's acceptance contract. The write goes through the same `ticket.SaveEdit` path as every other `tk edit` field. An edit writing `-d` or `--acceptance` now prints on stderr the unparsed-acceptance and shell-syntax warnings `ticket_edit` returns.
