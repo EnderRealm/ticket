@@ -106,6 +106,13 @@ func LoadCatalog(centralRoot string) (*Catalog, error) {
 		}
 		return nil, fmt.Errorf("reading catalog %s: %w", path, err)
 	}
+	return parseCatalog(path, raw)
+}
+
+// parseCatalog is LoadCatalog's parse and validation of a catalog's bytes,
+// shared with activation so the file it writes is judged by the rules every
+// reader judges it by before it replaces the old one.
+func parseCatalog(path string, raw []byte) (*Catalog, error) {
 	var cat Catalog
 	if err := yaml.Unmarshal(raw, &cat); err != nil {
 		return nil, fmt.Errorf("parsing catalog %s: %w", path, err)
@@ -436,9 +443,9 @@ func sortedKeys(set map[string]bool) []string {
 }
 
 // WriteNamespaceMarker writes the tracked marker into a namespace directory,
-// creating the directory if it is missing. It is the primitive activation
+// creating the directory if it is missing. It is the primitive Activate
 // materialises every admitted namespace with — Root included — so a healthy
-// empty namespace survives a clone; no command calls it yet. The name is
+// empty namespace survives a clone. The name is
 // bounded the way CentralProjectDir bounds a project name, since it becomes a
 // path element.
 //
@@ -495,8 +502,8 @@ func WriteNamespaceMarker(centralRoot, name string) error {
 // entry that binds Root to a repository, or a _root directory on disk that is
 // not already catalogued as Root. It never adopts or moves that directory —
 // a collision is a rename decision for a human, taken before activation runs
-// — and it writes nothing. Nil means the collision checks pass; the activation
-// itself is not implemented here.
+// — and it writes nothing. Nil means the collision checks pass; Activate runs
+// it first and refuses on what it reports.
 func PreflightActivation(centralRoot string, cfg project.Config) error {
 	cat, err := LoadCatalog(centralRoot)
 	if err != nil {

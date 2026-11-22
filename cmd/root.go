@@ -58,6 +58,7 @@ Setup & Server:
   status                 System status and project overview
   sync                   Sync ticket changes to git
   serve                  Start MCP server on stdio
+  activate               Activate Root and cross-project parents
 
 Journal:
   watch start|stop|status|logs   Background git commit watcher
