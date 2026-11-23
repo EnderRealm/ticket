@@ -218,6 +218,9 @@ func TestParse_UnusableFrontmatterStillFails(t *testing.T) {
 		// status its file stores, which is the demotion bypassed rather than
 		// applied.
 		{"type as a sequence", "---\nid: t-abc1\nstatus: done\ntype: [epic]\n---\n# Lost type\n"},
+		// A lost workflow_kind reads as coding and puts a generic ticket in
+		// ready and the frontier.
+		{"workflow_kind as a sequence", "---\nid: t-abc1\nstatus: ready\ntype: feature\nworkflow_kind: [generic]\n---\n# Lost kind\n"},
 		// A complex top-level key: the struct pass tolerates it and carries on,
 		// while the raw pass errors — so the load-bearing check cannot run. An
 		// unvetted tolerance falls back to strict, or the parent below would be

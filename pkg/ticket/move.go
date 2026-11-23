@@ -185,6 +185,8 @@ func copyForMove(t *Ticket, newID string, provenance Note) *Ticket {
 	newTicket.ID = newID
 	newTicket.Status = StatusBacklog
 	newTicket.Tags = copyStrings(t.Tags)
+	newTicket.How = copyStrings(t.How)
+	newTicket.Commands = copyStrings(t.Commands)
 	newTicket.Deps = []string{}
 	newTicket.Links = []string{}
 	newTicket.DepCargo = nil // the shallow copy aliases the source map

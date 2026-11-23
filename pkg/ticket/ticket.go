@@ -76,6 +76,54 @@ func ValidateType(t TicketType) error {
 	return fmt.Errorf("invalid type %q: must be one of feature, bug, epic", t)
 }
 
+// WorkflowKind says how a ticket is worked, beside its type. Absent reads as
+// coding, which is every ticket written before the field existed.
+type WorkflowKind string
+
+const (
+	// WorkflowCoding is work a run does in a repository.
+	WorkflowCoding WorkflowKind = "coding"
+	// WorkflowGeneric is work a person does, or an event to be observed:
+	// installing a build on a phone, restarting a server on another machine,
+	// waiting for a release. No run can start it, so ready and frontier leave
+	// it out; as a dependency it gates its dependents like any other ticket.
+	WorkflowGeneric WorkflowKind = "generic"
+)
+
+// ValidateWorkflowKind returns an error if k is neither empty nor a recognized
+// workflow kind.
+func ValidateWorkflowKind(k WorkflowKind) error {
+	if k == "" || k == WorkflowCoding || k == WorkflowGeneric {
+		return nil
+	}
+	return fmt.Errorf("invalid workflow_kind %q: must be one of coding, generic", k)
+}
+
+// WorkflowKindOf is the kind the ticket is worked as: what it stores, or
+// coding when it stores none. Consumers read the kind through this rather than
+// infer it from an absent field.
+func WorkflowKindOf(t *Ticket) WorkflowKind {
+	if t.WorkflowKind == "" {
+		return WorkflowCoding
+	}
+	return t.WorkflowKind
+}
+
+// ValidateLines checks a how or commands list: one non-empty line each, so
+// every entry is written and read back as exactly the text given and none is a
+// placeholder. field names the list in the error.
+func ValidateLines(field string, lines []string) error {
+	for i, l := range lines {
+		if l == "" {
+			return fmt.Errorf("invalid %s[%d]: must not be empty", field, i)
+		}
+		if strings.ContainsAny(l, "\r\n") {
+			return fmt.Errorf("invalid %s[%d] %q: must be a single line", field, i, l)
+		}
+	}
+	return nil
+}
+
 // ValidatePriority returns an error if p is outside the range 0-4.
 func ValidatePriority(p int) error {
 	if p >= 0 && p <= 4 {
@@ -109,6 +157,14 @@ type Ticket struct {
 	Tags        []string   `yaml:"tags,omitempty,flow"`
 	ExternalRef string     `yaml:"external-ref,omitempty"`
 	Branch      string     `yaml:"branch,omitempty"`
+	// WorkflowKind is stored exactly as written: absent stays absent, and
+	// WorkflowKindOf supplies the coding default for readers.
+	WorkflowKind WorkflowKind `yaml:"workflow_kind,omitempty"`
+	// How is the ordered steps a person follows, and Commands the ordered shell
+	// commands, one line each, kept byte for byte. Serialized as block
+	// sequences in format.go, which quotes whatever needs it.
+	How      []string `yaml:"how,omitempty"`
+	Commands []string `yaml:"commands,omitempty"`
 	// The three dates are all read manually in Parse rather than by the struct
 	// decode. A scalar yaml.v3 cannot fit a field reaches d.terror, which records
 	// a TypeError and carries on decoding the rest — the mismatch Parse tolerates.
@@ -233,6 +289,15 @@ func (t *Ticket) Validate() error {
 	if err := ValidatePriority(t.Priority); err != nil {
 		return err
 	}
+	if err := ValidateWorkflowKind(t.WorkflowKind); err != nil {
+		return err
+	}
+	if err := ValidateLines("how", t.How); err != nil {
+		return err
+	}
+	if err := ValidateLines("commands", t.Commands); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -244,6 +309,7 @@ var reservedKeys = map[string]bool{
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
 	"dep-cargo": true, "verdicts": true, "actions": true,
+	"workflow_kind": true, "how": true, "commands": true,
 	// JSON output fields derived from body sections, markdown heading and dates.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,

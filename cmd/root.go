@@ -71,6 +71,8 @@ Global flags:
 
 Statuses: backlog -> ready -> open -> done; closed = won't fix.
 An epic's status is derived from its children; see tk edit --help.
+--workflow-kind generic marks work no run can do (a person's step, an event);
+frontier and ready work leave it out. See tk create --help.
 IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.`
 
 // Version is set via -ldflags at build time.

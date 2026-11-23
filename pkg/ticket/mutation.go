@@ -188,6 +188,9 @@ func changedFields(prior, next *Ticket) []string {
 	add("extra", !maps.Equal(prior.Extra, next.Extra))
 	add("branch", prior.Branch != next.Branch)
 	add("external_ref", prior.ExternalRef != next.ExternalRef)
+	add("workflow_kind", prior.WorkflowKind != next.WorkflowKind)
+	add("how", !slices.Equal(prior.How, next.How))
+	add("commands", !slices.Equal(prior.Commands, next.Commands))
 	add("actions", !slices.Equal(prior.Actions, next.Actions))
 	// Trimmed on both sides: the parser normalizes a body's surrounding
 	// whitespace and a caller that built one by hand has not.

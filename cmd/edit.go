@@ -30,7 +30,11 @@ refused. The exception is --status closed, which abandons the epic: it records
 abandoned: true and closes its unfinished children, naming them in the line
 that reports the edit. Setting any other status on an abandoned epic takes the
 abandon back. The same applies to a status set alongside --type epic. The
-README's Epic Status section has the full rules.`,
+README's Epic Status section has the full rules.
+
+--workflow-kind generic marks work no run can do, which tk frontier and ready
+work leave out (see tk create --help). --how and --command each replace their
+whole list when given, in the order repeated; a lone empty value clears it.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runEdit,
 }
@@ -59,6 +63,9 @@ func registerEditFlags(cmd *cobra.Command) {
 	f.String("note", "", "append a timestamped note")
 	f.StringArray("set", nil, "set extra field (key=value, blank value removes)")
 	f.StringArray("output", nil, "set output value, e.g. branch, commit, artifact (key=value, blank value removes)")
+	f.String("workflow-kind", "", "how the ticket is worked: coding or generic (blank removes the field, which reads as coding)")
+	f.StringArray("how", nil, "a step for a generic ticket, one line; repeat in order. Replaces the list; --how '' clears it")
+	f.StringArray("command", nil, "a shell command for a generic ticket, one line, kept exactly as written; repeat in order. Replaces the list; --command '' clears it")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -122,6 +129,19 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			}
 		}
 		t.Tags = tags
+		changed = true
+	}
+
+	if v, _ := cmd.Flags().GetString("workflow-kind"); cmd.Flags().Changed("workflow-kind") {
+		t.WorkflowKind = ticket.WorkflowKind(v)
+		changed = true
+	}
+	if cmd.Flags().Changed("how") {
+		t.How = lineFlag(cmd, "how")
+		changed = true
+	}
+	if cmd.Flags().Changed("command") {
+		t.Commands = lineFlag(cmd, "command")
 		changed = true
 	}
 
@@ -207,6 +227,20 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// lineFlag reads a repeatable --how or --command flag in the order given. Each
+// value is kept exactly as typed — a StringArray does not split on commas — and
+// an empty one is dropped, so a lone empty value clears the list.
+func lineFlag(cmd *cobra.Command, name string) []string {
+	values, _ := cmd.Flags().GetStringArray(name)
+	var lines []string
+	for _, v := range values {
+		if v != "" {
+			lines = append(lines, v)
+		}
+	}
+	return lines
 }
 
 func parseSetFlag(s string) (key, value string, err error) {

@@ -207,6 +207,12 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
 	if v, ok := raw["type"]; ok && t.Type == "" && !emptyYAMLValue(v) {
 		return true
 	}
+	// A lost workflow_kind reads as coding, which puts a generic ticket back in
+	// ready and the frontier for a run to pick up — the failure the deps check
+	// above exists to prevent, by another field.
+	if v, ok := raw["workflow_kind"]; ok && t.WorkflowKind == "" && !emptyYAMLValue(v) {
+		return true
+	}
 	// The verdict ledger breaks the "local fields are not checked" rule above for
 	// a different reason than parent, deps and type do. It is append-only, so a
 	// tolerated decode loss would be replayed by the ticket's next write-back as
@@ -345,6 +351,22 @@ func Serialize(t *Ticket) ([]byte, error) {
 	}
 	if len(t.Tags) > 0 {
 		writeFlowArray(&buf, "tags", t.Tags)
+	}
+	if t.WorkflowKind != "" {
+		writeStringField(&buf, "workflow_kind", string(t.WorkflowKind))
+	}
+	// Block sequences through yaml.v3, which quotes an entry carrying `#`, `: `,
+	// a leading indicator or surrounding spaces, so a command reads back byte
+	// for byte. The emitter's line width is unbounded, so no entry is folded.
+	if len(t.How) > 0 {
+		if err := writeYAMLBlock(&buf, "how", t.How); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.Commands) > 0 {
+		if err := writeYAMLBlock(&buf, "commands", t.Commands); err != nil {
+			return nil, err
+		}
 	}
 	if len(t.Extra) > 0 {
 		keys := make([]string, 0, len(t.Extra))

@@ -457,11 +457,11 @@ func storeProject(store Store) string {
 }
 
 // IsReady returns true if the ticket is actionable: not terminal, all deps
-// done, parent chain active, and its parent relationship valid. Backlog
-// counts: tickets are picked up straight out of backlog on stores that never
-// groom to ready, and excluding them left the ready listing empty. Callers
-// that need the groomed set alone match Status == StatusReady, as
-// FrontierTickets does.
+// done, parent chain active, its parent relationship valid, and worked as
+// coding rather than generic. Backlog counts: tickets are picked up straight
+// out of backlog on stores that never groom to ready, and excluding them left
+// the ready listing empty. Callers that need the groomed set alone match
+// Status == StatusReady, as FrontierTickets does.
 func IsReady(store Store, t *Ticket) bool {
 	depOf := storeLookup(store)
 	return isReady(t, depOf, parentOfVia(depOf))
@@ -482,7 +482,7 @@ func parentOfVia(depOf depResolver) func(*Ticket) (*Ticket, error) {
 // resolve, is not an epic, or is one it may not belong to, and none of those
 // is evidence that nothing gates the work.
 func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, error)) bool {
-	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" {
+	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
 		return false
 	}
 	if isBlocked(t, depOf) {
@@ -492,7 +492,8 @@ func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, erro
 }
 
 // IsReadyOpen is like IsReady but bypasses parent gating.
-// Shows all unblocked non-terminal tickets regardless of epic status.
+// Shows all unblocked non-terminal coding tickets regardless of epic status;
+// a generic ticket is left out here as well.
 func IsReadyOpen(store Store, t *Ticket) bool {
 	return isReadyOpen(t, storeLookup(store))
 }
@@ -500,10 +501,20 @@ func IsReadyOpen(store Store, t *Ticket) bool {
 // isReadyOpen is IsReadyOpen with the dep lookup supplied. The parent gate is
 // bypassed; a relationship issue is not a gate, it is an invalid leaf.
 func isReadyOpen(t *Ticket, depOf depResolver) bool {
-	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" {
+	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
 		return false
 	}
 	return !isBlocked(t, depOf)
+}
+
+// runnableKind reports whether a run can start the ticket: it is worked as
+// coding. A generic ticket is work a person does or an event to observe, so
+// ready and frontier, which list what a run can start, leave it out; whether it
+// blocks its dependents is untouched. A kind tk does not know can only come
+// from a hand-edited file, since every write refuses one, and it is no
+// evidence a run can do the work either.
+func runnableKind(t *Ticket) bool {
+	return WorkflowKindOf(t) == WorkflowCoding
 }
 
 // parentChainActive checks that every ancestor (via parent field) is not
@@ -579,8 +590,8 @@ func readyOf(store Store, tickets []*Ticket, openMode bool) []*Ticket {
 	return ready
 }
 
-// FrontierTickets returns the schedulable set: tickets with status ready
-// whose dependencies are all terminal (done/closed). Listed through Store.List,
+// FrontierTickets returns the schedulable set: coding tickets with status
+// ready whose dependencies are all terminal (done/closed). Listed through Store.List,
 // so a CLI caller gets the store's warning about any file it skipped.
 func FrontierTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
@@ -626,7 +637,7 @@ func frontierOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var frontier []*Ticket
 	for _, t := range tickets {
-		if t.Status == StatusReady && t.relationshipIssue == "" && WaitingOn(t) == "" && !isBlocked(t, depOf) {
+		if t.Status == StatusReady && t.relationshipIssue == "" && WaitingOn(t) == "" && runnableKind(t) && !isBlocked(t, depOf) {
 			frontier = append(frontier, t)
 		}
 	}

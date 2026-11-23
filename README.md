@@ -177,6 +177,8 @@ Global flags:
 
 Statuses: backlog -> ready -> open -> done; closed = won't fix.
 An epic's status is derived from its children; see tk edit --help.
+--workflow-kind generic marks work no run can do (a person's step, an event);
+frontier and ready work leave it out. See tk create --help.
 IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.
 ```
 
@@ -203,6 +205,27 @@ Tickets use a simple status model:
 | bug | Defect fix |
 
 The hierarchy is one level deep: a ticket's `parent` must name an epic in the same project, and an epic itself has no parent. `tk audit` reports tickets that break the rule.
+
+### Workflow Kinds
+
+Beside its type, a ticket says how it is worked in `workflow_kind`. Absent, or `coding`, is work a run does in a repository — every ticket written before the field existed. `generic` is work no run can do: a step a person takes, such as installing a build on a phone or restarting a server on another machine, or an event to be observed, such as a release going out. Any other value is refused on every write, naming the field.
+
+A generic ticket can carry `how`, an ordered list of steps, and `commands`, an ordered list of shell commands. Each entry is one non-empty line — an empty entry or one with a line break is refused — and is kept exactly as written, so a command reads back byte for byte whatever quotes, `#`, `:`, `&&`, `|` or `$(...)` it holds. tk never runs them.
+
+```bash
+tk create "Install the build on a phone" --workflow-kind generic \
+  --how "Open TestFlight on the phone" --how "Install the latest build" \
+  --command "xcrun devicectl list devices"
+tk edit <id> --command "make deploy"     # replaces the list
+tk edit <id> --how ""                    # clears it
+tk edit <id> --workflow-kind coding
+```
+
+`ticket_create` and `ticket_edit` take `workflow_kind`, and `how` and `commands` as arrays of strings; on `ticket_edit` an array replaces the list and an empty array clears it. The three names are reserved and cannot be extra fields.
+
+Ready work is what a run can start, so `tk frontier`, `ticket_ready` and `ticket_frontier` leave a generic ticket out, whatever its status. As a dependency it counts like any other ticket: a ticket that depends on it stays blocked until it is `done` or `closed`, and then shows up in ready work as usual. `ticket_inbox` and `ticket_blocked` are unchanged.
+
+A `tk ls` and `tk search` row shows it in a `KIND` column beside `TYPE` (`tk frontier` drops the column, as it drops `STATUS`: every row there is coding). Every `tk query`, `tk frontier --json` and MCP listing row (`ticket_list`, `ticket_ready`, `ticket_frontier`, `ticket_blocked`, `ticket_inbox`, `ticket_search`) carries `workflow_kind`, `coding` when the ticket stores none, so a consumer never infers it; the file keeps exactly what was written. `tk show`, `ticket_show` and `tk query` carry `how` and `commands`.
 
 ### Epic Status
 
@@ -245,7 +268,7 @@ A leaf whose parent does not resolve, is not an epic, or is in another project b
 
 `tk delete` refuses a ticket that any other ticket still names as its parent, a dep or a link, in any project, and `tk edit --type` refuses turning an epic into a leaf while it has children anywhere. Abandoning an epic (`--status closed`) still closes its unfinished children in its own project, but refuses while an unfinished child lives in another project, naming the affected IDs grouped by project — closing another repository's work is not something an edit here does invisibly. Every one of those, and a move, needs the whole store read: an unreadable file or namespace is not proof that nothing references the ticket, so the operation is refused naming the evidence that is missing. Repairs never need that proof — clearing a parent, removing a dep or link, editing text and changing a leaf's status all land on a partial store.
 
-A file that yields no usable ticket cannot count. That covers broken YAML, frontmatter that never closes, and a top-level key repeated by a hand-resolved merge conflict — which YAML refuses before it decodes a single field — but also a *load-bearing* field the decode dropped, because that loss is about other tickets or about the derivation itself, and nothing on the ticket shows it: `parent: [epic-1111]` would leave the ticket silently outside its epic's children, `deps: notalist` would leave it reading unblocked in `tk ready` and `tk frontier`, and `type: [epic]` on an epic's own file would leave it typeless, so the derivation passes over it and it renders whatever stale status its file happens to store. An empty parent, dep list or type is a writer saying "none" and reads fine. Every listing that hits an unusable file warns and names it, and while one stands, no epic anywhere in the store reads `done` or `closed`, since the missing ticket could be any epic's child in any project — a project view still carries a failure in another project for that reason. Two files in one project claiming the same ID (`x.md` holding `id: x` beside `zz.md` holding `id: proj/x`) count the same way, as `duplicate-id`: neither answers a reference until the operator decides which is the ticket. So does a namespace that cannot be listed, or one the catalog names that has no directory. `tk audit` reports the same files as `skipped_files`, with `kind: unreadable`, and counts them as the `unreadable` cause, which `tk audit unreadable` lists; whichever form it is run in, it warns that the report is incomplete, in the same block that covers projects it could not read, and the epics in an affected project are reported against the degraded value, so the report never describes a store it read only in part as clean. It counts them as a finding of their own and exits non-zero, so a scripted audit fails on a file no listing yields; a file naming another project is read in full and leaves the exit code alone.
+A file that yields no usable ticket cannot count. That covers broken YAML, frontmatter that never closes, and a top-level key repeated by a hand-resolved merge conflict — which YAML refuses before it decodes a single field — but also a *load-bearing* field the decode dropped, because that loss is about other tickets or about the derivation itself, and nothing on the ticket shows it: `parent: [epic-1111]` would leave the ticket silently outside its epic's children, `deps: notalist` would leave it reading unblocked in `tk ready` and `tk frontier`, and `type: [epic]` on an epic's own file would leave it typeless, so the derivation passes over it and it renders whatever stale status its file happens to store, and `workflow_kind: [generic]` would read as coding and put a generic ticket in ready work. An empty parent, dep list or type is a writer saying "none" and reads fine. Every listing that hits an unusable file warns and names it, and while one stands, no epic anywhere in the store reads `done` or `closed`, since the missing ticket could be any epic's child in any project — a project view still carries a failure in another project for that reason. Two files in one project claiming the same ID (`x.md` holding `id: x` beside `zz.md` holding `id: proj/x`) count the same way, as `duplicate-id`: neither answers a reference until the operator decides which is the ticket. So does a namespace that cannot be listed, or one the catalog names that has no directory. `tk audit` reports the same files as `skipped_files`, with `kind: unreadable`, and counts them as the `unreadable` cause, which `tk audit unreadable` lists; whichever form it is run in, it warns that the report is incomplete, in the same block that covers projects it could not read, and the epics in an affected project are reported against the degraded value, so the report never describes a store it read only in part as clean. It counts them as a finding of their own and exits non-zero, so a scripted audit fails on a file no listing yields; a file naming another project is read in full and leaves the exit code alone.
 
 That warning goes to stderr, which an MCP client never sees, so the tools carry it in the response instead: `ticket_list`, `ticket_search`, `ticket_frontier`, `ticket_ready`, `ticket_blocked` and `ticket_inbox` each return `skipped_files` naming every file skipped in the projects they read, with the reason. An entry marked `epic_status_degraded` — an unreadable file, a `duplicate-id`, a `namespace` that could not be read — is one that could be any epic's child in any project, so while it stands anywhere in the store, no epic anywhere reads `done` or `closed`; a project-scoped call carries such an entry from another project for that reason, and only an entry that degrades nothing, such as `foreign-namespace`, is scoped to the project asked for. `ticket_show` on such a file reports `ticket unreadable`, naming the file, rather than `ticket not found`: the ticket is there and the file needs repair, which is a different fix from creating it again.
 

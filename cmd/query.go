@@ -19,12 +19,14 @@ The optional filter is passed to jq's select() automatically. Do NOT wrap
 your filter in select() -- just provide the expression. Always single-quote
 the filter so the shell leaves ! and " alone.
 
-JSON fields: id, status, abandoned, type, priority, title, deps[], links[],
-  tags[], created, updated, closed, parent, external-ref, outputs, dep_cargo,
+JSON fields: id, status, abandoned, type, workflow_kind, priority, title,
+  deps[], links[], tags[], created, updated, closed, parent, external-ref,
+  how[], commands[], outputs, dep_cargo,
   description, design, acceptance_criteria, test_results,
   notes[] (timestamp, text; every note, oldest first),
   plus any custom extra fields (flattened to top level)
-An empty body section's key is omitted.
+An empty body section's key is omitted. workflow_kind is always present:
+coding when the ticket stores none.
 
 The body fields are the ones ticket_show carries, split the same way, and no
 other ## heading becomes one. Headings match on prefix: ## Design Notes opens
@@ -46,28 +48,31 @@ func init() {
 
 // ticketJSON mirrors the bash query output format.
 type ticketJSON struct {
-	ID          string            `json:"id"`
-	Status      string            `json:"status"`
-	Abandoned   bool              `json:"abandoned,omitempty"`
-	Deps        []string          `json:"deps"`
-	Links       []string          `json:"links"`
-	Created     string            `json:"created"`
-	Updated     string            `json:"updated,omitempty"`
-	Closed      string            `json:"closed,omitempty"`
-	Type        string            `json:"type"`
-	Priority    int               `json:"priority"`
-	ExternalRef string            `json:"external-ref,omitempty"`
-	Parent      string            `json:"parent,omitempty"`
-	Tags        []string          `json:"tags,omitempty"`
-	Title       string            `json:"title"`
-	Description string            `json:"description,omitempty"`
-	Design      string            `json:"design,omitempty"`
-	Acceptance  string            `json:"acceptance_criteria,omitempty"`
-	TestResults string            `json:"test_results,omitempty"`
-	Notes       []noteJSON        `json:"notes,omitempty"`
-	Outputs     map[string]string `json:"outputs,omitempty"`
-	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
-	Extra       map[string]string `json:"-"`
+	ID           string            `json:"id"`
+	Status       string            `json:"status"`
+	Abandoned    bool              `json:"abandoned,omitempty"`
+	Deps         []string          `json:"deps"`
+	Links        []string          `json:"links"`
+	Created      string            `json:"created"`
+	Updated      string            `json:"updated,omitempty"`
+	Closed       string            `json:"closed,omitempty"`
+	Type         string            `json:"type"`
+	Priority     int               `json:"priority"`
+	ExternalRef  string            `json:"external-ref,omitempty"`
+	Parent       string            `json:"parent,omitempty"`
+	Tags         []string          `json:"tags,omitempty"`
+	WorkflowKind string            `json:"workflow_kind"`
+	How          []string          `json:"how,omitempty"`
+	Commands     []string          `json:"commands,omitempty"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description,omitempty"`
+	Design       string            `json:"design,omitempty"`
+	Acceptance   string            `json:"acceptance_criteria,omitempty"`
+	TestResults  string            `json:"test_results,omitempty"`
+	Notes        []noteJSON        `json:"notes,omitempty"`
+	Outputs      map[string]string `json:"outputs,omitempty"`
+	DepCargo     map[string]string `json:"dep_cargo,omitempty"`
+	Extra        map[string]string `json:"-"`
 }
 
 type noteJSON struct {
@@ -113,6 +118,8 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 		DepCargo:    t.DepCargo,
 		Extra:       t.Extra,
 	}
+	// The effective kind, so a consumer never infers coding from an absent key.
+	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
 	// A zero time is a date the ticket's file does not record: the key is
 	// omitted rather than rendered as year 1.
 	if !t.Updated.IsZero() {
@@ -129,6 +136,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 // metadata, like ticket_list's.
 func toQueryJSON(t *ticket.Ticket) ticketJSON {
 	j := toTicketJSON(t)
+	j.How, j.Commands = t.How, t.Commands
 	j.Description, j.Design, j.Acceptance, j.TestResults = ticket.BodySections(t.Body)
 	for _, n := range t.Notes {
 		j.Notes = append(j.Notes, noteJSON{

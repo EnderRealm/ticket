@@ -14,7 +14,10 @@ var frontierCmd = &cobra.Command{
 	Use:   "frontier",
 	Short: "List ready tickets whose dependencies are all done or closed",
 	Long: `List ready tickets whose dependencies are all done or closed -- the
-parallel-safe set to start next. The frontier is computed over the whole store:
+parallel-safe set to start next. A generic ticket (--workflow-kind generic:
+work a person does, or an event to observe) is left out, since no run can start
+it; a ticket depending on one stays out until it is done or closed. The
+frontier is computed over the whole store:
 --parent keeps the members of that epic (qualified project/id, or bare with
 --project) and --project keeps one namespace's rows, and neither changes what
 is ready.`,
@@ -106,7 +109,8 @@ func runFrontier(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// STATUS is ready for every row by construction — drop the column.
-	newTableWriter("STATUS").Print(tickets)
+	// STATUS is ready and KIND coding for every row by construction — drop
+	// both columns.
+	newTableWriter("STATUS", "KIND").Print(tickets)
 	return nil
 }

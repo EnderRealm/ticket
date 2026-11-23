@@ -166,6 +166,7 @@ func newTableWriter(skip ...string) *tableWriter {
 		{header: "ID", value: func(t *ticket.Ticket) string { return t.ID }},
 		{header: "P", value: func(t *ticket.Ticket) string { return fmt.Sprintf("P%d", t.Priority) }},
 		{header: "TYPE", value: func(t *ticket.Ticket) string { return string(t.Type) }},
+		{header: "KIND", value: func(t *ticket.Ticket) string { return string(ticket.WorkflowKindOf(t)) }},
 		{header: "STATUS", value: func(t *ticket.Ticket) string { return string(t.Status) }},
 		{header: "TITLE", value: func(t *ticket.Ticket) string {
 			s := t.Title

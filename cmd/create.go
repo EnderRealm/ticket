@@ -22,7 +22,14 @@ no project registers writes into whichever project those name.
 
 An acceptance criterion carrying neither a verify: nor an unverifiable: line is
 reported on stderr when the ticket is written (see tk verify --help); the
-ticket is still created.`,
+ticket is still created.
+
+--workflow-kind generic marks work no run can do: a step a person takes, or an
+event to observe. tk frontier and ready work leave a generic ticket out; as a
+dependency it still holds its dependents until it is done or closed. Absent, or
+coding, is a run's work. A generic ticket carries its steps in --how and its
+shell commands in --command, each repeatable in order, one line per value and
+kept exactly as written (commas included). tk never runs them.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runCreate,
 }
@@ -36,6 +43,9 @@ func init() {
 	f.String("parent", "", "parent epic ID (an epic in the same project; a qualified project/id names an epic in another namespace, accepted once the catalog requires cross-project-parents)")
 	f.String("tags", "", "comma-separated tags")
 	f.StringArray("set", nil, "set extra field (key=value)")
+	f.String("workflow-kind", "", "how the ticket is worked: coding (the default) or generic (work a person does or an event to observe; left out of ready work)")
+	f.StringArray("how", nil, "a step for a generic ticket, one line; repeat in order")
+	f.StringArray("command", nil, "a shell command for a generic ticket, one line, kept exactly as written; repeat in order")
 
 	rootCmd.AddCommand(createCmd)
 }
@@ -125,20 +135,25 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	workflowKind, _ := cmd.Flags().GetString("workflow-kind")
+
 	t := &ticket.Ticket{
-		ID:          ticket.GenerateID(title),
-		Status:      ticket.StatusBacklog,
-		Type:        ticket.TicketType(typeStr),
-		Priority:    priority,
-		Parent:      parent,
-		Deps:        []string{},
-		Links:       []string{},
-		Tags:        tags,
-		ExternalRef: externalRef,
-		Created:     time.Now().UTC(),
-		Title:       title,
-		Body:        body.String(),
-		Extra:       extra,
+		ID:           ticket.GenerateID(title),
+		Status:       ticket.StatusBacklog,
+		Type:         ticket.TicketType(typeStr),
+		Priority:     priority,
+		Parent:       parent,
+		Deps:         []string{},
+		Links:        []string{},
+		Tags:         tags,
+		ExternalRef:  externalRef,
+		WorkflowKind: ticket.WorkflowKind(workflowKind),
+		How:          lineFlag(cmd, "how"),
+		Commands:     lineFlag(cmd, "command"),
+		Created:      time.Now().UTC(),
+		Title:        title,
+		Body:         body.String(),
+		Extra:        extra,
 	}
 
 	// Looked up before the write so the new ticket is not its own match.

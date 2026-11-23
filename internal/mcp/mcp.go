@@ -83,6 +83,8 @@ type ticketSummaryJSON struct {
 	Updated  string            `json:"updated,omitempty"`
 	Closed   string            `json:"closed,omitempty"`
 	Extra    map[string]string `json:"-"`
+	// The effective kind: coding when the ticket stores none.
+	WorkflowKind string `json:"workflow_kind"`
 }
 
 func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
@@ -107,7 +109,7 @@ func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
 
 func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 	updated, closed := lifecycleTimes(t)
-	return ticketSummaryJSON{
+	j := ticketSummaryJSON{
 		ID:       t.ID,
 		Title:    t.Title,
 		Status:   string(t.Status),
@@ -122,6 +124,8 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 		Closed:   closed,
 		Extra:    t.Extra,
 	}
+	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
+	return j
 }
 
 // lifecycleTimes formats a ticket's last-write and terminal-entry times. A zero
@@ -161,6 +165,11 @@ type ticketJSON struct {
 	Notes       []noteJSON        `json:"notes,omitempty"`
 	Outputs     map[string]string `json:"outputs,omitempty"`
 	DepCargo    map[string]string `json:"dep_cargo,omitempty"`
+	// The effective kind, coding when the ticket stores none, and a generic
+	// ticket's steps and commands exactly as stored.
+	WorkflowKind string   `json:"workflow_kind"`
+	How          []string `json:"how,omitempty"`
+	Commands     []string `json:"commands,omitempty"`
 	// The ticket's verdict ledger, in record order. Whether a row is current is
 	// not answered here — that needs the head to judge against, which
 	// ticket_verdict_current takes.
@@ -275,6 +284,8 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 
 	j.Updated, j.Closed = lifecycleTimes(t)
 	j.Extra = t.Extra
+	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
+	j.How, j.Commands = t.How, t.Commands
 
 	// Extract body sections.
 	body := t.Body
@@ -618,10 +629,14 @@ func skippedFilesJSON(skips []ticket.FileSkip, project string) []fileSkipJSON {
 const skippedFilesDoc = " `skipped_files` names every file in the projects read that was not read as a ticket, with the reason. " +
 	"An entry with `epic_status_degraded` is a ticket the store cannot place — a file that could not be read, a `duplicate-id` two files claim, or a `namespace` that could not be read — and it could be any epic's child in any project, so while it stands anywhere in the store, no epic anywhere reads done or closed, whatever its children say; a project view carries such an entry from another project for that reason."
 
+// genericDoc documents the workflow kinds in the tool descriptions that write,
+// show or list by them, so the tools cannot describe them differently.
+const genericDoc = " A ticket's `workflow_kind` is `coding` (also what an absent field reads as) or `generic`: work no run can do — a step a person takes, or an event to observe. Ready work is what a run can start, so ticket_ready and ticket_frontier leave a generic ticket out; as a dependency it still holds its dependents until it is done or closed."
+
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters and pagination. Rows are metadata only: the body (`description`, `design`, `acceptance_criteria`, `test_results`) and `notes` are carried by ticket_show. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Each row carries `updated` (last write) and, while the ticket is done or closed, `closed` (when it entered that status), both RFC 3339 UTC; a ticket last written before tk stored these dates omits them. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
+		Description: "List tickets with optional filters and pagination. Rows are metadata only: the body (`description`, `design`, `acceptance_criteria`, `test_results`) and `notes` are carried by ticket_show. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Each row carries `updated` (last write) and, while the ticket is done or closed, `closed` (when it entered that status), both RFC 3339 UTC; a ticket last written before tk stored these dates omits them. Each row carries `workflow_kind`, `coding` when the ticket stores none; `how` and `commands` are carried by ticket_show. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
@@ -828,7 +843,7 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `bare-acceptance`, `empty-acceptance`, `envelope-fragment`, `legacy-review-log`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`.",
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). `workflow_kind` is always present, `coding` when the ticket stores none; a generic ticket's `how` (ordered steps) and `commands` (ordered shell commands, exactly as written) are carried when set, metadata_only included. An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `bare-acceptance`, `empty-acceptance`, `envelope-fragment`, `legacy-review-log`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`." + genericDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -955,12 +970,16 @@ type createArgs struct {
 	Repo        string            `json:"repo,omitempty" jsonschema:"registered project name or path to repo root"`
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value)"`
 	Source      string            `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
+	// How the ticket is worked, and a generic ticket's steps and commands.
+	WorkflowKind string   `json:"workflow_kind,omitempty" jsonschema:"how the ticket is worked: coding (the default) or generic — work a person does or an event to observe, left out of ticket_ready and ticket_frontier"`
+	How          []string `json:"how,omitempty" jsonschema:"ordered steps for a generic ticket, one non-empty line each"`
+	Commands     []string `json:"commands,omitempty" jsonschema:"ordered shell commands for a generic ticket, one non-empty line each, kept exactly as written"`
 }
 
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. `similar_tickets` and `similar_tickets_warning` are set when a non-closed ticket (not done or closed) in the destination project closely matches the new title or description — each candidate's id, title and status — so the caller can add to that ticket instead; the ticket is created either way. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. `similar_tickets` and `similar_tickets_warning` are set when a non-closed ticket (not done or closed) in the destination project closely matches the new title or description — each candidate's id, title and status — so the caller can add to that ticket instead; the ticket is created either way. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored. `workflow_kind` other than `coding` or `generic` is refused naming the field; `how` and `commands` are one non-empty line per entry, kept exactly as written, and an empty entry or one with a line break is refused." + genericDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		content := ticketContent{
 			Title:       args.Title,
@@ -988,6 +1007,8 @@ func registerCreate(server *mcp.Server, store ticket.Store, defaultProject strin
 		if args.Branch != "" {
 			t.Branch = args.Branch
 		}
+		t.WorkflowKind = ticket.WorkflowKind(args.WorkflowKind)
+		t.How, t.Commands = args.How, args.Commands
 
 		if len(args.Set) > 0 {
 			t.Extra = map[string]string{}
@@ -1269,12 +1290,18 @@ type editArgs struct {
 	Set         map[string]string `json:"set,omitempty" jsonschema:"set extra fields (key: value to set, key: empty string to remove)"`
 	Outputs     map[string]string `json:"outputs,omitempty" jsonschema:"set outputs the ticket produced, e.g. branch/commit/artifacts (key: value to set, key: empty string to remove)"`
 	Source      string            `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
+	// An empty workflow_kind is no change, like the other strings here. For how
+	// and commands nil is no change and an empty array clears, so the slices
+	// carry the distinction a pointer carries for parent.
+	WorkflowKind string   `json:"workflow_kind,omitempty" jsonschema:"new workflow kind: coding or generic — work a person does or an event to observe, left out of ticket_ready and ticket_frontier"`
+	How          []string `json:"how,omitempty" jsonschema:"ordered steps for a generic ticket, one non-empty line each; replaces the list, an empty array clears it"`
+	Commands     []string `json:"commands,omitempty" jsonschema:"ordered shell commands for a generic ticket, one non-empty line each, kept exactly as written; replaces the list, an empty array clears it"`
 }
 
 func registerEdit(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
-		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set under the same condition when a `verify:` line in the stored acceptance section carries shell-only syntax outside quotes, which verify passes to the program as literal arguments because it runs no shell. A body field that ends in a tool-call envelope fragment is refused rather than stored.",
+		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set under the same condition when a `verify:` line in the stored acceptance section carries shell-only syntax outside quotes, which verify passes to the program as literal arguments because it runs no shell. A body field that ends in a tool-call envelope fragment is refused rather than stored. `workflow_kind` other than `coding` or `generic` is refused naming the field; `how` and `commands` each replace the whole list when passed, an empty array clears it, and an empty entry or one with a line break is refused." + genericDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
 		for _, f := range []struct{ name, value string }{
 			{"description", args.Description},
@@ -1327,6 +1354,15 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 			for i := range t.Tags {
 				t.Tags[i] = strings.TrimSpace(t.Tags[i])
 			}
+		}
+		if args.WorkflowKind != "" {
+			t.WorkflowKind = ticket.WorkflowKind(args.WorkflowKind)
+		}
+		if args.How != nil {
+			t.How = args.How
+		}
+		if args.Commands != nil {
+			t.Commands = args.Commands
 		}
 
 		if args.Description != "" {
@@ -1607,7 +1643,7 @@ type ticketsResultJSON struct {
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic and no non-blank `waiting_on` field. Epics are never listed — an epic is a container, not a work item. Returns an object with `tickets`, ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it." + snapshotDoc + skippedFilesDoc,
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic, no non-blank `waiting_on` field and a `workflow_kind` of `coding`. Epics are never listed — an epic is a container, not a work item — and neither is a generic ticket, whatever its status. Returns an object with `tickets`, ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it. Each row carries `workflow_kind`." + genericDoc + snapshotDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
@@ -1674,7 +1710,7 @@ type frontierResultJSON struct {
 func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_frontier",
-		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed and that carry no non-blank `waiting_on` field. The parallel-safe set to start next. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + snapshotDoc + parentDoc + skippedFilesDoc,
+		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all done or closed, that carry no non-blank `waiting_on` field and whose `workflow_kind` is `coding` — a generic ticket is never listed. The parallel-safe set to start next. Each row carries `workflow_kind`. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + genericDoc + snapshotDoc + parentDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args frontierArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
