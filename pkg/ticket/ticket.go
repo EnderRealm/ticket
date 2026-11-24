@@ -15,6 +15,10 @@ const (
 	StatusBacklog Status = "backlog"
 	StatusReady   Status = "ready"
 	StatusOpen    Status = "open"
+	// StatusTesting is a landed change that still waits on a person's look. It
+	// satisfies the tickets that depend on it and is not finished: depSatisfied
+	// and isTerminal answer the two questions apart.
+	StatusTesting Status = "testing"
 	StatusDone    Status = "done"
 	StatusClosed  Status = "closed"
 )
@@ -23,6 +27,7 @@ var validStatuses = map[Status]bool{
 	StatusBacklog: true,
 	StatusReady:   true,
 	StatusOpen:    true,
+	StatusTesting: true,
 	StatusDone:    true,
 	StatusClosed:  true,
 }
@@ -32,7 +37,7 @@ func ValidateStatus(s Status) error {
 	if validStatuses[s] {
 		return nil
 	}
-	return fmt.Errorf("invalid status %q: must be one of backlog, ready, open, done, closed", s)
+	return fmt.Errorf("invalid status %q: must be one of backlog, ready, open, testing, done, closed", s)
 }
 
 // StatusOrder returns the sort rank for a status (lower = earlier in display).
@@ -40,16 +45,18 @@ func StatusOrder(s Status) int {
 	switch s {
 	case StatusOpen:
 		return 0
-	case StatusReady:
+	case StatusTesting:
 		return 1
-	case StatusBacklog:
+	case StatusReady:
 		return 2
-	case StatusDone:
+	case StatusBacklog:
 		return 3
-	case StatusClosed:
+	case StatusDone:
 		return 4
-	default:
+	case StatusClosed:
 		return 5
+	default:
+		return 6
 	}
 }
 

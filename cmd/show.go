@@ -134,11 +134,12 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		}
 	}
 
-	// Blockers: deps not at done status, shown as the ticket spells them.
+	// Blockers: deps at neither done nor testing status, shown as the ticket
+	// spells them.
 	var blockers []string
 	for _, depID := range t.Deps {
 		dep, ok := resolve(depID)
-		if !ok || dep.Status != ticket.StatusDone {
+		if !ok || (dep.Status != ticket.StatusDone && dep.Status != ticket.StatusTesting) {
 			blockers = append(blockers, depID)
 		}
 	}
@@ -154,12 +155,13 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	}
 
 	// Blocking: tickets in any namespace that depend on this one and aren't
-	// done. Each dep is read relative to the ticket holding it, so a dep on
-	// this ID from another namespace counts and a same-suffix dep on another
-	// project's ticket does not.
+	// done or in testing. A testing ticket has landed and holds none of its
+	// dependents, so it lists none. Each dep is read relative to the ticket
+	// holding it, so a dep on this ID from another namespace counts and a
+	// same-suffix dep on another project's ticket does not.
 	var blocking []*ticket.Ticket
 	for _, tk := range snap.Tickets {
-		if tk.Status == ticket.StatusDone {
+		if tk.Status == ticket.StatusDone || tk.Status == ticket.StatusTesting {
 			continue
 		}
 		tns, _ := ticket.ParseNamespacedID(tk.ID)
@@ -170,7 +172,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 			}
 		}
 	}
-	if len(blocking) > 0 {
+	if len(blocking) > 0 && t.Status != ticket.StatusTesting {
 		fmt.Print("\n## Blocking\n\n")
 		for _, tk := range blocking {
 			fmt.Printf("- %s [%s] %s\n", ticket.SanitizeControl(tk.ID), tk.Status, ticket.SanitizeControl(tk.Title))
@@ -203,7 +205,7 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 	if t.Type == ticket.TypeEpic {
 		p := snap.Progress(qid)
 		fmt.Print("\n## Progress\n\n")
-		fmt.Printf("children: %d — done %d, closed %d, open %d, ready %d, backlog %d\n", p.Total, p.Done, p.Closed, p.Open, p.Ready, p.Backlog)
+		fmt.Printf("children: %d — done %d, closed %d, open %d, testing %d, ready %d, backlog %d\n", p.Total, p.Done, p.Closed, p.Open, p.Testing, p.Ready, p.Backlog)
 		if p.Complete {
 			fmt.Println("complete: yes")
 		} else {

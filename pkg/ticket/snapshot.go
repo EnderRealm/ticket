@@ -174,6 +174,7 @@ type EpicProgress struct {
 	Done        int      `json:"done"`
 	Closed      int      `json:"closed"`
 	Open        int      `json:"open"`
+	Testing     int      `json:"testing"`
 	Ready       int      `json:"ready"`
 	Backlog     int      `json:"backlog"`
 	Complete    bool     `json:"complete"`
@@ -194,6 +195,8 @@ func (s *Snapshot) Progress(epicID string) EpicProgress {
 			p.Closed++
 		case StatusOpen:
 			p.Open++
+		case StatusTesting:
+			p.Testing++
 		case StatusReady:
 			p.Ready++
 		case StatusBacklog:

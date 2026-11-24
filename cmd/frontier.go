@@ -12,12 +12,13 @@ import (
 
 var frontierCmd = &cobra.Command{
 	Use:   "frontier",
-	Short: "List ready tickets whose dependencies are all done or closed",
-	Long: `List ready tickets whose dependencies are all done or closed -- the
-parallel-safe set to start next. A generic ticket (--workflow-kind generic:
-work a person does, or an event to observe) is left out, since no run can start
-it; a ticket depending on one stays out until it is done or closed. The
-frontier is computed over the whole store:
+	Short: "List ready tickets whose dependencies are all testing, done or closed",
+	Long: `List ready tickets whose dependencies are all testing, done or closed -- the
+parallel-safe set to start next. A ticket in testing has landed, so it holds
+none of its dependents, and is not itself listed. A generic ticket
+(--workflow-kind generic: work a person does, or an event to observe) is left
+out, since no run can start it; a ticket depending on one stays out until it is
+testing, done or closed. The frontier is computed over the whole store:
 --parent keeps the members of that epic (qualified project/id, or bare with
 --project) and --project keeps one namespace's rows, and neither changes what
 is ready.`,

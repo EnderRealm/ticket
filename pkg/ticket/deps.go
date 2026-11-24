@@ -85,6 +85,8 @@ func (c Cycle) String() string {
 }
 
 // FindCycles detects dependency cycles among open (non-done/closed) tickets.
+// A testing ticket counts: it holds nothing now, and a failed test sends it
+// back to open with the loop live again.
 // Uses DFS with white(0)/gray(1)/black(2) coloring.
 func FindCycles(store Store) ([]Cycle, error) {
 	tickets, err := store.List()
@@ -178,12 +180,20 @@ func normalizeCycle(ids []string) string {
 	return key
 }
 
-// isTerminal returns true if a ticket is in a terminal state.
+// isTerminal returns true if a ticket is finished: in a terminal state. A
+// testing ticket is not, so its epic cannot read finished over it.
 func isTerminal(t *Ticket) bool {
 	return t.Status == StatusDone || t.Status == StatusClosed
 }
 
-// IsBlocked returns true if any of the ticket's dependencies are not done/closed.
+// depSatisfied returns true if a ticket no longer holds the tickets that depend
+// on it: it is finished, or its change has landed and waits in testing.
+func depSatisfied(t *Ticket) bool {
+	return isTerminal(t) || t.Status == StatusTesting
+}
+
+// IsBlocked returns true if any of the ticket's dependencies are not
+// testing/done/closed.
 func IsBlocked(store Store, t *Ticket) bool {
 	return isBlocked(t, storeLookup(store))
 }
@@ -278,7 +288,7 @@ func isBlocked(t *Ticket, depOf depResolver) bool {
 			// Missing dep is treated as blocking.
 			return true
 		}
-		if !isTerminal(dep) {
+		if !depSatisfied(dep) {
 			return true
 		}
 	}
@@ -295,8 +305,8 @@ func BlockedFunc(store Store, tickets []*Ticket) func(*Ticket) bool {
 	}
 }
 
-// BlockingDeps returns the IDs of dependencies that are not done/closed, as
-// the ticket spells them.
+// BlockingDeps returns the IDs of dependencies that are not
+// testing/done/closed, as the ticket spells them.
 func BlockingDeps(store Store, t *Ticket) []string {
 	return blockingDeps(t, storeLookup(store))
 }
@@ -310,7 +320,7 @@ func blockingDeps(t *Ticket, depOf depResolver) []string {
 			blocking = append(blocking, depID)
 			continue
 		}
-		if !isTerminal(dep) {
+		if !depSatisfied(dep) {
 			blocking = append(blocking, depID)
 		}
 	}
@@ -321,7 +331,7 @@ func blockingDeps(t *Ticket, depOf depResolver) []string {
 // Store resolution is the fallback, not the path: a dep naming an epic
 // resolves through Store.Get, which derives — reading the whole store — so a
 // loop over the store would re-read it once per epic dep. Whether an epic dep
-// is terminal genuinely depends on that derivation, so the answer has to come
+// is satisfied genuinely depends on that derivation, so the answer has to come
 // from a derived set rather than a stored read; the index is the derived set
 // the caller is already holding.
 //
@@ -456,9 +466,9 @@ func storeProject(store Store) string {
 	return ""
 }
 
-// IsReady returns true if the ticket is actionable: not terminal, all deps
-// done, parent chain active, its parent relationship valid, and worked as
-// coding rather than generic. Backlog counts: tickets are picked up straight
+// IsReady returns true if the ticket is actionable: neither terminal nor in
+// testing, all deps satisfied, parent chain active, its parent relationship
+// valid, and worked as coding rather than generic. Backlog counts: tickets are picked up straight
 // out of backlog on stores that never groom to ready, and excluding them left
 // the ready listing empty. Callers that need the groomed set alone match
 // Status == StatusReady, as FrontierTickets does.
@@ -482,7 +492,7 @@ func parentOfVia(depOf depResolver) func(*Ticket) (*Ticket, error) {
 // resolve, is not an epic, or is one it may not belong to, and none of those
 // is evidence that nothing gates the work.
 func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, error)) bool {
-	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
+	if isTerminal(t) || t.Status == StatusTesting || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
 		return false
 	}
 	if isBlocked(t, depOf) {
@@ -493,7 +503,7 @@ func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, erro
 
 // IsReadyOpen is like IsReady but bypasses parent gating.
 // Shows all unblocked non-terminal coding tickets regardless of epic status;
-// a generic ticket is left out here as well.
+// a generic ticket and one in testing are left out here as well.
 func IsReadyOpen(store Store, t *Ticket) bool {
 	return isReadyOpen(t, storeLookup(store))
 }
@@ -501,7 +511,7 @@ func IsReadyOpen(store Store, t *Ticket) bool {
 // isReadyOpen is IsReadyOpen with the dep lookup supplied. The parent gate is
 // bypassed; a relationship issue is not a gate, it is an invalid leaf.
 func isReadyOpen(t *Ticket, depOf depResolver) bool {
-	if isTerminal(t) || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
+	if isTerminal(t) || t.Status == StatusTesting || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
 		return false
 	}
 	return !isBlocked(t, depOf)
@@ -541,14 +551,14 @@ func parentChainActive(parentOf func(*Ticket) (*Ticket, error), t *Ticket) bool 
 }
 
 // ReadyTickets returns all tickets that pass the IsReady check, so backlog
-// tickets whose deps are done and whose parent is active are included. Callers
+// tickets whose deps are satisfied and whose parent is active are included. Callers
 // that distinguish groomed from ungroomed sort by status.
 func ReadyTickets(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, false)
 }
 
-// ReadyTicketsOpen returns all unblocked non-terminal tickets, bypassing
-// parent gating.
+// ReadyTicketsOpen returns all tickets that pass the IsReadyOpen check, which
+// bypasses parent gating.
 func ReadyTicketsOpen(store Store) ([]*Ticket, error) {
 	return readyTicketsImpl(store, true)
 }
@@ -591,8 +601,8 @@ func readyOf(store Store, tickets []*Ticket, openMode bool) []*Ticket {
 }
 
 // FrontierTickets returns the schedulable set: coding tickets with status
-// ready whose dependencies are all terminal (done/closed). Listed through Store.List,
-// so a CLI caller gets the store's warning about any file it skipped.
+// ready whose dependencies are all testing, done or closed. Listed through
+// Store.List, so a CLI caller gets the store's warning about any file it skipped.
 func FrontierTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -644,7 +654,9 @@ func frontierOf(store Store, tickets []*Ticket) []*Ticket {
 	return frontier
 }
 
-// BlockedTickets returns all non-terminal, non-backlog tickets with unresolved deps.
+// BlockedTickets returns all non-terminal, non-backlog tickets with unresolved
+// deps. A testing ticket is left out: its change has landed, so there is no work
+// left for a dep to hold up.
 func BlockedTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -659,7 +671,7 @@ func BlockedOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var blocked []*Ticket
 	for _, t := range tickets {
-		if isTerminal(t) || t.Status == StatusBacklog {
+		if isTerminal(t) || t.Status == StatusTesting || t.Status == StatusBacklog {
 			continue
 		}
 		if isBlocked(t, depOf) {

@@ -28,7 +28,7 @@ with --all-projects; --all keeps closed ones. --all-projects conflicts with
 
 func init() {
 	addFilterFlags(lsCmd)
-	lsCmd.Flags().String("status", "", "filter by status: backlog | ready | open | done | closed")
+	lsCmd.Flags().String("status", "", "filter by status: backlog | ready | open | testing | done | closed")
 	lsCmd.Flags().Bool("all", false, "include done and closed tickets (hidden by default; ignored with --status)")
 	lsCmd.Flags().String("parent", "", "children of this epic (qualified project/id, or bare in the selected project); membership is global, the listing is the selected project's")
 	lsCmd.Flags().Bool("all-projects", false, "list every namespace in the central store, IDs qualified")
@@ -248,7 +248,8 @@ func printGrouped(blocked func(*ticket.Ticket) bool, tickets []*ticket.Ticket, g
 }
 
 func workflowGroup(blocked func(*ticket.Ticket) bool, t *ticket.Ticket) (string, int) {
-	if blocked(t) {
+	// A testing ticket has landed, so an unfinished dep no longer holds it.
+	if t.Status != ticket.StatusTesting && blocked(t) {
 		return "Blocked", 99
 	}
 	status := t.Status

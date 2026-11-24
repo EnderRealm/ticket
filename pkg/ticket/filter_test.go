@@ -132,7 +132,7 @@ func TestSortByStatusPriorityID(t *testing.T) {
 	tickets := makeTickets()
 	SortByStatusPriorityID(tickets)
 
-	// StatusOrder: open=0, ready=1, backlog=2, done=3, closed=4.
+	// StatusOrder: open=0, testing=1, ready=2, backlog=3, done=4, closed=5.
 	// t-002: open P0, t-005: open P3, t-003: ready P1, t-001: ready P2, t-004: done P1
 	expected := []string{"t-002", "t-005", "t-003", "t-001", "t-004"}
 	got := ids(tickets)

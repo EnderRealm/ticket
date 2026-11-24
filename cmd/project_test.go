@@ -358,7 +358,7 @@ func TestShowEpicProgressMatchesDerivedStatus(t *testing.T) {
 	for _, want := range []string{
 		"status: open",
 		"## Progress",
-		"children: 3 — done 1, closed 1, open 1, ready 0, backlog 0",
+		"children: 3 — done 1, closed 1, open 1, testing 0, ready 0, backlog 0",
 		"complete: yes",
 		"- loom/p-open [open]",
 		"- warp/p-done [done]",

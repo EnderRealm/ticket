@@ -19,7 +19,7 @@ Go binary. Three layers sharing one core library:
 
 Tickets are markdown files with YAML frontmatter. Core YAML fields: `id`, `status`, `deps`, `links`, `created`, `type`, `priority`, `parent`, `tags`.
 
-Statuses: `backlog`, `ready`, `open`, `done`, `closed`.
+Statuses: `backlog`, `ready`, `open`, `testing`, `done`, `closed`. `testing` has landed and waits on a person: it satisfies its dependents (`depSatisfied`) and is not finished (`isTerminal`).
 Types: `epic`, `feature`, `bug`.
 
 The hierarchy is one level deep and enforced on write: `parent`, when set, must resolve to an epic — in the same project, or in another namespace once the catalog requires `cross-project-parents` — and an epic itself has no parent. Enforcement lives at the central boundary in `pkg/ticket/central.go`: every write (`Create`, `Update`, `Delete`, `Mutate`, `ImportAll`, a move) runs through `central.write`, which takes the exclusive store lock, snapshots the whole store under it and validates the write against that snapshot in `op.validate`, so CLI, MCP and library writes are all covered — do not add a second check at a call site. `ResolveParent` in `pkg/ticket/parent.go` is a read-only preview of the same check, taken without the exclusive lock, for a caller that wants the answer before writing: it canonicalizes `t.Parent` to the resolved epic's qualified ID but writes nothing, and the write itself is judged again under the lock.

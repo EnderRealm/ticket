@@ -43,6 +43,7 @@ func TestLsDefaultStatusSet(t *testing.T) {
 		ticket.StatusBacklog,
 		ticket.StatusReady,
 		ticket.StatusOpen,
+		ticket.StatusTesting,
 		ticket.StatusDone,
 		ticket.StatusClosed,
 	}
@@ -62,7 +63,7 @@ func TestLsDefaultStatusSet(t *testing.T) {
 
 	out := captureLs(t)
 
-	for _, s := range []ticket.Status{ticket.StatusBacklog, ticket.StatusReady, ticket.StatusOpen} {
+	for _, s := range []ticket.Status{ticket.StatusBacklog, ticket.StatusReady, ticket.StatusOpen, ticket.StatusTesting} {
 		if !contains(out, "ls-"+string(s)) {
 			t.Errorf("default ls output missing %s ticket:\n%s", s, out)
 		}

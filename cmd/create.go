@@ -26,10 +26,10 @@ ticket is still created.
 
 --workflow-kind generic marks work no run can do: a step a person takes, or an
 event to observe. tk frontier and ready work leave a generic ticket out; as a
-dependency it still holds its dependents until it is done or closed. Absent, or
-coding, is a run's work. A generic ticket carries its steps in --how and its
-shell commands in --command, each repeatable in order, one line per value and
-kept exactly as written (commas included). tk never runs them.`,
+dependency it still holds its dependents until it is testing, done or closed.
+Absent, or coding, is a run's work. A generic ticket carries its steps in --how
+and its shell commands in --command, each repeatable in order, one line per
+value and kept exactly as written (commas included). tk never runs them.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runCreate,
 }

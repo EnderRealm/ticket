@@ -13,6 +13,9 @@ const (
 	ActionWork    ActionKind = "work"
 	ActionBlocked ActionKind = "blocked"
 	ActionReady   ActionKind = "ready"
+	// ActionTest is a testing ticket: its change has landed and a person has to
+	// test it.
+	ActionTest ActionKind = "test"
 )
 
 // QuestionField is the extra field a runner writes when it parks a run on a
@@ -64,6 +67,9 @@ func NextAction(t *Ticket) InboxItem {
 	case StatusOpen:
 		item.Action = ActionWork
 		item.Detail = "in progress"
+	case StatusTesting:
+		item.Action = ActionTest
+		item.Detail = "landed, waiting on a person to test it"
 	default:
 		item.Action = ActionReady
 		item.Detail = "unknown status"
@@ -72,10 +78,12 @@ func NextAction(t *Ticket) InboxItem {
 	return item
 }
 
-// Inbox returns ready and open tickets, plus backlog tickets with parked
-// questions or a waiting_on, sorted by priority then age. Tickets with
+// Inbox returns ready, open and testing tickets, plus backlog tickets with
+// parked questions or a waiting_on, sorted by priority then age. Tickets with
 // unresolved dependencies, parked questions or a waiting_on are kept as
-// blocked; the detail is the question first, then the waiting_on.
+// blocked; the detail is the question first, then the waiting_on. A testing
+// ticket waits on a person as test, and only a question or a waiting_on blocks
+// it: its change has landed, so its dependencies no longer hold it.
 func Inbox(store Store) ([]InboxItem, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -100,7 +108,7 @@ func InboxOf(store Store, tickets []*Ticket) []InboxItem {
 				item.Detail = "blocked on " + strings.Join(deps, ", ")
 			}
 		}
-		if item.Action == ActionWork || item.Action == ActionBlocked {
+		if item.Action == ActionWork || item.Action == ActionBlocked || item.Action == ActionTest {
 			items = append(items, item)
 		}
 	}
@@ -171,7 +179,7 @@ func Projects(store Store) ([]ProjectSummary, error) {
 			}
 
 			action := NextAction(kid)
-			if action.Action == ActionWork || action.Action == ActionBlocked {
+			if action.Action == ActionWork || action.Action == ActionBlocked || action.Action == ActionTest {
 				summary.NextActions = append(summary.NextActions, action)
 			}
 		}

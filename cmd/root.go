@@ -28,7 +28,7 @@ Usage: tk <command> [args]      tk <command> --help for details
 Viewing:
   show <id>...           Display ticket details
   ls, list               List tickets (done/closed hidden; --all shows them)
-  frontier               Ready tickets whose deps are all done or closed
+  frontier               Ready tickets whose deps are testing, done or closed
   search <query>         Search tickets by relevance
   query [jq-filter]      All tickets as JSONL, optionally filtered
   audit [cause]          Summarise store findings by cause
@@ -69,7 +69,8 @@ Global flags:
   --repo <name|path>     Operate on a registered project or repo
   --json                 JSON output
 
-Statuses: backlog -> ready -> open -> done; closed = won't fix.
+Statuses: backlog -> ready -> open -> testing -> done; closed = won't fix.
+testing = landed, waiting on a person's test; its dependents are not blocked.
 An epic's status is derived from its children; see tk edit --help.
 --workflow-kind generic marks work no run can do (a person's step, an event);
 frontier and ready work leave it out. See tk create --help.

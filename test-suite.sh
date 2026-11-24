@@ -158,7 +158,7 @@ assert_ok "tk edit $ID1 -d 'New description text'" "Edit description"
 assert_contains "tk show $ID1" "New description text" "Description was updated"
 
 # All v7 statuses.
-for status in backlog ready open done closed; do
+for status in backlog ready open testing done closed; do
     assert_ok "tk edit $ID1 --status $status" "Edit status to $status"
     assert_contains "tk show $ID1" "status: $status" "Status is $status"
 done

@@ -12,7 +12,7 @@ import (
 //
 //	abandoned and every child terminal        -> closed
 //	no children                               -> backlog
-//	any child open                            -> open
+//	any child open or testing                 -> open
 //	every child terminal, at least one closed -> closed
 //	every child done                          -> done
 //	otherwise                                 -> backlog
@@ -23,6 +23,10 @@ import (
 // moved to another repo before tk move was limited to isolated leaves: the
 // closed copies they left behind still count as its children. Reading either as
 // done would overstate what happened.
+//
+// A testing child reads as open here, whatever the rest are: its change has
+// landed and a person has yet to look at it, so the epic is in progress and
+// neither waiting to start nor finished.
 //
 // ready never appears: it means "available to pick up" and an epic is not
 // picked up directly. A childless epic derives backlog, not done — derivation
@@ -62,7 +66,7 @@ func DeriveEpicStatus(abandoned bool, children []*Ticket) Status {
 		if !isTerminal(c) {
 			allTerminal = false
 		}
-		if c.Status == StatusOpen {
+		if c.Status == StatusOpen || c.Status == StatusTesting {
 			anyOpen = true
 		}
 		if c.Status == StatusClosed {

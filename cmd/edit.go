@@ -25,6 +25,10 @@ tk verify --help); the edit is still written.
 parent. A qualified project/id names an epic in another namespace, accepted
 once the catalog requires cross-project-parents.
 
+--status testing marks a change that has landed and waits on a person's test.
+Tickets that depend on it are no longer blocked; it is not finished, so its
+epic stays open.
+
 An epic's status is derived from its children, and setting one by hand is
 refused. The exception is --status closed, which abandons the epic: it records
 abandoned: true and closes its unfinished children, naming them in the line
@@ -53,7 +57,7 @@ func registerEditFlags(cmd *cobra.Command) {
 	f.String("design", "", "design section text")
 	f.String("acceptance", "", "acceptance criteria section text")
 	f.String("test-results", "", "test results section text")
-	f.String("status", "", "ticket status (backlog, ready, open, done, closed)")
+	f.String("status", "", "ticket status (backlog, ready, open, testing, done, closed)")
 	f.StringP("type", "t", "", "ticket type")
 	f.StringP("priority", "p", "", "priority (0-4)")
 	f.String("external-ref", "", "external reference")

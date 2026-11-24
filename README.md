@@ -134,7 +134,7 @@ Usage: tk <command> [args]      tk <command> --help for details
 Viewing:
   show <id>...           Display ticket details
   ls, list               List tickets (done/closed hidden; --all shows them)
-  frontier               Ready tickets whose deps are all done or closed
+  frontier               Ready tickets whose deps are testing, done or closed
   search <query>         Search tickets by relevance
   query [jq-filter]      All tickets as JSONL, optionally filtered
   audit [cause]          Summarise store findings by cause
@@ -175,7 +175,8 @@ Global flags:
   --repo <name|path>     Operate on a registered project or repo
   --json                 JSON output
 
-Statuses: backlog -> ready -> open -> done; closed = won't fix.
+Statuses: backlog -> ready -> open -> testing -> done; closed = won't fix.
+testing = landed, waiting on a person's test; its dependents are not blocked.
 An epic's status is derived from its children; see tk edit --help.
 --workflow-kind generic marks work no run can do (a person's step, an event);
 frontier and ready work leave it out. See tk create --help.
@@ -193,8 +194,17 @@ Tickets use a simple status model:
 | backlog | Waiting for grooming |
 | ready | Available to work |
 | open | Currently being worked on |
+| testing | Landed, and waiting on a person to test it |
 | done | Completed |
 | closed | Not an issue, duplicate, etc. |
+
+A `testing` ticket's change has landed, so it no longer holds up other work, and a person still has to look at it, so it is not finished:
+
+- As a dependency it is satisfied. The tickets that depend on it are not blocked and can enter the frontier, as with a `done` or `closed` dependency.
+- It is not work to pick up: `tk frontier`, `ticket_ready` and `ticket_frontier` leave it out, and `ticket_blocked` does too, since its own dependencies no longer hold anything up.
+- `ticket_inbox` lists it with the action `test`. A parked `question` or a `waiting_on` on it still makes it `blocked`, as on any ticket; an unfinished dependency does not.
+- Its epic reads `open` while it waits, and counts it under `testing` (see [Epic Status](#epic-status)).
+- It has no `closed` date. That is stamped when it becomes `done` (or `closed`).
 
 ### Types
 
@@ -223,7 +233,7 @@ tk edit <id> --workflow-kind coding
 
 `ticket_create` and `ticket_edit` take `workflow_kind`, and `how` and `commands` as arrays of strings; on `ticket_edit` an array replaces the list and an empty array clears it. The three names are reserved and cannot be extra fields.
 
-Ready work is what a run can start, so `tk frontier`, `ticket_ready` and `ticket_frontier` leave a generic ticket out, whatever its status. As a dependency it counts like any other ticket: a ticket that depends on it stays blocked until it is `done` or `closed`, and then shows up in ready work as usual. `ticket_inbox` and `ticket_blocked` are unchanged.
+Ready work is what a run can start, so `tk frontier`, `ticket_ready` and `ticket_frontier` leave a generic ticket out, whatever its status. As a dependency it counts like any other ticket: a ticket that depends on it stays blocked until it is `testing`, `done` or `closed`, and then shows up in ready work as usual. `ticket_inbox` and `ticket_blocked` are unchanged.
 
 A `tk ls` and `tk search` row shows it in a `KIND` column beside `TYPE` (`tk frontier` drops the column, as it drops `STATUS`: every row there is coding). Every `tk query`, `tk frontier --json` and MCP listing row (`ticket_list`, `ticket_ready`, `ticket_frontier`, `ticket_blocked`, `ticket_inbox`, `ticket_search`) carries `workflow_kind`, `coding` when the ticket stores none, so a consumer never infers it; the file keeps exactly what was written. `tk show`, `ticket_show` and `tk query` carry `how` and `commands`.
 
@@ -237,20 +247,20 @@ References are read relative to the ticket that holds them: a bare `parent`, dep
 |----------|------------|
 | `abandoned: true` and all children done or closed | closed |
 | none | backlog |
-| any child open | open |
+| any child open or testing | open |
 | all done | done |
 | all done or closed, at least one closed | closed |
 | anything else | backlog |
 
 `done` and `closed` say different things about a finished epic: `done` means the work completed, `closed` means it did not. An epic whose children were every one abandoned reads `closed`. So does one whose children were moved to another repo before `tk move` was limited to isolated leaves: the closed copies they left behind still count as its children.
 
-An epic never reads `ready` — `ready` means "available to pick up" and an epic is not picked up directly. Setting an epic's status by hand is refused; change its children instead.
+An epic never reads `ready` — `ready` means "available to pick up" and an epic is not picked up directly. Nor does it read `testing`: a testing child's change has landed and a person has yet to look at it, so the epic reads `open` until the child leaves the status, even when every other child is finished. Setting an epic's status by hand is refused; change its children instead.
 
 An epic's completion date is derived alongside its status: it is the date its last child reached a terminal state, and it is blank while the epic is not terminal. Nothing writes an epic when a child of it finishes, so `tk show` and `tk query` read the children rather than a date on the epic's own file — an epic's file stores no completion date at all.
 
 An abandoned epic is the exception, because the abandon is what closes it: the edit that abandons it records `abandoned-at` beside the flag, and while it reads `closed` its completion date is the later of that and its last child's — the child's when one reopened after the abandon and finished again. Taking the abandon back clears the date. An epic abandoned before `abandoned-at` was recorded has no date for the decision and renders none, rather than a child's date the abandon may have come long after; setting it `closed` again records one.
 
-The one exception is abandoning an epic: `tk edit <epic> --status closed` records `abandoned: true` on the epic and closes every non-terminal child in the same action (children that already finished keep their `done`). The abandoned epic reads `closed` only while every child is terminal, so reopening one un-closes the epic until it finishes again. Setting any other status takes the abandon back, whatever the epic reads at the time. The children the abandon closed are reported with the edit — named on `tk edit`'s own line, returned by MCP `ticket_edit` as `closed_children` — so a write that mutated other tickets says so.
+The one exception is abandoning an epic: `tk edit <epic> --status closed` records `abandoned: true` on the epic and closes every non-terminal child in the same action (children that already finished keep their `done`). A `testing` child is closed with the rest: its code stays on main, and closing it ends the wait. The abandoned epic reads `closed` only while every child is terminal, so reopening one un-closes the epic until it finishes again. Setting any other status takes the abandon back, whatever the epic reads at the time. The children the abandon closed are reported with the edit — named on `tk edit`'s own line, returned by MCP `ticket_edit` as `closed_children` — so a write that mutated other tickets says so.
 
 Changing a ticket's type to `epic` is judged the same way: `tk edit <id> --type epic` on its own is one ordinary edit and the status it carries back is not read as a decision, while a status set in the same call is a status set on the epic that edit makes — `closed` abandons it, anything else is refused.
 
@@ -453,7 +463,7 @@ A refusal is reported as `refused`, never as a failure, and counted separately i
 ### Filter Flags
 
 ```
---status X        Filter by status (backlog, ready, open, done, closed)
+--status X        Filter by status (backlog, ready, open, testing, done, closed)
 --all             Include done and closed, which the default hides
 -t, --type X      bug | feature | epic
 -P, --priority X  0 (critical) through 4 (backlog)
@@ -468,7 +478,7 @@ A refusal is reported as `refused`, never as a failure, and counted separately i
 --flat            Flat list (no grouping)
 ```
 
-A default `tk ls` lists live work only — `done` and `closed` are hidden, so finished tickets do not bury the rows you are scanning for. Reach them with `--status done` / `--status closed`, or with `--all`, which shows the whole board in one listing (`--status` only ever shows one status at a time). Since an epic reads the status its children imply, a finished epic drops out of the default listing along with its children.
+A default `tk ls` lists live work only — `done` and `closed` are hidden, so finished tickets do not bury the rows you are scanning for. A `testing` ticket is not finished and is listed, in a group of its own after `open`. Reach them with `--status done` / `--status closed`, or with `--all`, which shows the whole board in one listing (`--status` only ever shows one status at a time). Since an epic reads the status its children imply, a finished epic drops out of the default listing along with its children.
 
 ### Extra Fields
 
@@ -620,9 +630,9 @@ Other tools (`ticket_show`, `ticket_edit`, etc.) accept namespaced IDs directly 
 Every listing is answered off the whole store first and narrowed afterwards. A `project` scope, and the closed filter, narrow the rows only: which epic a child belongs to, whether a ticket is ready or blocked, and what status an epic derives are all decided over every namespace before the scope applies, so a project view and the central view never disagree. This is the contract weft and warp consume; the CLI flags above are the same rules.
 
 - **Scope.** `all_projects` on `ticket_list`, `ticket_frontier`, `ticket_search`, `ticket_ready`, `ticket_blocked` and `ticket_inbox` lists every namespace and ignores the server's default project; it conflicts with `project`. `ticket_list` also takes `include_closed=true` to keep closed tickets in the rows (dropped by default unless `status` is set), so cancelled children of an epic are reachable.
-- **Parent.** `parent` on `ticket_list` and `ticket_frontier` keeps only the children the graph places under that epic, in every namespace: a qualified `project/id`, or a bare ID relative to `project` (or the default project) — with neither, a bare parent is refused rather than searched for, since identical bare IDs exist in different projects. A parent that does not resolve, or is not an epic, is a refusal and never an empty listing. The response then carries `parent`: the epic's `id`, derived `status`, `type`, `complete`, `children_total` and `counts` (`done`, `closed`, `open`, `ready`, `backlog`) over every child in every namespace, whatever `project` or the closed filter hid from the rows, so a consumer can tell a slice from the epic's whole.
+- **Parent.** `parent` on `ticket_list` and `ticket_frontier` keeps only the children the graph places under that epic, in every namespace: a qualified `project/id`, or a bare ID relative to `project` (or the default project) — with neither, a bare parent is refused rather than searched for, since identical bare IDs exist in different projects. A parent that does not resolve, or is not an epic, is a refusal and never an empty listing. The response then carries `parent`: the epic's `id`, derived `status`, `type`, `complete`, `children_total` and `counts` (`done`, `closed`, `open`, `testing`, `ready`, `backlog`) over every child in every namespace, whatever `project` or the closed filter hid from the rows, so a consumer can tell a slice from the epic's whole.
 - **Snapshot.** `ticket_list`, `ticket_frontier`, `ticket_search`, `ticket_ready`, `ticket_blocked` and `ticket_inbox` responses carry `snapshot`, the revision token of the one store reading the response was cut from, and `complete`, whether that reading saw the whole store; `ticket_list` also carries `namespaces`, the namespaces read in full. A paged `ticket_list` passes the first page's `snapshot` back on every later page: a page at an offset above 0 without it is refused, a store that changed in between is refused with `snapshot changed`, naming the new token, and the caller restarts from offset 0 — two revisions are never mixed into one membership or total.
-- **Show.** `ticket_show` carries `namespace` (the ticket's project, empty on a single store). An epic also carries `children` (`id`, `title`, `status`, `type`, `namespace` — every child in every namespace, IDs qualified), `children_total`, `counts` and `complete`, all off one reading so the derived status and the counts agree; while `complete` is false, `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. A done dependency in another project is not a blocker.
+- **Show.** `ticket_show` carries `namespace` (the ticket's project, empty on a single store). An epic also carries `children` (`id`, `title`, `status`, `type`, `namespace` — every child in every namespace, IDs qualified), `children_total`, `counts` and `complete`, all off one reading so the derived status and the counts agree; while `complete` is false, `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. A done or testing dependency in another project is not a blocker.
 - **Create.** `ticket_create`'s destination is `project` — a registered project, or `_root` for an idea with no repository yet, refused until the catalog requires `root-namespace` — or `repo`, or the server's default project; with none of the three the create is refused (`no destination: pass project … or repo`) rather than landing somewhere inferred. `parent` may name an epic in another namespace, qualified, once the catalog requires `cross-project-parents`.
 - **Verify.** `ticket_verify` runs commands only in the checkout registered on this machine for the ticket's own project — or, when the ticket carries `implementation: <project>`, for that project instead, never falling back to the ticket's own — or, with `dir`, in a linked git worktree of that checkout. A Root ticket (Root has no repository), a project with no checkout registered here, a registered checkout that is missing, and a `dir` outside that repository are each refused before anything runs, naming the reason, and nothing is recorded; the server's working directory, the store and a parent epic's project never stand in. `ticket_criteria` returns the parsed criteria and their `acceptance_id`; `ticket_verify` refuses a stale `acceptance_id` before running and does not record a run whose criteria changed underneath it. The report and the record carry the actual directory, the `implementation` project when set, the `acceptance_id` and the caller's `candidate`.
 

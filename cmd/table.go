@@ -135,6 +135,8 @@ func colorizeStatus(s string, status ticket.Status) string {
 		return colorize(s, ansiCyan)
 	case ticket.StatusOpen:
 		return colorize(s, ansiYellow)
+	case ticket.StatusTesting:
+		return colorize(s, ansiBlue)
 	case ticket.StatusDone:
 		return colorize(s, ansiGreen)
 	case ticket.StatusClosed:
