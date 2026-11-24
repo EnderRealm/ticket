@@ -49,6 +49,7 @@ Dependencies & Links:
   unlink <id> <id>       Remove link
 
 Verification:
+  criteria <id>          List a ticket's parsed acceptance criteria
   verify <id>            Run acceptance-criteria verify commands
   verify --policy        Print the verify_allow and verify_timeout in force
   verify --launcher <w>  Exec each verify command through an argv prefix

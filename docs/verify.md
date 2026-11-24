@@ -112,9 +112,19 @@ reported as the error with no list, never as the defaults.
 
 ## Results and output
 
-Criteria with no command are reported unverified. Results are recorded in the
-ticket's Test Results section, each failing criterion followed by its indented
-output; the exit status is non-zero on any failure or refusal. A command's
+A criterion's indented continuation line says who decides it. `verify:
+<command>` is run by tk. `test: <what to look at>` is checked by a person on the
+real build: nothing is run for it, and it is reported waiting. A criterion with
+neither is judged by the run's review and its tests, and is reported
+unverified; an `unverifiable: <reason>` line is retired and reads the same way,
+its reason kept. On a criterion carrying both `verify:` and `test:` the `test:`
+line wins and the command is not run.
+
+Results are recorded in the ticket's Test Results section, each failing
+criterion followed by its indented output; the exit status is non-zero on any
+failure or refusal, and neither an unverified nor a waiting criterion makes it
+so. With `--criterion` it grades that one criterion: 0 pass, 1 fail, 20 refused,
+unverified or waiting. A command's
 output is capped to its last 4KB, where test frameworks print failures, and a
 capped output opens with a line naming how many bytes were dropped from the
 head.

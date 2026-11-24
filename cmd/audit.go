@@ -15,7 +15,7 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit [cause]",
-	Short: "Summarise the store's findings by cause — invalid parents, epics whose stored status is no longer read, tickets missing body content, tickets whose acceptance criteria nothing can check, tickets storing a legacy Review Log, files that cannot be read as tickets, and files whose id names another project — and list one cause's tickets with `tk audit <cause>`",
+	Short: "Summarise the store's findings by cause — invalid parents, epics whose stored status is no longer read, tickets missing body content, tickets with a criterion carrying both a verify: and a test: line, tickets storing a legacy Review Log, files that cannot be read as tickets, and files whose id names another project — and list one cause's tickets with `tk audit <cause>`",
 	Long: "With no argument, report one line per cause: how many findings it has, and the command that lists them. " +
 		"The per-ticket listings and the overview are two different outputs, and printing both left the report unreadable — " +
 		"one class alone runs to hundreds of lines on a real store and pushes the classes with the fewest findings, and the most to act on, off the top of the terminal. " +
@@ -27,8 +27,8 @@ var auditCmd = &cobra.Command{
 		"Every epic whose stored status differs from the status it now derives from its children, since " +
 		"stored statuses were left in place and are no longer read, and every ticket whose stored body is missing content: " +
 		"a section ending in a tool-call envelope fragment, or a description with no acceptance criteria. " +
-		"Every ticket carrying acceptance criteria that have neither a `verify:` command nor an `unverifiable:` reason, " +
-		"with how many of its criteria are bare: nothing decides whether they are met, and the warning `tk create` prints only reaches tickets not yet written. " +
+		"Every ticket with acceptance criteria carrying both a `verify:` command and a `test:` line, with how many do: a criterion carries at most one, " +
+		"and the test line wins, so the command never runs. " +
 		"Every ticket whose file still stores a legacy `## Review Log` section, which nothing has read since v7 retired the review system: " +
 		"the section is stripped from the body on read and the ticket's next write drops it from the file, so this is the list of what is still there. " +
 		"Every file that could not be read as a ticket at all, which exits non-zero: it is a ticket no listing yields, and " +
@@ -79,7 +79,7 @@ var auditCauses = []auditCause{
 	driftCause(ticket.EpicDriftStale),
 	contentCause(ticket.ContentEnvelopeFragment),
 	contentCause(ticket.ContentEmptyAcceptance),
-	contentCause(ticket.ContentBareAcceptance),
+	contentCause(ticket.ContentTwoMarkers),
 	contentCause(ticket.ContentLegacyReviewLog),
 	{
 		name:  string(ticket.FileSkipUnreadable),
@@ -294,15 +294,14 @@ func splitFileSkips(skips []ticket.FileSkip) (unreadable, foreign []ticket.FileS
 }
 
 // printAuditSummary reports the store one line per cause and lists nothing. The
-// listings are what made the report unreadable: when this was split,
-// bare-acceptance alone ran to 605 lines of the live store and
-// legacy-review-log to 128, which between them pushed the 11 parent violations
-// and the 14 drifting epics — the findings most likely to need acting on —
-// hundreds of lines off the top of the terminal. A report that is correct and
-// cannot be read is wrong. Capping the listings was
-// rejected when bare-acceptance landed, because a capped list drops tickets
-// nothing can then reach; splitting the two outputs keeps every ticket
-// reachable, which is why each line names the command that prints it.
+// listings are what made the report unreadable: when this was split, the two
+// longest content classes ran to 605 and 128 lines of the live store, which
+// between them pushed the 11 parent violations and the 14 drifting epics — the
+// findings most likely to need acting on — hundreds of lines off the top of the
+// terminal. A report that is correct and cannot be read is wrong. Capping the
+// listings was rejected, because a capped list drops tickets nothing can then
+// reach; splitting the two outputs keeps every ticket reachable, which is why
+// each line names the command that prints it.
 func printAuditSummary(cmd *cobra.Command, audit *ticket.AuditReport, proj string) {
 	// The drill-in command carries the scope this run was made under, so the
 	// command as printed lists the tickets these counts were taken over.
@@ -445,12 +444,11 @@ func printEpicStatusDrift(kind ticket.EpicDriftKind, drift []ticket.EpicStatusDr
 }
 
 // printContentIssues lists one class of ticket whose stored body is missing
-// content it was meant to carry, is carrying criteria nothing can check, or is
-// still storing a legacy Review Log. Every class is silent everywhere else: the
-// ticket lists and renders, and only reading its text shows that the contract is
-// not there, or is there and undecidable — or that the file holds a section
-// nothing reads. Each prints alone, count and remedy included, because each is
-// reached by its own command.
+// content it was meant to carry, is carrying criteria with two markers, or is
+// still storing a legacy Review Log. The ticket lists and renders either way,
+// and only reading its text shows that the contract is not there, or says two
+// things at once — or that the file holds a section nothing reads. Each prints
+// alone, count and remedy included, because each is reached by its own command.
 //
 // An ID carries its project namespace, and a project name is a store directory
 // name or a shared-config key another machine wrote — bounded against path
@@ -467,15 +465,14 @@ func printContentIssues(kind ticket.ContentIssueKind, issues []ticket.ContentIss
 			fmt.Printf("%s  %s  %s: %q\n", ticket.SanitizeControl(c.ID), c.Kind, c.Field, c.Detail)
 		}
 		fmt.Printf("\n%d section(s) absorbed part of the tool call that wrote them — the text that followed was never stored, so the real content is likely missing; rewrite each from the source\n", len(issues))
-	case ticket.ContentBareAcceptance:
-		bare := 0
+	case ticket.ContentTwoMarkers:
+		criteria := 0
 		for _, c := range issues {
-			bare += c.Bare
-			fmt.Printf("%s  %s  %d bare criterion(s)\n", ticket.SanitizeControl(c.ID), c.Kind, c.Bare)
+			criteria += c.Criteria
+			fmt.Printf("%s  %s  %d criterion(s)\n", ticket.SanitizeControl(c.ID), c.Kind, c.Criteria)
 		}
-		fmt.Printf("\n%d ticket(s) carry %d acceptance criterion(s) with neither a `verify:` nor an `unverifiable:` line — the criteria state what done means and nothing decides whether they are met. "+
-			"Add a `verify: <command>` line under each, or an `unverifiable: <reason>` line saying why no command can exist. "+
-			"The count is a census and spans the whole store, done and closed tickets included; the open and ready ones are the actionable half\n", len(issues), bare)
+		fmt.Printf("\n%d ticket(s) carry %d acceptance criterion(s) with both a `verify:` and a `test:` line — the `test:` line wins, so each waits on a person and its command never runs. "+
+			"Remove one of the two lines, or split it into two criteria\n", len(issues), criteria)
 	case ticket.ContentLegacyReviewLog:
 		bytes := 0
 		for _, c := range issues {

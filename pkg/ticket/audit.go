@@ -8,8 +8,7 @@ import "fmt"
 // reader sees. At most one parent violation and at most one drift, which is
 // what the store-wide report carries per ticket too — the two readings are the
 // same code (auditContext.findings), so they cannot come to disagree the way a
-// second scan of a body once did (BodySections) and a second count of bare
-// criteria twice did (BareCriteria).
+// second scan of a body once did (BodySections).
 //
 // There is deliberately no field a FileSkip or a ProjectSkip can land in.
 // Those describe a file that never became a ticket and a project that could
@@ -349,10 +348,10 @@ func EmptyAcceptance(t *Ticket) bool {
 // stored, and a description with no acceptance criteria, which is a ticket
 // neither /capture nor /work will accept. The check that refuses both now runs
 // at the MCP boundary; this is what finds the ones already written. It also
-// reports criteria carrying neither a verify command nor an unverifiable claim,
-// which the create-time warning only catches on tickets not yet written, and a
-// legacy `## Review Log`, which is the opposite case — content that is there
-// and is read by nothing. Read-only, like the rest of the audit.
+// reports criteria carrying both a verify command and a test line, which the
+// create and edit warnings only catch as they are written, and a legacy
+// `## Review Log`, which is the opposite case — content that is there and is
+// read by nothing. Read-only, like the rest of the audit.
 //
 // Nothing about the store is consulted, only the ticket's own body, so this
 // takes no context.
@@ -372,15 +371,12 @@ func contentIssues(t *Ticket) []ContentIssue {
 	if EmptyAcceptance(t) {
 		issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentEmptyAcceptance})
 	}
-	// Criteria that were written and cannot be checked, through the same reading
-	// BareCriteria gives `tk create` and ticket_create — the warning there only
-	// reaches tickets not yet created, and a second scan here is how two
-	// definitions of "bare" would come to disagree. No type exemption, unlike the
-	// check above: an epic carries no contract of its own, but one that does
-	// state criteria and leaves them bare has the same gap. A ticket with no
-	// acceptance section parses to no criteria and is never reported.
-	if bare := BareCriteria(t.Body); len(bare) > 0 {
-		issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentBareAcceptance, Bare: len(bare)})
+	// Through the same reading TwoMarkerCriteria gives the write surfaces, so the
+	// audit and their warnings cannot disagree. No type exemption, unlike the
+	// check above: an epic carries no contract of its own, but criteria it does
+	// state are read the same way.
+	if found := TwoMarkerCriteria(t.Body); len(found) > 0 {
+		issues = append(issues, ContentIssue{ID: t.ID, Kind: ContentTwoMarkers, Criteria: len(found)})
 	}
 	// The parse above stripped the section, and the ticket's next write is what
 	// removes it from the file. Listing them is what makes the store

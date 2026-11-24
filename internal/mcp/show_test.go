@@ -141,7 +141,7 @@ func createFullTicket(t *testing.T, session *mcp.ClientSession) (string, string)
 		"tags":        "a,b",
 		"description": "A description.",
 		"design":      "A design.",
-		"acceptance":  bareAcceptance,
+		"acceptance":  twoMarkerAcceptance,
 	})
 	callObject(t, session, "ticket_edit", map[string]any{"id": id, "test_results": "All green.", "outputs": map[string]any{"commit": "abc123"}})
 	callObject(t, session, "ticket_dep", map[string]any{"id": id, "dep_id": other, "action": "add"})
@@ -254,15 +254,15 @@ func TestShow_MetadataOnlyAsString(t *testing.T) {
 	}
 }
 
-const bareAcceptance = "- Something happens.\n"
+const twoMarkerAcceptance = "- Something happens.\n  verify: /bin/true\n  test: look at it\n"
 
 const checkedAcceptance = "- Something happens.\n  verify: /bin/true\n"
 
-// createFlagged creates a ticket whose only acceptance criterion carries no
-// check, which is the one finding the write path warns about and stores.
+// createFlagged creates a ticket whose only acceptance criterion carries two
+// markers, a finding the write path warns about and stores.
 func createFlagged(t *testing.T, session *mcp.ClientSession, args map[string]any) string {
 	t.Helper()
-	full := map[string]any{"title": "Flagged", "description": "A description.", "acceptance": bareAcceptance}
+	full := map[string]any{"title": "Flagged", "description": "A description.", "acceptance": twoMarkerAcceptance}
 	for k, v := range args {
 		full[k] = v
 	}
@@ -294,7 +294,7 @@ func plantParent(t *testing.T, path, parent string) {
 	}
 }
 
-func TestShow_AuditReportsBareAcceptance(t *testing.T) {
+func TestShow_AuditReportsTwoMarkers(t *testing.T) {
 	session := testServer(t)
 	id := createFlagged(t, session, nil)
 
@@ -303,8 +303,8 @@ func TestShow_AuditReportsBareAcceptance(t *testing.T) {
 		t.Fatalf("audit.content = %v, want one entry", content)
 	}
 	entry, _ := content[0].(map[string]any)
-	if entry["kind"] != "bare-acceptance" || entry["bare"] != 1.0 || entry["id"] != id {
-		t.Errorf("audit.content[0] = %v, want kind bare-acceptance, bare 1, id %s", entry, id)
+	if entry["kind"] != "two-markers" || entry["criteria"] != 1.0 || entry["id"] != id {
+		t.Errorf("audit.content[0] = %v, want kind two-markers, criteria 1, id %s", entry, id)
 	}
 }
 

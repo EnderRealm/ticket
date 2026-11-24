@@ -3562,17 +3562,11 @@ func verifyReport(t *testing.T, session *mcp.ClientSession, acceptance string) t
 }
 
 // The shape warp/work-dispatch-test-6b6a carried: an unverifiable claim nested
-// inside a verify line. ticket_create takes it as a checkable criterion, and
-// ticket_verify reports it unverified with its reason rather than refusing a
-// program called "unverifiable:".
+// inside a verify line. ticket_verify reports it unverified with its reason
+// rather than refusing a program called "unverifiable:".
 func TestVerifyNestedUnverifiableReportsUnverifiedWithReason(t *testing.T) {
 	session, _ := verifyServer(t)
 	const acceptance = "- Recipe recorded.\n  verify: unverifiable: a reproduction recipe is a recorded artifact\n"
-
-	created := callObject(t, session, "ticket_create", map[string]any{"title": "Nested", "type": "feature", "description": "Why", "acceptance": acceptance})
-	if created["bare_acceptance_criteria"] != nil {
-		t.Errorf("create reported the nested claim as bare: %v", created["bare_acceptance_criteria"])
-	}
 
 	report := verifyReport(t, session, acceptance)
 	got := report.Results[0]
@@ -4570,26 +4564,22 @@ func TestCreateAcceptsADescriptionThatDiscussesEnvelopes(t *testing.T) {
 
 // emptyAcceptanceCases are the create shapes the empty-acceptance warning is
 // held against: warn says whether the stored ticket has a description and no
-// criteria, bare whether it has criteria carrying neither a verify nor an
-// unverifiable line. The two are exclusive by construction — a ticket cannot
-// both lack criteria and carry bare ones.
+// criteria.
 var emptyAcceptanceCases = []struct {
 	name string
 	args map[string]any
 	warn bool
-	bare bool
 }{
-	{"description without acceptance", map[string]any{"title": "No criteria", "description": "Why it matters"}, true, false},
-	// Prose, not a bullet: it is stored as criteria but parses to none, so
-	// neither field fires.
-	{"description with acceptance", map[string]any{"title": "Both", "description": "Why it matters", "acceptance": "What done means"}, false, false},
-	{"neither", map[string]any{"title": "Stub"}, false, false},
-	{"epic with a description", map[string]any{"title": "Container", "type": "epic", "description": "Why it matters"}, false, false},
-	{"whitespace-only acceptance", map[string]any{"title": "Blank criteria", "description": "Why it matters", "acceptance": "   "}, true, false},
+	{"description without acceptance", map[string]any{"title": "No criteria", "description": "Why it matters"}, true},
+	// Prose, not a bullet: it is stored as criteria but parses to none.
+	{"description with acceptance", map[string]any{"title": "Both", "description": "Why it matters", "acceptance": "What done means"}, false},
+	{"neither", map[string]any{"title": "Stub"}, false},
+	{"epic with a description", map[string]any{"title": "Container", "type": "epic", "description": "Why it matters"}, false},
+	{"whitespace-only acceptance", map[string]any{"title": "Blank criteria", "description": "Why it matters", "acceptance": "   "}, true},
 	// The section rides inside the description, as the CLI path sends it;
 	// BodySections stores it as criteria, so the stored ticket is contracted.
-	{"description carrying its own acceptance section", map[string]any{"title": "Embedded", "description": "Why it matters\n\n## Acceptance Criteria\n\n- Done when X.\n  verify: go test ./..."}, false, false},
-	{"description carrying a bare acceptance section", map[string]any{"title": "Embedded bare", "description": "Why it matters\n\n## Acceptance Criteria\n\n- Bare one."}, false, true},
+	{"description carrying its own acceptance section", map[string]any{"title": "Embedded", "description": "Why it matters\n\n## Acceptance Criteria\n\n- Done when X.\n  verify: go test ./..."}, false},
+	{"description carrying a criterion with no line", map[string]any{"title": "Embedded judged", "description": "Why it matters\n\n## Acceptance Criteria\n\n- Judged."}, false},
 }
 
 func TestCreateWarnsOnEmptyAcceptance(t *testing.T) {
@@ -4618,18 +4608,6 @@ func TestCreateWarnsOnEmptyAcceptance(t *testing.T) {
 			}
 			if tt.warn && !strings.Contains(warning, created["id"].(string)) {
 				t.Errorf("warning does not name the ticket: %q", warning)
-			}
-			bare, _ := created["bare_acceptance_criteria"].([]any)
-			if tt.bare && len(bare) == 0 {
-				t.Errorf("create with bare criteria reported none: %v", created)
-			}
-			if !tt.bare && len(bare) > 0 {
-				t.Errorf("unexpected bare_acceptance_criteria %v", bare)
-			}
-			// One response cannot say the ticket has no criteria and list the
-			// criteria it has.
-			if warning != "" && len(bare) > 0 {
-				t.Errorf("response carries both empty_acceptance_warning %q and bare_acceptance_criteria %v", warning, bare)
 			}
 		})
 	}
@@ -4667,89 +4645,6 @@ func TestCreateEmptyAcceptanceWarningMatchesAudit(t *testing.T) {
 			}
 			if (warning != "") != audited {
 				t.Errorf("empty_acceptance_warning present = %v, audit reports empty-acceptance = %v", warning != "", audited)
-			}
-		})
-	}
-}
-
-func TestCreateReportsBareAcceptanceCriteria(t *testing.T) {
-	session := testServer(t)
-
-	tests := []struct {
-		name       string
-		ticketType string
-		acceptance string
-		want       []string
-	}{
-		{
-			name:       "mix reports only the bare ones",
-			acceptance: "- Checked.\n  verify: go test ./...\n- Bare one.\n- Cannot be.\n  unverifiable: needs a human to look.\n- Bare two.",
-			want:       []string{"Bare one.", "Bare two."},
-		},
-		{
-			name:       "every criterion marked",
-			acceptance: "- Checked.\n  verify: go test ./...\n- Cannot be.\n  unverifiable: needs a human to look.",
-		},
-		{
-			// Unlike empty_acceptance_warning, which exempts epics because a
-			// container's children carry the contract, a criterion that was
-			// written and cannot be checked is a gap whatever the type.
-			name:       "an epic is not exempt",
-			ticketType: "epic",
-			acceptance: "- Bare one.",
-			want:       []string{"Bare one."},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			args := map[string]any{"title": "Bare " + tt.name, "description": "Why it matters", "acceptance": tt.acceptance}
-			if tt.ticketType != "" {
-				args["type"] = tt.ticketType
-			}
-			result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-				Name:      "ticket_create",
-				Arguments: args,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result.IsError {
-				t.Fatalf("ticket_create error: %v", result.Content)
-			}
-			var created map[string]any
-			json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &created)
-
-			// The report never refuses the call: the ticket exists and its id
-			// is what the caller edits to attach the missing lines.
-			id, _ := created["id"].(string)
-			if id == "" {
-				t.Fatalf("create returned no id: %v", created)
-			}
-
-			var bare []string
-			reported, _ := created["bare_acceptance_criteria"].([]any)
-			for _, c := range reported {
-				bare = append(bare, c.(string))
-			}
-			warning, _ := created["bare_acceptance_warning"].(string)
-			if len(tt.want) == 0 {
-				if len(bare) != 0 || warning != "" {
-					t.Fatalf("fully marked criteria reported %q / %q", bare, warning)
-				}
-				return
-			}
-			if len(bare) != len(tt.want) {
-				t.Fatalf("bare_acceptance_criteria = %q, want %q", bare, tt.want)
-			}
-			for i := range bare {
-				if bare[i] != tt.want[i] {
-					t.Errorf("bare[%d] = %q, want %q", i, bare[i], tt.want[i])
-				}
-			}
-			for _, want := range append([]string{id}, tt.want...) {
-				if !strings.Contains(warning, want) {
-					t.Errorf("warning %q does not name %q", warning, want)
-				}
 			}
 		})
 	}

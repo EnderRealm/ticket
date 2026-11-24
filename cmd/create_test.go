@@ -8,96 +8,69 @@ import (
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 )
 
-// The CLI has no acceptance flag: a description carrying an `## Acceptance
-// Criteria` section is how this path produces criteria, and the warning has to
-// reach the operator on the same terms ticket_create reports it.
-func TestCreateWarnsOnBareAcceptanceCriteria(t *testing.T) {
-	store := centralStore(t, "cr-bare")
-
-	description := "Why it matters.\n\n## Acceptance Criteria\n\n- Checked.\n  verify: go test ./...\n- Bare one.\n"
+// captureCreateStderr creates a ticket from a description and returns its ID
+// and what the create printed on stderr.
+func captureCreateStderr(t *testing.T, store *ticket.FileStore, title, description string) (string, string) {
+	t.Helper()
 	f := createCmd.Flags()
 	if err := f.Set("description", description); err != nil {
 		t.Fatalf("set description: %v", err)
 	}
 	defer func() { _ = f.Set("description", "") }()
 
+	before := map[string]bool{}
+	tickets, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, tk := range tickets {
+		before[tk.ID] = true
+	}
+
 	oldStdout, oldStderr := os.Stdout, os.Stderr
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("open %s: %v", os.DevNull, err)
 	}
-	errR, errW, _ := os.Pipe()
-	os.Stdout, os.Stderr = devNull, errW
+	r, w, _ := os.Pipe()
+	os.Stdout, os.Stderr = devNull, w
 	// Restored on cleanup: a panic in runCreate would otherwise leave the
 	// package's stderr on a closed pipe and swallow every later test's output.
 	t.Cleanup(func() {
 		os.Stdout, os.Stderr = oldStdout, oldStderr
-		errR.Close()
+		r.Close()
 	})
 
-	createErr := runCreate(createCmd, []string{"Bare criteria ticket"})
+	createErr := runCreate(createCmd, []string{title})
 
-	errW.Close()
+	w.Close()
 	devNull.Close()
 	os.Stdout, os.Stderr = oldStdout, oldStderr
-	warning, _ := io.ReadAll(errR)
+	out, _ := io.ReadAll(r)
 
 	if createErr != nil {
 		t.Fatalf("runCreate: %v", createErr)
 	}
-
-	tickets, err := store.List()
+	tickets, err = store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(tickets) != 1 {
-		t.Fatalf("store holds %d tickets, want the created one — the warning must not refuse the create", len(tickets))
-	}
-
-	for _, want := range []string{tickets[0].ID, "Bare one.", "verify:", "unverifiable:"} {
-		if !contains(string(warning), want) {
-			t.Errorf("warning = %q, want to contain %q", string(warning), want)
+	for _, tk := range tickets {
+		if !before[tk.ID] {
+			return tk.ID, string(out)
 		}
 	}
-	if contains(string(warning), "Checked.") {
-		t.Errorf("warning names a criterion that carries a verify command: %q", string(warning))
-	}
+	t.Fatalf("create stored no ticket")
+	return "", ""
 }
 
-// A numbered list under `## Acceptance Criteria` parses to no criteria, so it
-// is not bare either; without its own warning the create would look complete.
+// A numbered list under `## Acceptance Criteria` parses to no criteria; without
+// its own warning the create would look complete.
 func TestCreateWarnsOnUnparsedAcceptance(t *testing.T) {
 	store := centralStore(t, "cr-unparsed")
 
 	description := "Why it matters.\n\n## Acceptance Criteria\n\n1. First.\n   verify: go test ./a\n2. Second.\n   verify: go test ./b\n"
-	f := createCmd.Flags()
-	if err := f.Set("description", description); err != nil {
-		t.Fatalf("set description: %v", err)
-	}
-	defer func() { _ = f.Set("description", "") }()
-
-	oldStdout, oldStderr := os.Stdout, os.Stderr
-	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("open %s: %v", os.DevNull, err)
-	}
-	errR, errW, _ := os.Pipe()
-	os.Stdout, os.Stderr = devNull, errW
-	t.Cleanup(func() {
-		os.Stdout, os.Stderr = oldStdout, oldStderr
-		errR.Close()
-	})
-
-	createErr := runCreate(createCmd, []string{"Numbered criteria ticket"})
-
-	errW.Close()
-	devNull.Close()
-	os.Stdout, os.Stderr = oldStdout, oldStderr
-	warning, _ := io.ReadAll(errR)
-
-	if createErr != nil {
-		t.Fatalf("runCreate: %v", createErr)
-	}
+	id, warning := captureCreateStderr(t, store, "Numbered criteria ticket", description)
 
 	tickets, err := store.List()
 	if err != nil {
@@ -107,8 +80,8 @@ func TestCreateWarnsOnUnparsedAcceptance(t *testing.T) {
 		t.Fatalf("store holds %d tickets, want the created one — the warning must not refuse the create", len(tickets))
 	}
 
-	if want := ticket.UnparsedAcceptanceWarning(tickets[0].ID); !contains(string(warning), want) {
-		t.Errorf("stderr = %q, want to contain %q", string(warning), want)
+	if want := ticket.UnparsedAcceptanceWarning(id); !contains(warning, want) {
+		t.Errorf("stderr = %q, want to contain %q", warning, want)
 	}
 }
 

@@ -251,8 +251,8 @@ func printFindings(f ticket.Findings) {
 		switch c.Kind {
 		case ticket.ContentEnvelopeFragment:
 			fmt.Printf("- %s  %s: %q\n", c.Kind, c.Field, c.Detail)
-		case ticket.ContentBareAcceptance:
-			fmt.Printf("- %s  %d bare criterion(s)\n", c.Kind, c.Bare)
+		case ticket.ContentTwoMarkers:
+			fmt.Printf("- %s  %d criterion(s)\n", c.Kind, c.Criteria)
 		case ticket.ContentLegacyReviewLog:
 			fmt.Printf("- %s  %d bytes\n", c.Kind, c.Bytes)
 		default:

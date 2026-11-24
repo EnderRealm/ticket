@@ -239,7 +239,7 @@ func (v *verifyJobs) lookup(owner *mcp.ServerSession, store ticket.Store, args v
 func registerVerifyLifecycle(server *mcp.Server, store ticket.Store, jobs *verifyJobs) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify_status",
-		Description: "Retrieve this MCP session's verification by verification_id, or its latest run by ticket id if a start response was lost. Waits at most 10 seconds. Poll while state is running, cancelling or recording. completed carries the exact report (including failed/refused/unverified criteria and record_error); failed carries an error; cancelled has no report and does not overwrite Test Results. This tool never starts commands. Jobs are held in memory until session disconnect or server restart; the server retains at most 128 jobs and evicts the oldest finished jobs. Unknown/expired IDs are errors, not passes.",
+		Description: "Retrieve this MCP session's verification by verification_id, or its latest run by ticket id if a start response was lost. Waits at most 10 seconds. Poll while state is running, cancelling or recording. completed carries the exact report (including failed/refused/unverified/waiting criteria and record_error); failed carries an error; cancelled has no report and does not overwrite Test Results. This tool never starts commands. Jobs are held in memory until session disconnect or server restart; the server retains at most 128 jobs and evicts the oldest finished jobs. Unknown/expired IDs are errors, not passes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyLookupArgs) (*mcp.CallToolResult, any, error) {
 		j, err := jobs.lookup(req.Session, store, args)
 		if err != nil {

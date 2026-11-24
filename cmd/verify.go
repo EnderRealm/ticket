@@ -21,17 +21,20 @@ var verifyCmd = &cobra.Command{
 the results in the ticket's Test Results section, each failing criterion
 followed by its indented output.
 
-A criterion declares its check on an indented continuation line, or declares
-that no command can exist for it:
+A criterion's indented continuation line says who decides it:
 
   - Frontier excludes blocked tickets.
     verify: go test ./pkg/ticket -run TestFrontier
   - tk ls output stays readable at 40 columns.
-    unverifiable: needs a human at a terminal.
+    test: run tk ls in a 40-column terminal; no row should wrap.
+  - The help text reads plainly.
 
-A criterion carrying neither line is reported on stderr by tk create when the
-ticket is written; the ticket is still created. A criterion with no command is
-reported unverified.
+tk runs a verify: command. A test: line marks a criterion a person checks on
+the real build: nothing is run for it and it is reported waiting. A criterion
+with no line is judged by the run's review and its tests, and is reported
+unverified; an unverifiable: line is retired and reads the same way. A criterion
+carries at most one of verify: and test:. With both the test: line wins, and
+tk create, tk edit and tk audit report it.
 
 Commands run in the checkout registered on this machine for the ticket's
 project, or for the project its implementation field names
@@ -65,7 +68,7 @@ resolved project's verify_timeout as a run would enforce them right now;
 list, never as the defaults.
 
 Exit status: 0 when nothing failed or was refused, 1 otherwise. With
---criterion: 0 pass, 1 fail, 20 refused or unverified.
+--criterion: 0 pass, 1 fail, 20 refused or unverified, or waiting on a person.
 
 The verify policy -- eligibility, the implementation field, verify_allow and
 what listing a program trusts, verify_timeout, the output cap, and the
@@ -90,19 +93,19 @@ var (
 )
 
 // verifyRefusedExit is the exit code a single-criterion run reports for a
-// refused or unverified criterion. The integer is weft's anchor-stage
+// refused, unverified or waiting criterion. The integer is weft's anchor-stage
 // convention (AnchorCommand.gradedRefusalExitCode: "graded and refused, do not
 // relaunch") adopted rather than invented, so one documented code replaces a
-// wrapper script per harness. Neither status may exit 0: a harness grades the
+// wrapper script per harness. No such status may exit 0: a harness grades the
 // run on the exit code, and a criterion that never ran is not one that passed.
 const verifyRefusedExit = 20
 
 func init() {
 	f := verifyCmd.Flags()
 	f.StringVar(&verifyDir, "dir", "", "run the commands in this directory instead of the project's")
-	f.IntVar(&verifyCriterion, "criterion", 0, "run only criterion n (1-based): exit 0 pass, 1 fail, 20 refused or unverified")
+	f.IntVar(&verifyCriterion, "criterion", 0, "run only criterion n (1-based): exit 0 pass, 1 fail, 20 refused or unverified, or waiting on a person")
 	f.BoolVar(&verifyNoRecord, "no-record", false, "skip writing the Test Results section")
-	f.BoolVar(&verifyCheck, "check", false, "with --criterion, report whether it would be refused without running or recording it: exit 0 runnable, 20 refused or unverified")
+	f.BoolVar(&verifyCheck, "check", false, "with --criterion, report whether it would be refused without running or recording it: exit 0 runnable, 20 refused or unverified, or waiting on a person")
 	f.StringArrayVar(&verifyLauncher, "launcher", nil, "exec each command through this argv prefix, one word per use (repeat it; a word may start with -); trusted like --dir, never checked against verify_allow")
 	f.BoolVar(&verifyPolicy, "policy", false, "print the verify_allow list and the project's verify_timeout this machine would enforce, without a ticket (--json for a script)")
 	rootCmd.AddCommand(verifyCmd)
@@ -243,6 +246,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 			case ticket.VerifyUnverified:
 				fmt.Printf("UNVERIFIED %s\n", r.Criterion.Text)
 				continue
+			case ticket.VerifyWaiting:
+				fmt.Printf("WAITING %s\n", r.Criterion.Text)
+				continue
 			case ticket.VerifyRefused:
 				fmt.Printf("REFUSED %s\n", r.Criterion.Text)
 			default:
@@ -254,8 +260,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		fmt.Printf("%d pass, %d fail, %d refused, %d unverified\n",
-			report.Summary.Pass, report.Summary.Fail, report.Summary.Refused, report.Summary.Unverified)
+		fmt.Println(report.Summary)
 	}
 
 	if report.RecordError != "" && !jsonOutput {
@@ -289,7 +294,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 }
 
 // reportVerifyCheck prints a --check result and maps it to the exit code: a
-// runnable criterion exits 0, and a refused or unverified one exits
+// runnable criterion exits 0, and a refused, unverified or waiting one exits
 // verifyRefusedExit, the code a real run of it would give. Nothing ran, so
 // there is no record to write.
 func reportVerifyCheck(id string, results []ticket.VerifyResult, dir, implementation, acceptanceID string) error {

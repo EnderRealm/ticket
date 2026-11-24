@@ -543,8 +543,9 @@ func TestShowLeavesAForeignNamespacedNamesakeUnknown(t *testing.T) {
 
 // findingsFixture writes a feature and a leaf parented to it — a
 // parent-not-epic violation the write path refuses, so it goes in as a legacy
-// file — with acceptance criteria nothing can check. The subject's status is
-// the caller's, so a finished ticket can be checked to report the same.
+// file — with two acceptance criteria carrying two markers each. The subject's
+// status is the caller's, so a finished ticket can be checked to report the
+// same.
 func findingsFixture(t *testing.T, store *ticket.FileStore, status ticket.Status) {
 	t.Helper()
 	writeLegacyTicket(t, store, &ticket.Ticket{
@@ -554,7 +555,7 @@ func findingsFixture(t *testing.T, store *ticket.FileStore, status ticket.Status
 	writeLegacyTicket(t, store, &ticket.Ticket{
 		ID: "sf-subject-0002", Status: status, Type: ticket.TypeFeature, Parent: "sf-leaf-0001",
 		Created: time.Now(), Title: "Subject",
-		Body: "\nA description.\n\n## Acceptance Criteria\n\n- Something happens.\n- Something else happens.\n",
+		Body: "\nA description.\n\n## Acceptance Criteria\n\n- Something happens.\n  verify: go test ./...\n  test: look at it\n- Something else happens.\n  test: look at it\n  verify: go test ./...\n",
 	})
 }
 
@@ -571,7 +572,7 @@ func TestShowReportsFindings(t *testing.T) {
 	findings := out[idx:]
 	for _, w := range []string{
 		"- " + string(ticket.ViolationParentNotEpic) + "  parent: sf-leaf-0001  (",
-		"- " + string(ticket.ContentBareAcceptance) + "  2 bare criterion(s)",
+		"- " + string(ticket.ContentTwoMarkers) + "  2 criterion(s)",
 	} {
 		if !contains(findings, w) {
 			t.Errorf("Findings section missing %q:\n%s", w, findings)

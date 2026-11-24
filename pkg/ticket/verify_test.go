@@ -889,7 +889,7 @@ func TestRunVerifyRefusesCommandOutsideAllowList(t *testing.T) {
 
 // A first token ending in ":" is a label, not a program: adding it to
 // verify_allow would have tk try to exec it, so the refusal must not say to,
-// and names the unverifiable line as the shape the author meant.
+// and names the test line as the shape the author meant.
 func TestRunVerifyRefusalOfLabelDoesNotAdviseAllowList(t *testing.T) {
 	results, err := RunVerify(context.Background(), []Criterion{{Text: "labelled", Command: "manual: read the diff"}}, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
@@ -904,7 +904,7 @@ func TestRunVerifyRefusalOfLabelDoesNotAdviseAllowList(t *testing.T) {
 			t.Errorf("refusal advises allow-listing a label (%q):\n%s", unwanted, out)
 		}
 	}
-	for _, want := range []string{"\"manual:\" is not a program", "unverifiable: <reason>", "command: manual: read the diff"} {
+	for _, want := range []string{"\"manual:\" is not a program", "test: <what to look at>", "command: manual: read the diff"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("refusal missing %q:\n%s", want, out)
 		}
@@ -1180,75 +1180,6 @@ func TestTokenizeCommand(t *testing.T) {
 	}
 }
 
-func TestBareCriteria(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-		want []string
-	}{
-		{
-			name: "no acceptance section",
-			body: "\nJust a description.\n",
-		},
-		{
-			name: "every criterion marked",
-			body: "\n## Acceptance Criteria\n\n- Checked.\n  verify: go test ./...\n- Cannot be.\n  unverifiable: needs a human to look.\n",
-		},
-		{
-			name: "mix reports only the bare ones",
-			body: "\n## Acceptance Criteria\n\n- Checked.\n  verify: go test ./...\n- Bare one.\n- Cannot be.\n  unverifiable: needs a human to look.\n- Bare two.\n",
-			want: []string{"Bare one.", "Bare two."},
-		},
-		{
-			name: "unverifiable with no reason still carries the claim",
-			body: "\n## Acceptance Criteria\n\n- Cannot be.\n  unverifiable:\n",
-		},
-		{
-			// The other half of the asymmetry: an empty verify line is not a
-			// command, so the criterion is still bare and still reported.
-			name: "empty verify line leaves the criterion bare",
-			body: "\n## Acceptance Criteria\n\n- Half done.\n  verify:\n",
-			want: []string{"Half done."},
-		},
-		{
-			name: "text is sanitized",
-			body: "\n## Acceptance Criteria\n\n- Bare\x1b[2K one.\n",
-			want: []string{"Bare�[2K one."},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := BareCriteria(tc.body)
-			if len(got) != len(tc.want) {
-				t.Fatalf("BareCriteria = %q, want %q", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("bare[%d] = %q, want %q", i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
-}
-
-func TestBareAcceptanceWarning(t *testing.T) {
-	if got := BareAcceptanceWarning("proj/tk-0001", nil); got != "" {
-		t.Errorf("BareAcceptanceWarning with nothing bare = %q, want empty", got)
-	}
-	got := BareAcceptanceWarning("proj/tk-0001", []string{"Bare one.", "Bare two."})
-	for _, want := range []string{"proj/tk-0001", "Bare one.", "Bare two.", "verify:", "unverifiable:"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("warning %q does not name %q", got, want)
-		}
-	}
-	// The CLI prints this same sentence; its remedy names ticket_edit and the
-	// section, not `tk edit`.
-	if strings.Contains(got, "tk edit") {
-		t.Errorf("warning names `tk edit`: %q", got)
-	}
-}
-
 func TestUnparsedAcceptance(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1301,8 +1232,7 @@ func TestUnparsedAcceptance(t *testing.T) {
 			body: "Why.\n\n## Acceptance Criteria\n\n- First.\n  verify: go test ./...\n",
 		},
 		{
-			// Bare criteria parse; BareCriteria reports those, not this.
-			name: "bare dash bullet parses",
+			name: "dash bullet with no line parses",
 			body: "Why.\n\n## Acceptance Criteria\n\n- First.\n",
 		},
 		{
@@ -1330,13 +1260,15 @@ func TestUnparsedAcceptance(t *testing.T) {
 
 func TestUnparsedAcceptanceWarning(t *testing.T) {
 	got := UnparsedAcceptanceWarning("proj/tk-0001")
-	for _, want := range []string{"proj/tk-0001", "`- `", "verify:", "unverifiable:", "ticket_edit", "## Acceptance Criteria"} {
+	for _, want := range []string{"proj/tk-0001", "`- `", "verify:", "test:", "ticket_edit", "## Acceptance Criteria"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("warning %q does not name %q", got, want)
 		}
 	}
-	if strings.Contains(got, "tk edit") {
-		t.Errorf("warning names `tk edit`: %q", got)
+	for _, unwanted := range []string{"tk edit", "unverifiable"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("warning names `%s`: %q", unwanted, got)
+		}
 	}
 }
 

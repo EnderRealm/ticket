@@ -52,22 +52,23 @@ type ContentIssueKind string
 const (
 	ContentEnvelopeFragment ContentIssueKind = "envelope-fragment"
 	ContentEmptyAcceptance  ContentIssueKind = "empty-acceptance"
-	ContentBareAcceptance   ContentIssueKind = "bare-acceptance"
+	ContentTwoMarkers       ContentIssueKind = "two-markers"
 	ContentLegacyReviewLog  ContentIssueKind = "legacy-review-log"
 )
 
-// ContentIssue is one ticket whose stored body says something is missing —
-// a section that absorbed part of the tool call that wrote it, a description
-// with no acceptance criteria beside it, or criteria that state what done means
-// with nothing that can decide it — or holds content no reader sees: a legacy
-// `## Review Log` the parser strips and the ticket's next write drops for good.
+// ContentIssue is one ticket whose stored body is missing content (a section
+// that absorbed part of the tool call that wrote it, or a description with no
+// acceptance criteria beside it), carries criteria with both a `verify:` and a
+// `test:` line, of which only the test line counts, or holds content no reader
+// sees (a legacy `## Review Log` the parser strips and the ticket's next write
+// drops for good).
 type ContentIssue struct {
-	ID     string           `json:"id"`
-	Kind   ContentIssueKind `json:"kind"`
-	Field  string           `json:"field,omitempty"`  // which body section, for envelope-fragment
-	Detail string           `json:"detail,omitempty"` // the offending tail, for envelope-fragment
-	Bytes  int              `json:"bytes,omitempty"`  // size of the stripped section, for legacy-review-log
-	Bare   int              `json:"bare,omitempty"`   // how many criteria carry no check, for bare-acceptance
+	ID       string           `json:"id"`
+	Kind     ContentIssueKind `json:"kind"`
+	Field    string           `json:"field,omitempty"`    // which body section, for envelope-fragment
+	Detail   string           `json:"detail,omitempty"`   // the offending tail, for envelope-fragment
+	Bytes    int              `json:"bytes,omitempty"`    // size of the stripped section, for legacy-review-log
+	Criteria int              `json:"criteria,omitempty"` // how many criteria carry both lines, for two-markers
 }
 
 // parentCycle walks t's parent chain and returns the chain as text if it

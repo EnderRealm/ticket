@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `test: <what to look at>` on an acceptance criterion's indented continuation line marks it as checked by a person on the real build, so which tickets wait for a person is a deliberate mark. A criterion has a kind: `verify` (tk runs its command), `test`, or `judged` (no line: the run's review and its tests decide). `tk verify` and `ticket_verify` run nothing for a `test` criterion, even one that also carries a command, and report it with the new status `waiting`, its text under `test`, its own `waiting` count in the summary and a `WAITING` line in the record, distinct from `unverified`. The record's first line and the CLI summary name a waiting count only when there is one. Waiting does not make a report not ok; `tk verify --criterion` on one exits 20. A criterion with no `test:` line keeps the `acceptance_id` it had, and adding, changing or removing one moves it. Library: `ticket.CriterionKind`, `Criterion.Kind`, `Criterion.Test`, `Criterion.TestText`, `ticket.VerifyWaiting`, `VerifyCounts.Waiting`.
+- `tk criteria <id> [--json]` lists a ticket's acceptance criteria as tk parses them, in the shape `ticket_criteria` returns, and both now report each criterion's `kind` and its `test:` line's text. Library: `ticket.CriteriaReport`, `ticket.CriterionJSON`, `ticket.NewCriteriaReport`.
+- A criterion carrying both `verify:` and `test:` is reported, never refused: `tk create` and `tk edit` warn on stderr, `ticket_create`, `ticket_discover` and `ticket_edit` return `two_markers_warning`, and `tk audit` has a `two-markers` cause, which `tk show` and `ticket_show` carry as a finding (`criteria` is how many). Library: `ticket.TwoMarkerCriteria`, `ticket.TwoMarkersWarning`, `ticket.ContentTwoMarkers`, `ContentIssue.Criteria`.
+
+### Changed
+- `unverifiable: <reason>` is retired and still read: such a criterion is judged by the run and keeps its reason, so no ticket has to be rewritten. The unparsed-acceptance warning and the refusal of a label in a `verify:` line no longer tell an author to write one.
+
+### Removed
+- The bare-criterion warnings and finding: a criterion with no continuation line is legitimate. `tk create` no longer warns, `ticket_create` and `ticket_discover` no longer return `bare_acceptance_criteria` or `bare_acceptance_warning`, and `tk audit` and `ticket_show` no longer report `bare-acceptance`; `tk audit bare-acceptance` is an unknown cause. Library: `ticket.BareCriteria`, `ticket.BareAcceptanceWarning`, `ticket.ContentBareAcceptance` and `ContentIssue.Bare` are gone.
+
 ## [8.13.0] - 2026-11-24
 
 ### Added

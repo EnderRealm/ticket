@@ -17,18 +17,46 @@ import (
 	"github.com/EnderRealm/ticket/v8/internal/project"
 )
 
-// Criterion is one acceptance criterion, optionally carrying a verify command
-// or a claim that no command can exist for it.
+// Criterion is one acceptance criterion, optionally carrying a verify command,
+// a mark that a person checks it, or the retired claim that no command can
+// exist for it.
 //
-// Unverifiable and UnverifiableReason are two fields rather than one because a
-// bare "unverifiable:" with no reason text still carries the claim: an empty
-// reason must stay distinguishable from a criterion carrying no such line at
-// all, which a single string field would collapse.
+// Test and TestText are two fields rather than one, as are Unverifiable and
+// UnverifiableReason, because a line with no text still carries its mark: an
+// empty text must stay distinguishable from a criterion carrying no such line
+// at all, which a single string field would collapse.
 type Criterion struct {
 	Text               string
-	Command            string // empty = unverified
+	Command            string // empty = no command
+	Test               bool   // a "test:" line was present
+	TestText           string // what to look at, from that line; may be empty
 	Unverifiable       bool   // an "unverifiable:" line was present
 	UnverifiableReason string // the prose from that line; may be empty
+}
+
+// CriterionKind is who or what decides a criterion.
+type CriterionKind string
+
+const (
+	// CriterionVerify is checked by running its command.
+	CriterionVerify CriterionKind = "verify"
+	// CriterionTest is checked by a person on the real build.
+	CriterionTest CriterionKind = "test"
+	// CriterionJudged is judged by the run's review and its tests.
+	CriterionJudged CriterionKind = "judged"
+)
+
+// Kind reports who or what decides the criterion. A test line outranks a verify
+// line on the same criterion: a command that did not run is reported, while a
+// person who was never asked is not. An unverifiable line decides nothing.
+func (c Criterion) Kind() CriterionKind {
+	switch {
+	case c.Test:
+		return CriterionTest
+	case c.Command != "":
+		return CriterionVerify
+	}
+	return CriterionJudged
 }
 
 // VerifyStatus is the outcome of checking a single criterion.
@@ -39,6 +67,9 @@ const (
 	VerifyFail       VerifyStatus = "fail"
 	VerifyRefused    VerifyStatus = "refused"
 	VerifyUnverified VerifyStatus = "unverified"
+	// VerifyWaiting is a criterion a person checks: nothing was run for it and
+	// no run will decide it.
+	VerifyWaiting VerifyStatus = "waiting"
 	// VerifyRunnable is CheckVerify's answer for a command no refusal applies
 	// to. RunVerify never reports it: a command that is run passes or fails.
 	VerifyRunnable VerifyStatus = "runnable"
@@ -46,9 +77,9 @@ const (
 
 // VerifyResult pairs a criterion with the outcome of running its command. A
 // refused command never ran: its Output carries the refusal, not command output.
-// Criterion holds the sanitized text, command and unverifiable reason —
-// RunVerify strips control characters once, so every consumer can print it
-// as-is; the raw command is what was tokenized and execed.
+// Criterion holds the sanitized text, command, test text and unverifiable
+// reason — RunVerify strips control characters once, so every consumer can
+// print it as-is; the raw command is what was tokenized and execed.
 type VerifyResult struct {
 	Criterion Criterion
 	Status    VerifyStatus
@@ -62,10 +93,17 @@ type VerifyResult struct {
 // verifyPrefix marks a criterion's check command on a continuation line.
 const verifyPrefix = "verify:"
 
+// testPrefix marks, on a continuation line, a criterion a person checks, with
+// what to look at. The text is an instruction to that person and is carried as
+// data only: like an unverifiable reason it is never tokenized or execed.
+const testPrefix = "test:"
+
 // unverifiablePrefix marks, on a continuation line, a criterion for which no
-// runnable command can exist, with the reason it cannot. It is carried as data
-// only: the reason is prose from the same untrusted body a verify command comes
-// from, with no allow-list behind it, so it is never tokenized or execed.
+// runnable command can exist, with the reason it cannot. The line is retired —
+// a criterion with no line at all is judged by the run — and is still read, so
+// a ticket carrying one needs no rewrite and keeps its reason. It is carried as
+// data only: the reason is prose from the same untrusted body a verify command
+// comes from, with no allow-list behind it, so it is never tokenized or execed.
 const unverifiablePrefix = "unverifiable:"
 
 // maxVerifyOutput caps captured output per criterion so a chatty command can't
@@ -124,16 +162,17 @@ func AcceptanceCriteria(body string) string {
 // ParseCriteria extracts criteria from an acceptance-criteria section. A
 // top-level "- " bullet starts a criterion; a following line indented by at
 // least two spaces and reading "verify: <command>" attaches that command to it,
-// and one reading "unverifiable: <reason>" marks it as having no runnable check
-// and records the reason. The first line of each kind wins — later ones under
-// the same bullet are ignored, as is either line with no preceding bullet. An
-// empty verify line is not a command, so it leaves the slot open for a later
-// non-empty one; an empty unverifiable line still consumes the slot, because
-// the claim is the line's presence rather than the reason. The two are
-// independent: a criterion carrying both keeps its command. A verify line
-// whose command itself opens with "unverifiable:" is read as that unverifiable
-// line, on the same terms, and is not a command. Bullets with no text are
-// skipped.
+// one reading "test: <what to look at>" marks it as checked by a person, and
+// one reading "unverifiable: <reason>" records the retired claim and its
+// reason. The first line of each kind wins — later ones under the same bullet
+// are ignored, as is any of them with no preceding bullet. An empty verify line
+// is not a command, so it leaves the slot open for a later non-empty one; an
+// empty test or unverifiable line still consumes the slot, because the mark is
+// the line's presence rather than its text. The three are independent: a
+// criterion keeps every line it carries, and Kind decides between them. A
+// verify line whose command itself opens with "unverifiable:" is read as that
+// unverifiable line, on the same terms, and is not a command. Bullets with no
+// text are skipped.
 func ParseCriteria(section string) []Criterion {
 	var criteria []Criterion
 	for _, line := range strings.Split(section, "\n") {
@@ -157,6 +196,12 @@ func ParseCriteria(section string) []Criterion {
 				continue
 			}
 			criteria[len(criteria)-1].Command = strings.TrimSpace(trimmed[len(verifyPrefix):])
+		case strings.HasPrefix(line, "  ") && strings.HasPrefix(trimmed, testPrefix):
+			if len(criteria) == 0 || criteria[len(criteria)-1].Test {
+				continue
+			}
+			criteria[len(criteria)-1].Test = true
+			criteria[len(criteria)-1].TestText = strings.TrimSpace(trimmed[len(testPrefix):])
 		case strings.HasPrefix(line, "  ") && strings.HasPrefix(trimmed, unverifiablePrefix):
 			// Unlike an empty verify line, which leaves the slot open for a later
 			// non-empty one because an empty command is not runnable, an empty
@@ -173,57 +218,27 @@ func ParseCriteria(section string) []Criterion {
 }
 
 // CriteriaIdentity is the identity of a parsed acceptance contract: a sha256
-// over every criterion's text, command, unverifiable claim and reason, in
-// order, as ParseCriteria produced them. Whitespace and markdown ParseCriteria
-// already discards do not move it; any change to what would run, or to what a
-// criterion says, does. A caller that read the criteria through ticket_criteria
-// hands the identity back to ticket_verify so the run is refused if the
-// contract moved in between, and the recorded result names which contract was
-// verified. Each field is length-prefixed so two contracts cannot serialize to
-// the same bytes by sharing a boundary.
+// over every criterion's text, command, unverifiable claim and reason, and its
+// test line if it carries one, in order, as ParseCriteria produced them. A
+// criterion with no test line contributes the bytes it did before that line
+// existed, so an identity already recorded or handed out still matches.
+// Whitespace and markdown ParseCriteria already discards do not move it; any
+// change to what would run, or to what a criterion says, does. A caller that
+// read the criteria through ticket_criteria hands the identity back to
+// ticket_verify so the run is refused if the contract moved in between, and the
+// recorded result names which contract was verified. Each field is
+// length-prefixed so two contracts cannot serialize to the same bytes by
+// sharing a boundary.
 func CriteriaIdentity(criteria []Criterion) string {
 	h := sha256.New()
 	for _, c := range criteria {
 		fmt.Fprintf(h, "%d:%s\n%d:%s\n%t\n%d:%s\n", len(c.Text), c.Text, len(c.Command), c.Command,
 			c.Unverifiable, len(c.UnverifiableReason), c.UnverifiableReason)
-	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))
-}
-
-// BareCriteria returns the text of every acceptance criterion in body that
-// carries neither a verify command nor an unverifiable claim. Such a criterion
-// states what done means with nothing that can decide it, and no other surface
-// reports the gap at the moment it is written. Text is sanitized because it is
-// untrusted markdown both the CLI and the MCP response print.
-func BareCriteria(body string) []string {
-	var bare []string
-	for _, c := range ParseCriteria(AcceptanceCriteria(body)) {
-		if c.Command == "" && !c.Unverifiable {
-			bare = append(bare, SanitizeControl(c.Text))
+		if c.Test {
+			fmt.Fprintf(h, "test %d:%s\n", len(c.TestText), c.TestText)
 		}
 	}
-	return bare
-}
-
-// BareAcceptanceWarning is the one phrasing for criteria BareCriteria found,
-// said the same way by `tk create` and ticket_create. Empty bare means no
-// warning, so a caller can assign the result unconditionally.
-//
-// The remedy names ticket_edit and the section itself, not `tk edit
-// --acceptance`. One phrasing reaches both the CLI and MCP surfaces.
-func BareAcceptanceWarning(id string, bare []string) string {
-	if len(bare) == 0 {
-		return ""
-	}
-	quoted := make([]string, len(bare))
-	for i, text := range bare {
-		quoted[i] = fmt.Sprintf("%q", text)
-	}
-	return fmt.Sprintf("ticket %s has acceptance criteria with no way to check them: %s. "+
-		"Nothing decides whether they are met, and the workflow gates on that. "+
-		"Add a `verify: <command>` line under each, or an `unverifiable: <reason>` line saying why no command can exist — "+
-		"with ticket_edit on %s and an `acceptance` argument, or by editing that ticket's `## Acceptance Criteria` section.",
-		id, strings.Join(quoted, ", "), id)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // UnparsedAcceptance reports whether body has a non-blank acceptance section
@@ -239,12 +254,12 @@ func UnparsedAcceptance(body string) bool {
 
 // UnparsedAcceptanceWarning is the one phrasing for a section
 // UnparsedAcceptance reports, said the same way by `tk create`, `tk edit`,
-// ticket_create and ticket_edit. It names the remedy on the same terms
-// BareAcceptanceWarning does.
+// ticket_create and ticket_edit. One phrasing reaches both the CLI and MCP
+// surfaces, so the remedy names ticket_edit and the section itself.
 func UnparsedAcceptanceWarning(id string) string {
 	return fmt.Sprintf("ticket %s has an acceptance section but no criteria parse from it: only a line starting with `- ` in the first column starts a criterion, "+
 		"so a numbered list, `*` or `+` bullets and indented bullets yield none, and verify will report that the ticket has no acceptance criteria. "+
-		"Rewrite each criterion as a `- ` bullet with its `verify: <command>` or `unverifiable: <reason>` line indented beneath it — "+
+		"Rewrite each criterion as a `- ` bullet, with its `verify: <command>` or `test: <what to look at>` line, if it has one, indented beneath it — "+
 		"with ticket_edit on %s and an `acceptance` argument, or by editing that ticket's `## Acceptance Criteria` section.",
 		id, id)
 }
@@ -284,8 +299,8 @@ const shellSyntaxRemedy = "Rewrite such a line as one program invocation with it
 // ShellSyntaxWarning is the one phrasing for commands ShellSyntaxCriteria
 // found, said the same way by `tk create`, `tk edit`, ticket_create and
 // ticket_edit. Empty found means no warning, so a caller can assign the result
-// unconditionally. It names the remedy on the same terms BareAcceptanceWarning
-// does.
+// unconditionally. It names the remedy on the same terms
+// UnparsedAcceptanceWarning does.
 func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {
 	if len(found) == 0 {
 		return ""
@@ -300,10 +315,85 @@ func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {
 		id, strings.Join(named, ", "), shellSyntaxRemedy, id)
 }
 
+// TwoMarkerCriteria returns the text of every acceptance criterion in body that
+// carries both a verify command and a test line. A criterion carries at most
+// one of the two: the test line decides its kind, so the command beside it
+// never runs. Text is sanitized because it is untrusted markdown both the CLI
+// and the MCP response print.
+func TwoMarkerCriteria(body string) []string {
+	var found []string
+	for _, c := range ParseCriteria(AcceptanceCriteria(body)) {
+		if c.Command != "" && c.Test {
+			found = append(found, SanitizeControl(c.Text))
+		}
+	}
+	return found
+}
+
+// TwoMarkersWarning is the one phrasing for criteria TwoMarkerCriteria found,
+// said the same way by `tk create`, `tk edit`, ticket_create and ticket_edit.
+// Empty found means no warning, so a caller can assign the result
+// unconditionally. It names the remedy on the same terms
+// UnparsedAcceptanceWarning does.
+func TwoMarkersWarning(id string, found []string) string {
+	if len(found) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(found))
+	for i, text := range found {
+		quoted[i] = fmt.Sprintf("%q", text)
+	}
+	return fmt.Sprintf("ticket %s has acceptance criteria carrying both a `verify:` and a `test:` line: %s. "+
+		"A criterion carries at most one of them; the `test:` line wins, so it waits on a person and verify does not run its command. "+
+		"Remove one of the two lines, or split it into two criteria — "+
+		"with ticket_edit on %s and an `acceptance` argument, or by editing that ticket's `## Acceptance Criteria` section.",
+		id, strings.Join(quoted, ", "), id)
+}
+
+// CriteriaReport is a ticket's parsed acceptance contract, shared by
+// `tk criteria --json` and the ticket_criteria MCP tool. AcceptanceID is the
+// CriteriaIdentity of the criteria listed.
+type CriteriaReport struct {
+	ID           string          `json:"id"`
+	AcceptanceID string          `json:"acceptance_id"`
+	Criteria     []CriterionJSON `json:"criteria"`
+}
+
+// CriterionJSON is the wire form of a single criterion. Index is 1-based, the
+// index `tk verify --criterion` takes.
+type CriterionJSON struct {
+	Index              int           `json:"index"`
+	Text               string        `json:"text"`
+	Kind               CriterionKind `json:"kind"`
+	Command            string        `json:"command,omitempty"`
+	Test               string        `json:"test,omitempty"`
+	Unverifiable       bool          `json:"unverifiable"`
+	UnverifiableReason string        `json:"unverifiable_reason,omitempty"`
+}
+
+// NewCriteriaReport builds the report for a parsed contract, with every string
+// read off the ticket sanitized.
+func NewCriteriaReport(id string, criteria []Criterion) CriteriaReport {
+	report := CriteriaReport{ID: id, AcceptanceID: CriteriaIdentity(criteria), Criteria: []CriterionJSON{}}
+	for i, c := range criteria {
+		report.Criteria = append(report.Criteria, CriterionJSON{
+			Index:              i + 1,
+			Text:               SanitizeControl(c.Text),
+			Kind:               c.Kind(),
+			Command:            SanitizeControl(c.Command),
+			Test:               SanitizeControl(c.TestText),
+			Unverifiable:       c.Unverifiable,
+			UnverifiableReason: SanitizeControl(c.UnverifiableReason),
+		})
+	}
+	return report
+}
+
 // RunVerify executes each criterion's command in dir, sequentially and in
 // order, each bounded by policy's timeout and by ctx. Criteria without commands
-// yield unverified results. An unusable dir is a single error rather than a
-// failure per criterion.
+// yield unverified results, and a criterion a person checks yields a waiting
+// one without running any command it also carries. An unusable dir is a single
+// error rather than a failure per criterion.
 //
 // A verify command is attacker-reachable content — ticket bodies are written by
 // agents and replicate across machines over the shared store's git remote — so
@@ -314,10 +404,10 @@ func ShellSyntaxWarning(id string, found []ShellSyntaxCommand) string {
 // argument, and a policy whose controls could not be read refuses everything
 // naming the cause.
 //
-// A criterion's text, command and unverifiable reason are stripped of control
-// characters; a command's own captured Output is deliberately left raw, so
-// that the coloured output of a test runner survives to the terminal in the
-// readable form the field exists for. That output comes from a program the
+// A criterion's text, command, test text and unverifiable reason are stripped
+// of control characters; a command's own captured Output is deliberately left
+// raw, so that the coloured output of a test runner survives to the terminal in
+// the readable form the field exists for. That output comes from a program the
 // machine's owner allow-listed, which is a narrower trust than the ticket
 // content around it.
 //
@@ -344,7 +434,10 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy Ver
 	results := make([]VerifyResult, 0, len(criteria))
 	for _, c := range criteria {
 		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
-		if c.Command != "" {
+		switch c.Kind() {
+		case CriterionTest:
+			res.Status = VerifyWaiting
+		case CriterionVerify:
 			res = runCriterion(ctx, c, dir, policy, launcher)
 		}
 		results = append(results, sanitizeResult(res))
@@ -353,7 +446,7 @@ func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy Ver
 }
 
 // CheckVerify reports, for each criterion, what RunVerify would decide before
-// running it: refused or unverified with the output a run gives, or
+// running it: refused, unverified or waiting with the output a run gives, or
 // VerifyRunnable. It executes nothing and needs no directory. The decision is
 // screenCriterion's, the same function runCriterion consults, so runnable here
 // means a run would not refuse the command. A runnable result's Argv is what
@@ -362,7 +455,10 @@ func CheckVerify(criteria []Criterion, policy VerifyPolicy, launcher []string) [
 	results := make([]VerifyResult, 0, len(criteria))
 	for _, c := range criteria {
 		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
-		if c.Command != "" {
+		switch c.Kind() {
+		case CriterionTest:
+			res.Status = VerifyWaiting
+		case CriterionVerify:
 			argv, refused, ok := screenCriterion(c, policy)
 			res = refused
 			if ok {
@@ -375,12 +471,13 @@ func CheckVerify(criteria []Criterion, policy VerifyPolicy, launcher []string) [
 }
 
 // sanitizeResult strips control characters from a result's criterion. Its
-// text, command and unverifiable reason are all untrusted markdown that every
-// consumer prints; sanitizing where the result is produced keeps each print
-// site from having to remember to.
+// text, command, test text and unverifiable reason are all untrusted markdown
+// that every consumer prints; sanitizing where the result is produced keeps
+// each print site from having to remember to.
 func sanitizeResult(res VerifyResult) VerifyResult {
 	res.Criterion.Text = SanitizeControl(res.Criterion.Text)
 	res.Criterion.Command = SanitizeControl(res.Criterion.Command)
+	res.Criterion.TestText = SanitizeControl(res.Criterion.TestText)
 	res.Criterion.UnverifiableReason = SanitizeControl(res.Criterion.UnverifiableReason)
 	if res.Argv != nil {
 		argv := make([]string, len(res.Argv))
@@ -564,12 +661,12 @@ func allowedCommand(argv0 string, allow []string) bool {
 // internal/project.ConfigPath, which this package deliberately does not import —
 // the core library stays free of machine config resolution.
 func refusal(command, argv0 string, allowErr error) string {
-	// A first token ending in ":" is a label such as "unverifiable:", not a
-	// program; advising it onto the allow-list would have tk try to exec it.
+	// A first token ending in ":" is a label such as "manual:", not a program;
+	// advising it onto the allow-list would have tk try to exec it.
 	if allowErr == nil && strings.HasSuffix(argv0, ":") {
 		return capOutput(fmt.Sprintf("refused: %q is not a program, so this criterion's command did not run.\n"+
-			"A verify: line takes a command. A criterion no command can check takes an `unverifiable: <reason>` line of its own instead, "+
-			"indented under the criterion and not inside a verify line.\n"+
+			"A verify: line takes a command. A criterion a person checks takes a `test: <what to look at>` line of its own instead, "+
+			"indented under the criterion and not inside a verify line, and one judged by the run takes no line.\n"+
 			"command: %s", argv0, SanitizeControl(command)))
 	}
 	// A line written for a shell, such as `cd x && …`, is refused on its first
@@ -869,7 +966,8 @@ const recordOutputIndent = "    "
 // FormatVerifyRecord renders a verify run as ticket Test Results content. The
 // criterion text and command are written as RunVerify produced them, already
 // stripped of control characters — the record is replayed by every later read.
-// The first line's shape is fixed; the provenance line after it names where the
+// The first line's shape is fixed, with a waiting count after it only when a
+// criterion waits on a person; the provenance line after it names where the
 // commands ran, the implementation project when the ticket names one, which
 // contract they ran against and, when the caller named one, the candidate — so
 // the record says what was verified, not only how it went.
@@ -880,8 +978,7 @@ const recordOutputIndent = "    "
 func FormatVerifyRecord(results []VerifyResult, prov VerifyProvenance, at time.Time) string {
 	counts := countVerify(results)
 	var b strings.Builder
-	fmt.Fprintf(&b, "verify %s: %d pass, %d fail, %d refused, %d unverified\n",
-		at.UTC().Format(time.RFC3339), counts.Pass, counts.Fail, counts.Refused, counts.Unverified)
+	fmt.Fprintf(&b, "verify %s: %s\n", at.UTC().Format(time.RFC3339), counts)
 	fmt.Fprintf(&b, "checkout %s", SanitizeControl(prov.Dir))
 	if prov.Implementation != "" {
 		fmt.Fprintf(&b, "; implementation %s", SanitizeControl(prov.Implementation))
@@ -894,6 +991,10 @@ func FormatVerifyRecord(results []VerifyResult, prov VerifyProvenance, at time.T
 	for _, r := range results {
 		if r.Status == VerifyUnverified {
 			fmt.Fprintf(&b, "- UNVERIFIED: %s\n", r.Criterion.Text)
+			continue
+		}
+		if r.Status == VerifyWaiting {
+			fmt.Fprintf(&b, "- WAITING: %s\n", r.Criterion.Text)
 			continue
 		}
 		// A refusal has no exit code — the command never ran, and recording it
@@ -957,13 +1058,24 @@ type VerifyCounts struct {
 	Fail       int `json:"fail"`
 	Refused    int `json:"refused"`
 	Unverified int `json:"unverified"`
+	Waiting    int `json:"waiting"`
 	Runnable   int `json:"runnable,omitempty"`
+}
+
+// String is the summary of a run, as the CLI prints it and the record opens.
+func (c VerifyCounts) String() string {
+	s := fmt.Sprintf("%d pass, %d fail, %d refused, %d unverified", c.Pass, c.Fail, c.Refused, c.Unverified)
+	if c.Waiting > 0 {
+		s += fmt.Sprintf(", %d waiting", c.Waiting)
+	}
+	return s
 }
 
 // VerifyResultJSON is the wire form of a single criterion's outcome.
 type VerifyResultJSON struct {
 	Criterion          string   `json:"criterion"`
 	Command            string   `json:"command,omitempty"`
+	Test               string   `json:"test,omitempty"`
 	UnverifiableReason string   `json:"unverifiable_reason,omitempty"`
 	Status             string   `json:"status"`
 	ExitCode           int      `json:"exit_code"`
@@ -981,7 +1093,8 @@ func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) V
 		AcceptanceID:   prov.AcceptanceID,
 		Candidate:      cleanCandidate(prov.Candidate),
 		Summary:        counts,
-		// A refusal leaves the criterion unchecked, so the run is not ok.
+		// A refusal leaves the criterion unchecked, so the run is not ok. A
+		// waiting criterion was never the run's to check.
 		OK:      counts.Fail == 0 && counts.Refused == 0,
 		Results: []VerifyResultJSON{},
 	}
@@ -989,6 +1102,7 @@ func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) V
 		report.Results = append(report.Results, VerifyResultJSON{
 			Criterion:          r.Criterion.Text,
 			Command:            r.Criterion.Command,
+			Test:               r.Criterion.TestText,
 			UnverifiableReason: r.Criterion.UnverifiableReason,
 			Status:             string(r.Status),
 			ExitCode:           r.ExitCode,
@@ -1011,6 +1125,8 @@ func countVerify(results []VerifyResult) VerifyCounts {
 			counts.Refused++
 		case VerifyRunnable:
 			counts.Runnable++
+		case VerifyWaiting:
+			counts.Waiting++
 		default:
 			counts.Unverified++
 		}

@@ -434,10 +434,10 @@ func TestDiscoverDeduplicatesByKeyPerProject(t *testing.T) {
 func TestDiscoverCarriesCreateWarningsAndRefusals(t *testing.T) {
 	session := testServer(t)
 	tk, _, _ := actionResponse(t, discover(t, session, map[string]any{
-		"finding_key": "k1", "title": "Bare", "description": "described", "acceptance": "- something",
+		"finding_key": "k1", "title": "Both", "description": "described", "acceptance": "- something\n  verify: go test ./...\n  test: look at it",
 	}), "discover")
-	if tk["bare_acceptance_warning"] == nil || tk["bare_acceptance_criteria"] == nil {
-		t.Errorf("a discovery with a bare criterion carried no warning: %v", tk)
+	if tk["two_markers_warning"] == nil {
+		t.Errorf("a discovery with a criterion carrying two markers carried no warning: %v", tk)
 	}
 	tk, _, _ = actionResponse(t, discover(t, session, map[string]any{
 		"finding_key": "k2", "title": "Empty", "description": "described",

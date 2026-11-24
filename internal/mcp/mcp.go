@@ -195,17 +195,6 @@ type ticketJSON struct {
 	// nothing else reports it; a warning rather than a refusal, so stub-first
 	// flows still create.
 	EmptyAcceptanceWarning string `json:"empty_acceptance_warning,omitempty"`
-	// BareAcceptanceCriteria names the criteria that carry neither a `verify:`
-	// nor an `unverifiable:` line, so a caller can machine-read which bullets
-	// are the gap rather than parse the sentence below. Set by ticket_create
-	// alone — every other tool leaves it empty.
-	BareAcceptanceCriteria []string `json:"bare_acceptance_criteria,omitempty"`
-	// BareAcceptanceWarning is the remedy for those criteria. Set by
-	// ticket_create alone. The caller is the only party still holding the
-	// context the criteria came from, so it is the one that can attach commands
-	// cheaply; a warning rather than a refusal, so a batch filing path is not
-	// left unable to record the ticket at all.
-	BareAcceptanceWarning string `json:"bare_acceptance_warning,omitempty"`
 	// UnparsedAcceptanceWarning says the stored acceptance section is not
 	// blank but no criterion parses from it, so verify will find none. Set by
 	// ticket_create, and by ticket_edit when the edit wrote a description or an
@@ -219,6 +208,11 @@ type ticketJSON struct {
 	// than a refusal, so editing a legacy ticket carrying such a line never
 	// fails.
 	ShellSyntaxWarning string `json:"shell_syntax_warning,omitempty"`
+	// TwoMarkersWarning names the criteria that carry both a `verify:` and a
+	// `test:` line, of which only the test line counts. Set by ticket_create,
+	// and by ticket_edit when the edit wrote a description or an acceptance
+	// value. A warning rather than a refusal, on ShellSyntaxWarning's terms.
+	TwoMarkersWarning string `json:"two_markers_warning,omitempty"`
 	// SimilarTickets names the non-closed tickets in the destination project
 	// whose title or description closely matches the new ticket, so a caller
 	// can fold into one rather than file a duplicate. Set by ticket_create
@@ -848,7 +842,7 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). `workflow_kind` is always present, `coding` when the ticket stores none; a generic ticket's `how` (ordered steps) and `commands` (ordered shell commands, exactly as written) are carried when set, metadata_only included. An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `bare-acceptance`, `empty-acceptance`, `envelope-fragment`, `legacy-review-log`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`." + genericDoc + testingDoc,
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). `workflow_kind` is always present, `coding` when the ticket stores none; a generic ticket's `how` (ordered steps) and `commands` (ordered shell commands, exactly as written) are carried when set, metadata_only included. An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `empty-acceptance`, `envelope-fragment`, `legacy-review-log`, `two-markers`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`." + genericDoc + testingDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -984,7 +978,7 @@ type createArgs struct {
 func registerCreate(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_create",
-		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. `bare_acceptance_criteria` and `bare_acceptance_warning` are set when an acceptance criterion carries neither a `verify: <command>` line nor an `unverifiable: <reason>` line — re-send those criteria with one of the two attached. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. `similar_tickets` and `similar_tickets_warning` are set when a non-closed ticket (not done or closed) in the destination project closely matches the new title or description — each candidate's id, title and status — so the caller can add to that ticket instead; the ticket is created either way. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored. `workflow_kind` other than `coding` or `generic` is refused naming the field; `how` and `commands` are one non-empty line per entry, kept exactly as written, and an empty entry or one with a line break is refused." + genericDoc,
+		Description: "Create a new ticket. In multi-project mode the destination is `project` (a registered project, or `_root` for an idea with no repository yet — refused until the catalog requires root-namespace), `repo` (a registered project name or repo path, for cross-repo creation), or the server's default project; with none of the three the create is refused rather than landing somewhere inferred. Passing `repo` together with a `project` naming a different project is refused rather than one silently winning; the CWD-derived default project never conflicts. `parent` may name an epic in another namespace, qualified as project/id, once the catalog requires cross-project-parents. `unregistered_warning` is set when that repo's project has a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that repo to register it. `empty_acceptance_warning` is set when the ticket was stored with a description and no acceptance criteria. An acceptance criterion's indented continuation line says who decides it: `verify: <command>` is run by ticket_verify, `test: <what to look at>` waits on a person checking the real build, and no line means the run's review and tests judge it; `unverifiable: <reason>` is retired and still read, as no line. `two_markers_warning` is set when a criterion carries both a `verify:` and a `test:` line — the `test:` line wins and the command is not run. `unparsed_acceptance_warning` is set when the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set when a `verify:` line carries shell-only syntax outside quotes (`&&`, `||`, `|`, `;`, `$(`, a `!` in command position, a leading `~`) — verify runs the command as argv with no shell, so that syntax reaches the program as literal arguments. `similar_tickets` and `similar_tickets_warning` are set when a non-closed ticket (not done or closed) in the destination project closely matches the new title or description — each candidate's id, title and status — so the caller can add to that ticket instead; the ticket is created either way. A description, design or acceptance value that ends in a tool-call envelope fragment is refused rather than stored. `workflow_kind` other than `coding` or `generic` is refused naming the field; `how` and `commands` are one non-empty line per entry, kept exactly as written, and an empty entry or one with a line break is refused." + genericDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args createArgs) (*mcp.CallToolResult, any, error) {
 		content := ticketContent{
 			Title:       args.Title,
@@ -1143,22 +1137,16 @@ func (c ticketContent) warn(j *ticketJSON, t *ticket.Ticket) {
 	// predicate tk audit reports with: the response describes the ticket as
 	// stored, and a description that carries its own `## Acceptance Criteria`
 	// section is stored as criteria, so judging the `acceptance` argument alone
-	// would warn of an empty contract beside the bare criteria reported below.
+	// would warn of an empty contract beside criteria the ticket holds.
 	if ticket.EmptyAcceptance(t) {
 		j.EmptyAcceptanceWarning = fmt.Sprintf("ticket %s has a description but no acceptance criteria: nothing states what done means, and the workflow gates on that contract. "+
 			"Add it with ticket_edit on %s and an `acceptance` argument.", t.ID, t.ID)
 	}
-	// Read off the stored body, not c.Acceptance, so the CLI — which has no
-	// acceptance argument, only a description carrying the section — reaches
-	// the same helper. No type exemption: unlike an empty contract, which is
-	// expected on a container, a criterion that was written but cannot be
-	// checked is a gap whatever the type.
-	j.BareAcceptanceCriteria = ticket.BareCriteria(t.Body)
-	j.BareAcceptanceWarning = ticket.BareAcceptanceWarning(t.ID, j.BareAcceptanceCriteria)
 	if ticket.UnparsedAcceptance(t.Body) {
 		j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
 	}
 	j.ShellSyntaxWarning = ticket.ShellSyntaxWarning(t.ID, ticket.ShellSyntaxCriteria(t.Body))
+	j.TwoMarkersWarning = ticket.TwoMarkersWarning(t.ID, ticket.TwoMarkerCriteria(t.Body))
 }
 
 // destination is where a new ticket lands, resolved from the `repo` and
@@ -1306,7 +1294,7 @@ type editArgs struct {
 func registerEdit(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_edit",
-		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set under the same condition when a `verify:` line in the stored acceptance section carries shell-only syntax outside quotes, which verify passes to the program as literal arguments because it runs no shell. A body field that ends in a tool-call envelope fragment is refused rather than stored. `workflow_kind` other than `coding` or `generic` is refused naming the field; `how` and `commands` each replace the whole list when passed, an empty array clears it, and an empty entry or one with a line break is refused." + genericDoc + testingDoc,
+		Description: "Edit an existing ticket's fields. Closing an epic closes its children too; the response names them in `closed_children`. `unparsed_acceptance_warning` is set when the edit wrote a description or acceptance value and the stored acceptance section is not blank but no criterion parses from it — only a `- ` bullet in the first column starts a criterion, so a numbered list yields none. `shell_syntax_warning` is set under the same condition when a `verify:` line in the stored acceptance section carries shell-only syntax outside quotes, which verify passes to the program as literal arguments because it runs no shell. `two_markers_warning` is set under the same condition when a stored criterion carries both a `verify:` and a `test:` line; the `test:` line wins and the command is not run. A body field that ends in a tool-call envelope fragment is refused rather than stored. `workflow_kind` other than `coding` or `generic` is refused naming the field; `how` and `commands` each replace the whole list when passed, an empty array clears it, and an empty entry or one with a line break is refused." + genericDoc + testingDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args editArgs) (*mcp.CallToolResult, any, error) {
 		for _, f := range []struct{ name, value string }{
 			{"description", args.Description},
@@ -1452,6 +1440,7 @@ func registerEdit(server *mcp.Server, store ticket.Store) {
 				j.UnparsedAcceptanceWarning = ticket.UnparsedAcceptanceWarning(t.ID)
 			}
 			j.ShellSyntaxWarning = ticket.ShellSyntaxWarning(t.ID, ticket.ShellSyntaxCriteria(t.Body))
+			j.TwoMarkersWarning = ticket.TwoMarkersWarning(t.ID, ticket.TwoMarkerCriteria(t.Body))
 		}
 		r, err := jsonResult(j)
 		return r, nil, err
@@ -1980,26 +1969,12 @@ type criteriaArgs struct {
 	ID string `json:"id" jsonschema:"ticket ID (supports partial matching)"`
 }
 
-type criterionJSON struct {
-	Index              int    `json:"index"`
-	Text               string `json:"text"`
-	Command            string `json:"command,omitempty"`
-	Unverifiable       bool   `json:"unverifiable"`
-	UnverifiableReason string `json:"unverifiable_reason,omitempty"`
-}
-
-type criteriaJSON struct {
-	ID           string          `json:"id"`
-	AcceptanceID string          `json:"acceptance_id"`
-	Criteria     []criterionJSON `json:"criteria"`
-}
-
 func registerVerify(server *mcp.Server, store ticket.Store, defaultProject string) *verifyJobs {
 	jobs := newVerifyJobs()
 	registerVerifyLifecycle(server, store, jobs)
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_criteria",
-		Description: "Return a ticket's acceptance criteria exactly as ticket_verify parses them — index (1-based, the same index tk verify --criterion uses), text, verify command if any, and whether it is declared unverifiable and why — with acceptance_id, the identity of that contract. Pass acceptance_id back to ticket_verify to have the run refused if the criteria change in between. Runs nothing. A ticket with no criteria returns an empty list, not an error.",
+		Description: "Return a ticket's acceptance criteria exactly as ticket_verify parses them — index (1-based, the same index tk verify --criterion uses), text, kind (`verify`: ticket_verify runs its command; `test`: a person checks it; `judged`: the run's review and tests judge it), verify command if any, test (what the person is to look at) if any, and whether it carries the retired unverifiable line and its reason — with acceptance_id, the identity of that contract. Pass acceptance_id back to ticket_verify to have the run refused if the criteria change in between. Runs nothing. A ticket with no criteria returns an empty list, not an error.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args criteriaArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -2007,22 +1982,12 @@ func registerVerify(server *mcp.Server, store ticket.Store, defaultProject strin
 			return r, nil, nil
 		}
 		criteria := ticket.ParseCriteria(ticket.AcceptanceCriteria(t.Body))
-		out := criteriaJSON{ID: t.ID, AcceptanceID: ticket.CriteriaIdentity(criteria), Criteria: []criterionJSON{}}
-		for i, c := range criteria {
-			out.Criteria = append(out.Criteria, criterionJSON{
-				Index:              i + 1,
-				Text:               ticket.SanitizeControl(c.Text),
-				Command:            ticket.SanitizeControl(c.Command),
-				Unverifiable:       c.Unverifiable,
-				UnverifiableReason: ticket.SanitizeControl(c.UnverifiableReason),
-			})
-		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(ticket.NewCriteriaReport(t.ID, criteria))
 		return r, nil, err
 	})
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_verify",
-		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project, or, with dir, in a linked git worktree of that checkout. A ticket whose implementation lives in another project's repository carries the frontmatter field `implementation: <project>` (set it with ticket_edit set; a project name, never a path): its commands then run in the checkout registered on this machine for that project, or a linked worktree of it, never in the ticket's own checkout, and an implementation that is not a project name, has no checkout registered here or whose checkout is missing is refused before anything runs, naming the field. A Root ticket, a project with no checkout registered here, a registered checkout that is missing, and a dir that is not the configured checkout or a worktree root sharing its repository (a subdirectory, an unrelated or nested repository, a non-git directory, a missing path, an empty string, or a symlink resolving to any of those) are each refused before anything runs, naming the reason, and nothing is recorded. Pass acceptance_id from ticket_criteria to have the run refused before anything executes if the criteria changed since you read them; the report and the ticket's Test Results name the directory the commands ran in, the implementation project when the ticket names one, the acceptance_id of the criteria that ran, and candidate (your name for what was under test, recorded as provenance only) if given. If the criteria change while commands are running, the result is returned but not recorded (record_error says so). Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Before writing a verify line, read the allow-list and the project's timeout from verify_policy in ticket_store_info (or tk verify --policy --json) instead of guessing or reading the config file. Each command is bounded by the verify_timeout of the project whose checkout it runs in, set in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified, with unverifiable_reason when the criterion declares one. Each command's output is capped to its last 4KB, where test frameworks print failures; a capped output opens with a line naming how many bytes were dropped from the head, and Test Results carries each failing criterion's output beneath its line. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start with the same dir, implementation, acceptance_id and candidate joins the active run; one that differs in any of the four (including an implementation field edited since the run started) is refused, naming the active run, and starts nothing; after completion a start begins a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
+		Description: "Run the verify commands declared in a ticket's acceptance criteria (\"verify: <command>\" lines) and record the results on the ticket. Commands execute on the server host in the checkout registered on this machine for the ticket's own project, or, with dir, in a linked git worktree of that checkout. A ticket whose implementation lives in another project's repository carries the frontmatter field `implementation: <project>` (set it with ticket_edit set; a project name, never a path): its commands then run in the checkout registered on this machine for that project, or a linked worktree of it, never in the ticket's own checkout, and an implementation that is not a project name, has no checkout registered here or whose checkout is missing is refused before anything runs, naming the field. A Root ticket, a project with no checkout registered here, a registered checkout that is missing, and a dir that is not the configured checkout or a worktree root sharing its repository (a subdirectory, an unrelated or nested repository, a non-git directory, a missing path, an empty string, or a symlink resolving to any of those) are each refused before anything runs, naming the reason, and nothing is recorded. Pass acceptance_id from ticket_criteria to have the run refused before anything executes if the criteria changed since you read them; the report and the ticket's Test Results name the directory the commands ran in, the implementation project when the ticket names one, the acceptance_id of the criteria that ran, and candidate (your name for what was under test, recorded as provenance only) if given. If the criteria change while commands are running, the result is returned but not recorded (record_error says so). Commands run as argv and never through a shell: quotes group arguments, but ;, |, &&, $(), backticks and ~ are literal text passed to the command. A command whose program is not in the host user's machine-local verify_allow list is reported as refused without running — you cannot widen that list, from this tool or from ticket content, so report a refusal to the user rather than working around it. Before writing a verify line, read the allow-list and the project's timeout from verify_policy in ticket_store_info (or tk verify --policy --json) instead of guessing or reading the config file. Each command is bounded by the verify_timeout of the project whose checkout it runs in, set in the host user's machine-local config (default 120s), which you cannot change either. Both the allow-list and the bound are re-read from that config at the start of every new run, so an edit the host user makes applies to the next run without restarting the server. Criteria with no command are reported as unverified, with unverifiable_reason when the criterion declares one. A criterion with a `test:` line is reported as waiting, with the line's text as test: a person checks it, nothing is run for it even when it also carries a command, and it does not make the report not ok. Each command's output is capped to its last 4KB, where test frameworks print failures; a capped output opens with a line naming how many bytes were dropped from the head, and Test Results carries each failing criterion's output beneath its line. Waits at most 10 seconds for commands: a longer run returns a verification_id and state, not a pass. Poll ticket_verify_status until terminal; it returns the complete report. Request cancellation does not cancel commands. Recover a lost response with ticket_verify_status using the ticket id, not another start. A repeated start with the same dir, implementation, acceptance_id and candidate joins the active run; one that differs in any of the four (including an implementation field edited since the run started) is refused, naming the active run, and starts nothing; after completion a start begins a new run. Jobs belong to this MCP session; disconnect cancels them. Use ticket_verify_cancel to stop explicitly.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args verifyArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {

@@ -18,8 +18,9 @@ var editCmd = &cobra.Command{
 --description, --design, --acceptance and --test-results each replace one body
 section: the description, ## Design, ## Acceptance Criteria and ## Test Results.
 An edit writing the description or acceptance reports on stderr an acceptance
-section no criterion parses from, or a verify: line carrying shell syntax (see
-tk verify --help); the edit is still written.
+section no criterion parses from, a verify: line carrying shell syntax, or a
+criterion carrying both a verify: and a test: line (see tk verify --help); the
+edit is still written.
 
 --parent names an epic in the same project, and an epic itself cannot have a
 parent. A qualified project/id names an epic in another namespace, accepted
@@ -228,6 +229,9 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		}
 		if shell := ticket.ShellSyntaxCriteria(t.Body); len(shell) > 0 {
 			fmt.Fprintln(os.Stderr, ticket.ShellSyntaxWarning(t.ID, shell))
+		}
+		if both := ticket.TwoMarkerCriteria(t.Body); len(both) > 0 {
+			fmt.Fprintln(os.Stderr, ticket.TwoMarkersWarning(t.ID, both))
 		}
 	}
 	return nil

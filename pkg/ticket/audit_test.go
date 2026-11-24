@@ -33,7 +33,7 @@ func auditFixtureStore(t *testing.T) *countingStore {
 	// tool call of any agent that quotes this file.
 	terminator := "</" + "antml:invoke" + ">"
 	writeLegacy(t, s, mkBody("frag-8888", "\nThe real description text.\n"+terminator+"\n"))
-	writeLegacy(t, s, mkBody("bare-9999", "\nA description.\n\n## Acceptance Criteria\n\n- Something happens.\n"))
+	writeLegacy(t, s, mkBody("both-9999", "\nA description.\n\n## Acceptance Criteria\n\n- Something happens.\n  verify: go test ./...\n  test: look at it\n"))
 	writeLegacy(t, s, mkBody("rlog-0001", "\nA description.\n\n## Review Log\n\n**2026-02-25T12:00:00Z [agent:design-reviewer]**\nAPPROVED\n"))
 	plantUnreadable(t, dir, "broken-0002.md")
 	return &countingStore{FileStore: s}

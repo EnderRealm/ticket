@@ -64,7 +64,7 @@ Resolve, or explicitly accept in the release record:
 - Epics with outgoing deps: move each real requirement onto an acceptance leaf. Epics never read their own deps.
 - Duplicate IDs, and files whose `id` names another project.
 
-Content findings (`bare-acceptance` and similar) do not block activation.
+Content findings (`empty-acceptance` and similar) do not block activation.
 
 ### 3. Inventory
 
