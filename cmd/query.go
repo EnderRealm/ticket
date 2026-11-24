@@ -22,6 +22,7 @@ the filter so the shell leaves ! and " alone.
 JSON fields: id, status, abandoned, type, workflow_kind, priority, title,
   deps[], links[], tags[], created, updated, closed, parent, external-ref,
   how[], commands[], outputs, dep_cargo,
+  last_test (result, checks[], note, at, by, commit),
   description, design, acceptance_criteria, test_results,
   notes[] (timestamp, text; every note, oldest first),
   plus any custom extra fields (flattened to top level)
@@ -72,6 +73,7 @@ type ticketJSON struct {
 	Notes        []noteJSON        `json:"notes,omitempty"`
 	Outputs      map[string]string `json:"outputs,omitempty"`
 	DepCargo     map[string]string `json:"dep_cargo,omitempty"`
+	LastTest     *ticket.TestRow   `json:"last_test,omitempty"`
 	Extra        map[string]string `json:"-"`
 }
 
@@ -131,12 +133,13 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 	return j
 }
 
-// toQueryJSON adds the body fields, under the keys and in the shape ticket_show
-// carries them. `tk frontier --json` stays on toTicketJSON: its rows are
+// toQueryJSON adds the body fields and the last test, under the keys and in the
+// shape ticket_show carries them. `tk frontier --json` stays on toTicketJSON: its rows are
 // metadata, like ticket_list's.
 func toQueryJSON(t *ticket.Ticket) ticketJSON {
 	j := toTicketJSON(t)
 	j.How, j.Commands = t.How, t.Commands
+	j.LastTest = ticket.LastTest(t)
 	j.Description, j.Design, j.Acceptance, j.TestResults = ticket.BodySections(t.Body)
 	for _, n := range t.Notes {
 		j.Notes = append(j.Notes, noteJSON{

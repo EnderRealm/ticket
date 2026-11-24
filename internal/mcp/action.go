@@ -42,30 +42,39 @@ func actionError(what string, err error) (*mcp.CallToolResult, error) {
 }
 
 type applyActionArgs struct {
-	ID           string `json:"id" jsonschema:"ticket ID"`
-	ActionID     string `json:"action_id" jsonschema:"the caller's stable identity for this action; the same id sent again with the same note and transition returns the recorded outcome instead of applying the action twice"`
-	Precondition string `json:"precondition,omitempty" jsonschema:"the opaque precondition ticket_show reported for the state this action was decided on; omit to make no claim about the state"`
-	Note         string `json:"note" jsonschema:"the evidence note to append"`
-	Transition   string `json:"transition,omitempty" jsonschema:"optional status transition: reopen (sets status to open; refused on an epic) or release (clears waiting_on and moves a backlog ticket to ready, leaving any other status unchanged; refused on an epic and on a ticket with no waiting_on)"`
-	Source       string `json:"source,omitempty" jsonschema:"who is applying this; defaults to the MCP client name"`
+	ID           string    `json:"id" jsonschema:"ticket ID"`
+	ActionID     string    `json:"action_id" jsonschema:"the caller's stable identity for this action; the same id sent again with the same note, transition, commit and checks returns the recorded outcome instead of applying the action twice"`
+	Precondition string    `json:"precondition,omitempty" jsonschema:"the opaque precondition ticket_show reported for the state this action was decided on; omit to make no claim about the state"`
+	Note         string    `json:"note" jsonschema:"the note to append; for a fail, what the person saw"`
+	Transition   string    `json:"transition,omitempty" jsonschema:"optional status transition: reopen (sets status to open; refused on an epic) or release (clears waiting_on and moves a backlog ticket to ready, leaving any other status unchanged; refused on an epic and on a ticket with no waiting_on) or land (records commit; the ticket becomes testing when it has a test: criterion and done otherwise; refused on an epic) or pass (testing to done; refused on a ticket not in testing) or fail (testing to ready; requires checks; refused on a ticket not in testing) or retest (undoes the last pass or fail and returns the ticket to testing; refused once the ticket no longer holds the status and commit that test left)"`
+	Commit       string    `json:"commit,omitempty" jsonschema:"the full hash a land records in outputs.commit; required for land and refused with any other transition"`
+	Checks       []FlexInt `json:"checks,omitempty" jsonschema:"the criteria a fail names, as 1-based indexes among the ticket's test: criteria in order; at least one, each once; required for fail and refused with any other transition"`
+	Source       string    `json:"source,omitempty" jsonschema:"who is applying this; defaults to the MCP client name"`
 }
 
 func registerApplyAction(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name: "ticket_apply_action",
-		Description: "Apply one observer action to an existing ticket: append an evidence note, optionally reopen or release it, and record a receipt — all in one write, so no partial action can land. " +
-			"`action_id` is the caller's stable identity for the action: repeating the same id with the same note and transition (after a lost response, a retry or a restart) returns the recorded receipt with `replayed: true` and writes nothing, whatever the ticket's state is by then; the same id with different content is refused. " +
-			"`precondition` is the opaque token ticket_show reported: when given, the action lands only if the ticket is still in that state, otherwise it is refused and the ticket is left unchanged. The permitted transitions are `reopen` (sets the status to open; refused on an epic) and `release` (clears `waiting_on` and moves a backlog ticket to ready, any other status unchanged; refused on an epic and on a ticket with no `waiting_on`). " +
-			"The three refusals carry stable prefixes so they can be told apart from the text: `precondition conflict:` (re-read the ticket and decide again), `action conflict:` (the action id was already used for other content — use a new id), `transition not permitted:`. " +
+		Description: "Apply one action to an existing ticket: append a note, optionally reopen, release, land or test it, and record a receipt — all in one write, so no partial action can land. " +
+			"`action_id` is the caller's stable identity for the action: repeating the same id with the same note, transition, commit and checks (after a lost response, a retry or a restart) returns the recorded receipt with `replayed: true` and writes nothing, whatever the ticket's state is by then; the same id with different content is refused. " +
+			"`precondition` is the opaque token ticket_show reported: when given, the action lands only if the ticket is still in that state, otherwise it is refused and the ticket is left unchanged. The permitted transitions are `reopen` (sets the status to open; refused on an epic) and `release` (clears `waiting_on` and moves a backlog ticket to ready, any other status unchanged; refused on an epic and on a ticket with no `waiting_on`), and the landing and testing ones. " +
+			"`land` takes `commit`, the full hash, and records it in `outputs.commit` in place of any earlier one: the ticket becomes `testing` when it has at least one `test:` criterion, otherwise `done`; refused on an epic. `pass` moves a testing ticket to `done`. `fail` moves a testing ticket to `ready`; its `note` says what the person saw and `checks` names at least one failed criterion by its 1-based index among the `test:` criteria. Both record the test, which ticket_show returns as `last_test`, and both are refused on a ticket not in testing. `retest` undoes the last pass or fail: it removes that record and returns the ticket to `testing`, and is refused when no test stands or the ticket no longer holds the status and the `outputs.commit` that test left. " +
+			"The three refusals carry stable prefixes so they can be told apart from the text: `precondition conflict:` (re-read the ticket and decide again), `action conflict:` (the action id was already used for other content — use a new id), `transition not permitted:` (the transition does not apply to the ticket as it stands). " +
 			"`source` is a declared label attributing the write, recorded on the receipt and in the mutation log; it does not authenticate anyone. " +
 			"Receipts live in the ticket's append-only `actions` block and replicate with it. Retries are deduplicated on one machine; two machines recording under one action id surface as a merge conflict in that block.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args applyActionArgs) (*mcp.CallToolResult, any, error) {
+		var checks []int
+		for _, n := range args.Checks {
+			checks = append(checks, int(n))
+		}
 		res, err := ticket.ApplyAction(ticket.WithSource(store, sourceFor(req, args.Source)), ticket.ActionRequest{
 			ID:           args.ID,
 			ActionID:     args.ActionID,
 			Precondition: args.Precondition,
 			Note:         args.Note,
 			Transition:   ticket.Transition(args.Transition),
+			Commit:       args.Commit,
+			Checks:       checks,
 		})
 		if err != nil {
 			r, _ := actionError("apply action", err)

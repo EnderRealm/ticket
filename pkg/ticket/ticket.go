@@ -214,6 +214,12 @@ type Ticket struct {
 	// a write that drops or rewrites one.
 	Actions []ActionReceipt `yaml:"actions,omitempty"`
 
+	// What people said of this ticket once it landed (testing.go), oldest
+	// first. Serialized as a nested block in format.go. Written through
+	// ApplyAction: pass and fail append a row and retest removes the last, so
+	// unlike the two blocks above it is not append-only.
+	Tests []TestRow `yaml:"tests,omitempty"`
+
 	// Custom key/value pairs, handled manually in format.go.
 	Extra map[string]string `yaml:"-"`
 
@@ -315,12 +321,12 @@ var reservedKeys = map[string]bool{
 	"id": true, "status": true, "abandoned": true, "abandoned-at": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
-	"dep-cargo": true, "verdicts": true, "actions": true,
+	"dep-cargo": true, "verdicts": true, "actions": true, "tests": true,
 	"workflow_kind": true, "how": true, "commands": true,
 	// JSON output fields derived from body sections, markdown heading and dates.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,
-	"dep_cargo": true, "closed": true,
+	"dep_cargo": true, "closed": true, "last_test": true,
 }
 
 // IsReservedKey reports whether key is a known frontmatter field name.

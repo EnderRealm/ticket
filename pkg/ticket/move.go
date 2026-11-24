@@ -206,6 +206,8 @@ func copyForMove(t *Ticket, newID string, provenance Note) *Ticket {
 	// in: an action ID names the source ticket, and a finding key is scoped
 	// to the source project. Neither answers for the copy.
 	newTicket.Actions = nil
+	// The tests were of the source ticket's landings.
+	newTicket.Tests = nil
 	newTicket.Notes = append(copyNotes(t.Notes), provenance)
 	return newTicket
 }

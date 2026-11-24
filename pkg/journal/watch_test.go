@@ -1295,3 +1295,138 @@ func runTestWatchCycle(t *testing.T, repoDir, jPath string, cfg project.ProjectC
 	result.Appended = len(toAppend)
 	return result, nil
 }
+
+// testedTicket is an open ticket with a criterion a person checks.
+func testedTicket(t *testing.T, store ticket.Store, title string) *ticket.Ticket {
+	t.Helper()
+	tk := mkTicket(t, store, title, ticket.StatusOpen)
+	tk, err := ticket.Mutate(store, tk.ID, func(t *ticket.Ticket) error {
+		t.Body = "\nDescription.\n\n## Acceptance Criteria\n\n- Builds.\n  verify: go build ./...\n- Reads well.\n  test: look at it\n"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tk
+}
+
+func applyTransition(t *testing.T, store ticket.Store, id, action string, req ticket.ActionRequest) *ticket.Ticket {
+	t.Helper()
+	req.ID, req.ActionID, req.Note = id, action, "note "+action
+	res, err := ticket.ApplyAction(store, req)
+	if err != nil {
+		t.Fatalf("%s: %v", action, err)
+	}
+	return res.Ticket
+}
+
+func headSHA(t *testing.T, repoDir string) string {
+	t.Helper()
+	commits, err := CollectCommits(repoDir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commits[len(commits)-1].SHA
+}
+
+func watchCycle(t *testing.T, name string, repoDir string, store ticket.Store, closed int) {
+	t.Helper()
+	cfg := project.ProjectConfig{Path: repoDir, AutoLink: true, AutoClose: true}
+	result, err := RunWatchCycle(name, cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != closed || len(result.Warnings) != 0 {
+		t.Fatalf("closed %d with warnings %v, want %d and none", result.Closed, result.Warnings, closed)
+	}
+}
+
+func TestWatcherLandsIntoTesting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repoDir := initTestRepo(t)
+	store := ticket.NewProjectFileStore(t.TempDir(), "landing-test")
+	tested := testedTicket(t, store, "Tested leaf")
+	untested := mkTicket(t, store, "Untested leaf", ticket.StatusOpen)
+	commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tested.ID+"] ["+untested.ID+"] Land both")
+	first := headSHA(t, repoDir)
+	watchCycle(t, "landing-test", repoDir, store, 2)
+
+	for id, want := range map[string]ticket.Status{tested.ID: ticket.StatusTesting, untested.ID: ticket.StatusDone} {
+		got, err := store.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != want || got.Outputs[ticket.OutputKeyCommit] != first || got.ClosedAt().IsZero() != (want == ticket.StatusTesting) {
+			t.Errorf("%s landed %s at %v, closed %v; want %s at %s", id, got.Status, got.Outputs, got.ClosedAt(), want, first)
+		}
+	}
+
+	// Failed and landed again: testing, and the commit is the one to test now.
+	applyTransition(t, store, tested.ID, "fail", ticket.ActionRequest{Transition: ticket.TransitionFail, Checks: []int{1}})
+	commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tested.ID+"] Land it again")
+	second := headSHA(t, repoDir)
+	watchCycle(t, "landing-test", repoDir, store, 1)
+	got, err := store.Get(tested.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != ticket.StatusTesting || got.Outputs[ticket.OutputKeyCommit] != second {
+		t.Errorf("re-landed %s at %v, want testing at %s", got.Status, got.Outputs, second)
+	}
+
+	// Neither landing is replayed on a machine with no journal.
+	applyTransition(t, store, tested.ID, "pass", ticket.ActionRequest{Transition: ticket.TransitionPass})
+	removeWatchState(t, "landing-test")
+	watchCycle(t, "landing-test", repoDir, store, 0)
+	if got, err = store.Get(tested.ID); err != nil || got.Status != ticket.StatusDone || got.Outputs[ticket.OutputKeyCommit] != second {
+		t.Errorf("after the replay: %v at %v, %v", got.Status, got.Outputs, err)
+	}
+}
+
+// TestWatcherLeavesEarlierLandActionAlone is a machine with no journal walking
+// the commit of a landing a later one has replaced in outputs.commit, whose
+// only records are the land receipt or the test of it.
+func TestWatcherLeavesEarlierLandActionAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		land func(t *testing.T, store ticket.Store, id, sha string)
+	}{
+		{"land receipt", func(t *testing.T, store ticket.Store, id, sha string) {
+			applyTransition(t, store, id, "land-1", ticket.ActionRequest{Transition: ticket.TransitionLand, Commit: sha})
+		}},
+		{"test row", func(t *testing.T, store ticket.Store, id, sha string) {
+			if _, err := ticket.Mutate(store, id, func(t *ticket.Ticket) error {
+				t.Status = ticket.StatusTesting
+				t.Outputs = map[string]string{ticket.OutputKeyCommit: sha}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			repoDir := initTestRepo(t)
+			store := ticket.NewProjectFileStore(t.TempDir(), "replay-test")
+			tk := testedTicket(t, store, "Tested leaf")
+
+			commitFile(t, repoDir, "a.go", "package a\n", "Closes: ["+tk.ID+"] Land it")
+			tc.land(t, store, tk.ID, headSHA(t, repoDir))
+			applyTransition(t, store, tk.ID, "fail", ticket.ActionRequest{Transition: ticket.TransitionFail, Checks: []int{1}})
+			commitFile(t, repoDir, "b.go", "package b\n", "Closes: ["+tk.ID+"] Land it again")
+			second := headSHA(t, repoDir)
+			applyTransition(t, store, tk.ID, "land-2", ticket.ActionRequest{Transition: ticket.TransitionLand, Commit: second})
+			before := applyTransition(t, store, tk.ID, "pass", ticket.ActionRequest{Transition: ticket.TransitionPass})
+
+			watchCycle(t, "replay-test", repoDir, store, 0)
+			got, err := store.Get(tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Precondition() != before.Precondition() {
+				t.Errorf("the replay wrote the ticket: %s at %v, notes %v", got.Status, got.Outputs, got.Notes)
+			}
+		})
+	}
+}

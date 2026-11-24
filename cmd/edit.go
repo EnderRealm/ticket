@@ -28,7 +28,7 @@ once the catalog requires cross-project-parents.
 
 --status testing marks a change that has landed and waits on a person's test.
 Tickets that depend on it are no longer blocked; it is not finished, so its
-epic stays open.
+epic stays open. tk land sets it, and tk pass, fail and retest record the test.
 
 An epic's status is derived from its children, and setting one by hand is
 refused. The exception is --status closed, which abandons the epic: it records

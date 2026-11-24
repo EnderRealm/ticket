@@ -48,11 +48,15 @@ Dependencies & Links:
   link <id> <id>...      Link tickets (symmetric)
   unlink <id> <id>       Remove link
 
-Verification:
+Verification & Landing:
   criteria <id>          List a ticket's parsed acceptance criteria
   verify <id>            Run acceptance-criteria verify commands
   verify --policy        Print the verify_allow and verify_timeout in force
   verify --launcher <w>  Exec each verify command through an argv prefix
+  land <id> --commit <s> Record the landed commit; testing or done
+  pass <id>              Pass a testing ticket; done
+  fail <id> --check <n>  Fail a testing ticket with a --note; ready
+  retest <id>            Undo the last pass or fail; testing
 
 Setup & Server:
   init                   Initialize tk and register a project

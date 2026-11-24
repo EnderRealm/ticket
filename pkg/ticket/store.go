@@ -1299,7 +1299,7 @@ func (s *FileStore) writeTicket(t, prior *Ticket) error {
 	// A landed ticket records the branch it landed on. Done at the same write
 	// choke point as the timestamps so CLI and MCP callers all get it;
 	// fill-if-absent leaves any value the caller set explicitly.
-	if t.Status == StatusDone {
+	if t.Status == StatusDone || t.Status == StatusTesting {
 		PopulateDoneOutputs(t, "", t.Branch)
 	}
 	data, err := Serialize(t)

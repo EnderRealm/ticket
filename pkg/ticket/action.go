@@ -11,11 +11,12 @@ import (
 	"time"
 )
 
-// The observer action protocol: a scheduled observer attaches evidence to a
-// ticket, reopens or releases it, or files a discovery, and has to be able to
-// retry after a lost response without duplicating the work or overwriting a
-// decision made in between. Separate show / add-note / edit calls cannot
-// promise that, so the protocol is one write that lands the evidence note, the
+// The action protocol: a scheduled observer attaches evidence to a ticket,
+// reopens or releases it, or files a discovery; a landing host records the
+// commit a ticket landed as, and the verdict of the person who tested it. Each
+// has to be able to retry after a lost response without duplicating the work or
+// overwriting a decision made in between. Separate show / add-note / edit calls
+// cannot promise that, so the protocol is one write that lands the note, the
 // transition and a durable receipt together, judged against a precondition the
 // caller read.
 //
@@ -62,16 +63,28 @@ var errDamagedActions = errors.New("action receipts cannot be read")
 var errActionReplayed = errors.New("action replayed")
 
 // Transition is the status change an action may carry. The permitted set is
-// deliberately narrow: an observer reopens work it found regressed, or
-// releases a ticket parked on an outside event once that event occurred —
-// clearing its waiting_on and, from backlog only, making it ready. Everything
-// else is an edit a human or an orchestrator makes through ticket_edit.
+// deliberately narrow:
+//
+//   - an observer reopens work it found regressed, or releases a ticket parked
+//     on an outside event once that event occurred — clearing its waiting_on
+//     and, from backlog only, making it ready;
+//   - a host lands a ticket as a commit, which makes it testing or done by
+//     LandingStatus;
+//   - a person passes a testing ticket, making it done, or fails it, making it
+//     ready; retest undoes the last of either.
+//
+// Everything else is an edit a human or an orchestrator makes through
+// ticket_edit.
 type Transition string
 
 const (
 	TransitionNone    Transition = ""
 	TransitionReopen  Transition = "reopen"
 	TransitionRelease Transition = "release"
+	TransitionLand    Transition = "land"
+	TransitionPass    Transition = "pass"
+	TransitionFail    Transition = "fail"
+	TransitionRetest  Transition = "retest"
 )
 
 // ReceiptKind says what a receipt records: an action applied to an existing
@@ -98,7 +111,8 @@ var validReceiptKinds = map[ReceiptKind]bool{
 // writer, the value the mutation log records for the same write — a label a
 // cooperating tool attaches to attribute its writes, not an authenticated
 // identity. Outcome is what the action did: the status the ticket held after
-// an apply, or the ID the discovery created. At is a string for the reason
+// an apply, or the ID the discovery created. Commit is the commit a land
+// recorded, empty on every other receipt. At is a string for the reason
 // VerdictRow.At is.
 type ActionReceipt struct {
 	ID      string      `yaml:"id" json:"id"`
@@ -107,6 +121,7 @@ type ActionReceipt struct {
 	Source  string      `yaml:"source" json:"source"`
 	At      string      `yaml:"at" json:"at"`
 	Outcome string      `yaml:"outcome" json:"outcome"`
+	Commit  string      `yaml:"commit,omitempty" json:"commit,omitempty"`
 }
 
 // ActionRequest is one action against an existing ticket.
@@ -117,14 +132,20 @@ type ActionReceipt struct {
 // means the caller makes no claim about the state it read, and the action
 // lands on whatever the ticket holds. Note is required. ActionID is the
 // caller's stable identity for this action: the same ID sent again with the
-// same Note and Transition returns the recorded outcome without a second note
-// or transition, whatever the precondition says by then.
+// same Note, Transition, Commit and Checks returns the recorded outcome without
+// a second note or transition, whatever the precondition says by then. Commit
+// is the full hash a land records, required for it and refused with any other
+// transition. Checks are the criteria a fail names, as 1-based indexes among
+// the ticket's `test:` criteria in parse order: at least one, each once, and
+// refused with any other transition.
 type ActionRequest struct {
 	ID           string
 	ActionID     string
 	Precondition string
 	Note         string
 	Transition   Transition
+	Commit       string
+	Checks       []int
 }
 
 // ActionResult is what an action produced, or what it produced the first time
@@ -160,10 +181,14 @@ func (t *Ticket) Precondition() string {
 }
 
 // applyPayload is the content of an apply action, in the fixed field order the
-// digest is computed over.
+// digest is computed over. A field added since receipts were first written is
+// omitted when empty, so a payload that does not use it keeps the digest it
+// had and a recorded action still replays.
 type applyPayload struct {
 	Note       string     `json:"note"`
 	Transition Transition `json:"transition"`
+	Commit     string     `json:"commit,omitempty"`
+	Checks     []int      `json:"checks,omitempty"`
 }
 
 // discoverPayload is the content of a discovery, in the fixed field order the
@@ -187,7 +212,7 @@ type discoverPayload struct {
 func actionDigest(v any) string {
 	data, err := json.Marshal(v)
 	if err != nil {
-		// The payload structs hold strings, an int and a string slice, none of
+		// The payload structs hold strings, ints and slices of either, none of
 		// which json.Marshal can fail on.
 		panic(err)
 	}
@@ -196,8 +221,9 @@ func actionDigest(v any) string {
 }
 
 // ValidateActionReceipt checks a whole receipt, including the fields the
-// protocol stamps itself. Every field is required on write, which is what
-// lets the parser tell a decode loss from a receipt a writer wrote.
+// protocol stamps itself. Every field but a land's commit is required on
+// write, which is what lets the parser tell a decode loss from a receipt a
+// writer wrote.
 func ValidateActionReceipt(r ActionReceipt) error {
 	if err := validateLedgerText("action", "id", r.ID); err != nil {
 		return err
@@ -218,6 +244,13 @@ func ValidateActionReceipt(r ActionReceipt) error {
 	}
 	if _, err := time.Parse(time.RFC3339, r.At); err != nil {
 		return fmt.Errorf("action timestamp %q is not RFC3339: %w", r.At, err)
+	}
+	if r.Commit != "" {
+		if normalized, err := ValidateVerdictSHA(r.Commit); err != nil {
+			return fmt.Errorf("action commit: %w", err)
+		} else if normalized != r.Commit {
+			return fmt.Errorf("action commit %q is not normalized", r.Commit)
+		}
 	}
 	return validateLedgerText("action", "outcome", r.Outcome)
 }
@@ -282,11 +315,21 @@ func errNoAtomicStore(what string, store Store) error {
 //  3. Apply. The note is appended, the transition applied and the receipt
 //     appended, and the ticket written once. Reopen sets the status to open.
 //     Release removes waiting_on and moves a backlog ticket to ready, leaving
-//     any other status as it is.
+//     any other status as it is. Land sets the status to LandingStatus and
+//     outputs.commit to the commit, in place of any earlier one;
+//     outputs.branch keeps the value already recorded. Landing a commit that
+//     was already tested decides again, so it returns a passed or failed ticket
+//     to testing: a retry of one landing reuses its ActionID. Pass moves a
+//     testing ticket to done and fail to ready, each recording the test; retest
+//     removes the last test's record and returns the ticket to testing.
 //
-// Reopen and release are refused on an epic, and release on a ticket with no
-// nonblank waiting_on, with ErrTransitionNotPermitted after the replay check,
-// so an applied release — which leaves no waiting_on behind — still replays.
+// A transition that does not apply to the ticket is refused with
+// ErrTransitionNotPermitted after the replay check, so an applied one — a
+// release leaves no waiting_on behind, a pass no testing status — still
+// replays. Every transition is refused on an epic, release on a ticket
+// with no nonblank waiting_on, pass and fail on one that is not testing, and
+// retest on one whose last test no longer holds (testRefusal). A fail naming a
+// check past the ticket's test: criteria is refused after its status is judged.
 //
 // Every argument that can be judged without the store is judged first, so a
 // refused request costs nothing on disk. The store must be a FileStore or a
@@ -307,11 +350,28 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		return nil, fmt.Errorf("apply action %q: note is required", req.ActionID)
 	}
 	switch req.Transition {
-	case TransitionNone, TransitionReopen, TransitionRelease:
+	case TransitionNone, TransitionReopen, TransitionRelease, TransitionLand, TransitionPass, TransitionFail, TransitionRetest:
 	default:
-		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release)", ErrTransitionNotPermitted, req.Transition)
+		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release, land, pass, fail, retest)", ErrTransitionNotPermitted, req.Transition)
 	}
-	digest := actionDigest(applyPayload{Note: req.Note, Transition: req.Transition})
+	var commit string
+	var checks []int
+	var err error
+	if req.Transition == TransitionLand {
+		if commit, err = ValidateVerdictSHA(req.Commit); err != nil {
+			return nil, fmt.Errorf("apply action %q: land: %w", req.ActionID, err)
+		}
+	} else if req.Commit != "" {
+		return nil, fmt.Errorf("apply action %q: a commit is recorded by land alone", req.ActionID)
+	}
+	if req.Transition == TransitionFail {
+		if checks, err = normalizeChecks(req.Checks); err != nil {
+			return nil, fmt.Errorf("apply action %q: %w", req.ActionID, err)
+		}
+	} else if len(req.Checks) > 0 {
+		return nil, fmt.Errorf("apply action %q: checks are named by fail alone", req.ActionID)
+	}
+	digest := actionDigest(applyPayload{Note: req.Note, Transition: req.Transition, Commit: commit, Checks: checks})
 	source := declaredSource(store)
 
 	var result ActionResult
@@ -339,6 +399,19 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		if req.Transition == TransitionRelease && WaitingOn(t) == "" {
 			return fmt.Errorf("%w: release on %s, which has no %s to clear", ErrTransitionNotPermitted, t.ID, WaitingOnField)
 		}
+		if req.Transition == TransitionLand && t.Type == TypeEpic {
+			return fmt.Errorf("%w: land on epic %s — an epic's status is derived from its children; land the child", ErrTransitionNotPermitted, t.ID)
+		}
+		switch req.Transition {
+		case TransitionPass, TransitionFail, TransitionRetest:
+			if err := testRefusal(t, req.Transition); err != nil {
+				return err
+			}
+		}
+		failed, err := namedChecks(t, checks)
+		if err != nil {
+			return fmt.Errorf("apply action %q: %w", req.ActionID, err)
+		}
 		now := time.Now().UTC()
 		t.Notes = append(t.Notes, Note{Timestamp: now, Text: req.Note})
 		switch req.Transition {
@@ -349,6 +422,22 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 			if t.Status == StatusBacklog {
 				t.Status = StatusReady
 			}
+		case TransitionLand:
+			t.Status = LandingStatus(t)
+			if t.Outputs == nil {
+				t.Outputs = map[string]string{}
+			}
+			t.Outputs[OutputKeyCommit] = commit
+		case TransitionPass, TransitionFail:
+			row := TestRow{Result: TestPassed, At: now.Format(time.RFC3339), By: source, Commit: t.Outputs[OutputKeyCommit]}
+			if req.Transition == TransitionFail {
+				row.Result, row.Checks, row.Note = TestFailed, failed, req.Note
+			}
+			t.Tests = append(t.Tests, row)
+			t.Status = row.status()
+		case TransitionRetest:
+			t.Tests = t.Tests[:len(t.Tests)-1]
+			t.Status = StatusTesting
 		}
 		receipt := ActionReceipt{
 			ID:      req.ActionID,
@@ -357,6 +446,7 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 			Source:  source,
 			At:      now.Format(time.RFC3339),
 			Outcome: string(t.Status),
+			Commit:  commit,
 		}
 		if err := ValidateActionReceipt(receipt); err != nil {
 			return err

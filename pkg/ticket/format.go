@@ -98,7 +98,7 @@ func Parse(r io.Reader) (*Ticket, error) {
 	// Second pass: capture unknown keys into Extra, and handle legacy fields.
 	var raw map[string]interface{}
 	rawErr := yaml.Unmarshal(front, &raw)
-	if structErr != nil && (rawErr != nil || lostLoadBearing(&t, raw)) {
+	if structErr != nil && (rawErr != nil || lostLoadBearing(&t, raw, front)) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", structErr)
 	}
 	// Independent of the tolerance above: a damaged receipt can decode without
@@ -192,7 +192,7 @@ func Parse(r io.Reader) (*Ticket, error) {
 // mistyped abandon flag is wrong only about the ticket it is on, and that is
 // visible on the ticket; a lost parent, dep or type is wrong about a ticket
 // somewhere else, and nothing about the ticket shows it.
-func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
+func lostLoadBearing(t *Ticket, raw map[string]interface{}, front []byte) bool {
 	if v, ok := raw["parent"]; ok && t.Parent == "" && !emptyYAMLValue(v) {
 		return true
 	}
@@ -242,6 +242,19 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
 			}
 		}
 	}
+	// The tests break the same rule for the reason the verdicts do, bar that
+	// they are not append-only: a tolerated loss would be written back as the
+	// deletion of what a person said, and would leave retest an earlier test to
+	// undo. Decoded again alone, since the type error that brought us here may
+	// be any field's, and from the file's own bytes.
+	if v, ok := raw["tests"]; ok && !emptyYAMLValue(v) {
+		var only struct {
+			Tests []TestRow `yaml:"tests"`
+		}
+		if yaml.Unmarshal(front, &only) != nil {
+			return true
+		}
+	}
 	return false
 }
 
@@ -253,9 +266,9 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}) bool {
 // damaged one that decodes cleanly disables the protection without a type
 // error to catch it: a row with its `kind` or `id` dropped by a merge decodes
 // to a receipt findReceipt never matches, so a retry applies the action
-// again or creates a second ticket. Every field is required on write
-// (ValidateActionReceipt), so every decoded receipt is held to that, whatever
-// the decode reported.
+// again or creates a second ticket. Every field but a land's commit is
+// required on write (ValidateActionReceipt), so every decoded receipt is held
+// to that, whatever the decode reported.
 func damagedActions(t *Ticket, raw map[string]interface{}) error {
 	if v, ok := raw["actions"]; ok && !emptyYAMLValue(v) {
 		if len(t.Actions) == 0 {
@@ -263,6 +276,15 @@ func damagedActions(t *Ticket, raw map[string]interface{}) error {
 		}
 		if rows, ok := v.([]interface{}); ok && len(rows) != len(t.Actions) {
 			return fmt.Errorf("actions block holds %d rows and %d decoded", len(rows), len(t.Actions))
+		} else if ok {
+			// A receipt's commit is the one field a writer may leave out, so a
+			// lost one is told from the raw row.
+			for i, r := range rows {
+				row, _ := r.(map[string]interface{})
+				if t.Actions[i].Commit == "" && !emptyYAMLValue(row["commit"]) {
+					return fmt.Errorf("actions[%d]: commit did not decode", i)
+				}
+			}
 		}
 	}
 	for i, r := range t.Actions {
@@ -405,6 +427,12 @@ func Serialize(t *Ticket) ([]byte, error) {
 	if len(t.Actions) > 0 {
 		// Deterministic for the reason the verdicts block is.
 		if err := writeYAMLBlock(&buf, "actions", t.Actions); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.Tests) > 0 {
+		// Deterministic for the reason the verdicts block is.
+		if err := writeYAMLBlock(&buf, "tests", t.Tests); err != nil {
 			return nil, err
 		}
 	}

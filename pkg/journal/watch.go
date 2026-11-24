@@ -195,7 +195,7 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 						if closedByCommit(t, commit, freshState) {
 							return errAlreadyClosed
 						}
-						t.Status = ticket.StatusDone
+						t.Status = ticket.LandingStatus(t)
 						t.Notes = append(t.Notes, ticket.Note{
 							Timestamp: time.Now().UTC(),
 							Text:      autoCloseNote(commit.SHA),
@@ -203,6 +203,12 @@ func RunWatchCycle(projectName string, cfg project.ProjectConfig, store ticket.S
 						branch := dr.branch
 						if branch == "" {
 							branch = t.Branch
+						}
+						// The recorded commit is one a person already tested, so
+						// this is the landing after that test: left alone, the
+						// fill-if-absent below would keep naming the tested one.
+						if last := ticket.LastTest(t); last != nil && last.Commit == t.Outputs[ticket.OutputKeyCommit] {
+							delete(t.Outputs, ticket.OutputKeyCommit)
 						}
 						ticket.PopulateDoneOutputs(t, commit.SHA, branch)
 						return nil
@@ -302,9 +308,11 @@ func autoCloseNote(sha string) string {
 const legacyNoteSkew = 24 * time.Hour
 
 // closedByCommit reports whether t records that commit closed it, by any of:
-//   - outputs.commit naming it. Fill-if-absent, so it holds only the first
-//     commit that closed the ticket.
+//   - outputs.commit naming it. It holds one commit: the first that closed the
+//     ticket, until a land action or a landing after a test replaces it.
 //   - the auto-close note naming it.
+//   - a land action's receipt naming it, or a recorded test of it: what is left
+//     of a landing no auto-close noted once outputs.commit names a later one.
 //   - on a cycle that started with no journal state (freshState), a legacy
 //     note without a SHA timestamped no more than legacyNoteSkew before the
 //     commit's committer date. A legacy note older than that is taken not to
@@ -318,6 +326,16 @@ const legacyNoteSkew = 24 * time.Hour
 func closedByCommit(t *ticket.Ticket, commit GitCommit, freshState bool) bool {
 	if t.Outputs[ticket.OutputKeyCommit] == commit.SHA {
 		return true
+	}
+	for _, r := range t.Actions {
+		if r.Commit == commit.SHA {
+			return true
+		}
+	}
+	for _, r := range t.Tests {
+		if r.Commit == commit.SHA {
+			return true
+		}
 	}
 	committed, tsErr := time.Parse(time.RFC3339, commit.TS)
 	note := autoCloseNote(commit.SHA)
