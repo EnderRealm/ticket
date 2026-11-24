@@ -38,6 +38,8 @@ Creating & Editing:
   edit <id>              Update ticket fields
   edit --acceptance <t>  Set a body section (also --design, --test-results)
   add-note <id> [text]   Append a timestamped note (stdin if no text)
+  attach <id>            Attach a before or after picture by its https link
+  detach <id>            Remove a before or after attachment
   move <id> <project>    Move an isolated leaf ticket to another project
   delete <id>...         Delete tickets
 
@@ -77,8 +79,7 @@ Global flags:
 Statuses: backlog -> ready -> open -> testing -> done; closed = won't fix.
 testing = landed, waiting on a person's test; its dependents are not blocked.
 An epic's status is derived from its children; see tk edit --help.
---workflow-kind generic marks work no run can do (a person's step, an event);
-frontier and ready work leave it out. See tk create --help.
+--workflow-kind generic marks work no run can do; see tk create --help.
 IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.`
 
 // Version is set via -ldflags at build time.

@@ -53,6 +53,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *S
 	registerAddNote(server, store)
 	registerDep(server, store)
 	registerLink(server, store)
+	registerAttach(server, store)
 	registerReady(server, store, defaultProject)
 	registerFrontier(server, store, defaultProject)
 	registerBlocked(server, store, defaultProject)
@@ -84,7 +85,8 @@ type ticketSummaryJSON struct {
 	Closed   string            `json:"closed,omitempty"`
 	Extra    map[string]string `json:"-"`
 	// The effective kind: coding when the ticket stores none.
-	WorkflowKind string `json:"workflow_kind"`
+	WorkflowKind string              `json:"workflow_kind"`
+	Attachments  []ticket.Attachment `json:"attachments,omitempty"`
 }
 
 func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
@@ -122,8 +124,9 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 		Created:  t.Created.UTC().Format("2006-01-02T15:04:05Z"),
 		Updated:  updated,
 		Closed:   closed,
-		Extra:    t.Extra,
+		Extra:    ticket.ExtraFields(t),
 	}
+	j.Attachments = ticket.Attachments(t)
 	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
 	return j
 }
@@ -181,6 +184,8 @@ type ticketJSON struct {
 	// and retest); absent when none does.
 	LastTest *ticket.TestRow   `json:"last_test,omitempty"`
 	Extra    map[string]string `json:"-"`
+	// The before and after pictures (see ticket_attach).
+	Attachments []ticket.Attachment `json:"attachments,omitempty"`
 	// ClosedChildren names the children an edit that abandoned an epic closed
 	// along with it. Set by ticket_edit alone — every other tool leaves it
 	// empty, and it is omitted from the response then.
@@ -281,7 +286,8 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 	}
 
 	j.Updated, j.Closed = lifecycleTimes(t)
-	j.Extra = t.Extra
+	j.Extra = ticket.ExtraFields(t)
+	j.Attachments = ticket.Attachments(t)
 	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
 	j.How, j.Commands = t.How, t.Commands
 
@@ -636,10 +642,14 @@ const genericDoc = " A ticket's `workflow_kind` is `coding` (also what an absent
 // show or list by it, so the tools cannot describe it differently.
 const testingDoc = " Status `testing` is a change that has landed and still needs a person to test it: the tickets that depend on it are not blocked, it is listed by neither ticket_ready nor ticket_frontier, ticket_inbox lists it with the action `test`, and its epic reads open — never done or closed — until it leaves the status."
 
+// attachmentsDoc documents the attachments field in the tool descriptions that
+// show or list it, so the tools cannot describe it differently.
+const attachmentsDoc = " `attachments` is the ticket's before and after pictures, in that order, absent when it has none: each an `id`, a `role` (`before` or `after`) and an https `link`. Set with ticket_attach."
+
 func registerList(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_list",
-		Description: "List tickets with optional filters and pagination. Rows are metadata only: the body (`description`, `design`, `acceptance_criteria`, `test_results`) and `notes` are carried by ticket_show. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Each row carries `updated` (last write) and, while the ticket is done or closed, `closed` (when it entered that status), both RFC 3339 UTC; a ticket last written before tk stored these dates omits them. Each row carries `workflow_kind`, `coding` when the ticket stores none; `how` and `commands` are carried by ticket_show. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + testingDoc + skippedFilesDoc,
+		Description: "List tickets with optional filters and pagination. Rows are metadata only: the body (`description`, `design`, `acceptance_criteria`, `test_results`) and `notes` are carried by ticket_show. Returns non-closed tickets by default; `include_closed=true` keeps them, and `status` selects exactly one. Each row carries `updated` (last write) and, while the ticket is done or closed, `closed` (when it entered that status), both RFC 3339 UTC; a ticket last written before tk stored these dates omits them. Each row carries `workflow_kind`, `coding` when the ticket stores none; `how` and `commands` are carried by ticket_show. Default limit is 50; use offset/limit to paginate, and pass the `snapshot` token from the first page back on every later page — a page at offset > 0 without it is refused, and a store that changed in between is refused with the new token rather than mixing two revisions into one total." + snapshotDoc + " `namespaces` names the namespaces read in full." + parentDoc + " `unregistered_projects` names any project in the result set with a directory in the store but no `store: central` entry in config, so no repo is registered to it — run `tk init` in that project's repo to register it." + attachmentsDoc + testingDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
@@ -846,7 +856,7 @@ func (s showResultJSON) MarshalJSON() ([]byte, error) {
 func registerShow(server *mcp.Server, store ticket.Store) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_show",
-		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). `workflow_kind` is always present, `coding` when the ticket stores none; a generic ticket's `how` (ordered steps) and `commands` (ordered shell commands, exactly as written) are carried when set, metadata_only included. An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `empty-acceptance`, `envelope-fragment`, `legacy-review-log`, `two-markers`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. `last_test` is the last test a person recorded with ticket_apply_action's pass or fail, absent when none stands: `result` (`passed` or `failed`), `checks` (a fail's criteria, each `index` among the `test:` criteria and `text` as it read then), `note` (a fail's), `at`, `by` and `commit` (the `outputs.commit` that was tested). An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`." + genericDoc + testingDoc,
+		Description: "Show full details of a ticket by ID. Notes are trimmed to the newest 20 by default; use notes_limit=0 for all, omit_notes=true for none, or notes_offset to page further back. metadata_only=true returns the headers alone, dropping the body (`description`, `design`, `acceptance_criteria`, `test_results`) as well as the notes; `notes_total`, `audit` and an epic's children and counts are still reported. `namespace` is the ticket's project (empty on a single store). `workflow_kind` is always present, `coding` when the ticket stores none; a generic ticket's `how` (ordered steps) and `commands` (ordered shell commands, exactly as written) are carried when set, metadata_only included. An epic also carries `children` (id, title, status, type, namespace — every child in every namespace, IDs qualified), `children_total`, `counts` by status, and `complete`, all off one reading of the store so the derived status and the counts agree; while `complete` is false `diagnostics` names what could not be read and the epic reads neither done nor closed. A leaf whose parent does not make it a child carries `relationship_issue` saying why. `audit` is present only when the audit finds something wrong with the ticket, carrying `parent` (an invalid parent, with `kind` and `detail`), `epic_status` (an epic whose stored status is no longer the one it derives) and `content` (the body's issues, each with `kind` — `empty-acceptance`, `envelope-fragment`, `legacy-review-log`, `two-markers`), in the same shape `tk audit --json` reports them; absent means the checks ran and found nothing. `precondition` is the opaque token to pass to ticket_apply_action so the action lands only on the state shown here. `last_test` is the last test a person recorded with ticket_apply_action's pass or fail, absent when none stands: `result` (`passed` or `failed`), `checks` (a fail's criteria, each `index` among the `test:` criteria and `text` as it read then), `note` (a fail's), `at`, `by` and `commit` (the `outputs.commit` that was tested). An id whose file exists but cannot be read as a ticket is reported as `ticket unreadable`, naming the file — the ticket is there and the file needs repair, which is not the same as `ticket not found`." + attachmentsDoc + genericDoc + testingDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
 		t, err := store.Get(args.ID)
 		if err != nil {
@@ -1610,6 +1620,42 @@ func registerLink(server *mcp.Server, store ticket.Store) {
 			return nil
 		}); err != nil {
 			r, _ := errResult("failed to update target ticket: %v", err)
+			return r, nil, nil
+		}
+
+		r, err := jsonResult(toJSON(t))
+		return r, nil, err
+	})
+}
+
+type attachArgs struct {
+	ID           string `json:"id" jsonschema:"ticket ID"`
+	Action       string `json:"action" jsonschema:"add or remove"`
+	Role         string `json:"role" jsonschema:"before (the picture the ticket started from) or after (the picture the run captured)"`
+	AttachmentID string `json:"attachment_id,omitempty" jsonschema:"add only, required: the id the attachment's host gave it; letters, digits, '.', '_' and '-', starting with a letter or digit"`
+	Link         string `json:"link,omitempty" jsonschema:"add only, required: https link to the attachment"`
+	Source       string `json:"source,omitempty" jsonschema:"who is making this change; defaults to the MCP client name"`
+}
+
+func registerAttach(server *mcp.Server, store ticket.Store) {
+	addFlexTool(server, &mcp.Tool{
+		Name:        "ticket_attach",
+		Description: "Add or remove a ticket's before or after picture, held as a reference to where it is hosted. A ticket holds one per role: an add replaces the attachment with the same role, and a remove takes the role alone and is not an error when there is none. A role other than `before` or `after`, or a link that is not https, is refused. The response's `attachments` is what the ticket then holds.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args attachArgs) (*mcp.CallToolResult, any, error) {
+		if args.Action != "add" && args.Action != "remove" {
+			r, _ := errResult("action must be 'add' or 'remove'")
+			return r, nil, nil
+		}
+
+		role := ticket.AttachmentRole(args.Role)
+		t, err := ticket.Mutate(ticket.WithSource(store, sourceFor(req, args.Source)), args.ID, func(t *ticket.Ticket) error {
+			if args.Action == "remove" {
+				return ticket.RemoveAttachment(t, role)
+			}
+			return ticket.SetAttachment(t, ticket.Attachment{ID: args.AttachmentID, Role: role, Link: args.Link})
+		})
+		if err != nil {
+			r, _ := errResult("failed to update ticket: %v", err)
 			return r, nil, nil
 		}
 

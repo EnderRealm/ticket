@@ -144,6 +144,8 @@ Creating & Editing:
   edit <id>              Update ticket fields
   edit --acceptance <t>  Set a body section (also --design, --test-results)
   add-note <id> [text]   Append a timestamped note (stdin if no text)
+  attach <id>            Attach a before or after picture by its https link
+  detach <id>            Remove a before or after attachment
   move <id> <project>    Move an isolated leaf ticket to another project
   delete <id>...         Delete tickets
 
@@ -183,8 +185,7 @@ Global flags:
 Statuses: backlog -> ready -> open -> testing -> done; closed = won't fix.
 testing = landed, waiting on a person's test; its dependents are not blocked.
 An epic's status is derived from its children; see tk edit --help.
---workflow-kind generic marks work no run can do (a person's step, an event);
-frontier and ready work leave it out. See tk create --help.
+--workflow-kind generic marks work no run can do; see tk create --help.
 IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.
 ```
 
@@ -552,6 +553,21 @@ tk edit <id> --output artifact=            # remove
 Outputs are populated automatically when a ticket lands: the commit watcher records the closing commit's SHA and branch on auto-close, `land` records the commit it names, and marking a ticket `testing` or `done` from anywhere (CLI or MCP) copies its `branch` field. Existing values are not overwritten, so anything set by hand wins, with two exceptions: `land` sets `commit` whatever it held, and the watcher replaces a `commit` the ticket's last test was of, so a ticket that failed and landed again does not go on naming the commit that failed. Neither touches `branch`, which keeps the value already recorded. A derived value that would not serialize cleanly is dropped rather than written.
 
 `tk show` renders them as an `## Outputs` section, and they appear under `outputs` in `tk query` JSONL and MCP responses.
+
+### Attachments
+
+A ticket references up to two pictures hosted elsewhere, such as in Folio: a `before` picture, which the ticket started from, and an `after` picture, which the run captured. Each is an id, a role and an https link; the ticket holds no image bytes. There is one per role, so attaching another with the same role replaces it:
+
+```bash
+tk attach <id> --role before --attachment-id 9f2c --link https://folio.example/api/images/9f2c
+tk detach <id> --role before
+```
+
+The `ticket_attach` MCP tool does the same with `action` (`add` or `remove`), `role`, `attachment_id` and `link`. Removing one the ticket does not hold is not an error. A role other than `before` or `after` is refused, and so is a link that is not an https URL in printable ASCII, or that ends in a colon. The id is letters, digits, `.`, `_` and `-`, starting with a letter or digit.
+
+`attachments` — each an `id`, `role` and `link`, before then after, absent when there are none — is in `ticket_show` (`metadata_only` included) and every other tool that returns a ticket, in `ticket_list` and every other listing row, and in `tk query` and `tk frontier --json`. `tk show` prints the stored form. A moved ticket's copy keeps them.
+
+They are stored one frontmatter key per role, `attachment-before: <id> <link>` and `attachment-after: <id> <link>`, so a tk released before they existed keeps them as extra fields when it writes the ticket, and shows them as such. `attachment-before`, `attachment-after` and `attachments` are reserved names and cannot be extra fields. A stored value that is not a valid attachment is served as an extra field under its own key; `tk attach` replaces it and `tk detach` removes it.
 
 ### Timestamps
 

@@ -220,7 +220,8 @@ type Ticket struct {
 	// unlike the two blocks above it is not append-only.
 	Tests []TestRow `yaml:"tests,omitempty"`
 
-	// Custom key/value pairs, handled manually in format.go.
+	// Custom key/value pairs, handled manually in format.go. Attachments are
+	// stored among them; attachment.go reads and writes those.
 	Extra map[string]string `yaml:"-"`
 
 	// Parsed from markdown, not stored in frontmatter.
@@ -340,7 +341,7 @@ func ValidateExtraKey(key string) error {
 	if key == "" {
 		return fmt.Errorf("extra field key must not be empty")
 	}
-	if reservedKeys[key] {
+	if reservedKeys[key] || attachmentKeys[key] {
 		return fmt.Errorf("extra field key %q is reserved", key)
 	}
 	return validateKeyChars("extra field key", key)
