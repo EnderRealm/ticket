@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.14.0] - 2026-11-24
 
 ### Added
 - `land`, `pass`, `fail` and `retest` on `ticket_apply_action` and `ticket.ApplyAction`, and `tk land`, `tk pass`, `tk fail` and `tk retest`, so one rule decides whether a landed ticket waits for a person and a person's verdict has a home. `land` takes `commit` (a full hash), makes the ticket `testing` when it has a `test:` criterion and `done` otherwise, and sets `outputs.commit` in place of any earlier value. `pass` moves a `testing` ticket to `done`. `fail` moves it to `ready` and requires a note and `checks`, the failed criteria's 1-based indexes among the `test:` criteria. `retest` undoes the last of either, and is refused once the ticket has moved on from the status or the commit that test left. All four are refused on an epic and replay by action id like the other transitions; a receipt written by an earlier tk still replays. The CLI commands take `--note`, `--action-id` and `--json`. Library: `TransitionLand`, `TransitionPass`, `TransitionFail`, `TransitionRetest`, `ActionRequest.Commit`, `ActionRequest.Checks`, `ActionReceipt.Commit`, `ticket.LandingStatus`.
