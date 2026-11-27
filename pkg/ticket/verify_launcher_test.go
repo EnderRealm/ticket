@@ -22,9 +22,12 @@ const standInLauncherEnv = "TK_TEST_LAUNCHER"
 
 // standInLauncher plays sudo with no shell job control, which /bin/sh offers
 // portably only with a controlling terminal: it starts argv in a process group
-// of its own, writes its pid and the child's to pidFile, relays SIGTERM to the
-// child and waits for it.
+// of its own, writes its pid and the child's to pidFile suffixed with the
+// child's program name, relays SIGTERM to the child and waits for it. The
+// suffix keeps the context probe, launched through it before the command, from
+// standing in for the command.
 func standInLauncher(pidFile string, argv []string) int {
+	pidFile += "." + filepath.Base(argv[0])
 	term := make(chan os.Signal, 1)
 	signal.Notify(term, syscall.SIGTERM)
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -103,7 +106,7 @@ func TestRunVerifyExecsThroughLauncher(t *testing.T) {
 	launcher := writeLauncher(t, `out=$1; shift; printf '%s\n' "$@" > "$out"; exec "$@"`+"\n")
 
 	criteria := []Criterion{{Text: "echoes", Command: "/bin/echo 'two words' ok"}}
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, []string{launcher, argvFile})
+	results, _, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, []string{launcher, argvFile})
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -136,11 +139,11 @@ func TestRunVerifyLauncherDoesNotWidenAllowList(t *testing.T) {
 	launcher := []string{"/bin/sh", "-c", `touch "$0"; exec "$@"`, marker}
 	criteria := []Criterion{{Text: "not allowed", Command: "/usr/bin/true"}}
 
-	bare, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow}, nil)
+	bare, _, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow}, nil)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
-	launched, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow}, launcher)
+	launched, _, err := RunVerify(context.Background(), criteria, dir, VerifyPolicy{Allow: testAllow}, launcher)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)
 	}
@@ -178,11 +181,11 @@ func TestRunVerifyTimeoutUnderLauncherReachesTheCommand(t *testing.T) {
 	done := make(chan run, 1)
 	go func() {
 		policy := VerifyPolicy{Allow: []string{"/bin/sleep"}, Timeout: time.Second}
-		results, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sleep 30"}}, t.TempDir(), policy, []string{exe, pidFile})
+		results, _, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sleep 30"}}, t.TempDir(), policy, []string{exe, pidFile})
 		done <- run{results, err}
 	}()
 
-	pids := readPids(t, pidFile, 2)
+	pids := readPids(t, pidFile+".sleep", 2)
 	launcherPid, child := pids[0], pids[1]
 	t.Cleanup(func() { syscall.Kill(child, syscall.SIGKILL) })
 	// Without this the test would pass on a launcher whose child shares its
@@ -218,7 +221,7 @@ wait
 	timeout := 200 * time.Millisecond
 	start := time.Now()
 	policy := VerifyPolicy{Allow: []string{"/bin/sleep"}, Timeout: timeout}
-	results, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sleep 30"}}, t.TempDir(), policy, []string{launcher, pidFile})
+	results, _, err := RunVerify(context.Background(), []Criterion{{Text: "hangs", Command: "/bin/sleep 30"}}, t.TempDir(), policy, []string{launcher, pidFile})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("RunVerify: %v", err)

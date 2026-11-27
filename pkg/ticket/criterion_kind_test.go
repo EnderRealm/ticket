@@ -138,7 +138,7 @@ func TestUnverifiableReadsAsJudgedByRun(t *testing.T) {
 		if len(criteria) != 1 || criteria[0].Kind() != CriterionJudged || criteria[0].UnverifiableReason != "a recorded artifact" {
 			t.Fatalf("ParseCriteria(%q) = %+v, want one judged criterion keeping its reason", section, criteria)
 		}
-		results, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
+		results, _, err := RunVerify(context.Background(), criteria, t.TempDir(), VerifyPolicy{Allow: testAllow}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +194,7 @@ func TestVerifyReportsTestCriterionAsWaiting(t *testing.T) {
 		"- Not a command.\n  test: " + touch + "\n")
 	policy := VerifyPolicy{Allow: testAllow}
 
-	results, err := RunVerify(context.Background(), criteria, t.TempDir(), policy, nil)
+	results, _, err := RunVerify(context.Background(), criteria, t.TempDir(), policy, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

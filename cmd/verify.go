@@ -208,7 +208,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	// through the runner's context and drain that group before leaving.
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	results, err := ticket.RunVerify(ctx, criteria, dir, policy, verifyLauncher)
+	results, vctx, err := ticket.RunVerify(ctx, criteria, dir, policy, verifyLauncher)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -217,6 +217,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 	prov := ticket.VerifyProvenance{Dir: dir, Implementation: implementation, AcceptanceID: acceptanceID}
 	report := ticket.NewVerifyReport(t.ID, prov, results)
+	report.Context = vctx
 
 	// Record after the run so a store failure degrades to a warning instead of
 	// discarding the results. RecordVerify lands the record in the body as it

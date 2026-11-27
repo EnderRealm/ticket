@@ -147,6 +147,14 @@ func TestVerifyJSON(t *testing.T) {
 	if !strings.HasPrefix(report.AcceptanceID, "sha256:") || report.Candidate != "" {
 		t.Errorf("provenance = %q %q, want the identity and no candidate", report.AcceptanceID, report.Candidate)
 	}
+	// The same execution context ticket_verify reports, so the two can be
+	// compared; the CLI prints the output itself and keeps no file.
+	if c := report.Context; c == nil || c.Error != "" || len(c.Limits) == 0 || len(c.Parents) == 0 || c.Parents[0].PID != os.Getpid() || c.ControllingTerminal == nil {
+		t.Errorf("context = %+v, want limits, parents opening at this process and controlling_terminal", report.Context)
+	}
+	if report.Results[1].OutputFile != "" {
+		t.Errorf("output_file = %q, want none from the CLI", report.Results[1].OutputFile)
+	}
 }
 
 func TestVerifyDoesNotRecordAChangedContract(t *testing.T) {

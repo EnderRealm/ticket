@@ -129,6 +129,14 @@ output is capped to its last 4KB, where test frameworks print failures, and a
 capped output opens with a line naming how many bytes were dropped from the
 head.
 
+`ticket_verify` keeps a failed criterion's whole output in a private file named
+by that result's `output_file` until the job is evicted, its session
+disconnects or the server stops. When any command ran, the report's `context`
+says what the commands executed under — working directory, resource limits,
+parent process chain by command name and whether a controlling terminal
+opens — measured by a fixed tk-owned `/bin/sh` probe launched the way the
+commands are, before the first of them.
+
 ## MCP `dir` versus CLI `--dir`
 
 `--criterion`, `--no-record` and `--launcher` are CLI-only, and the

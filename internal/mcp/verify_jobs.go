@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -36,6 +38,10 @@ type verifyJob struct {
 	seq    uint64
 	cancel context.CancelFunc
 	done   chan struct{}
+	// outputDir holds the whole output of each failed criterion, named by the
+	// report's output_file. It lives as long as the job is retrievable and is
+	// removed once the job finishes and is evicted, disconnected or shut down.
+	outputDir string
 }
 
 func (j *verifyJob) snapshot() verifyJobResult {
@@ -53,6 +59,46 @@ func (j *verifyJob) stop() {
 	}
 	// Once recording begins, the complete result is committed. Cancellation
 	// cannot retract a store write or leave its outcome ambiguous.
+}
+
+// discardOutputs removes the job's kept output files. The job must have
+// finished: a running worker may still write them.
+func (j *verifyJob) discardOutputs() {
+	j.mu.Lock()
+	dir := j.outputDir
+	j.outputDir = ""
+	j.mu.Unlock()
+	if dir != "" {
+		os.RemoveAll(dir)
+	}
+}
+
+// keepOutputs writes each failed criterion's whole output to a file of its own
+// in a new private directory, names the file in the report as output_file, and
+// returns the directory, empty when nothing was kept. The report's output is
+// capped to its tail, which can drop the failing test's name when another
+// target's run follows it. A file that cannot be written leaves its result
+// without one and says why in its output; the run's results stand.
+func keepOutputs(report *ticket.VerifyReport, results []ticket.VerifyResult) string {
+	dir := ""
+	for i, r := range results {
+		if r.Status != ticket.VerifyFail || r.FullOutput == "" {
+			continue
+		}
+		var err error
+		if dir == "" {
+			dir, err = os.MkdirTemp("", "tk-verify-")
+		}
+		if err == nil {
+			path := filepath.Join(dir, fmt.Sprintf("criterion-%d.log", i+1))
+			if err = os.WriteFile(path, []byte(r.FullOutput), 0o600); err == nil {
+				report.Results[i].OutputFile = path
+				continue
+			}
+		}
+		report.Results[i].Output += fmt.Sprintf("\nfull output not kept: %v", err)
+	}
+	return dir
 }
 
 func (j *verifyJob) response(ctx context.Context, quickReport bool) (*mcp.CallToolResult, any, error) {
@@ -92,7 +138,7 @@ func newVerifyJobs() *verifyJobs {
 }
 
 func (v *verifyJobs) start(owner *mcp.ServerSession, id string, prov ticket.VerifyProvenance,
-	run func(context.Context) (ticket.VerifyReport, string, error), record func(string) error,
+	run func(context.Context) (ticket.VerifyReport, []ticket.VerifyResult, string, error), record func(string) error,
 ) (*verifyJob, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -130,6 +176,7 @@ func (v *verifyJobs) start(owner *mcp.ServerSession, id string, prov ticket.Veri
 			return nil, fmt.Errorf("verification capacity reached; wait for or cancel an active job")
 		}
 		delete(v.jobs, oldest.result.VerificationID)
+		oldest.discardOutputs()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	v.seq++
@@ -145,7 +192,7 @@ func (v *verifyJobs) start(owner *mcp.ServerSession, id string, prov ticket.Veri
 	}
 	go func() {
 		defer cancel()
-		report, text, err := run(ctx)
+		report, results, text, err := run(ctx)
 		j.mu.Lock()
 		switch {
 		case ctx.Err() != nil:
@@ -159,10 +206,12 @@ func (v *verifyJobs) start(owner *mcp.ServerSession, id string, prov ticket.Veri
 		recording := j.result.State == "recording"
 		j.mu.Unlock()
 		if recording {
+			outputDir := keepOutputs(&report, results)
 			if err := record(text); err != nil {
 				report.RecordError = fmt.Sprintf("failed to record verify results: %v", err)
 			}
 			j.mu.Lock()
+			j.outputDir = outputDir
 			j.result.Report = &report
 			j.result.State = "completed"
 			j.mu.Unlock()
@@ -186,6 +235,12 @@ func (v *verifyJobs) shutdown() {
 	v.mu.Unlock()
 	for _, j := range pending {
 		<-j.done
+		j.discardOutputs()
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for _, j := range v.jobs {
+		j.discardOutputs()
 	}
 }
 
@@ -197,6 +252,10 @@ func (v *verifyJobs) disconnect(owner *mcp.ServerSession) {
 		if j.owner == owner {
 			j.stop()
 			delete(v.jobs, id)
+			go func() {
+				<-j.done
+				j.discardOutputs()
+			}()
 		}
 	}
 	delete(v.sessions, owner)

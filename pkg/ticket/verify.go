@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -85,6 +86,10 @@ type VerifyResult struct {
 	Status    VerifyStatus
 	ExitCode  int    // meaningful for pass/fail
 	Output    string // combined stdout+stderr, trimmed and capped, then tk's own notes
+	// FullOutput is a failed command's whole combined output, uncut and raw, so
+	// a caller can keep what the cap on Output drops. Empty for every other
+	// status.
+	FullOutput string
 	// Argv is CheckVerify's answer for a runnable criterion: the full argv a
 	// run would exec, launcher prefix included, sanitized like the command.
 	Argv []string
@@ -120,6 +125,47 @@ const verifyWaitDelay = 5 * time.Second
 // follows. It sits inside verifyWaitDelay so the SIGKILL lands before exec
 // stops waiting on the launcher and closes its pipes.
 const launcherKillGrace = 2 * time.Second
+
+// contextProbeTimeout bounds the context probe. It reads a few values and
+// starts one ps per parent, so a probe still running after this is stuck.
+const contextProbeTimeout = 5 * time.Second
+
+// contextProbe is the /bin/sh script that measures what a run's commands
+// execute under. It is tk's own constant, never ticket content, so like dir and
+// the launcher it is not screened by the allow-list. It runs in a child, not in
+// tk: the Go runtime raises its own soft RLIMIT_NOFILE at startup and restores
+// the original only for the children it execs, so tk reading its own limits
+// would misreport the very limit a child runs under. It is POSIX sh, for
+// macOS's bash-as-sh and Linux's dash alike; a limit this shell's ulimit does
+// not take reads unknown. dash spells the process limit -p rather than -u, so
+// nproc falls back to -p; bash's -p is the pipe size, but bash takes -u and
+// never reaches the fallback. The parent chain is read by command name alone,
+// because arguments can carry secrets. A controlling terminal is one /dev/tty
+// opens on, read in a subshell because a failed redirection exits dash.
+const contextProbe = `set -f
+PATH=/bin:/usr/bin
+lim() { ulimit "$1" "-$2" 2>/dev/null || { [ "$2" = u ] && ulimit "$1" -p 2>/dev/null; }; }
+for pair in c:core d:data f:fsize l:memlock m:rss n:nofile s:stack t:cpu u:nproc v:as; do
+	l=${pair%%:*}
+	soft=$(lim -S "$l") || soft=unknown
+	hard=$(lim -H "$l") || hard=unknown
+	printf 'limit %s %s %s\n' "${pair#*:}" "$soft" "$hard"
+done
+pid=$PPID
+i=0
+while [ "$i" -lt 16 ] && [ "$pid" -gt 0 ] 2>/dev/null; do
+	line=$(ps -o ppid= -o comm= -p "$pid" 2>/dev/null) || break
+	set -- $line
+	[ $# -ge 2 ] || break
+	ppid=$1
+	shift
+	printf 'parent %s %s\n' "$pid" "$*"
+	pid=$ppid
+	i=$((i + 1))
+done
+if (true </dev/tty) 2>/dev/null; then echo 'tty yes'; else echo 'tty no'; fi
+printf 'dir %s\n' "$(pwd -P)"
+`
 
 // DefaultVerifyTimeout bounds a single criterion command when the project sets
 // no verify_timeout; an overrun is reported as a failure. It is the only place
@@ -422,27 +468,115 @@ func NewCriteriaReport(id string, criteria []Criterion) CriteriaReport {
 // which a launcher such as sudo relays to a command running as a user tk
 // cannot signal, then SIGKILL after launcherKillGrace; an unlaunched command's
 // group is sent SIGKILL at once.
-func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy VerifyPolicy, launcher []string) ([]VerifyResult, error) {
+//
+// Before the first command that runs, the context probe is launched the same
+// way — in dir, through launcher — and what it measured is returned as the
+// VerifyContext, so a command that fails under one caller and passes under
+// another can be compared without rebuilding either environment by hand. It is
+// nil when no command ran, and a probe that fails is reported in its Error,
+// never as a failure of the run.
+func RunVerify(ctx context.Context, criteria []Criterion, dir string, policy VerifyPolicy, launcher []string) ([]VerifyResult, *VerifyContext, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
-		return nil, fmt.Errorf("verify directory: %w", err)
+		return nil, nil, fmt.Errorf("verify directory: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("verify directory %s is not a directory", dir)
+		return nil, nil, fmt.Errorf("verify directory %s is not a directory", dir)
 	}
 
 	results := make([]VerifyResult, 0, len(criteria))
+	var vc *VerifyContext
 	for _, c := range criteria {
 		res := VerifyResult{Criterion: c, Status: VerifyUnverified}
 		switch c.Kind() {
 		case CriterionTest:
 			res.Status = VerifyWaiting
 		case CriterionVerify:
-			res = runCriterion(ctx, c, dir, policy, launcher)
+			argv, refused, ok := screenCriterion(c, policy)
+			res = refused
+			if ok {
+				if vc == nil {
+					vc = probeContext(ctx, dir, launcher)
+				}
+				res = runCriterion(ctx, c, argv, dir, policy, launcher)
+			}
 		}
 		results = append(results, sanitizeResult(res))
 	}
-	return results, nil
+	return results, vc, nil
+}
+
+// VerifyContext is what a run's commands executed under, as the context probe
+// measured it from a child launched the way each command is. Limits are as
+// /bin/sh's ulimit prints them — unlimited, or a count in that shell's unit for
+// the resource — and unknown where that shell does not report one. Parents
+// runs from the commands' parent, which is tk or the launcher, up toward pid 1.
+// ControllingTerminal is absent when the probe could not tell. Error is why the
+// probe failed, alongside whatever it did read.
+type VerifyContext struct {
+	Dir                 string          `json:"dir,omitempty"`
+	Limits              []VerifyLimit   `json:"limits,omitempty"`
+	Parents             []VerifyProcess `json:"parents,omitempty"`
+	ControllingTerminal *bool           `json:"controlling_terminal,omitempty"`
+	Error               string          `json:"error,omitempty"`
+}
+
+// VerifyLimit is one resource limit, by its RLIMIT name in lower case.
+type VerifyLimit struct {
+	Name string `json:"name"`
+	Soft string `json:"soft"`
+	Hard string `json:"hard"`
+}
+
+// VerifyProcess is one ancestor of a run's commands, by its command name.
+type VerifyProcess struct {
+	PID     int    `json:"pid"`
+	Command string `json:"command"`
+}
+
+// probeContext runs contextProbe in dir through launcher, within ctx and
+// contextProbeTimeout, and reads what it printed.
+func probeContext(ctx context.Context, dir string, launcher []string) *VerifyContext {
+	ctx, cancel := context.WithTimeout(ctx, contextProbeTimeout)
+	defer cancel()
+	out, err := launch(ctx, dir, launcher, []string{"/bin/sh", "-c", contextProbe})
+	vc := parseVerifyContext(string(out))
+	if err != nil {
+		vc.Error = "context probe: " + err.Error()
+		if s := strings.TrimSpace(string(out)); s != "" {
+			vc.Error += "\n" + SanitizeControl(capOutputTail(s))
+		}
+	}
+	return vc
+}
+
+// parseVerifyContext reads contextProbe's lines. A line it does not recognise,
+// such as a launcher's own message, is skipped. Every value is stripped of
+// control characters: a process's command name is whatever that process chose.
+func parseVerifyContext(out string) *VerifyContext {
+	vc := &VerifyContext{}
+	for _, line := range strings.Split(out, "\n") {
+		kind, rest, _ := strings.Cut(line, " ")
+		switch kind {
+		case "limit":
+			if f := strings.Fields(rest); len(f) == 3 {
+				vc.Limits = append(vc.Limits, VerifyLimit{Name: SanitizeControl(f[0]), Soft: SanitizeControl(f[1]), Hard: SanitizeControl(f[2])})
+			}
+		case "parent":
+			pid, command, _ := strings.Cut(rest, " ")
+			if n, err := strconv.Atoi(pid); err == nil {
+				vc.Parents = append(vc.Parents, VerifyProcess{PID: n, Command: SanitizeControl(command)})
+			}
+		case "tty":
+			if rest == "yes" || rest == "no" {
+				has := rest == "yes"
+				vc.ControllingTerminal = &has
+			}
+		case "dir":
+			vc.Dir = SanitizeControl(rest)
+		}
+	}
+	return vc
 }
 
 // CheckVerify reports, for each criterion, what RunVerify would decide before
@@ -802,28 +936,11 @@ func signalGroup(pid int, sig syscall.Signal) error {
 	return nil
 }
 
-func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPolicy, launcher []string) VerifyResult {
-	argv, refused, ok := screenCriterion(c, policy)
-	if !ok {
-		return refused
-	}
+// launch execs argv through launcher in dir, bounded by ctx, and returns its
+// combined output. It is the one way a verify child is started, so the context
+// probe runs under exactly what a criterion's command does.
+func launch(ctx context.Context, dir string, launcher, argv []string) ([]byte, error) {
 	argv = launchArgv(launcher, argv)
-
-	timeout := policy.Timeout
-	if timeout <= 0 {
-		timeout = DefaultVerifyTimeout
-	}
-	// The caller's deadline, read before the per-criterion one is layered on: a
-	// context expiring from the parent still reports DeadlineExceeded, so
-	// without this the note would credit the kill to a bound that never cut
-	// anything. WithTimeout keeps the earlier of the two, so the derived
-	// deadline equalling the caller's is exactly the case where the caller won.
-	callerDeadline, hasCallerDeadline := ctx.Deadline()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	deadline, _ := ctx.Deadline()
-	cutByCaller := hasCallerDeadline && callerDeadline.Equal(deadline)
-
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.WaitDelay = verifyWaitDelay
@@ -860,6 +977,27 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	if killLater != nil && killLater.Stop() {
 		signalGroup(cmd.Process.Pid, syscall.SIGKILL)
 	}
+	return out, err
+}
+
+// runCriterion runs a command screenCriterion admitted, as argv.
+func runCriterion(ctx context.Context, c Criterion, argv []string, dir string, policy VerifyPolicy, launcher []string) VerifyResult {
+	timeout := policy.Timeout
+	if timeout <= 0 {
+		timeout = DefaultVerifyTimeout
+	}
+	// The caller's deadline, read before the per-criterion one is layered on: a
+	// context expiring from the parent still reports DeadlineExceeded, so
+	// without this the note would credit the kill to a bound that never cut
+	// anything. WithTimeout keeps the earlier of the two, so the derived
+	// deadline equalling the caller's is exactly the case where the caller won.
+	callerDeadline, hasCallerDeadline := ctx.Deadline()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	cutByCaller := hasCallerDeadline && callerDeadline.Equal(deadline)
+
+	out, err := launch(ctx, dir, launcher, argv)
 
 	// The command's own output keeps its tail, because that is where test
 	// frameworks print the failures — a head cut leaves a long suite's startup
@@ -872,6 +1010,7 @@ func runCriterion(ctx context.Context, c Criterion, dir string, policy VerifyPol
 	res := VerifyResult{Criterion: c, Status: VerifyPass, Output: capOutputTail(string(out))}
 	if err != nil {
 		res.Status = VerifyFail
+		res.FullOutput = string(out)
 		res.ExitCode = -1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -1037,13 +1176,15 @@ func RecordVerify(store Store, id, record, acceptanceID string) error {
 // when the ticket names one through ImplementationField, absent otherwise,
 // AcceptanceID the CriteriaIdentity of the criteria that ran, and Candidate the
 // caller's name for what was under test, absent when it gave none — the same
-// provenance the Test Results record carries.
+// provenance the Test Results record carries. Context is what the commands
+// executed under, absent when none ran; the record does not carry it.
 type VerifyReport struct {
 	ID             string             `json:"id"`
 	Dir            string             `json:"dir"`
 	Implementation string             `json:"implementation,omitempty"`
 	AcceptanceID   string             `json:"acceptance_id"`
 	Candidate      string             `json:"candidate,omitempty"`
+	Context        *VerifyContext     `json:"context,omitempty"`
 	Summary        VerifyCounts       `json:"summary"`
 	OK             bool               `json:"ok"`
 	Results        []VerifyResultJSON `json:"results"`
@@ -1072,6 +1213,8 @@ func (c VerifyCounts) String() string {
 }
 
 // VerifyResultJSON is the wire form of a single criterion's outcome.
+// OutputFile names a file holding a failed command's whole output, set by a
+// caller that keeps one; NewVerifyReport leaves it empty.
 type VerifyResultJSON struct {
 	Criterion          string   `json:"criterion"`
 	Command            string   `json:"command,omitempty"`
@@ -1080,10 +1223,12 @@ type VerifyResultJSON struct {
 	Status             string   `json:"status"`
 	ExitCode           int      `json:"exit_code"`
 	Output             string   `json:"output,omitempty"`
+	OutputFile         string   `json:"output_file,omitempty"`
 	Argv               []string `json:"argv,omitempty"`
 }
 
-// NewVerifyReport builds the structured report for a verify run.
+// NewVerifyReport builds the structured report for a verify run. Its Results
+// are in the order of results, one for each.
 func NewVerifyReport(id string, prov VerifyProvenance, results []VerifyResult) VerifyReport {
 	counts := countVerify(results)
 	report := VerifyReport{
