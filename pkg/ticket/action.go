@@ -12,7 +12,7 @@ import (
 )
 
 // The action protocol: a scheduled observer attaches evidence to a ticket,
-// reopens or releases it, or files a discovery; a landing host records the
+// reopens, releases or finishes it, or files a discovery; a landing host records the
 // commit a ticket landed as, and the verdict of the person who tested it. Each
 // has to be able to retry after a lost response without duplicating the work or
 // overwriting a decision made in between. Separate show / add-note / edit calls
@@ -67,7 +67,8 @@ var errActionReplayed = errors.New("action replayed")
 //
 //   - an observer reopens work it found regressed, or releases a ticket parked
 //     on an outside event once that event occurred — clearing its waiting_on
-//     and, from backlog only, making it ready;
+//     and, from backlog only, making it ready — or, for a generic ticket parked
+//     on an event, finishes it once that event occurred;
 //   - a host lands a ticket as a commit, which makes it testing or done by
 //     LandingStatus;
 //   - a person passes a testing ticket, making it done, or fails it, making it
@@ -83,6 +84,7 @@ const (
 	TransitionNone    Transition = ""
 	TransitionReopen  Transition = "reopen"
 	TransitionRelease Transition = "release"
+	TransitionFinish  Transition = "finish"
 	TransitionLand    Transition = "land"
 	TransitionPass    Transition = "pass"
 	TransitionFail    Transition = "fail"
@@ -322,7 +324,8 @@ func errNoAtomicStore(what string, store Store) error {
 //  3. Apply. The note is appended, the transition applied and the receipt
 //     appended, and the ticket written once. Reopen sets the status to open.
 //     Release removes waiting_on and moves a backlog ticket to ready, leaving
-//     any other status as it is. Land sets the status to LandingStatus and
+//     any other status as it is. Finish removes waiting_on and moves the
+//     ticket to done. Land sets the status to LandingStatus and
 //     outputs.commit to the commit, in place of any earlier one;
 //     outputs.branch keeps the value already recorded. Landing a commit that
 //     was already tested decides again, so it returns a passed or failed ticket
@@ -338,8 +341,9 @@ func errNoAtomicStore(what string, store Store) error {
 // ErrTransitionNotPermitted after the replay check, so an applied one — a
 // release leaves no waiting_on behind, a pass no testing status — still
 // replays. Every transition is refused on an epic, release on a ticket
-// with no nonblank waiting_on, pass and fail on one that is not testing, and
-// retest on one whose last test no longer holds (testRefusal), and mark and
+// with no nonblank waiting_on, finish on one that is not generic, has no
+// nonblank waiting_on or is already done or closed (finishRefusal), pass and
+// fail on one that is not testing, and retest on one whose last test no longer holds (testRefusal), and mark and
 // unmark on a ticket that is not generic, unmark also on one whose last mark no
 // longer holds (markRefusal). A fail naming a check past the ticket's test:
 // criteria is refused after its status is judged.
@@ -363,9 +367,9 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		return nil, fmt.Errorf("apply action %q: note is required", req.ActionID)
 	}
 	switch req.Transition {
-	case TransitionNone, TransitionReopen, TransitionRelease, TransitionLand, TransitionPass, TransitionFail, TransitionRetest, TransitionMark, TransitionUnmark:
+	case TransitionNone, TransitionReopen, TransitionRelease, TransitionFinish, TransitionLand, TransitionPass, TransitionFail, TransitionRetest, TransitionMark, TransitionUnmark:
 	default:
-		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release, land, pass, fail, retest, mark, unmark)", ErrTransitionNotPermitted, req.Transition)
+		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release, finish, land, pass, fail, retest, mark, unmark)", ErrTransitionNotPermitted, req.Transition)
 	}
 	var commit string
 	var checks []int
@@ -427,6 +431,10 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 			return fmt.Errorf("%w: land on epic %s — an epic's status is derived from its children; land the child", ErrTransitionNotPermitted, t.ID)
 		}
 		switch req.Transition {
+		case TransitionFinish:
+			if err := finishRefusal(t); err != nil {
+				return err
+			}
 		case TransitionPass, TransitionFail, TransitionRetest:
 			if err := testRefusal(t, req.Transition); err != nil {
 				return err
@@ -450,6 +458,9 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 			if t.Status == StatusBacklog {
 				t.Status = StatusReady
 			}
+		case TransitionFinish:
+			delete(t.Extra, WaitingOnField)
+			t.Status = StatusDone
 		case TransitionLand:
 			t.Status = LandingStatus(t)
 			if t.Outputs == nil {
@@ -498,6 +509,26 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 	}
 	result.Ticket = t
 	return &result, nil
+}
+
+// finishRefusal is why finish does not apply to t, or nil. An observer
+// finishes only a generic step parked on an event it can read as having
+// happened: a coding ticket finishes by landing, an epic's status is derived
+// from its children, and a step with nothing to wait on is a person's to mark.
+func finishRefusal(t *Ticket) error {
+	if t.Type == TypeEpic {
+		return fmt.Errorf("%w: finish on epic %s — an epic's status is derived from its children; finish the child that waits", ErrTransitionNotPermitted, t.ID)
+	}
+	if kind := WorkflowKindOf(t); kind != WorkflowGeneric {
+		return fmt.Errorf("%w: finish on %s, which is %s and not generic — a coding ticket finishes by landing", ErrTransitionNotPermitted, t.ID, kind)
+	}
+	if WaitingOn(t) == "" {
+		return fmt.Errorf("%w: finish on %s, which has no %s — an observer finishes only a step parked on an event", ErrTransitionNotPermitted, t.ID, WaitingOnField)
+	}
+	if t.Status == StatusDone || t.Status == StatusClosed {
+		return fmt.Errorf("%w: finish on %s, which is already %s", ErrTransitionNotPermitted, t.ID, t.Status)
+	}
+	return nil
 }
 
 // discoverer is the store side of CreateDiscovery: the replay scan and the

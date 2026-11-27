@@ -236,6 +236,51 @@ func TestApplyActionReleaseMakesTheTicketReady(t *testing.T) {
 	}
 }
 
+// A finish makes a generic ticket parked on an event done and clears its
+// waiting_on; a coding ticket parked the same way is refused, and the tool
+// describes the transition.
+func TestApplyActionFinishesAParkedGenericTicket(t *testing.T) {
+	session := testServer(t)
+	step := createTicketID(t, session, map[string]any{"title": "Build 151 on every device", "workflow_kind": "generic"})
+	code := createTicketID(t, session, map[string]any{"title": "Code"})
+	for _, id := range []string{step, code} {
+		callObject(t, session, "ticket_edit", map[string]any{"id": id, "set": map[string]any{ticket.WaitingOnField: "observer/build-151"}})
+	}
+
+	tk := action(t, session, step, "obs-finish", "finish", nil)
+	if tk["status"] != "done" || tk["closed"] == nil {
+		t.Errorf("finish = %v", tk)
+	}
+	if shown := showTicket(t, session, step); shown[ticket.WaitingOnField] != nil || shown["status"] != "done" || len(notesOf(shown)) != 1 || len(actionsOf(shown)) != 1 {
+		t.Errorf("after finish: %v", shown)
+	}
+	if _, _, replayed := actionResponse(t, applyAction(t, session, actionArgs(step, "obs-finish", "finish", nil)), "replay"); !replayed {
+		t.Error("a retried finish was not replayed")
+	}
+	for _, id := range []string{code, step} {
+		if text := errorText(t, applyAction(t, session, actionArgs(id, "obs-2", "finish", nil)), "finish"); !strings.HasPrefix(text, "transition not permitted: ") {
+			t.Errorf("finish on %s refused with %q", id, text)
+		}
+	}
+
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "ticket_apply_action" {
+			continue
+		}
+		props := tool.InputSchema.(map[string]any)["properties"].(map[string]any)
+		transition := props["transition"].(map[string]any)["description"].(string)
+		if !strings.Contains(transition, "finish (") || !strings.Contains(tool.Description, "`finish`") {
+			t.Error("ticket_apply_action does not describe finish")
+		}
+		return
+	}
+	t.Error("ticket_apply_action is not registered")
+}
+
 func TestApplyActionCompetingWriters(t *testing.T) {
 	session := testServer(t)
 	id := createTicketID(t, session, map[string]any{"title": "Competing"})

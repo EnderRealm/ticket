@@ -364,6 +364,145 @@ func TestApplyActionRelease(t *testing.T) {
 	}
 }
 
+// parked creates a ticket of the given kind and status, waiting on value when
+// it is not empty, beside an unrelated extra field.
+func parked(t *testing.T, store Store, id string, kind WorkflowKind, status Status, value string) {
+	t.Helper()
+	tk := sampleTicket(id)
+	tk.WorkflowKind = kind
+	tk.Status = status
+	tk.Extra = map[string]string{"keep": "me"}
+	if value != "" {
+		tk.Extra[WaitingOnField] = value
+	}
+	if err := store.Create(tk); err != nil {
+		t.Fatalf("Create %s: %v", id, err)
+	}
+}
+
+func finishReq(id, action string) ActionRequest {
+	return ActionRequest{ID: id, ActionID: action, Note: "build 151 is on every device", Transition: TransitionFinish}
+}
+
+// An observer finishes a generic step parked on an event in one write: the
+// note, the cleared waiting_on, done with its closed date, and the receipt.
+func TestFinishTransitionOnParkedGeneric(t *testing.T) {
+	mutationSandbox(t)
+	store := NewProjectFileStore(t.TempDir(), "alpha")
+	for _, status := range []Status{StatusBacklog, StatusReady, StatusOpen, StatusTesting} {
+		id := "fin-" + string(status)
+		parked(t, store, id, WorkflowGeneric, status, "observer/build-151")
+		writes := len(readMutations(t, "alpha"))
+		before := time.Now().UTC().Truncate(time.Second)
+
+		res := mustApply(t, store, finishReq(id, "obs-finish"))
+		if res.Replayed || res.Ticket.Status != StatusDone || res.Receipt.Outcome != "done" {
+			t.Errorf("finish from %s = replayed %v, status %s, outcome %s", status, res.Replayed, res.Ticket.Status, res.Receipt.Outcome)
+		}
+		got := mustGet(t, store, id)
+		if got.Status != StatusDone || got.ClosedAt().IsZero() || got.ClosedAt().Before(before) {
+			t.Errorf("after finish from %s: status %s, closed %v", status, got.Status, got.ClosedAt())
+		}
+		if _, ok := got.Extra[WaitingOnField]; ok || got.Extra["keep"] != "me" {
+			t.Errorf("after finish from %s: extra %v", status, got.Extra)
+		}
+		if strings.Contains(string(readTicketFile(t, store, id)), WaitingOnField) {
+			t.Errorf("the file still carries waiting_on after a finish from %s", status)
+		}
+		if len(got.Notes) != 1 || got.Notes[0].Text != finishReq(id, "").Note {
+			t.Errorf("notes = %+v, want the evidence note", got.Notes)
+		}
+		if len(got.Actions) != 1 || got.Actions[0] != res.Receipt || res.Receipt.Kind != ReceiptApply {
+			t.Errorf("actions = %+v, want the returned receipt %+v", got.Actions, res.Receipt)
+		}
+		if entries := readMutations(t, "alpha")[writes:]; len(entries) != 1 || entries[0].TicketID != id || entries[0].Operation != MutationEdit {
+			t.Errorf("finish from %s wrote %+v; want one update", status, entries)
+		}
+	}
+}
+
+// Finish is refused on a coding ticket, on a generic one with no or a blank
+// waiting_on, on an epic, and on a parked generic ticket already done or
+// closed, and writes nothing.
+func TestFinishRefusedOffParkedGeneric(t *testing.T) {
+	store, _ := testStore(t)
+	parked(t, store, "fin-coding", WorkflowCoding, StatusBacklog, "observer/build-151")
+	parked(t, store, "fin-default", "", StatusBacklog, "observer/build-151")
+	parked(t, store, "fin-none", WorkflowGeneric, StatusBacklog, "")
+	parked(t, store, "fin-blank", WorkflowGeneric, StatusBacklog, "   ")
+	parked(t, store, "fin-done", WorkflowGeneric, StatusDone, "observer/build-151")
+	parked(t, store, "fin-closed", WorkflowGeneric, StatusClosed, "observer/build-151")
+	epic := sampleTicket("fin-epic")
+	epic.Type = TypeEpic
+	epic.WorkflowKind = WorkflowGeneric
+	epic.Status = StatusBacklog
+	epic.Extra = map[string]string{WaitingOnField: "observer/build-151"}
+	if err := store.Create(epic); err != nil {
+		t.Fatalf("Create epic: %v", err)
+	}
+	for _, id := range []string{"fin-coding", "fin-default", "fin-none", "fin-blank", "fin-done", "fin-closed", "fin-epic"} {
+		before := readTicketFile(t, store, id)
+		_, err := ApplyAction(store, finishReq(id, "obs-finish"))
+		if !errors.Is(err, ErrTransitionNotPermitted) || !strings.Contains(err.Error(), id) {
+			t.Errorf("finish on %s = %v; want ErrTransitionNotPermitted naming it", id, err)
+		}
+		if after := readTicketFile(t, store, id); !bytes.Equal(before, after) {
+			t.Errorf("a refused finish on %s changed the file:\n%s", id, after)
+		}
+	}
+}
+
+// A finish replays and conflicts as a release does, and a moved precondition
+// is refused.
+func TestFinishReplayAndPrecondition(t *testing.T) {
+	store, _ := testStore(t)
+	parked(t, store, "fin-0001", WorkflowGeneric, StatusBacklog, "observer/build-151")
+	req := finishReq("fin-0001", "obs-finish")
+	req.Precondition = mustGet(t, store, "fin-0001").Precondition()
+	res := mustApply(t, store, req)
+
+	// The replay answers with the recorded receipt although the ticket is done
+	// and no longer waits, under a stale precondition, and writes nothing.
+	if _, err := Mutate(store, "fin-0001", func(t *Ticket) error { t.Priority = 0; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before := readTicketFile(t, store, "fin-0001")
+	replay := mustApply(t, store, req)
+	if !replay.Replayed || replay.Receipt != res.Receipt || replay.Ticket.Status != StatusDone {
+		t.Errorf("replay = replayed %v, receipt %+v, status %s; want %+v", replay.Replayed, replay.Receipt, replay.Ticket.Status, res.Receipt)
+	}
+	// Same id, other content, conflicts.
+	changed := req
+	changed.Transition = TransitionRelease
+	if _, err := ApplyAction(store, changed); !errors.Is(err, ErrActionConflict) {
+		t.Errorf("another transition under a finish's id = %v; want ErrActionConflict", err)
+	}
+	changed = req
+	changed.Note = "other evidence"
+	if _, err := ApplyAction(store, changed); !errors.Is(err, ErrActionConflict) {
+		t.Errorf("another note under a finish's id = %v; want ErrActionConflict", err)
+	}
+	if after := readTicketFile(t, store, "fin-0001"); !bytes.Equal(before, after) {
+		t.Errorf("a replay or a conflict changed the file:\n%s", after)
+	}
+
+	// A moved precondition is refused and writes nothing.
+	parked(t, store, "fin-0002", WorkflowGeneric, StatusBacklog, "observer/build-152")
+	pre := mustGet(t, store, "fin-0002").Precondition()
+	if _, err := Mutate(store, "fin-0002", func(t *Ticket) error { t.Priority = 1; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before = readTicketFile(t, store, "fin-0002")
+	stale := finishReq("fin-0002", "obs-finish")
+	stale.Precondition = pre
+	if _, err := ApplyAction(store, stale); !errors.Is(err, ErrConflict) {
+		t.Errorf("finish on a stale precondition = %v; want ErrConflict", err)
+	}
+	if after := readTicketFile(t, store, "fin-0002"); !bytes.Equal(before, after) {
+		t.Errorf("a refused finish changed the file:\n%s", after)
+	}
+}
+
 // The write is one temp file plus one rename; a failure at that point leaves
 // the file as it was, with none of the note, the transition or the receipt.
 func TestApplyActionFaultLeavesTheTicketUntouched(t *testing.T) {
