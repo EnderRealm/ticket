@@ -187,6 +187,7 @@ func changedFields(prior, next *Ticket) []string {
 	add("outputs", !maps.Equal(prior.Outputs, next.Outputs))
 	add("extra", !maps.Equal(ExtraFields(prior), ExtraFields(next)))
 	add("attachments", !slices.Equal(Attachments(prior), Attachments(next)))
+	add(ClaimField, prior.Extra[ClaimField] != next.Extra[ClaimField])
 	add("branch", prior.Branch != next.Branch)
 	add("external_ref", prior.ExternalRef != next.ExternalRef)
 	add("workflow_kind", prior.WorkflowKind != next.WorkflowKind)

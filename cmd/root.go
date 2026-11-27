@@ -22,11 +22,10 @@ var (
 // behaviour lives in its own Long and Example, printed by tk <command> --help,
 // and policy prose lives in docs/ and the README.
 var helpText = `tk - ticket management CLI
-
 Usage: tk <command> [args]      tk <command> --help for details
 
 Viewing:
-  show <id>...           Display ticket details
+  show <id>...           Display ticket details (IDs match on prefix)
   ls, list               List tickets (done/closed hidden; --all shows them)
   frontier               Ready tickets whose deps are testing, done or closed
   search <query>         Search tickets by relevance
@@ -40,6 +39,8 @@ Creating & Editing:
   add-note <id> [text]   Append a timestamped note (stdin if no text)
   attach <id>            Attach a before or after picture by its https link
   detach <id>            Remove a before or after attachment
+  claim <id> --owner <o> Claim a ticket for a bounded time (--ttl, default 2h)
+  release <id> --owner   Release an owner's claim on a ticket
   move <id> <project>    Move an isolated leaf ticket to another project
   delete <id>...         Delete tickets
 
@@ -79,8 +80,7 @@ Global flags:
 Statuses: backlog -> ready -> open -> testing -> done; closed = won't fix.
 testing = landed, waiting on a person's test; its dependents are not blocked.
 An epic's status is derived from its children; see tk edit --help.
---workflow-kind generic marks work no run can do; see tk create --help.
-IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.`
+--workflow-kind generic marks work no run can do; see tk create --help.`
 
 // Version is set via -ldflags at build time.
 var Version = "dev"

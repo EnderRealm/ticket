@@ -106,6 +106,16 @@ func showTicket(store *ticket.FileStore, id string, metadataOnly bool) error {
 		}
 	}
 
+	// Annotate the claim line with whether it holds now.
+	if c := ticket.ReportClaim(t, time.Now()); c != nil {
+		state := "expired"
+		if c.Live {
+			state = "live"
+		}
+		line := ticket.ClaimField + ": " + t.Extra[ticket.ClaimField]
+		output = strings.Replace(output, line, line+"  # "+state, 1)
+	}
+
 	fmt.Print(sanitizeRenderedDocument(output))
 
 	// Outputs: what the ticket produced, for downstream handoff.

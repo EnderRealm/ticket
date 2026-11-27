@@ -468,7 +468,8 @@ func storeProject(store Store) string {
 
 // IsReady returns true if the ticket is actionable: neither terminal nor in
 // testing, all deps satisfied, parent chain active, its parent relationship
-// valid, and worked as coding rather than generic. Backlog counts: tickets are picked up straight
+// valid, worked as coding rather than generic, and not under a live claim
+// (someone is on it now). Backlog counts: tickets are picked up straight
 // out of backlog on stores that never groom to ready, and excluding them left
 // the ready listing empty. Callers that need the groomed set alone match
 // Status == StatusReady, as FrontierTickets does.
@@ -492,7 +493,7 @@ func parentOfVia(depOf depResolver) func(*Ticket) (*Ticket, error) {
 // resolve, is not an epic, or is one it may not belong to, and none of those
 // is evidence that nothing gates the work.
 func isReady(t *Ticket, depOf depResolver, parentOf func(*Ticket) (*Ticket, error)) bool {
-	if isTerminal(t) || t.Status == StatusTesting || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
+	if isTerminal(t) || t.Status == StatusTesting || t.relationshipIssue != "" || WaitingOn(t) != "" || claimedNow(t) || !runnableKind(t) {
 		return false
 	}
 	if isBlocked(t, depOf) {
@@ -511,7 +512,7 @@ func IsReadyOpen(store Store, t *Ticket) bool {
 // isReadyOpen is IsReadyOpen with the dep lookup supplied. The parent gate is
 // bypassed; a relationship issue is not a gate, it is an invalid leaf.
 func isReadyOpen(t *Ticket, depOf depResolver) bool {
-	if isTerminal(t) || t.Status == StatusTesting || t.relationshipIssue != "" || WaitingOn(t) != "" || !runnableKind(t) {
+	if isTerminal(t) || t.Status == StatusTesting || t.relationshipIssue != "" || WaitingOn(t) != "" || claimedNow(t) || !runnableKind(t) {
 		return false
 	}
 	return !isBlocked(t, depOf)
@@ -601,8 +602,9 @@ func readyOf(store Store, tickets []*Ticket, openMode bool) []*Ticket {
 }
 
 // FrontierTickets returns the schedulable set: coding tickets with status
-// ready whose dependencies are all testing, done or closed. Listed through
-// Store.List, so a CLI caller gets the store's warning about any file it skipped.
+// ready whose dependencies are all testing, done or closed, and that no live
+// claim holds. Listed through Store.List, so a CLI caller gets the store's
+// warning about any file it skipped.
 func FrontierTickets(store Store) ([]*Ticket, error) {
 	tickets, err := store.List()
 	if err != nil {
@@ -647,7 +649,7 @@ func frontierOf(store Store, tickets []*Ticket) []*Ticket {
 	depOf := depLookup(store, tickets)
 	var frontier []*Ticket
 	for _, t := range tickets {
-		if t.Status == StatusReady && t.relationshipIssue == "" && WaitingOn(t) == "" && runnableKind(t) && !isBlocked(t, depOf) {
+		if t.Status == StatusReady && t.relationshipIssue == "" && WaitingOn(t) == "" && !claimedNow(t) && runnableKind(t) && !isBlocked(t, depOf) {
 			frontier = append(frontier, t)
 		}
 	}

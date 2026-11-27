@@ -54,6 +54,7 @@ func NewServer(store ticket.Store, defaultProject string, centralRoot string) *S
 	registerDep(server, store)
 	registerLink(server, store)
 	registerAttach(server, store)
+	registerClaim(server, store)
 	registerReady(server, store, defaultProject)
 	registerFrontier(server, store, defaultProject)
 	registerBlocked(server, store, defaultProject)
@@ -87,6 +88,8 @@ type ticketSummaryJSON struct {
 	// The effective kind: coding when the ticket stores none.
 	WorkflowKind string              `json:"workflow_kind"`
 	Attachments  []ticket.Attachment `json:"attachments,omitempty"`
+	// The ticket's claim and whether it is live at this read (see ticket_claim).
+	Claim *ticket.ClaimReport `json:"claim,omitempty"`
 }
 
 func (j ticketSummaryJSON) MarshalJSON() ([]byte, error) {
@@ -127,6 +130,7 @@ func toSummaryJSON(t *ticket.Ticket) ticketSummaryJSON {
 		Extra:    ticket.ExtraFields(t),
 	}
 	j.Attachments = ticket.Attachments(t)
+	j.Claim = ticket.ReportClaim(t, time.Now())
 	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
 	return j
 }
@@ -190,6 +194,8 @@ type ticketJSON struct {
 	Extra    map[string]string `json:"-"`
 	// The before and after pictures (see ticket_attach).
 	Attachments []ticket.Attachment `json:"attachments,omitempty"`
+	// The ticket's claim and whether it is live at this read (see ticket_claim).
+	Claim *ticket.ClaimReport `json:"claim,omitempty"`
 	// ClosedChildren names the children an edit that abandoned an epic closed
 	// along with it. Set by ticket_edit alone — every other tool leaves it
 	// empty, and it is omitted from the response then.
@@ -293,6 +299,7 @@ func toJSON(t *ticket.Ticket) ticketJSON {
 	j.Updated, j.Closed = lifecycleTimes(t)
 	j.Extra = ticket.ExtraFields(t)
 	j.Attachments = ticket.Attachments(t)
+	j.Claim = ticket.ReportClaim(t, time.Now())
 	j.WorkflowKind = string(ticket.WorkflowKindOf(t))
 	j.How, j.Commands, j.Machine = t.How, t.Commands, t.Machine
 
@@ -1699,7 +1706,7 @@ type ticketsResultJSON struct {
 func registerReady(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_ready",
-		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic, no non-blank `waiting_on` field and a `workflow_kind` of `coding`. Epics are never listed — an epic is a container, not a work item — and neither is a generic ticket, whatever its status. Returns an object with `tickets`, ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it. Each row carries `workflow_kind`." + genericDoc + testingDoc + snapshotDoc + skippedFilesDoc,
+		Description: "List tickets that can be picked up: status open, ready or backlog, with all deps resolved, no terminal parent epic, no non-blank `waiting_on` field, no live claim (see ticket_claim) and a `workflow_kind` of `coding`. Epics are never listed — an epic is a container, not a work item — and neither is a generic ticket, whatever its status. Returns an object with `tickets`, ordered open first, then ready, then backlog; priority then ID within each group. A backlog ticket is reachable but ungroomed — check it carries a why and success criteria before starting it. Each row carries `workflow_kind`." + genericDoc + testingDoc + snapshotDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args readyArgs) (*mcp.CallToolResult, any, error) {
 		proj, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {
@@ -1766,7 +1773,7 @@ type frontierResultJSON struct {
 func registerFrontier(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name:        "ticket_frontier",
-		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all testing, done or closed, that carry no non-blank `waiting_on` field and whose `workflow_kind` is `coding` — a generic ticket is never listed. The parallel-safe set to start next. Each row carries `workflow_kind`. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + genericDoc + testingDoc + snapshotDoc + parentDoc + skippedFilesDoc,
+		Description: "List the schedulable frontier: tickets with status ready whose dependencies are all testing, done or closed, that carry no non-blank `waiting_on` field and no live claim (see ticket_claim), and whose `workflow_kind` is `coding` — a generic ticket is never listed. The parallel-safe set to start next. Each row carries `workflow_kind`. Returns an object with `tickets`, computed over the whole store before `parent` and `project` narrow it." + genericDoc + testingDoc + snapshotDoc + parentDoc + skippedFilesDoc,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args frontierArgs) (*mcp.CallToolResult, any, error) {
 		effectiveProject, r := scopeProject(args.Project, args.AllProjects, defaultProject)
 		if r != nil {

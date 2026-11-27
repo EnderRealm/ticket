@@ -352,7 +352,7 @@ func ValidateExtraKey(key string) error {
 	if key == "" {
 		return fmt.Errorf("extra field key must not be empty")
 	}
-	if reservedKeys[key] || attachmentKeys[key] {
+	if reservedKeys[key] || attachmentKeys[key] || key == ClaimField {
 		return fmt.Errorf("extra field key %q is reserved", key)
 	}
 	return validateKeyChars("extra field key", key)

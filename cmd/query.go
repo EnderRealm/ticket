@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/EnderRealm/ticket/v8/pkg/ticket"
 	"github.com/spf13/cobra"
@@ -24,11 +25,12 @@ JSON fields: id, status, abandoned, type, workflow_kind, priority, title,
   how[], commands[], machine, outputs, dep_cargo,
   last_test (result, checks[], note, at, by, commit),
   attachments[] (id, role, link; before then after),
+  claim (owner, machine, claimed_at, expires, live: whether it holds now),
   description, design, acceptance_criteria, test_results,
   notes[] (timestamp, text; every note, oldest first),
   plus any custom extra fields (flattened to top level)
-An empty body section's key is omitted, and so is attachments when there are
-none. workflow_kind is always present:
+An empty body section's key is omitted, and so are attachments and claim when
+there are none. workflow_kind is always present:
 coding when the ticket stores none.
 
 The body fields are the ones ticket_show carries, split the same way, and no
@@ -81,6 +83,7 @@ type ticketJSON struct {
 	Extra        map[string]string `json:"-"`
 
 	Attachments []ticket.Attachment `json:"attachments,omitempty"`
+	Claim       *ticket.ClaimReport `json:"claim,omitempty"`
 }
 
 type noteJSON struct {
@@ -126,6 +129,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 		DepCargo:    t.DepCargo,
 		Extra:       ticket.ExtraFields(t),
 		Attachments: ticket.Attachments(t),
+		Claim:       ticket.ReportClaim(t, time.Now()),
 	}
 	// The effective kind, so a consumer never infers coding from an absent key.
 	j.WorkflowKind = string(ticket.WorkflowKindOf(t))

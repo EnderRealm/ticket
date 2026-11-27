@@ -132,7 +132,7 @@ Claude Opus picks it up naturally from there. Other models may need additional g
 Usage: tk <command> [args]      tk <command> --help for details
 
 Viewing:
-  show <id>...           Display ticket details
+  show <id>...           Display ticket details (IDs match on prefix)
   ls, list               List tickets (done/closed hidden; --all shows them)
   frontier               Ready tickets whose deps are testing, done or closed
   search <query>         Search tickets by relevance
@@ -146,6 +146,8 @@ Creating & Editing:
   add-note <id> [text]   Append a timestamped note (stdin if no text)
   attach <id>            Attach a before or after picture by its https link
   detach <id>            Remove a before or after attachment
+  claim <id> --owner <o> Claim a ticket for a bounded time (--ttl, default 2h)
+  release <id> --owner   Release an owner's claim on a ticket
   move <id> <project>    Move an isolated leaf ticket to another project
   delete <id>...         Delete tickets
 
@@ -186,7 +188,6 @@ Statuses: backlog -> ready -> open -> testing -> done; closed = won't fix.
 testing = landed, waiting on a person's test; its dependents are not blocked.
 An epic's status is derived from its children; see tk edit --help.
 --workflow-kind generic marks work no run can do; see tk create --help.
-IDs match on prefix: 'tk show 5c4' matches 'nw-5c46'.
 ```
 
 The sections below cover each area in depth. The verify policy — where commands run, `verify_allow`, `verify_timeout` and the MCP tool's narrower `dir` — is in [docs/verify.md](docs/verify.md).
@@ -587,6 +588,27 @@ The `ticket_attach` MCP tool does the same with `action` (`add` or `remove`), `r
 `attachments` — each an `id`, `role` and `link`, before then after, absent when there are none — is in `ticket_show` (`metadata_only` included) and every other tool that returns a ticket, in `ticket_list` and every other listing row, and in `tk query` and `tk frontier --json`. `tk show` prints the stored form. A moved ticket's copy keeps them.
 
 They are stored one frontmatter key per role, `attachment-before: <id> <link>` and `attachment-after: <id> <link>`, so a tk released before they existed keeps them as extra fields when it writes the ticket, and shows them as such. `attachment-before`, `attachment-after` and `attachments` are reserved names and cannot be extra fields. A stored value that is not a valid attachment is served as an extra field under its own key; `tk attach` replaces it and `tk detach` removes it.
+
+### Claims
+
+A claim says who is working a ticket right now: an owner label, the machine that took it, when, and when it expires. A status cannot say it — `open` reads the same whether its writer set it a minute ago or exited yesterday — and a process check cannot either, since the store is exchanged between machines by git. An expiry can:
+
+```bash
+tk claim <id> --owner work-session-41            # a 2h lease
+tk claim <id> --owner work-session-41 --ttl 30m  # renews it, 30m from now
+tk release <id> --owner work-session-41
+```
+
+The MCP tools are `ticket_claim` (`id`, `owner`, `ttl` as a Go duration such as `90m`, `takeover`) and `ticket_release` (`id`, `owner`).
+
+- **Liveness.** A claim is live while now is before its `expires`; there is nothing else to it. A claim whose owner died stops counting by itself when it expires, and needs no release.
+- **Claiming.** The owner's own live claim is renewed: `expires` moves to the new lease and `claimed_at` stays. Another owner's live claim refuses the claim with the stable prefix `claim conflict:`, naming that owner, its machine and its expiry, and leaves the ticket unchanged; `--takeover` (`takeover: true`) replaces it. An expired claim is replaced whoever held it. Either replacement reports the claim it replaced (`replaced`). The decision and the write are one read-modify-write under the ticket's lock, so two claims racing on one machine cannot both succeed; two machines claiming between syncs meet as a merge conflict on the `claim` line.
+- **Releasing.** `tk release` clears the named owner's claim, live or expired. Another owner's live claim refuses it with `claim conflict:`. No claim, or another owner's expired one, is nothing to release: the ticket is left unwritten.
+- **Advisory.** Nothing else is refused on a claimed ticket: edits, notes, status changes and actions land as before. `ticket_ready`, `ticket_frontier` and `tk frontier` leave out a ticket under a live claim and list it again once the claim expires or is released. Moving a ticket to `done` or `closed`, by any path, clears its claim.
+
+`claim` — `owner`, `machine`, `claimed_at`, `expires` (RFC 3339 UTC) and `live`, whether it holds at the read — is in `ticket_show` and every other tool that returns a ticket, in `ticket_list` and every other listing row, and in `tk query` and `tk frontier --json`; it is absent when there is none. `tk show` prints the stored line marked `# live` or `# expired`.
+
+It is stored as one frontmatter key, `claim: <owner> <machine> <claimed-at> <expires>`, so a tk released before claims existed keeps it as an extra field when it writes the ticket. The owner is letters, digits, `.`, `_`, `-`, `:`, `@` and `/`, starting with a letter or digit, and so must the machine's host name be. `claim` is a reserved name and cannot be an extra field. A stored value that is not a valid claim is none; `tk claim` replaces it.
 
 ### Timestamps
 

@@ -131,11 +131,13 @@ func RemoveAttachment(t *Ticket, role AttachmentRole) error {
 }
 
 // ExtraFields is t's extra fields as JSON flattens them to the top level:
-// without the attachments Attachments returns, and without an extra of the
-// name they are served under.
+// without the attachments Attachments returns, without an extra of the name
+// they are served under, and without the claim, whose stored key is the one
+// ReportClaim is served under.
 func ExtraFields(t *Ticket) map[string]string {
 	fields := maps.Clone(t.Extra)
 	delete(fields, attachmentsKey)
+	delete(fields, ClaimField)
 	for _, a := range Attachments(t) {
 		delete(fields, a.Role.storedKey())
 	}

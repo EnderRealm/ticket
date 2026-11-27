@@ -1296,6 +1296,12 @@ func (s *FileStore) writeTicket(t, prior *Ticket) error {
 	if t.Type != TypeEpic {
 		t.Abandoned = false
 	}
+	// A finished ticket is nobody's to work. Dropped here so every path that
+	// finishes one — an edit, a land, a pass, a mark, a move, an epic's
+	// cascade — drops it.
+	if isTerminal(t) {
+		delete(t.Extra, ClaimField)
+	}
 	// A landed ticket records the branch it landed on. Done at the same write
 	// choke point as the timestamps so CLI and MCP callers all get it;
 	// fill-if-absent leaves any value the caller set explicitly.
