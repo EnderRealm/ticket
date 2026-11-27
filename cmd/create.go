@@ -29,7 +29,10 @@ event to observe. tk frontier and ready work leave a generic ticket out; as a
 dependency it still holds its dependents until it is testing, done or closed.
 Absent, or coding, is a run's work. A generic ticket carries its steps in --how
 and its shell commands in --command, each repeatable in order, one line per
-value and kept exactly as written (commas included). tk never runs them.`,
+value and kept exactly as written (commas included). tk never runs them.
+--machine names the machine those commands are for, so they are not run on
+the wrong one; absent, they are for whichever machine they are read on. It is
+a label: tk runs nothing on it.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runCreate,
 }
@@ -46,6 +49,7 @@ func init() {
 	f.String("workflow-kind", "", "how the ticket is worked: coding (the default) or generic (work a person does or an event to observe; left out of ready work)")
 	f.StringArray("how", nil, "a step for a generic ticket, one line; repeat in order")
 	f.StringArray("command", nil, "a shell command for a generic ticket, one line, kept exactly as written; repeat in order")
+	f.String("machine", "", "the machine a generic ticket's commands are for, one line; a label, tk runs nothing on it")
 
 	rootCmd.AddCommand(createCmd)
 }
@@ -136,6 +140,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	workflowKind, _ := cmd.Flags().GetString("workflow-kind")
+	machine, _ := cmd.Flags().GetString("machine")
 
 	t := &ticket.Ticket{
 		ID:           ticket.GenerateID(title),
@@ -150,6 +155,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		WorkflowKind: ticket.WorkflowKind(workflowKind),
 		How:          lineFlag(cmd, "how"),
 		Commands:     lineFlag(cmd, "command"),
+		Machine:      machine,
 		Created:      time.Now().UTC(),
 		Title:        title,
 		Body:         body.String(),

@@ -3,11 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- `machine` on a generic ticket names the machine its commands are for, so a step about one machine is not run on another: `tk create --machine` and `tk edit --machine` (blank clears), and `machine` on `ticket_create` and `ticket_edit` (an empty string clears it on edit). One line, kept exactly as written; a line break is refused. Carried by `tk show`, `ticket_show` and `tk query`. It is a label: tk runs nothing on it.
 - `finish` on `ticket_apply_action` and `ticket.ApplyAction`, so an observer that reads the event a generic ticket is parked on as having happened can finish it: it clears `waiting_on`, makes the ticket `done` and stamps its closed date, with the note and the receipt in the same write. It is refused on a coding ticket, on a ticket with no `waiting_on`, on one already done or closed, and on an epic, and replays by action id like the other transitions. Library: `TransitionFinish`.
 - `mark` and `unmark` on `ticket_apply_action` and `ticket.ApplyAction`, and `tk mark <id> <done|failed|not-needed>` and `tk unmark <id>`, so a person who finished a generic ticket's step by hand has their word recorded on it. `mark` takes `mark` (`done`, `failed` or `not_needed`) and a required note: `done` makes the ticket `done`, `not_needed` closes it, so its dependents are no longer held, and `failed` leaves the status as it is. Each records the mark — `result`, `note`, `at`, `by` (the declared source), `host` (the recording machine's host name) and `prior` (the status before it) — in a `marks` frontmatter block, returned as `last_mark` by `ticket_show`, every other tool that returns a full ticket, and `tk query`. `unmark` removes the last mark and restores its `prior`, and is refused when no mark stands or the ticket no longer holds the status that mark left. Both are refused on a ticket that is not generic, since a coding ticket finishes by landing, and on an epic; they replay by action id like the other transitions, and a receipt written by an earlier tk still replays. The CLI commands take `--note`, `--action-id` and `--json`. A moved ticket's copy carries no marks. Library: `TransitionMark`, `TransitionUnmark`, `ActionRequest.Mark`, `ticket.MarkResult`, `ticket.MarkRow`, `ticket.LastMark`, `Ticket.Marks`.
 
 ### Changed
 - `marks` and `last_mark` are reserved names and can no longer be extra fields.
+- `machine` is a reserved name and can no longer be an extra field.
 
 ## [8.14.0] - 2026-11-24
 

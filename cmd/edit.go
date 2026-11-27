@@ -39,7 +39,8 @@ README's Epic Status section has the full rules.
 
 --workflow-kind generic marks work no run can do, which tk frontier and ready
 work leave out (see tk create --help). --how and --command each replace their
-whole list when given, in the order repeated; a lone empty value clears it.`,
+whole list when given, in the order repeated; a lone empty value clears it.
+--machine names the machine those commands are for; --machine '' clears it.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runEdit,
 }
@@ -71,6 +72,7 @@ func registerEditFlags(cmd *cobra.Command) {
 	f.String("workflow-kind", "", "how the ticket is worked: coding or generic (blank removes the field, which reads as coding)")
 	f.StringArray("how", nil, "a step for a generic ticket, one line; repeat in order. Replaces the list; --how '' clears it")
 	f.StringArray("command", nil, "a shell command for a generic ticket, one line, kept exactly as written; repeat in order. Replaces the list; --command '' clears it")
+	f.String("machine", "", "the machine a generic ticket's commands are for, one line; a label, tk runs nothing on it (blank removes)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -147,6 +149,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("command") {
 		t.Commands = lineFlag(cmd, "command")
+		changed = true
+	}
+	if v, _ := cmd.Flags().GetString("machine"); cmd.Flags().Changed("machine") {
+		t.Machine = v
 		changed = true
 	}
 

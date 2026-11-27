@@ -21,7 +21,7 @@ the filter so the shell leaves ! and " alone.
 
 JSON fields: id, status, abandoned, type, workflow_kind, priority, title,
   deps[], links[], tags[], created, updated, closed, parent, external-ref,
-  how[], commands[], outputs, dep_cargo,
+  how[], commands[], machine, outputs, dep_cargo,
   last_test (result, checks[], note, at, by, commit),
   attachments[] (id, role, link; before then after),
   description, design, acceptance_criteria, test_results,
@@ -67,6 +67,7 @@ type ticketJSON struct {
 	WorkflowKind string            `json:"workflow_kind"`
 	How          []string          `json:"how,omitempty"`
 	Commands     []string          `json:"commands,omitempty"`
+	Machine      string            `json:"machine,omitempty"`
 	Title        string            `json:"title"`
 	Description  string            `json:"description,omitempty"`
 	Design       string            `json:"design,omitempty"`
@@ -144,7 +145,7 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 // metadata, like ticket_list's.
 func toQueryJSON(t *ticket.Ticket) ticketJSON {
 	j := toTicketJSON(t)
-	j.How, j.Commands = t.How, t.Commands
+	j.How, j.Commands, j.Machine = t.How, t.Commands, t.Machine
 	j.LastTest = ticket.LastTest(t)
 	j.LastMark = ticket.LastMark(t)
 	j.Description, j.Design, j.Acceptance, j.TestResults = ticket.BodySections(t.Body)

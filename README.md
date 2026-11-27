@@ -241,16 +241,20 @@ Beside its type, a ticket says how it is worked in `workflow_kind`. Absent, or `
 
 A generic ticket can carry `how`, an ordered list of steps, and `commands`, an ordered list of shell commands. Each entry is one non-empty line — an empty entry or one with a line break is refused — and is kept exactly as written, so a command reads back byte for byte whatever quotes, `#`, `:`, `&&`, `|` or `$(...)` it holds. tk never runs them.
 
+Some steps are about one machine — restarting a watcher on the MacBook, installing a build on the Studio — and whoever runs a step's commands, a person or a harness, runs them on the machine they are on. A generic ticket can therefore carry `machine`, the name of the machine its commands are for, so they are not run on the wrong one. It is optional: absent, the commands are for whichever machine they are read on. It is one line, kept exactly as written, and a line break is refused. It is a label and nothing more: tk itself runs nothing on that machine, or on any other — it never connects to a machine, and never runs a command remotely.
+
 ```bash
 tk create "Install the build on a phone" --workflow-kind generic \
   --how "Open TestFlight on the phone" --how "Install the latest build" \
   --command "xcrun devicectl list devices"
 tk edit <id> --command "make deploy"     # replaces the list
 tk edit <id> --how ""                    # clears it
+tk edit <id> --machine "Studio"          # the machine the commands are for
+tk edit <id> --machine ""                # clears it
 tk edit <id> --workflow-kind coding
 ```
 
-`ticket_create` and `ticket_edit` take `workflow_kind`, and `how` and `commands` as arrays of strings; on `ticket_edit` an array replaces the list and an empty array clears it. The three names are reserved and cannot be extra fields.
+`ticket_create` and `ticket_edit` take `workflow_kind`, `how` and `commands` as arrays of strings, and `machine` as a string; on `ticket_edit` an array replaces the list and an empty array clears it, and an empty `machine` clears it. The four names are reserved and cannot be extra fields.
 
 Ready work is what a run can start, so `tk frontier`, `ticket_ready` and `ticket_frontier` leave a generic ticket out, whatever its status. As a dependency it counts like any other ticket: a ticket that depends on it stays blocked until it is `testing`, `done` or `closed`, and then shows up in ready work as usual. `ticket_inbox` and `ticket_blocked` are unchanged.
 
@@ -265,7 +269,7 @@ tk unmark <id>                                       # undo the last mark, back 
 
 Each mark requires a note, and is refused on a ticket that is not generic, since a coding ticket finishes by landing, and on an epic. A ticket that depended on one marked `done` or `not-needed` is no longer held. The last mark standing is `last_mark` in `ticket_show` and `tk query`: `result` (`done`, `failed` or `not_needed`), `note`, `at` (when), `by` (who: the declared source), `host` (where: the machine that recorded it, as its host name read at the write) and `prior` (the status before the mark). The marks are kept in the ticket's `marks` frontmatter block; `unmark` removes the last and restores its `prior`, and is refused when no mark stands or the ticket no longer holds the status that mark left. `tk mark` and `tk unmark` take `--note`, `--action-id` and `--json` as `tk pass` does, and `unmark` has a default note. `marks` and `last_mark` are reserved names and cannot be extra fields.
 
-A `tk ls` and `tk search` row shows it in a `KIND` column beside `TYPE` (`tk frontier` drops the column, as it drops `STATUS`: every row there is coding). Every `tk query`, `tk frontier --json` and MCP listing row (`ticket_list`, `ticket_ready`, `ticket_frontier`, `ticket_blocked`, `ticket_inbox`, `ticket_search`) carries `workflow_kind`, `coding` when the ticket stores none, so a consumer never infers it; the file keeps exactly what was written. `tk show`, `ticket_show` and `tk query` carry `how` and `commands`.
+A `tk ls` and `tk search` row shows it in a `KIND` column beside `TYPE` (`tk frontier` drops the column, as it drops `STATUS`: every row there is coding). Every `tk query`, `tk frontier --json` and MCP listing row (`ticket_list`, `ticket_ready`, `ticket_frontier`, `ticket_blocked`, `ticket_inbox`, `ticket_search`) carries `workflow_kind`, `coding` when the ticket stores none, so a consumer never infers it; the file keeps exactly what was written. `tk show`, `ticket_show` and `tk query` carry `how`, `commands` and `machine`.
 
 ### Epic Status
 

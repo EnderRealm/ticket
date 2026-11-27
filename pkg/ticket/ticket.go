@@ -172,6 +172,10 @@ type Ticket struct {
 	// sequences in format.go, which quotes whatever needs it.
 	How      []string `yaml:"how,omitempty"`
 	Commands []string `yaml:"commands,omitempty"`
+	// Machine names the machine a generic ticket's commands are for, one line,
+	// kept as written. A label only: tk runs nothing on it. Absent, the
+	// commands are for whichever machine they are read on.
+	Machine string `yaml:"machine,omitempty"`
 	// The three dates are all read manually in Parse rather than by the struct
 	// decode. A scalar yaml.v3 cannot fit a field reaches d.terror, which records
 	// a TypeError and carries on decoding the rest — the mismatch Parse tolerates.
@@ -316,6 +320,9 @@ func (t *Ticket) Validate() error {
 	if err := ValidateLines("commands", t.Commands); err != nil {
 		return err
 	}
+	if strings.ContainsAny(t.Machine, "\r\n") {
+		return fmt.Errorf("invalid machine %q: must be a single line", t.Machine)
+	}
 	return nil
 }
 
@@ -327,7 +334,7 @@ var reservedKeys = map[string]bool{
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
 	"dep-cargo": true, "verdicts": true, "actions": true, "tests": true, "marks": true,
-	"workflow_kind": true, "how": true, "commands": true,
+	"workflow_kind": true, "how": true, "commands": true, "machine": true,
 	// JSON output fields derived from body sections, markdown heading and dates.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,

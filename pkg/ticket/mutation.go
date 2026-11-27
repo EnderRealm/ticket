@@ -192,6 +192,7 @@ func changedFields(prior, next *Ticket) []string {
 	add("workflow_kind", prior.WorkflowKind != next.WorkflowKind)
 	add("how", !slices.Equal(prior.How, next.How))
 	add("commands", !slices.Equal(prior.Commands, next.Commands))
+	add("machine", prior.Machine != next.Machine)
 	add("actions", !slices.Equal(prior.Actions, next.Actions))
 	add("tests", !slices.EqualFunc(prior.Tests, next.Tests, testRowsEqual))
 	add("marks", !slices.Equal(prior.Marks, next.Marks))

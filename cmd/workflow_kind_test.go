@@ -555,3 +555,145 @@ func TestRowsCarryWorkflowKind(t *testing.T) {
 		t.Errorf("tk frontier --json rows = %v, want the coding ticket carrying its kind", frontier)
 	}
 }
+
+// genericMachine is a machine name a plain YAML scalar would mangle: a
+// mapping indicator, a comment marker, a quote and surrounding spaces.
+const genericMachine = `  Steve's Mac Studio: #2  `
+
+// showFrontmatter decodes the frontmatter `tk show` printed for one ticket.
+func showFrontmatter(t *testing.T, out string) map[string]any {
+	t.Helper()
+	parts := strings.SplitN(out, "---\n", 3)
+	if len(parts) < 3 {
+		t.Fatalf("tk show printed no frontmatter:\n%s", out)
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal([]byte(parts[1]), &m); err != nil {
+		t.Fatalf("tk show frontmatter: %v\n%s", err, parts[1])
+	}
+	return m
+}
+
+// A generic ticket's machine, written through the CLI or MCP, reads back
+// byte for byte from the file and is carried on tk show, tk query and
+// ticket_show; absent, no surface invents one.
+func TestGenericMachineFieldRoundTrips(t *testing.T) {
+	store := centralStore(t, "wk-machine")
+
+	flags := append([]string{"workflow-kind", "generic", "machine", genericMachine}, lineFlags("command", genericCommands)...)
+	cliCreated, err := createWith(t, store, "Restart the watcher on the MacBook", flags...)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got, err := store.Get(cliCreated); err != nil || got.Machine != genericMachine {
+		t.Fatalf("tk create: machine = %q (err %v), want %q", got.Machine, err, genericMachine)
+	}
+
+	data, err := os.ReadFile(filepath.Join(store.Dir, cliCreated+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ticket.Parse(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("Parse stored file: %v\n%s", err, data)
+	}
+	if parsed.Machine != genericMachine || parsed.Extra["machine"] != "" {
+		t.Errorf("stored file: machine = %q extra %q, want %q\n%s", parsed.Machine, parsed.Extra["machine"], genericMachine, data)
+	}
+	if !reflect.DeepEqual(parsed.Commands, genericCommands) {
+		t.Errorf("stored file: commands = %q, want %q", parsed.Commands, genericCommands)
+	}
+
+	if err := store.Create(&ticket.Ticket{ID: "wk-nomachine", Status: ticket.StatusReady, Type: ticket.TypeFeature, Created: time.Now(), Title: "No machine", Body: "\n", WorkflowKind: ticket.WorkflowGeneric}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, metadataOnly := range []bool{false, true} {
+		if got := showFrontmatter(t, captureShow(t, store, cliCreated, metadataOnly))["machine"]; got != genericMachine {
+			t.Errorf("tk show (metadata %v): machine = %q, want %q", metadataOnly, got, genericMachine)
+		}
+		if got, ok := showFrontmatter(t, captureShow(t, store, "wk-nomachine", metadataOnly))["machine"]; ok {
+			t.Errorf("tk show (metadata %v) of a ticket with none: machine = %q", metadataOnly, got)
+		}
+	}
+
+	rows := captureQuery(t)
+	if got := rows[cliCreated]["machine"]; got != genericMachine {
+		t.Errorf("tk query: machine = %q, want %q", got, genericMachine)
+	}
+	if got, ok := rows["wk-nomachine"]["machine"]; ok {
+		t.Errorf("tk query of a ticket with none: machine = %q", got)
+	}
+
+	// tk edit: a value replaces, an edit of another field leaves it, blank clears.
+	if err := runEditWith(t, "wk-nomachine", "machine", "MacBook Pro"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got, _ := store.Get("wk-nomachine"); got.Machine != "MacBook Pro" {
+		t.Errorf("tk edit: machine = %q", got.Machine)
+	}
+	if err := runEditWith(t, "wk-nomachine", "title", "Renamed"); err != nil {
+		t.Fatalf("edit title: %v", err)
+	}
+	if got, _ := store.Get("wk-nomachine"); got.Machine != "MacBook Pro" {
+		t.Errorf("tk edit of another field: machine = %q", got.Machine)
+	}
+	if err := runEditWith(t, "wk-nomachine", "machine", ""); err != nil {
+		t.Fatalf("edit clear: %v", err)
+	}
+	data, _ = os.ReadFile(filepath.Join(store.Dir, "wk-nomachine.md"))
+	if strings.Contains(string(data), "\nmachine:") {
+		t.Errorf("tk edit --machine '' left the key:\n%s", data)
+	}
+	if err := runEditWith(t, "wk-nomachine", "machine", "Studio\nMacBook"); err == nil || !strings.Contains(err.Error(), "machine") {
+		t.Errorf("multi-line machine: err = %v, want a refusal naming machine", err)
+	}
+
+	served, root, err := serveStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := serveSession(t, served, "wk-machine", root)
+
+	for _, metadataOnly := range []bool{false, true} {
+		shown := callTool(t, session, "ticket_show", map[string]any{"id": "wk-machine/" + cliCreated, "metadata_only": metadataOnly})
+		if shown["machine"] != genericMachine {
+			t.Errorf("ticket_show (metadata %v): machine = %q, want %q", metadataOnly, shown["machine"], genericMachine)
+		}
+	}
+	if got, ok := callTool(t, session, "ticket_show", map[string]any{"id": "wk-machine/wk-nomachine"})["machine"]; ok {
+		t.Errorf("ticket_show of a ticket with none: machine = %q", got)
+	}
+
+	created := callTool(t, session, "ticket_create", map[string]any{
+		"title":         "Install the build on the Studio",
+		"workflow_kind": "generic",
+		"commands":      genericCommands,
+		"machine":       genericMachine,
+	})
+	mcpID := created["id"].(string)
+	if got := callTool(t, session, "ticket_show", map[string]any{"id": mcpID})["machine"]; got != genericMachine {
+		t.Errorf("ticket_show of ticket_create: machine = %q, want %q", got, genericMachine)
+	}
+
+	// ticket_edit: omitted leaves it, a value replaces, an empty string clears.
+	callTool(t, session, "ticket_edit", map[string]any{"id": mcpID, "title": "Renamed"})
+	if got := callTool(t, session, "ticket_show", map[string]any{"id": mcpID})["machine"]; got != genericMachine {
+		t.Errorf("ticket_edit of another field: machine = %q", got)
+	}
+	callTool(t, session, "ticket_edit", map[string]any{"id": mcpID, "machine": "MacBook Pro"})
+	if got := callTool(t, session, "ticket_show", map[string]any{"id": mcpID})["machine"]; got != "MacBook Pro" {
+		t.Errorf("ticket_edit: machine = %q", got)
+	}
+	callTool(t, session, "ticket_edit", map[string]any{"id": mcpID, "machine": ""})
+	if got, ok := callTool(t, session, "ticket_show", map[string]any{"id": mcpID})["machine"]; ok {
+		t.Errorf("ticket_edit with an empty machine left %q", got)
+	}
+
+	if text := callToolErr(t, session, "ticket_create", map[string]any{"title": "Two machines", "workflow_kind": "generic", "machine": "Studio\r\nMacBook"}); !strings.Contains(text, "machine") {
+		t.Errorf("multi-line machine refusal does not name machine: %s", text)
+	}
+	if text := callToolErr(t, session, "ticket_create", map[string]any{"title": "Machine as extra", "set": map[string]any{"machine": "Studio"}}); !strings.Contains(text, "machine") {
+		t.Errorf("machine as an extra field refusal does not name machine: %s", text)
+	}
+}

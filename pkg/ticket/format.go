@@ -400,6 +400,9 @@ func Serialize(t *Ticket) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if t.Machine != "" {
+		writeStringField(&buf, "machine", t.Machine)
+	}
 	if len(t.Extra) > 0 {
 		keys := make([]string, 0, len(t.Extra))
 		for k := range t.Extra {
