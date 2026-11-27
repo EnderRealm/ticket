@@ -76,6 +76,7 @@ type ticketJSON struct {
 	Outputs      map[string]string `json:"outputs,omitempty"`
 	DepCargo     map[string]string `json:"dep_cargo,omitempty"`
 	LastTest     *ticket.TestRow   `json:"last_test,omitempty"`
+	LastMark     *ticket.MarkRow   `json:"last_mark,omitempty"`
 	Extra        map[string]string `json:"-"`
 
 	Attachments []ticket.Attachment `json:"attachments,omitempty"`
@@ -138,13 +139,14 @@ func toTicketJSON(t *ticket.Ticket) ticketJSON {
 	return j
 }
 
-// toQueryJSON adds the body fields and the last test, under the keys and in the
+// toQueryJSON adds the body fields and the last test and mark, under the keys and in the
 // shape ticket_show carries them. `tk frontier --json` stays on toTicketJSON: its rows are
 // metadata, like ticket_list's.
 func toQueryJSON(t *ticket.Ticket) ticketJSON {
 	j := toTicketJSON(t)
 	j.How, j.Commands = t.How, t.Commands
 	j.LastTest = ticket.LastTest(t)
+	j.LastMark = ticket.LastMark(t)
 	j.Description, j.Design, j.Acceptance, j.TestResults = ticket.BodySections(t.Body)
 	for _, n := range t.Notes {
 		j.Notes = append(j.Notes, noteJSON{

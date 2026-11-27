@@ -208,6 +208,9 @@ func copyForMove(t *Ticket, newID string, provenance Note) *Ticket {
 	newTicket.Actions = nil
 	// The tests were of the source ticket's landings.
 	newTicket.Tests = nil
+	// The marks were said of the source ticket, and unmark on the copy would
+	// restore a status the source held.
+	newTicket.Marks = nil
 	newTicket.Notes = append(copyNotes(t.Notes), provenance)
 	return newTicket
 }

@@ -194,6 +194,7 @@ func changedFields(prior, next *Ticket) []string {
 	add("commands", !slices.Equal(prior.Commands, next.Commands))
 	add("actions", !slices.Equal(prior.Actions, next.Actions))
 	add("tests", !slices.EqualFunc(prior.Tests, next.Tests, testRowsEqual))
+	add("marks", !slices.Equal(prior.Marks, next.Marks))
 	// Trimmed on both sides: the parser normalizes a body's surrounding
 	// whitespace and a caller that built one by hand has not.
 	add("body", strings.TrimSpace(prior.Body) != strings.TrimSpace(next.Body))

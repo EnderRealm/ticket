@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `mark` and `unmark` on `ticket_apply_action` and `ticket.ApplyAction`, and `tk mark <id> <done|failed|not-needed>` and `tk unmark <id>`, so a person who finished a generic ticket's step by hand has their word recorded on it. `mark` takes `mark` (`done`, `failed` or `not_needed`) and a required note: `done` makes the ticket `done`, `not_needed` closes it, so its dependents are no longer held, and `failed` leaves the status as it is. Each records the mark — `result`, `note`, `at`, `by` (the declared source), `host` (the recording machine's host name) and `prior` (the status before it) — in a `marks` frontmatter block, returned as `last_mark` by `ticket_show`, every other tool that returns a full ticket, and `tk query`. `unmark` removes the last mark and restores its `prior`, and is refused when no mark stands or the ticket no longer holds the status that mark left. Both are refused on a ticket that is not generic, since a coding ticket finishes by landing, and on an epic; they replay by action id like the other transitions, and a receipt written by an earlier tk still replays. The CLI commands take `--note`, `--action-id` and `--json`. A moved ticket's copy carries no marks. Library: `TransitionMark`, `TransitionUnmark`, `ActionRequest.Mark`, `ticket.MarkResult`, `ticket.MarkRow`, `ticket.LastMark`, `Ticket.Marks`.
+
+### Changed
+- `marks` and `last_mark` are reserved names and can no longer be extra fields.
+
 ## [8.14.0] - 2026-11-24
 
 ### Added

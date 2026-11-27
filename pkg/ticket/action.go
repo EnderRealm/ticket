@@ -71,7 +71,9 @@ var errActionReplayed = errors.New("action replayed")
 //   - a host lands a ticket as a commit, which makes it testing or done by
 //     LandingStatus;
 //   - a person passes a testing ticket, making it done, or fails it, making it
-//     ready; retest undoes the last of either.
+//     ready; retest undoes the last of either;
+//   - a person marks a generic ticket done, failed (its status unchanged) or
+//     not needed (closed); unmark undoes the last mark.
 //
 // Everything else is an edit a human or an orchestrator makes through
 // ticket_edit.
@@ -85,6 +87,8 @@ const (
 	TransitionPass    Transition = "pass"
 	TransitionFail    Transition = "fail"
 	TransitionRetest  Transition = "retest"
+	TransitionMark    Transition = "mark"
+	TransitionUnmark  Transition = "unmark"
 )
 
 // ReceiptKind says what a receipt records: an action applied to an existing
@@ -132,12 +136,13 @@ type ActionReceipt struct {
 // means the caller makes no claim about the state it read, and the action
 // lands on whatever the ticket holds. Note is required. ActionID is the
 // caller's stable identity for this action: the same ID sent again with the
-// same Note, Transition, Commit and Checks returns the recorded outcome without
-// a second note or transition, whatever the precondition says by then. Commit
-// is the full hash a land records, required for it and refused with any other
-// transition. Checks are the criteria a fail names, as 1-based indexes among
-// the ticket's `test:` criteria in parse order: at least one, each once, and
-// refused with any other transition.
+// same Note, Transition, Commit, Checks and Mark returns the recorded outcome
+// without a second note or transition, whatever the precondition says by then.
+// Commit is the full hash a land records, required for it and refused with any
+// other transition. Checks are the criteria a fail names, as 1-based indexes
+// among the ticket's `test:` criteria in parse order: at least one, each once,
+// and refused with any other transition. Mark is the result a mark records,
+// required for it and refused with any other transition.
 type ActionRequest struct {
 	ID           string
 	ActionID     string
@@ -146,6 +151,7 @@ type ActionRequest struct {
 	Transition   Transition
 	Commit       string
 	Checks       []int
+	Mark         MarkResult
 }
 
 // ActionResult is what an action produced, or what it produced the first time
@@ -189,6 +195,7 @@ type applyPayload struct {
 	Transition Transition `json:"transition"`
 	Commit     string     `json:"commit,omitempty"`
 	Checks     []int      `json:"checks,omitempty"`
+	Mark       MarkResult `json:"mark,omitempty"`
 }
 
 // discoverPayload is the content of a discovery, in the fixed field order the
@@ -321,15 +328,21 @@ func errNoAtomicStore(what string, store Store) error {
 //     was already tested decides again, so it returns a passed or failed ticket
 //     to testing: a retry of one landing reuses its ActionID. Pass moves a
 //     testing ticket to done and fail to ready, each recording the test; retest
-//     removes the last test's record and returns the ticket to testing.
+//     removes the last test's record and returns the ticket to testing. Mark
+//     records the mark with the declared source and this host's name, moving
+//     the ticket to done for done and closed for not needed and leaving a
+//     failed one's status as it is; unmark removes the last mark's record and
+//     restores the status the ticket held before it.
 //
 // A transition that does not apply to the ticket is refused with
 // ErrTransitionNotPermitted after the replay check, so an applied one — a
 // release leaves no waiting_on behind, a pass no testing status — still
 // replays. Every transition is refused on an epic, release on a ticket
 // with no nonblank waiting_on, pass and fail on one that is not testing, and
-// retest on one whose last test no longer holds (testRefusal). A fail naming a
-// check past the ticket's test: criteria is refused after its status is judged.
+// retest on one whose last test no longer holds (testRefusal), and mark and
+// unmark on a ticket that is not generic, unmark also on one whose last mark no
+// longer holds (markRefusal). A fail naming a check past the ticket's test:
+// criteria is refused after its status is judged.
 //
 // Every argument that can be judged without the store is judged first, so a
 // refused request costs nothing on disk. The store must be a FileStore or a
@@ -350,9 +363,9 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		return nil, fmt.Errorf("apply action %q: note is required", req.ActionID)
 	}
 	switch req.Transition {
-	case TransitionNone, TransitionReopen, TransitionRelease, TransitionLand, TransitionPass, TransitionFail, TransitionRetest:
+	case TransitionNone, TransitionReopen, TransitionRelease, TransitionLand, TransitionPass, TransitionFail, TransitionRetest, TransitionMark, TransitionUnmark:
 	default:
-		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release, land, pass, fail, retest)", ErrTransitionNotPermitted, req.Transition)
+		return nil, fmt.Errorf("%w: %q is not one of the permitted transitions (reopen, release, land, pass, fail, retest, mark, unmark)", ErrTransitionNotPermitted, req.Transition)
 	}
 	var commit string
 	var checks []int
@@ -371,7 +384,18 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 	} else if len(req.Checks) > 0 {
 		return nil, fmt.Errorf("apply action %q: checks are named by fail alone", req.ActionID)
 	}
-	digest := actionDigest(applyPayload{Note: req.Note, Transition: req.Transition, Commit: commit, Checks: checks})
+	var host string
+	if req.Transition == TransitionMark {
+		if !validMarkResult(req.Mark) {
+			return nil, fmt.Errorf("apply action %q: mark %q is not one of done, failed, not_needed", req.ActionID, req.Mark)
+		}
+		if host, err = os.Hostname(); err != nil {
+			return nil, fmt.Errorf("apply action %q: mark: naming the host that records it: %w", req.ActionID, err)
+		}
+	} else if req.Mark != "" {
+		return nil, fmt.Errorf("apply action %q: a mark result is named by mark alone", req.ActionID)
+	}
+	digest := actionDigest(applyPayload{Note: req.Note, Transition: req.Transition, Commit: commit, Checks: checks, Mark: req.Mark})
 	source := declaredSource(store)
 
 	var result ActionResult
@@ -407,6 +431,10 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 			if err := testRefusal(t, req.Transition); err != nil {
 				return err
 			}
+		case TransitionMark, TransitionUnmark:
+			if err := markRefusal(t, req.Transition); err != nil {
+				return err
+			}
 		}
 		failed, err := namedChecks(t, checks)
 		if err != nil {
@@ -438,6 +466,13 @@ func ApplyAction(store Store, req ActionRequest) (*ActionResult, error) {
 		case TransitionRetest:
 			t.Tests = t.Tests[:len(t.Tests)-1]
 			t.Status = StatusTesting
+		case TransitionMark:
+			row := MarkRow{Result: req.Mark, Note: req.Note, At: now.Format(time.RFC3339), By: source, Host: host, Prior: t.Status}
+			t.Marks = append(t.Marks, row)
+			t.Status = row.status()
+		case TransitionUnmark:
+			t.Status = LastMark(t).Prior
+			t.Marks = t.Marks[:len(t.Marks)-1]
 		}
 		receipt := ActionReceipt{
 			ID:      req.ActionID,

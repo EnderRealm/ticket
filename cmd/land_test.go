@@ -31,12 +31,12 @@ func landStore(t *testing.T) *ticket.FileStore {
 	return store
 }
 
-// runLanding runs one of the four commands against a fresh flag set parsed from
-// args, returning what it printed.
+// runLanding runs one of the landing, test or mark commands against a fresh
+// flag set parsed from args, returning what it printed.
 func runLanding(t *testing.T, name string, args ...string) (string, error) {
 	t.Helper()
 	cmd := &cobra.Command{}
-	run := map[string]func(*cobra.Command, []string) error{"land": runLand, "pass": runPass, "fail": runFail, "retest": runRetest}[name]
+	run := map[string]func(*cobra.Command, []string) error{"land": runLand, "pass": runPass, "fail": runFail, "retest": runRetest, "mark": runMark, "unmark": runUnmark}[name]
 	switch name {
 	case "land":
 		registerLandFlags(cmd)

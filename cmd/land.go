@@ -103,13 +103,14 @@ func runRetest(cmd *cobra.Command, args []string) error {
 	return applyLanding(cmd, "Last test undone; back to testing.", ticket.ActionRequest{ID: args[0], Transition: ticket.TransitionRetest})
 }
 
-// landingJSON is the --json report of the four commands. Status is what the
-// ticket holds now, which on a replay may have moved on from the receipt's
-// outcome.
+// landingJSON is the --json report of the four commands, and of mark and
+// unmark. Status is what the ticket holds now, which on a replay may have moved
+// on from the receipt's outcome.
 type landingJSON struct {
 	ID       string               `json:"id"`
 	Status   string               `json:"status"`
 	LastTest *ticket.TestRow      `json:"last_test,omitempty"`
+	LastMark *ticket.MarkRow      `json:"last_mark,omitempty"`
 	Receipt  ticket.ActionReceipt `json:"receipt"`
 	Replayed bool                 `json:"replayed"`
 }
@@ -140,6 +141,7 @@ func applyLanding(cmd *cobra.Command, defaultNote string, req ticket.ActionReque
 			ID:       res.Ticket.ID,
 			Status:   string(res.Ticket.Status),
 			LastTest: ticket.LastTest(res.Ticket),
+			LastMark: ticket.LastMark(res.Ticket),
 			Receipt:  res.Receipt,
 			Replayed: res.Replayed,
 		}, "", "  ")

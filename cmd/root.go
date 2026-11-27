@@ -59,15 +59,15 @@ Verification & Landing:
   pass <id>              Pass a testing ticket; done
   fail <id> --check <n>  Fail a testing ticket with a --note; ready
   retest <id>            Undo the last pass or fail; testing
+  mark <id> <result>     Mark a generic ticket done, failed or not-needed
+  unmark <id>            Undo the last mark; the status before it
 
-Setup & Server:
+Setup, Server & Journal:
   init                   Initialize tk and register a project
   status                 System status and project overview
   sync                   Sync ticket changes to git
   serve                  Start MCP server on stdio
   activate               Activate Root and cross-project parents
-
-Journal:
   watch start|stop|status|logs   Background git commit watcher
   recompute              Rebuild commit journal from git history
 

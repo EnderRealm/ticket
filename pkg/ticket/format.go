@@ -255,6 +255,16 @@ func lostLoadBearing(t *Ticket, raw map[string]interface{}, front []byte) bool {
 			return true
 		}
 	}
+	// The marks on the tests' terms: a tolerated loss would be written back as
+	// the deletion of what a person said, and leave unmark an earlier mark.
+	if v, ok := raw["marks"]; ok && !emptyYAMLValue(v) {
+		var only struct {
+			Marks []MarkRow `yaml:"marks"`
+		}
+		if yaml.Unmarshal(front, &only) != nil {
+			return true
+		}
+	}
 	return false
 }
 
@@ -433,6 +443,12 @@ func Serialize(t *Ticket) ([]byte, error) {
 	if len(t.Tests) > 0 {
 		// Deterministic for the reason the verdicts block is.
 		if err := writeYAMLBlock(&buf, "tests", t.Tests); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.Marks) > 0 {
+		// Deterministic for the reason the verdicts block is.
+		if err := writeYAMLBlock(&buf, "marks", t.Marks); err != nil {
 			return nil, err
 		}
 	}

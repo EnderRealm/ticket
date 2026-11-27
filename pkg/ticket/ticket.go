@@ -220,6 +220,10 @@ type Ticket struct {
 	// unlike the two blocks above it is not append-only.
 	Tests []TestRow `yaml:"tests,omitempty"`
 
+	// What a person said of this generic ticket (mark.go), oldest first, on the
+	// tests' terms: mark appends a row and unmark removes the last.
+	Marks []MarkRow `yaml:"marks,omitempty"`
+
 	// Custom key/value pairs, handled manually in format.go. Attachments are
 	// stored among them; attachment.go reads and writes those.
 	Extra map[string]string `yaml:"-"`
@@ -322,12 +326,12 @@ var reservedKeys = map[string]bool{
 	"id": true, "status": true, "abandoned": true, "abandoned-at": true,
 	"deps": true, "links": true, "created": true, "updated": true, "completed": true, "type": true, "priority": true,
 	"external-ref": true, "branch": true, "parent": true, "tags": true, "outputs": true,
-	"dep-cargo": true, "verdicts": true, "actions": true, "tests": true,
+	"dep-cargo": true, "verdicts": true, "actions": true, "tests": true, "marks": true,
 	"workflow_kind": true, "how": true, "commands": true,
 	// JSON output fields derived from body sections, markdown heading and dates.
 	"title": true, "description": true, "design": true, "notes": true,
 	"acceptance_criteria": true, "test_results": true, "external_ref": true,
-	"dep_cargo": true, "closed": true, "last_test": true,
+	"dep_cargo": true, "closed": true, "last_test": true, "last_mark": true,
 }
 
 // IsReservedKey reports whether key is a known frontmatter field name.
