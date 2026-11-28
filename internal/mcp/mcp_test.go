@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -572,6 +573,73 @@ func TestCreateWithRepoRejectsConflictingProject(t *testing.T) {
 				t.Errorf("refused create still wrote %s into project %s", e.Name(), proj)
 			}
 		}
+	}
+}
+
+func TestCreateRefusesInvalidProjectByName(t *testing.T) {
+	// The tk serve shape: a MultiStore behind a CWD-derived default. A project
+	// that is not a bare name was joined into the generated ID, so "alpha/b"
+	// reached alpha's FileStore as "b/<id>" and was refused as a bad ticket ID
+	// pointing at "the id you passed" — an ID tk generated itself.
+	session, root := testCentralServerWithDefault(t, "alpha", "alpha", "beta")
+
+	for _, bad := range []string{"alpha/b", "..", "."} {
+		refused := callTool(t, session, "ticket_create", map[string]any{"title": "Bad project", "type": "feature", "project": bad})
+		text := errorText(t, refused, "a create with project "+bad)
+		if !strings.Contains(text, fmt.Sprintf("invalid project argument %q", bad)) {
+			t.Errorf("project %q: refusal %q does not name the project argument", bad, text)
+		}
+		if strings.Contains(text, "the id you passed") {
+			t.Errorf("project %q: refusal %q blames an id the caller never passed", bad, text)
+		}
+	}
+	// ticket_discover resolves its destination through the same path.
+	refused := callTool(t, session, "ticket_discover", map[string]any{"title": "Bad project", "finding_key": "k1", "project": "alpha/b"})
+	text := errorText(t, refused, "a discover with project alpha/b")
+	if !strings.Contains(text, `invalid project argument "alpha/b"`) {
+		t.Errorf("discover refusal %q does not name the project argument", text)
+	}
+	if strings.Contains(text, "the id you passed") {
+		t.Errorf("discover refusal %q blames an id the caller never passed", text)
+	}
+	assertNoTicketFiles(t, root)
+
+	// The valid project, the absent one and the CWD default are untouched.
+	if p, _ := ticket.ParseNamespacedID(createTicketID(t, session, map[string]any{"title": "Valid project", "type": "feature", "project": "beta"})); p != "beta" {
+		t.Errorf("create with project beta landed in %q", p)
+	}
+	if p, _ := ticket.ParseNamespacedID(createTicketID(t, session, map[string]any{"title": "Default project", "type": "feature"})); p != "alpha" {
+		t.Errorf("create with no project landed in %q, want the default alpha", p)
+	}
+
+	// The default reaches qualify without the argument's bound: a config key
+	// matched by path comes back from project.ResolveName unsanitized.
+	badDefault, badRoot := testCentralServerWithDefault(t, "alpha/sub", "alpha")
+	refused = callTool(t, badDefault, "ticket_create", map[string]any{"title": "Bad default", "type": "feature"})
+	text = errorText(t, refused, "a create under default project alpha/sub")
+	if !strings.Contains(text, `invalid default project "alpha/sub"`) {
+		t.Errorf("refusal %q does not name the default project", text)
+	}
+	if strings.Contains(text, "the id you passed") {
+		t.Errorf("refusal %q blames an id the caller never passed", text)
+	}
+	assertNoTicketFiles(t, badRoot)
+}
+
+// assertNoTicketFiles fails the test for any ticket file under root's store.
+func assertNoTicketFiles(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(filepath.Join(root, "tickets"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(path, ".md") {
+			t.Errorf("refused create still wrote %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

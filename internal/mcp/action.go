@@ -106,7 +106,7 @@ type discoverArgs struct {
 func registerDiscover(server *mcp.Server, store ticket.Store, defaultProject string) {
 	addFlexTool(server, &mcp.Tool{
 		Name: "ticket_discover",
-		Description: "File a discovery: create a ticket under a stable `finding_key`, or return the ticket that key already created. The destination (`project`, `repo` or the server's default project) and the content arguments are ticket_create's; the key is scoped to the destination project, so the same key in another project is a different finding. " +
+		Description: "File a discovery: create a ticket under a stable `finding_key`, or return the ticket that key already created. The destination (`project`, `repo` or the server's default project) and the content arguments are ticket_create's; the key is scoped to the destination project, so the same key in another project is a different finding. A `project` that is not a bare name (a path separator, `.` or `..`) is refused naming the argument. " +
 			"Under the key, a retry or a concurrent call with the same title, description, design, acceptance, type, priority, parent and tags returns the existing ticket with `replayed: true` and creates nothing; different content under the same key is refused with the `action conflict:` prefix, naming the existing ticket, and creates nothing. " +
 			"Deduplication is exact-content by key — finding that a new discovery describes a problem an existing ticket already tracks is the caller's job (ticket_search). " +
 			"`source` is a declared label attributing the write, recorded on the receipt and in the mutation log; it does not authenticate anyone. " +

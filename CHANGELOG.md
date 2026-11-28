@@ -16,6 +16,9 @@
 - `machine` is a reserved name and can no longer be an extra field.
 - `claim` is a reserved name and can no longer be set or filtered on as an extra field, and an extra stored under it is no longer in JSON, where the key is the claim.
 
+### Fixed
+- `ticket_create` and `ticket_discover` refuse a `project` argument that is not a bare project name — one carrying a path separator, or `.` or `..` — naming the argument and its value, before anything is written. It was joined into the generated ID unchecked, so `project: "a/b"` reached project `a` as the ticket ID `b/<id>` and was refused with a message telling the caller to check "the id you passed" for an ID tk generated itself. A server default project that is not a bare name — a config key matched to the working directory by path — is refused the same way, naming the default. A valid `project`, an absent one and a valid CWD-derived default are unchanged.
+
 ## [8.14.0] - 2026-11-24
 
 ### Added
